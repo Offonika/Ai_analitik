@@ -1,0 +1,16 @@
+{
+  "revenue_account_key": "ca495cfb-658a-11ec-be7c-8e45118e8d46",
+  "cogs_account_key": "ca495cfc-658a-11ec-be7c-8e45118e8d46",
+  "vat_account_key": "ec4a083e-4c2d-11ee-8dc0-005056ae0f31",
+  "rwb_structural_unit_key": "9fb8122b-658a-11ec-be7c-8e45118e8d46",
+  "rwb_account_keys": {
+    "commission": "ed809e63-2c0c-11f1-80e1-000c29cb5adf",
+    "logistics": "77dcb829-46ca-11f1-80e1-000c29cb5adf",
+    "promotion": "35cd6072-46c5-11f1-80e1-000c29cb5adf",
+    "utilization": "26beead7-46cc-11f1-80e1-000c29cb5adf",
+    "pvz": "bb46fc26-46c5-11f1-80e1-000c29cb5adf",
+    "fines": "561bd92f-46ca-11f1-80e1-000c29cb5adf",
+    "subscription": "c66d8f42-46cc-11f1-80e1-000c29cb5adf",
+    "acquiring": "44c6bbce-46ce-11f1-80e1-000c29cb5adf"
+  }
+}

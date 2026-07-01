@@ -1,0 +1,13 @@
+[Unit]
+Description=Shumeyko WB/1C daily source refresh
+After=network-online.target postgresql@16-main.service shumeiko-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
+EnvironmentFile=/etc/shumeiko-web.env
+Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko
+ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode daily --reason "systemd daily source refresh"
+NoNewPrivileges=true
+PrivateTmp=true

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Shumeyko weekly full source refresh on Monday morning
+
+[Timer]
+OnCalendar=Mon *-*-* 08:15:00
+Persistent=true
+Unit=shumeiko-source-refresh-weekly.service
+
+[Install]
+WantedBy=timers.target

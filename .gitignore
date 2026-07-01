@@ -1,0 +1,29 @@
+# local secrets
+.env
+.env.*
+!.env.example
+
+# local data and generated reports
+data/
+reports/
+*.xlsx
+*.xls
+*.csv
+*.zip
+*.7z
+
+# caches
+__pycache__/
+*.pyc
+.cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

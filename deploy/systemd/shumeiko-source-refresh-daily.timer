@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Shumeyko rolling daily source refresh every hour
+
+[Timer]
+OnCalendar=*-*-* *:15:00
+Persistent=true
+Unit=shumeiko-source-refresh-daily.service
+
+[Install]
+WantedBy=timers.target

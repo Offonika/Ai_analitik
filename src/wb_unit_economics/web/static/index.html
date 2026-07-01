@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Shumeyko WB Unit Economics</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="login-view" class="login-view" hidden>
+        <div class="login-panel">
+          <p class="eyebrow">Shumeyko WB Unit Economics</p>
+          <h1>Кабинет отчета</h1>
+          <form id="login-form" class="login-form">
+            <label>
+              Email
+              <input id="email" name="email" type="email" autocomplete="email" required />
+            </label>
+            <label>
+              Пароль
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+            </label>
+            <label class="remember-option">
+              <input id="remember-me" name="rememberMe" type="checkbox" />
+              <span>Запомнить меня</span>
+            </label>
+            <button type="submit">Войти</button>
+          </form>
+          <p id="login-error" class="error-text" role="alert"></p>
+        </div>
+      </section>
+
+      <section id="cabinet-view" class="cabinet-view" hidden>
+        <header class="topbar">
+          <div class="brand-lockup">
+            <p class="eyebrow">WB/1C юнит-экономика</p>
+            <h1 id="report-title">Кабинет отчета</h1>
+            <p id="report-subtitle" class="topbar-subtitle">Расчетная витрина клиента</p>
+          </div>
+          <div class="topbar-controls">
+            <label class="client-switcher">
+              <span>Клиент</span>
+              <select id="client-select" aria-label="Выбор клиента"></select>
+            </label>
+            <label class="report-switcher">
+              <span>Отчет</span>
+              <select id="report-select" aria-label="Выбор отчета"></select>
+            </label>
+            <div class="topbar-actions">
+              <button id="ai-open-button" type="button" class="secondary-button">AI</button>
+              <button
+                id="integrations-open-button"
+                type="button"
+                class="secondary-button"
+                hidden
+              >
+                Интеграции
+              </button>
+              <button id="logout-button" type="button" class="secondary-button">Выход</button>
+            </div>
+          </div>
+        </header>
+
+        <section class="overview-band" aria-labelledby="overview-title">
+          <div id="readiness-card" class="overview-panel readiness-neutral">
+            <div>
+              <p class="eyebrow">Главное по отчету</p>
+              <h2 id="overview-title">Обзор для отправки клиенту</h2>
+              <p id="readiness-action" class="muted">Проверяем отчет.</p>
+            </div>
+            <div class="readiness-summary" aria-label="Готовность отчета">
+              <div>
+                <span id="readiness-label">Загрузка</span>
+                <small>Готовность</small>
+              </div>
+              <div class="score-box">
+                <span id="readiness-score">0</span>
+                <small>score</small>
+              </div>
+            </div>
+          </div>
+          <div class="meta-panel">
+            <dl>
+              <div>
+                <dt>Период отчета</dt>
+                <dd id="meta-period">-</dd>
+              </div>
+              <div>
+                <dt>Покрытие источников</dt>
+                <dd id="meta-source-coverage">-</dd>
+              </div>
+              <div>
+                <dt>Дата расчета</dt>
+                <dd id="meta-generated">-</dd>
+              </div>
+              <div>
+                <dt>Методика</dt>
+                <dd id="meta-methodology">-</dd>
+              </div>
+              <div>
+                <dt>Источник</dt>
+                <dd id="meta-source">-</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+
+        <section
+          id="source-refresh-panel"
+          class="panel full-width source-refresh-panel"
+          aria-labelledby="source-refresh-title"
+          hidden
+        >
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Обновление источников</p>
+              <h2 id="source-refresh-title">Последний refresh WB/1C</h2>
+            </div>
+            <span id="source-refresh-status" class="status-pill">Не запускался</span>
+          </div>
+          <p id="source-refresh-message" class="muted"></p>
+          <dl id="source-refresh-meta" class="source-refresh-meta"></dl>
+          <div id="source-refresh-collections" class="source-refresh-collections"></div>
+          <button id="source-refresh-new-report" type="button" class="secondary-button" hidden>
+            Открыть новый отчет
+          </button>
+        </section>
+
+        <section class="content-grid">
+          <section class="panel" aria-labelledby="kpi-title">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Финансы</p>
+                <h2 id="kpi-title">Базовые KPI</h2>
+              </div>
+              <a id="excel-link" class="button-link" href="#">Excel</a>
+            </div>
+            <div id="kpi-grid" class="metric-grid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="quality-title">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Контроль перед отправкой</p>
+                <h2 id="quality-title">Качество отчета</h2>
+              </div>
+              <button id="review-rows-button" type="button">Проблемные строки</button>
+            </div>
+            <div id="quality-grid" class="metric-grid"></div>
+          </section>
+        </section>
+
+        <section class="panel full-width" aria-labelledby="liquidity-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Ассортимент</p>
+              <h2 id="liquidity-title">Ликвидность ассортимента</h2>
+            </div>
+            <span id="liquidity-count" class="muted"></span>
+          </div>
+          <div id="liquidity-grid" class="metric-grid"></div>
+          <div class="table-wrap">
+            <table class="products-table">
+              <thead>
+                <tr>
+                  <th>Месяц</th>
+                  <th>Статус ликвидности</th>
+                  <th>Драйвер</th>
+                  <th>Товар</th>
+                  <th>Артикул WB</th>
+                  <th>Артикул 1С</th>
+                  <th>Продажи</th>
+                  <th>Выручка</th>
+                  <th>МД после налогов</th>
+                  <th>На шт</th>
+                  <th>Статус данных</th>
+                </tr>
+              </thead>
+              <tbody id="liquidity-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <section class="panel" aria-labelledby="reasons-title">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Причины</p>
+                <h2 id="reasons-title">Что проверить</h2>
+              </div>
+            </div>
+            <div class="reason-columns">
+              <div>
+                <h3>Блокирует отправку</h3>
+                <ul id="blocking-reasons" class="reason-list"></ul>
+              </div>
+              <div>
+                <h3>Требует проверки</h3>
+                <ul id="review-reasons" class="reason-list"></ul>
+              </div>
+            </div>
+          </section>
+
+          <section id="draft-panel" class="panel" aria-labelledby="draft-title" hidden>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Staff only</p>
+                <h2 id="draft-title">Клиентский AI-черновик</h2>
+              </div>
+              <button id="draft-refresh-button" type="button">Обновить</button>
+            </div>
+            <div id="draft-status" class="draft-status"></div>
+          </section>
+        </section>
+
+        <section id="ai-panel" class="panel full-width ai-panel" aria-labelledby="ai-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Read-only помощник</p>
+              <h2 id="ai-title">AI-аналитик</h2>
+            </div>
+            <span id="ai-source-status" class="status-pill">Не запускался</span>
+          </div>
+          <div class="quick-questions" aria-label="Быстрые вопросы AI">
+            <button type="button" data-ai-question="Что самое важное по убыточности?">
+              Что убыточно?
+            </button>
+            <button type="button" data-ai-question="Где в отчете нет себестоимости 1С?">
+              Где нет себестоимости?
+            </button>
+            <button type="button" data-ai-question="Что мешает отправке отчета клиенту?">
+              Что мешает отправке?
+            </button>
+            <button type="button" data-ai-question="Сформируй короткий вывод клиенту.">
+              Вывод клиенту
+            </button>
+          </div>
+          <div class="ai-workspace">
+            <div class="ai-chat" aria-live="polite">
+              <div id="ai-messages" class="ai-messages"></div>
+              <form id="ai-form" class="ai-form">
+                <input
+                  id="ai-input"
+                  name="message"
+                  type="text"
+                  placeholder="Спросите по отчету, SKU, себестоимости или readiness"
+                  autocomplete="off"
+                />
+                <button id="ai-send-button" type="submit">Спросить</button>
+              </form>
+              <p id="ai-error" class="error-text" role="alert"></p>
+            </div>
+            <aside class="ai-timeline" aria-label="Ход работы AI">
+              <h3>Ход анализа</h3>
+              <ul id="ai-events" class="event-list"></ul>
+            </aside>
+          </div>
+        </section>
+
+        <section class="panel full-width" aria-labelledby="lost-sales-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Пополнение WB</p>
+              <h2 id="lost-sales-title">Упущенные продажи</h2>
+            </div>
+            <span id="lost-sales-count" class="muted"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="products-table">
+              <thead>
+                <tr>
+                  <th>Кабинет</th>
+                  <th>Товар</th>
+                  <th>Артикул 1С</th>
+                  <th>Баркод</th>
+                  <th>Дней без WB</th>
+                  <th>Остаток 1С</th>
+                  <th>Склады 1С</th>
+                  <th>Упущено, шт</th>
+                  <th>Упущенная прибыль</th>
+                  <th>Вывод</th>
+                </tr>
+              </thead>
+              <tbody id="lost-sales-rows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section
+          id="integrations-panel"
+          class="panel full-width integrations-panel"
+          aria-labelledby="integrations-title"
+          hidden
+        >
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Контур клиента</p>
+              <h2 id="integrations-title">Интеграции</h2>
+            </div>
+            <span id="integrations-status" class="muted"></span>
+          </div>
+          <div id="integration-list" class="integration-list"></div>
+        </section>
+
+        <section class="panel full-width products-panel" aria-labelledby="rows-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Детализация</p>
+              <h2 id="rows-title">Товары</h2>
+            </div>
+            <span id="rows-count" class="muted"></span>
+          </div>
+          <form id="rows-filter-form" class="filters-bar">
+            <label class="filter-search">
+              Поиск
+              <input
+                id="filter-query"
+                name="query"
+                type="search"
+                placeholder="Товар, артикул, баркод, nmId"
+                autocomplete="off"
+              />
+            </label>
+            <label>
+              Статус
+              <select id="filter-status" name="status_filter"></select>
+            </label>
+            <label>
+              Месяц 1С
+              <select id="filter-month" name="month"></select>
+            </label>
+            <label>
+              Начало
+              <input id="filter-period-start" name="period_start" type="date" />
+            </label>
+            <label>
+              Конец
+              <input id="filter-period-end" name="period_end" type="date" />
+            </label>
+            <label>
+              Документ-отчет
+              <select id="filter-document-report" name="document_report"></select>
+            </label>
+            <label>
+              Кабинет
+              <select id="filter-cabinet" name="cabinet"></select>
+            </label>
+            <label>
+              Организация
+              <select id="filter-organization" name="organization"></select>
+            </label>
+            <label>
+              Схема
+              <select id="filter-scheme" name="scheme"></select>
+            </label>
+            <label>
+              Класс
+              <select id="filter-loss-class" name="loss_class"></select>
+            </label>
+            <div class="filter-actions">
+              <button id="apply-filters-button" type="submit">Применить</button>
+              <button id="reset-filters-button" type="button" class="secondary-button">
+                Сбросить
+              </button>
+            </div>
+          </form>
+          <div class="table-wrap">
+            <table class="products-table">
+              <thead>
+                <tr>
+                  <th>Месяц 1С</th>
+                  <th>Документ-отчет</th>
+                  <th>Отчет WB</th>
+                  <th>Дата отчета</th>
+                  <th>Кабинет</th>
+                  <th>Товар</th>
+                  <th>Артикул WB</th>
+                  <th>Артикул 1С</th>
+                  <th>Баркод</th>
+                  <th>Схема</th>
+                  <th>Статус</th>
+                  <th>Продажи</th>
+                  <th>Возвраты</th>
+                  <th>Выручка</th>
+                  <th>Прибыль</th>
+                </tr>
+              </thead>
+              <tbody id="review-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

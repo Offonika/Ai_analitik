@@ -1,0 +1,19 @@
+[Unit]
+Description=Shumeyko WB Unit Economics Web API
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
+EnvironmentFile=/etc/shumeiko-web.env
+ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python -m uvicorn wb_unit_economics.web.app:app --host 127.0.0.1 --port 8096 --workers 1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=2G
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

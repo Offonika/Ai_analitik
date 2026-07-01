@@ -1,0 +1,898 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from tests.fixtures import (
+    CLIENT_ID,
+    account_org_mapping,
+    cost_snapshots,
+    sku_mappings,
+    wb_snapshots,
+)
+from wb_unit_economics.calculation import build_unit_economics_report
+from wb_unit_economics.contracts import (
+    AdvertisingScope,
+    DataQualityStatus,
+    MappingStatus,
+    OnecUnfCostSnapshot,
+    ReportStatus,
+    SalesModel,
+    SkuMapping,
+    WbExpenseAllocationBase,
+    WbSalesReportSummaryRow,
+)
+
+
+def build_report(as_of_date: date = date(2026, 6, 16)):
+    return build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=as_of_date,
+    )
+
+
+def test_report_marks_q2_before_end_as_partial_period() -> None:
+    assert build_report().status is ReportStatus.PARTIAL_PERIOD
+    assert build_report(date(2026, 7, 1)).status is ReportStatus.FINAL
+
+
+def test_report_period_filters_source_rows() -> None:
+    march_snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "period_start": date(2026, 3, 31),
+            "period_end": date(2026, 3, 31),
+            "raw_payload_hash": "march-hash",
+        }
+    )
+    april_snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "period_start": date(2026, 4, 1),
+            "period_end": date(2026, 4, 1),
+            "raw_payload_hash": "april-hash",
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[march_snapshot, april_snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+        report_period_start=date(2026, 4, 1),
+        report_period_end=date(2026, 6, 17),
+    )
+
+    assert len(report.rows) == 1
+    assert report.rows[0].source_snapshot_hashes == ("april-hash",)
+    assert report.rows[0].is_partial_week is True
+    assert report.source_coverage_start == date(2026, 3, 31)
+    assert report.source_coverage_end == date(2026, 4, 1)
+
+
+def test_profit_formula_includes_acquiring_and_cost_extra() -> None:
+    report = build_report()
+    row = next(item for item in report.rows if item.nm_id == 101)
+    assert row.sales_model is SalesModel.FBO
+    assert row.sales_quantity == Decimal("2")
+    assert row.return_quantity == Decimal("0")
+    assert row.return_amount == Decimal("0.00")
+    assert row.return_rate_by_quantity == Decimal("0.0000")
+    assert row.cogs_from_1c_with_extra_costs == Decimal("230.00")
+    assert row.gross_profit == Decimal("570.00")
+    assert row.revenue_without_vat == Decimal("952.38")
+    assert row.vat_5_from_revenue == Decimal("47.62")
+    assert row.usn_1_from_revenue == Decimal("10.00")
+    assert row.profit_after_taxes == Decimal("512.38")
+    assert row.margin_after_taxes == Decimal("0.5124")
+    assert row.profit_after_taxes_per_unit == Decimal("256.19")
+    assert row.revenue_after_spp == Decimal("1000.00")
+    assert row.revenue_before_spp == Decimal("1000.00")
+    assert row.spp_discount == Decimal("0.00")
+    assert row.spp_discount_rate == Decimal("0.0000")
+    assert row.spp_source_status == "СПП не передается текущим источником"
+    assert row.tax_method == "НДС внутри цены 5/105; УСН 1% от выручки"
+    assert row.data_quality_status is DataQualityStatus.RELIABLE
+    assert row.advertising_scope is AdvertisingScope.EXCLUDED_FROM_MVP
+
+
+def test_unit_economics_row_keeps_sales_returns_and_net_quantity() -> None:
+    sale = wb_snapshots()[0]
+    returned = sale.model_copy(
+        update={
+            "wb_document_id": "doc-return-same-product",
+            "operation_type": "return",
+            "quantity": Decimal("-1"),
+            "net_revenue": Decimal("-400"),
+            "wb_commission": Decimal("-40"),
+            "logistics": Decimal("25"),
+            "storage": Decimal("0"),
+            "acceptance": Decimal("0"),
+            "penalties_and_holdbacks": Decimal("0"),
+            "acquiring": Decimal("-6"),
+            "raw_payload_hash": "wb-hash-return-same-product",
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale, returned],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.sales_quantity == Decimal("2")
+    assert row.return_quantity == Decimal("1")
+    assert row.quantity == Decimal("1")
+    assert row.return_amount == Decimal("400.00")
+    assert row.return_rate_by_quantity == Decimal("0.5000")
+    assert row.cogs_from_1c_with_extra_costs == Decimal("115.00")
+
+
+def test_zero_amount_goods_rows_do_not_increase_document_quantity() -> None:
+    sale = wb_snapshots()[0].model_copy(
+        update={
+            "wb_report_id": "ZERO-AMOUNT-WEEK",
+            "period_start": date(2026, 4, 6),
+            "period_end": date(2026, 4, 6),
+            "quantity": Decimal("2"),
+            "net_revenue": Decimal("1000"),
+            "raw_payload_hash": "nonzero-sale",
+        }
+    )
+    zero_amount_sale = sale.model_copy(
+        update={
+            "wb_document_id": "zero-amount-sale",
+            "quantity": Decimal("1"),
+            "net_revenue": Decimal("0"),
+            "raw_payload_hash": "zero-amount-sale",
+        }
+    )
+    zero_amount_return = sale.model_copy(
+        update={
+            "wb_document_id": "zero-amount-return",
+            "operation_type": "return",
+            "quantity": Decimal("-1"),
+            "net_revenue": Decimal("0"),
+            "raw_payload_hash": "zero-amount-return",
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale, zero_amount_sale, zero_amount_return],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    unit_row = report.rows[0]
+    assert unit_row.sales_quantity == Decimal("2")
+    assert unit_row.return_quantity == Decimal("0")
+    assert unit_row.quantity == Decimal("2")
+
+    document_row = report.onec_report_reconciliation_rows[0]
+    assert document_row.sales_quantity == Decimal("2")
+    assert document_row.return_quantity == Decimal("0")
+    assert document_row.quantity == Decimal("2")
+
+
+def test_storage_and_promotion_are_scaled_to_weekly_wb_report() -> None:
+    snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "wb_report_id": "726807272",
+            "storage": Decimal("20"),
+            "wb_promotion": Decimal("10"),
+        }
+    )
+    summary = WbSalesReportSummaryRow(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        account_name="WB_ACCOUNT_1",
+        report_id="726807272",
+        date_from=date(2026, 4, 6),
+        date_to=date(2026, 4, 12),
+        create_date=date(2026, 4, 13),
+        report_type=1,
+        paid_storage_sum="30",
+        deduction_sum="15",
+        raw_payload_hash="summary-hash-1",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        wb_sales_report_summary_rows=[summary],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.wb_report_id == "726807272"
+    assert row.wb_report_date == "2026-04-13"
+    assert (
+        row.document_report
+        == "Отчет комиссионера · 06.04.2026-12.04.2026 · закрытие 12.04.2026"
+    )
+    assert row.storage == Decimal("30.00")
+    assert row.wb_promotion == Decimal("15.00")
+    assert row.gross_profit == Decimal("545.00")
+    allocations = {
+        item.expense_category: item for item in report.expense_allocation_rows
+    }
+    assert allocations["Хранение"].control_amount == Decimal("30.00")
+    assert allocations["Хранение"].api_total_amount == Decimal("20.00")
+    assert allocations["Хранение"].allocated_amount == Decimal("30.00")
+    assert allocations["Хранение"].wb_report_ids == ("726807272",)
+    assert (
+        allocations["Хранение"].allocation_status
+        == "Распределено по API, приведено к фин. отчету WB"
+    )
+    assert allocations["WB Продвижение"].allocated_amount == Decimal("15.00")
+
+
+def test_report_type_from_sales_report_list_classifies_document_kind() -> None:
+    snapshot = wb_snapshots()[0].model_copy(update={"wb_report_id": "NO-SUFFIX"})
+    summary = WbSalesReportSummaryRow(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        account_name="WB_ACCOUNT_1",
+        report_id="NO-SUFFIX",
+        date_from=date(2026, 4, 6),
+        date_to=date(2026, 4, 12),
+        create_date=date(2026, 4, 13),
+        report_type=2,
+        raw_payload_hash="summary-hash-report-type",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        wb_sales_report_summary_rows=[summary],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert "Уведомление о выкупе" in report.rows[0].document_report
+    assert report.rows[0].data_quality_status is DataQualityStatus.RELIABLE
+
+
+def test_report_type_suffix_fallback_marks_review_status() -> None:
+    snapshot = wb_snapshots()[0].model_copy(
+        update={"wb_report_id": "535699202604061"}
+    )
+    unrelated_summary = WbSalesReportSummaryRow(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        account_name="WB_ACCOUNT_1",
+        report_id="OTHER-REPORT",
+        date_from=date(2026, 4, 6),
+        date_to=date(2026, 4, 12),
+        create_date=date(2026, 4, 13),
+        report_type=1,
+        raw_payload_hash="summary-hash-other",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        wb_sales_report_summary_rows=[unrelated_summary],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert "Уведомление о выкупе" in report.rows[0].document_report
+    assert report.rows[0].data_quality_status is DataQualityStatus.REPORT_TYPE_FALLBACK
+
+
+def test_spp_discount_is_allocated_from_weekly_wb_report() -> None:
+    summary = WbSalesReportSummaryRow(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        account_name="WB_ACCOUNT_1",
+        report_id="726807272",
+        date_from=date(2026, 4, 6),
+        date_to=date(2026, 4, 12),
+        create_date=date(2026, 4, 13),
+        report_type=1,
+        cashback_discount_sum="100",
+        raw_payload_hash="summary-hash-spp",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        wb_sales_report_summary_rows=[summary],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.revenue_after_spp == Decimal("1000.00")
+    assert row.spp_discount == Decimal("100.00")
+    assert row.revenue_before_spp == Decimal("1100.00")
+    assert row.spp_discount_rate == Decimal("0.0909")
+    assert row.spp_source_status == "СПП из WB sales-reports/list cashbackDiscountSum"
+    reconciliation = report.report_reconciliation_rows[0]
+    assert reconciliation.revenue_before_spp == Decimal("1100.00")
+    assert reconciliation.spp_discount == Decimal("100.00")
+
+
+def test_no_sku_storage_and_promotion_allocate_to_products_by_revenue() -> None:
+    product_snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "storage": Decimal("0"),
+            "wb_promotion": Decimal("0"),
+        }
+    )
+    expense_snapshot = product_snapshot.model_copy(
+        update={
+            "wb_document_id": "expense-no-sku",
+            "nm_id": 0,
+            "vendor_code": "",
+            "barcode": "",
+            "operation_type": "deduction",
+            "quantity": Decimal("0"),
+            "net_revenue": Decimal("0"),
+            "wb_commission": Decimal("0"),
+            "logistics": Decimal("0"),
+            "storage": Decimal("30"),
+            "acceptance": Decimal("0"),
+            "wb_promotion": Decimal("15"),
+            "penalties_and_holdbacks": Decimal("0"),
+            "acquiring": Decimal("0"),
+            "advertising": Decimal("0"),
+            "raw_payload_hash": "expense-no-sku-hash",
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[product_snapshot, expense_snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    product_row = next(item for item in report.rows if item.nm_id == 101)
+    expense_row = next(item for item in report.rows if item.nm_id == 0)
+    assert product_row.storage == Decimal("30.00")
+    assert product_row.wb_promotion == Decimal("15.00")
+    assert product_row.gross_profit == Decimal("545.00")
+    assert product_row.data_quality_status is DataQualityStatus.RELIABLE
+    assert expense_row.storage == Decimal("0.00")
+    assert expense_row.wb_promotion == Decimal("0.00")
+
+    product_allocations = {
+        item.expense_category: item
+        for item in report.expense_allocation_rows
+        if item.nm_id == 101
+    }
+    assert product_allocations["Хранение"].allocated_amount == Decimal("30.00")
+    assert (
+        product_allocations["Хранение"].allocation_status
+        == "Расход без товара распределен по выручке"
+    )
+    assert product_allocations["WB Продвижение"].allocated_amount == Decimal("15.00")
+
+
+def test_storage_and_promotion_use_separate_api_base_when_loaded() -> None:
+    snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "storage": Decimal("20"),
+            "wb_promotion": Decimal("10"),
+        }
+    )
+    summary = WbSalesReportSummaryRow(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        account_name="WB_ACCOUNT_1",
+        report_id="726807272",
+        date_from=date(2026, 4, 6),
+        date_to=date(2026, 4, 12),
+        create_date=date(2026, 4, 13),
+        report_type=1,
+        paid_storage_sum="30",
+        deduction_sum="15",
+        raw_payload_hash="summary-hash-1",
+    )
+    bases = [
+        WbExpenseAllocationBase(
+            client_id=CLIENT_ID,
+            seller_account_id="WB_ACCOUNT_1",
+            week_start=date(2026, 4, 6),
+            week_end=date(2026, 4, 12),
+            expense_category="Хранение",
+            nm_id=101,
+            amount="60",
+            source_endpoint="paid-storage",
+            source_row_count=3,
+        ),
+        WbExpenseAllocationBase(
+            client_id=CLIENT_ID,
+            seller_account_id="WB_ACCOUNT_1",
+            week_start=date(2026, 4, 6),
+            week_end=date(2026, 4, 12),
+            expense_category="WB Продвижение",
+            nm_id=101,
+            amount="100",
+            source_endpoint="promotion",
+            source_row_count=2,
+        ),
+    ]
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        wb_sales_report_summary_rows=[summary],
+        expense_allocation_bases=bases,
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.storage == Decimal("30.00")
+    assert row.wb_promotion == Decimal("15.00")
+    allocations = {
+        item.expense_category: item for item in report.expense_allocation_rows
+    }
+    assert allocations["Хранение"].api_base_amount == Decimal("60.00")
+    assert allocations["Хранение"].api_total_amount == Decimal("60.00")
+    assert allocations["Хранение"].distribution_method == "Доля по отдельному API WB"
+    assert (
+        allocations["Хранение"].allocation_status
+        == "Распределено по отдельному API WB, приведено к фин. отчету WB"
+    )
+    assert allocations["Хранение"].source_row_count == 3
+    assert allocations["WB Продвижение"].api_base_amount == Decimal("100.00")
+    assert allocations["WB Продвижение"].allocated_amount == Decimal("15.00")
+
+
+def test_product_level_mapping_matches_size_level_wb_sku() -> None:
+    product_mapping = SkuMapping(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        organization_id="1C_ORG_1",
+        nm_id=101,
+        vendor_code="A-1",
+        barcode="",
+        onec_item_id="ONEC-1",
+        onec_article="A-1",
+        match_method="article",
+        confidence="1",
+        status=MappingStatus.MATCHED,
+        updated_by="fixture",
+        updated_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=[product_mapping],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].onec_item_id == "ONEC-1"
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("230.00")
+    assert report.rows[0].data_quality_status is DataQualityStatus.RELIABLE
+
+
+def test_missing_week_uses_nearest_available_cost_with_review_status() -> None:
+    snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "period_start": date(2026, 5, 20),
+            "period_end": date(2026, 5, 20),
+        }
+    )
+    cost = OnecUnfCostSnapshot(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        loaded_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        onec_item_id="ONEC-1",
+        article="A-1",
+        barcode="111",
+        name="Product 1",
+        cost_value="100",
+        extra_costs_value="15",
+        cost_method="sales_register_weighted_average_allocated_extra_costs",
+        effective_from=date(2026, 4, 6),
+        effective_to=date(2026, 4, 12),
+        source_document="AccumulationRegister_Продажи 2026-04-06..2026-04-12",
+        raw_payload_hash="cost-hash-previous-week",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[snapshot],
+        cost_snapshots=[cost],
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("230.00")
+    assert report.rows[0].data_quality_status is DataQualityStatus.NEEDS_REVIEW
+
+
+def test_zero_cost_for_goods_movement_is_missing_cost() -> None:
+    zero_cost = cost_snapshots()[0].model_copy(
+        update={
+            "cost_value": Decimal("0"),
+            "extra_costs_value": Decimal("0"),
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=[zero_cost],
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("0.00")
+    assert report.rows[0].data_quality_status is DataQualityStatus.MISSING_COST
+
+
+def test_unique_article_cost_fallback_handles_mapping_item_mismatch() -> None:
+    mapping = SkuMapping(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        organization_id="1C_ORG_1",
+        nm_id=101,
+        vendor_code="A-1",
+        barcode="111",
+        onec_item_id="ONEC-MAPPING",
+        onec_article="A-1",
+        match_method="onec_marketplace_mapping_sku",
+        confidence="1",
+        status=MappingStatus.MATCHED,
+        updated_by="fixture",
+        updated_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+    )
+    cost = OnecUnfCostSnapshot(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        loaded_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        onec_item_id="ONEC-COST",
+        article="A-1",
+        barcode="",
+        name="Product 1",
+        cost_value="100",
+        extra_costs_value="0",
+        cost_method="sales_register_weighted_average_allocated_extra_costs",
+        effective_from=date(2026, 4, 1),
+        effective_to=date(2026, 4, 30),
+        source_document="AccumulationRegister_Продажи 2026-04-01..2026-04-30",
+        raw_payload_hash="cost-hash-article",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=[cost],
+        sku_mappings=[mapping],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].onec_item_id == "ONEC-COST"
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("200.00")
+    assert report.rows[0].data_quality_status is DataQualityStatus.NEEDS_REVIEW
+
+
+def test_ambiguous_article_cost_fallback_is_not_used() -> None:
+    mapping = SkuMapping(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        organization_id="1C_ORG_1",
+        nm_id=101,
+        vendor_code="A-1",
+        barcode="111",
+        onec_item_id="ONEC-MAPPING",
+        onec_article="A-1",
+        match_method="onec_marketplace_mapping_sku",
+        confidence="1",
+        status=MappingStatus.MATCHED,
+        updated_by="fixture",
+        updated_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+    )
+    costs = [
+        OnecUnfCostSnapshot(
+            client_id=CLIENT_ID,
+            organization_id="1C_ORG_1",
+            loaded_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+            onec_item_id=onec_item_id,
+            article="A-1",
+            barcode="",
+            name="Product 1",
+            cost_value="100",
+            extra_costs_value="0",
+            cost_method="sales_register_weighted_average_allocated_extra_costs",
+            effective_from=date(2026, 4, 1),
+            effective_to=date(2026, 4, 30),
+            source_document="AccumulationRegister_Продажи 2026-04-01..2026-04-30",
+            raw_payload_hash=f"cost-hash-{onec_item_id}",
+        )
+        for onec_item_id in ("ONEC-COST-1", "ONEC-COST-2")
+    ]
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=costs,
+        sku_mappings=[mapping],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].onec_item_id == "ONEC-MAPPING"
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("0.00")
+    assert report.rows[0].data_quality_status is DataQualityStatus.MISSING_COST
+
+
+def test_partial_source_does_not_hide_missing_mapping() -> None:
+    partial_snapshot = wb_snapshots()[0].model_copy(update={"is_partial_source": True})
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[partial_snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=[],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].data_quality_status is DataQualityStatus.MISSING_MAPPING
+
+
+def test_partial_source_remains_visible_for_otherwise_complete_rows() -> None:
+    partial_snapshot = wb_snapshots()[0].model_copy(update={"is_partial_source": True})
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[partial_snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].data_quality_status is DataQualityStatus.PARTIAL_SOURCE
+
+
+def test_returns_follow_wb_finance_period_and_keep_negative_quantity() -> None:
+    row = next(item for item in build_report().rows if item.nm_id == 202)
+    assert row.sales_model is SalesModel.FBS
+    assert row.quantity == Decimal("-1")
+    assert row.week_start == date(2026, 4, 13)
+    assert row.cogs_from_1c_with_extra_costs == Decimal("-225.00")
+    assert row.gross_profit == Decimal("-248.00")
+    assert row.vat_5_from_revenue == Decimal("-23.81")
+    assert row.usn_1_from_revenue == Decimal("-5.00")
+    assert row.profit_after_taxes == Decimal("-219.19")
+
+
+def test_expense_reimbursement_quantity_does_not_create_cogs() -> None:
+    expense_snapshot = wb_snapshots()[0].model_copy(
+        update={
+            "wb_document_id": "expense-1",
+            "operation_type": (
+                "Возмещение издержек по перевозке/по складским операциям с товаром"
+            ),
+            "quantity": Decimal("100"),
+            "net_revenue": Decimal("0"),
+            "wb_commission": Decimal("0"),
+            "logistics": Decimal("12"),
+            "storage": Decimal("0"),
+            "acceptance": Decimal("0"),
+            "penalties_and_holdbacks": Decimal("0"),
+            "acquiring": Decimal("0"),
+        }
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[expense_snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].quantity == Decimal("0")
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("0.00")
+    assert report.rows[0].gross_profit == Decimal("-12.00")
+
+
+def test_onec_report_packages_split_commissioner_report_and_buyout() -> None:
+    base_sale = wb_snapshots()[0].model_copy(
+        update={
+            "period_start": date(2026, 5, 24),
+            "period_end": date(2026, 5, 24),
+            "wb_report_id": "439356720260524",
+            "net_revenue": Decimal("914576"),
+            "quantity": Decimal("10"),
+            "wb_commission": Decimal("0"),
+            "logistics": Decimal("0"),
+            "storage": Decimal("0"),
+            "acceptance": Decimal("0"),
+            "penalties_and_holdbacks": Decimal("0"),
+            "acquiring": Decimal("0"),
+        }
+    )
+    buyout_sale = wb_snapshots()[0].model_copy(
+        update={
+            "wb_document_id": "buyout-doc",
+            "period_start": date(2026, 5, 24),
+            "period_end": date(2026, 5, 24),
+            "wb_report_id": "4393567202605241",
+            "net_revenue": Decimal("55761.75"),
+            "quantity": Decimal("3"),
+            "wb_commission": Decimal("0"),
+            "logistics": Decimal("0"),
+            "storage": Decimal("0"),
+            "acceptance": Decimal("0"),
+            "penalties_and_holdbacks": Decimal("0"),
+            "acquiring": Decimal("0"),
+            "raw_payload_hash": "wb-hash-buyout",
+        }
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[base_sale, buyout_sale],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    rows_by_kind = {
+        row.document_label: row for row in report.onec_report_reconciliation_rows
+    }
+    assert rows_by_kind["Отчет комиссионера"].document_date == date(2026, 5, 25)
+    assert rows_by_kind["Отчет комиссионера"].week_start == date(2026, 5, 18)
+    assert rows_by_kind["Отчет комиссионера"].week_end == date(2026, 5, 24)
+    assert rows_by_kind["Отчет комиссионера"].sales_amount == Decimal("914576.00")
+    assert rows_by_kind["Отчет комиссионера"].wb_report_ids == ("439356720260524",)
+    assert rows_by_kind["Уведомление о выкупе"].document_date == date(2026, 5, 25)
+    assert rows_by_kind["Уведомление о выкупе"].sales_amount == Decimal("55761.75")
+    assert rows_by_kind["Уведомление о выкупе"].wb_report_ids == ("4393567202605241",)
+
+    product_rows_by_kind = {
+        row.document_label: row for row in report.onec_report_product_rows
+    }
+    assert product_rows_by_kind["Отчет комиссионера"].nm_id == 101
+    assert product_rows_by_kind["Уведомление о выкупе"].nm_id == 101
+
+
+def test_daily_buyout_report_id_is_not_mixed_into_commissioner_report() -> None:
+    base_sale = wb_snapshots()[0].model_copy(
+        update={
+            "period_start": date(2026, 4, 6),
+            "period_end": date(2026, 4, 6),
+            "wb_report_id": "53569920260406",
+            "quantity": Decimal("10"),
+            "net_revenue": Decimal("1000"),
+        }
+    )
+    buyout_sale = wb_snapshots()[0].model_copy(
+        update={
+            "wb_document_id": "daily-buyout-doc",
+            "period_start": date(2026, 4, 6),
+            "period_end": date(2026, 4, 6),
+            "wb_report_id": "535699202604061",
+            "quantity": Decimal("3"),
+            "net_revenue": Decimal("300"),
+            "raw_payload_hash": "daily-buyout-hash",
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[base_sale, buyout_sale],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    rows_by_kind = {
+        row.document_label: row for row in report.onec_report_reconciliation_rows
+    }
+    assert rows_by_kind["Отчет комиссионера"].sales_quantity == Decimal("10")
+    assert rows_by_kind["Отчет комиссионера"].wb_report_ids == ("53569920260406",)
+    assert rows_by_kind["Уведомление о выкупе"].sales_quantity == Decimal("3")
+    assert rows_by_kind["Уведомление о выкупе"].wb_report_ids == ("535699202604061",)
+
+    unit_rows_by_document = {row.document_report: row for row in report.rows}
+    assert len(unit_rows_by_document) == 2
+    assert unit_rows_by_document[
+        "Отчет комиссионера · 06.04.2026-12.04.2026 · закрытие 12.04.2026"
+    ].sales_quantity == Decimal("10")
+    assert unit_rows_by_document[
+        "Уведомление о выкупе · 06.04.2026-12.04.2026 · закрытие 12.04.2026"
+    ].sales_quantity == Decimal("3")
+
+
+def test_data_quality_statuses_cover_ambiguous_and_account_org_mismatch() -> None:
+    rows = {item.nm_id: item for item in build_report().rows}
+    assert rows[303].data_quality_status is DataQualityStatus.AMBIGUOUS_MAPPING
+    assert rows[404].data_quality_status is DataQualityStatus.ACCOUNT_ORG_MISMATCH
+
+
+def test_partial_week_is_visible_for_q2_boundary() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[
+            wb_snapshots()[0].model_copy(update={"period_start": date(2026, 4, 1)})
+        ],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+        report_period_start=date(2026, 4, 1),
+        report_period_end=date(2026, 6, 17),
+    )
+    assert report.rows[0].is_partial_week is True
+
+
+def test_custom_report_period_controls_status_and_partial_weeks() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[
+            wb_snapshots()[0].model_copy(update={"period_start": date(2026, 3, 1)})
+        ],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 18, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 18),
+        report_period_start=date(2026, 3, 1),
+        report_period_end=date(2026, 6, 17),
+    )
+
+    assert report.report_period_start == date(2026, 3, 1)
+    assert report.report_period_end == date(2026, 6, 17)
+    assert report.status is ReportStatus.FINAL
+    assert report.rows[0].is_partial_week is True

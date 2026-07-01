@@ -1,0 +1,429 @@
+---
+title: "Эксплуатация web-кабинета Shumeyko"
+doc_type: runbook
+domain: "marketplace-analytics"
+audience: ["engineering", "operations"]
+status: draft
+source_of_truth: false
+updated_at: "2026-07-01"
+---
+
+# Эксплуатация web-кабинета Shumeyko
+
+Кабинет `shumeiko.offonika.ru` работает как read-only продукт:
+HTML-оболочка открывается публично, но данные отчета, Excel export, AI-чат и
+live checks доступны только после входа.
+
+# Runtime Contours
+
+В production есть два связанных контура:
+
+- `FastAPI backend` в `/opt/shumeyko-partners-wb-unit-economics`, systemd service
+  `shumeiko-web.service`, локальный адрес `127.0.0.1:8096`;
+- `nginx` на домене `https://shumeiko.offonika.ru`, который проксирует
+  публичный shell и API в FastAPI.
+
+Nginx должен проксировать в FastAPI:
+
+- `/`;
+- `/cabinet`;
+- `/static/*`;
+- `/api/*`.
+
+Старый статический shell из `/var/www/offonika-shumeiko/shumeiko/index.html`
+нельзя использовать для web-кабинета: он хранит устаревший контракт и может
+обращаться к `unitRows` из public summary. Актуальный nginx-шаблон лежит в
+`deploy/nginx/shumeiko.offonika.ru.conf`.
+
+# Безопасный запуск backend
+
+`shumeiko-web.service` нельзя включать после аварийной остановки без лимита
+памяти и smoke-check. Актуальный шаблон лежит в
+`deploy/systemd/shumeiko-web.service` и задает:
+
+- `MemoryMax=2G`;
+- один `uvicorn` worker на `127.0.0.1:8096`;
+- `Restart=on-failure`;
+- `EnvironmentFile=/etc/shumeiko-web.env`.
+
+Установка/обновление unit:
+
+```bash
+sudo cp deploy/systemd/shumeiko-web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+Установка/обновление nginx-маршрута:
+
+```bash
+sudo cp deploy/nginx/shumeiko.offonika.ru.conf /etc/nginx/sites-available/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Перед включением проверить, что summary API не отдает полный `unitRows`, а
+PostgreSQL timeout настроен через `SHUMEYKO_POSTGRES_STATEMENT_TIMEOUT_MS`
+или default `15000`.
+
+Порядок первого запуска:
+
+```bash
+sudo systemctl start shumeiko-web.service
+curl --noproxy '*' -fsS http://127.0.0.1:8096/api/health
+free -h
+ps aux --sort=-%mem | head -20
+journalctl -u shumeiko-web.service -n 100 --no-pager
+```
+
+После nginx reload проверить, что публичный домен отдает FastAPI shell, а не
+legacy static:
+
+```bash
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/cabinet | grep -q '/static/app.js'
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/static/app.js | grep -q 'function asArray'
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/static/app.js | grep -vq 'summary.unitRows'
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health
+```
+
+Открыть кабинет в браузере и повторить проверку памяти. Если после входа и
+переключения отчетов Python остается стабильно ниже 1-1.5G, можно включить
+автозапуск:
+
+```bash
+sudo systemctl enable shumeiko-web.service
+```
+
+Если память снова растет до лимита или health-check нестабилен, остановить
+сервис и оставить его disabled до разбора:
+
+```bash
+sudo systemctl stop shumeiko-web.service
+sudo systemctl disable shumeiko-web.service
+```
+
+# Доступы
+
+Пользователи создаются только server-side, публичной регистрации нет.
+
+```bash
+cd /opt/shumeyko-partners-wb-unit-economics
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/manage_web_users.py list
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/manage_web_users.py create \
+  --email client@example.com \
+  --name "Client" \
+  --role client \
+  --password-file /root/shumeiko-web-users.txt
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/manage_web_users.py reset-password \
+  --email client@example.com \
+  --password-file /root/shumeiko-web-users.txt
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/manage_web_users.py disable \
+  --email client@example.com
+```
+
+Файл с временными паролями должен быть доступен только root. Пароли не
+записываются в Git, Markdown, HTML, JSON или чат.
+
+# Обновление report run
+
+Штатный путь: пересобрать расчетные витрины в БД, экспортировать артефакты и
+атомарно опубликовать новый `current` report:
+
+```bash
+cd /opt/shumeyko-partners-wb-unit-economics
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/rebuild_report_from_sources.py \
+  --tenant-id shumeyko \
+  --report-id excel_mvp_YYYY_MM_DD \
+  --export-all
+```
+
+Экспорт без пересборки источников:
+
+```bash
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/export_report_artifacts.py \
+  --report-id excel_mvp_YYYY_MM_DD \
+  --excel --docx --pdf --html --csv
+```
+
+Legacy recovery path, только если нужно восстановиться из уже принятого Excel:
+
+```bash
+cd /opt/shumeyko-partners-wb-unit-economics
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/import_web_report_from_excel.py \
+  --workbook reports/shumeyko_wb_excel_mvp.xlsx \
+  --report-id excel_mvp_YYYY_MM_DD
+```
+
+Если `SHUMEYKO_DATABASE_URL` не задан и `--database-url` не передан, команды
+используют локальный fallback `sqlite:///data/web/shumeyko_web.sqlite3`. Это
+нормально для локального smoke, но для production может создать “обновили не ту
+базу” эффект. Перед production-публикацией всегда использовать тот же runtime
+database URL, что и `shumeiko-web.service`; значение не печатать в чат, логи
+или документацию.
+
+Или через авторизованный admin API:
+
+```bash
+POST /api/admin/reports/import
+```
+
+1. Проверить `GET /api/reports`, `GET /api/reports/{id}/freshness`,
+   KPI summary и Excel export.
+2. Перед отправкой клиенту проверить `readiness` в `summary` или `freshness`:
+   `ready` можно отправлять, `needs_review` требует ручной проверки,
+   `partial_period`, `partial_source` и `source_coverage_gap` требуют явной
+   клиентской оговорки, `failed` нельзя отправлять до устранения
+   `blockingReasons`.
+3. Открыть `/cabinet`, войти под `consultant/admin` и сверить, что первый экран
+   показывает readiness, score, причины, следующий шаг, качество отчета и
+   проблемные строки без raw snapshots и технических секретов.
+4. Убедиться, что старые публичные artifacts не доступны: `/data/*.json`,
+   `/downloads/*.xlsx`, `/.env`.
+
+# Обновление UI shell
+
+UI shell живет в FastAPI assets внутри этого репозитория:
+
+- HTML: `src/wb_unit_economics/web/templates/cabinet.html`;
+- JS: `src/wb_unit_economics/web/static/app.js`;
+- CSS: `src/wb_unit_economics/web/static/styles.css`.
+
+После изменения клиентской страницы проверить публичный HTML, JS и API:
+
+```bash
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/ | grep -q '/static/app.js'
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/static/app.js | grep -q 'function asArray'
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health
+```
+
+Для клиентской вкладки `Упущенные продажи` публичный shell должен показывать
+колонки `Остаток 1С` и `Склады 1С`. Данные в этих колонках приходят из
+`/api/reports/{id}/summary`, а не из статического HTML.
+
+# AI
+
+Ключ OpenAI задается только в runtime окружении сервиса, например в
+`/etc/shumeiko-web.env`.
+
+AI-инструменты работают только поверх расчетной витрины и audit:
+
+- summary;
+- SKU search;
+- loss drivers;
+- data-quality issues;
+- period comparison;
+- management report draft;
+- read-only live checks, если включены.
+
+Если ключ пустой или OpenAI недоступен, кабинет отвечает deterministic fallback
+по тем же серверным tool outputs.
+
+В UI панель `AI-аналитик` должна явно показывать источник ответа:
+
+- `OpenAI` — ответ собран моделью поверх whitelisted tools;
+- `Fallback` — ответ собран локально по расчетной витрине, без обращения к
+  модели или после safe error OpenAI.
+
+Для `consultant/admin` fallback виден явно. Для `client` показывается мягкий
+статус расчетной витрины без технической причины ошибки.
+
+# Интеграции
+
+Ключи WB/1С хранятся в tenant-level разделе `Интеграции`, а не в профиле
+пользователя. Доступен только `consultant/admin`.
+
+Операции:
+
+- сохранить или заменить ключ;
+- проверить подключение read-only;
+- отключить интеграцию.
+
+API и audit никогда не должны возвращать полный secret. Допустимы только
+provider, status, masked `secretHint`, `storageMode`, safe `lastCheck` и
+timestamps. OpenAI key остается сервисным runtime secret в окружении сервиса,
+клиентский BYOK не включен в текущий пилот.
+
+Для реальных проверок должен быть задан runtime-ключ:
+
+```text
+SHUMEYKO_INTEGRATION_SECRET_KEY=<fernet-key>
+```
+
+Значение хранить только в `/etc/shumeiko-web.env` или другом root-only runtime
+контуре. Не записывать его в Git, Markdown, HTML, JSON или чат. Если ключ
+шифрования не задан, новый tenant secret сохраняется в `hash_only` режиме:
+кабинет покажет, что ключ введен, но `Проверить` вернет `check_failed` и
+попросит повторно сохранить ключ после настройки secret storage.
+
+Проверки:
+
+- `wb_api`: легкий read-only `GET https://finance-api.wildberries.ru/ping`;
+  проверяет достижимость WB API, валидность токена и Finance category, не
+  читает финансовые отчеты;
+- `onec_readonly`: `GET <baseUrl>/$metadata` через Basic Auth; проверяет, что
+  OData endpoint и учетная запись доступны для чтения metadata.
+
+Формат 1С-секрета в UI может быть JSON:
+
+```json
+{
+  "baseUrl": "https://example.invalid/odata/standard.odata",
+  "username": "readonly_user",
+  "password": "secret",
+  "verifySsl": true
+}
+```
+
+или key-value строкой:
+
+```text
+baseUrl=https://example.invalid/odata/standard.odata;username=readonly_user;password=secret;verifySsl=true
+```
+
+Эти примеры являются placeholders. Реальные URL, логины и пароли в документах
+не фиксировать.
+
+# Live Checks
+
+До отдельного smoke держать:
+
+```text
+SHUMEYKO_LIVE_CHECKS_ENABLED=false
+```
+
+При выключенном режиме endpoint возвращает `status=disabled` и
+`reviewStatus=needs_review`. Нули вместо недоступных данных не подставляются.
+Все обращения пишутся в audit и кешируются.
+
+# 1С Auto-Refresh
+
+Кнопка 1C auto-refresh и AI-команда дозагрузки 1С оставлены для совместимости
+интерфейса, но внутри вызывают новый единый `SourceRefreshService` в режиме
+`onec-only`. Новые запуски пишутся в `source_refresh_runs`, а старые
+`data_refresh_jobs` остаются только историей.
+
+До отдельного read-only smoke на реальном доступе держать:
+
+```text
+SHUMEYKO_SOURCE_REFRESH_ENABLED=false
+```
+
+После включения ручной `onec-only` refresh доступен только `consultant/admin`.
+Он берет доступы из encrypted tenant integrations, читает 1С только read-only,
+сохраняет snapshot в `data/source_refresh/<snapshot_set_id>/`. При
+`SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true` новый `report_run` публикуется через
+DB-first marts и artifact registry; при выключенном флаге остается legacy
+workbook-import fallback. Исходный отчет не патчится.
+
+# WB/1C Source Refresh
+
+Новый контур `source refresh` обновляет raw lineage WB, 1С и mapping одним
+`snapshot_set_id`. До smoke на реальных доступах держать:
+
+```text
+SHUMEYKO_SOURCE_REFRESH_ENABLED=false
+```
+
+Основной запуск:
+
+```bash
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
+  --tenant shumeyko \
+  --mode full
+```
+
+Проверка конфигурации без чтения WB/1С:
+
+```bash
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
+  --tenant shumeyko \
+  --mode full \
+  --dry-run
+```
+
+Правила:
+
+- production scheduler использует encrypted tenant integrations; `.env`
+  разрешен только для ручного локального backfill через
+  `--credential-source env`;
+- production CLI и health helper не читают локальный `.env`; runtime settings
+  берутся из systemd environment или явного `SHUMEYKO_DATABASE_URL`, а WB/1C
+  секреты — из encrypted tenant integrations;
+- `hash_only`, disabled или отсутствующие интеграции дают
+  `needs_configuration` и не запускают внешние API;
+- `daily` читает rolling window и не публикует новый report run, чтобы не
+  создать обрезанный отчет;
+- `weekly`/`full` читают полный настроенный период и создают новый report run
+  только если обязательные источники прошли;
+- ошибка WB Finance detail, 1C nomenclature/barcodes/organizations/sales
+  register или mapping блокирует новый отчет;
+- optional source failure, например weekly report list, дает report run со
+  статусом `needs_review`;
+- stale mapping подсвечивается отдельно: деньги могут сходиться, но товарные
+  строки требуют проверки.
+- raw rows для WB Finance, weekly report list, 1C OData и mapping metadata
+  пишутся в `source_snapshot_rows` после создания collection. Ошибка записи
+  raw rows по обязательному источнику блокирует публикацию, по optional source
+  переводит отчет в `needs_review`.
+
+Для systemd использовать отдельные timers: daily каждый час на 15-й минуте по
+МСК для rolling raw refresh и weekly/full утром в понедельник для публикации
+нового отчета после закрытия недельных данных WB/1С. Сырые snapshots остаются
+в `data/source_refresh` и не публикуются клиенту.
+
+Проверка первого scheduled run:
+
+```bash
+.venv/bin/python scripts/check_source_refresh_health.py \
+  --tenant shumeyko \
+  --mode daily \
+  --max-age-hours 2
+```
+
+Код выхода `0` означает свежий приемлемый run, `1` — свежий
+`failed/needs_configuration`, `2` — run не найден, устарел, еще выполняется или
+БД недоступна. Дополнительно проверить `journalctl` по timer service: в логах не
+должно быть токенов, connection strings или raw payload.
+
+# Backup
+
+PostgreSQL backup:
+
+```bash
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/backup_web_db.py \
+  --output-dir /var/backups/shumeiko-web \
+  --retention-days 14
+```
+
+Архивы backup хранятся вне Git и должны быть доступны только операционному
+пользователю/root.
+
+# Monitor
+
+Быстрая проверка runtime:
+
+```bash
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/check_web_cabinet_health.py
+```
+
+Проверка выводит статус systemd, local `/api/health`, количество пользователей,
+количество report runs и дату последнего отчета. Секреты и database URL не
+печатаются.
+
+# Deployment Smoke
+
+- `https://shumeiko.offonika.ru` открывает login/UI по HTTPS;
+- `https://shumeiko.offonika.ru/cabinet` открывает тот же login/UI shell;
+- `/api/health` отвечает `200`;
+- unauthenticated `/api/reports` отвечает `401`;
+- после login первый экран показывает readiness panel и качество отчета;
+- секция `Товары` показывает фильтры, а таблица прокручивается горизонтально на
+  узком экране без обрезания правых колонок;
+- панель `AI-аналитик` открывается, отправляет быстрые вопросы, показывает
+  timeline и статус `OpenAI`/`Fallback`;
+- `consultant/admin` видит раздел `Интеграции`; роль `client` его не видит;
+- роль `client` не видит staff-only статус клиентского AI-черновика;
+- `X-Robots-Tag: noindex, nofollow, noarchive` есть в ответах;
+- secure session cookie появляется только после login;
+- `/data/dashboard-data.json`, `/downloads/shumeyko_wb_excel_mvp.xlsx`,
+  `/.env` не отдаются публично;
+- AI drawer открывается, а ответ явно показывает ограничения источников.

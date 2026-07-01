@@ -1,0 +1,220 @@
+version: 1
+updated_at: "2026-06-30"
+documents:
+  - path: "AGENTS.md"
+    title: "AGENTS.md"
+    doc_type: "agent_rules"
+    status: "active"
+    audience: ["engineering", "agent"]
+    source_of_truth: true
+    summary: "Правила работы агента, безопасность, spec-first workflow."
+  - path: "README.md"
+    title: "AI-аналитик отчетов: пилот Шумейко WB/1C"
+    doc_type: "project_overview"
+    status: "active"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Локальная структура, секреты и базовые команды пилота AI-аналитика отчетов."
+  - path: "config/README.md"
+    title: "Config"
+    doc_type: "config_guide"
+    status: "active"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Правила non-secret конфигурации."
+  - path: "docs/index.md"
+    title: "Индекс документации проекта"
+    doc_type: "docs_index"
+    status: "active"
+    audience: ["engineering", "consultant", "client"]
+    source_of_truth: false
+    summary: "Навигация по документации и проверкам."
+  - path: "docs/product-concept-ai-report-analyst.md"
+    title: "AI-аналитик отчетов"
+    doc_type: "product_concept"
+    status: "accepted"
+    audience: ["consultant", "engineering", "operations"]
+    source_of_truth: false
+    summary: "Продуктовая рамка AI-аналитика отчетов и место пилота Шумейко WB/1C в ней."
+  - path: "docs/specs/wb-unit-economics-mvp.md"
+    title: "AI-аналитик отчетов: пилот Шумейко WB/1C MVP"
+    doc_type: "spec"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: true
+    summary: "Продуктовая рамка пилота AI-аналитика отчетов на WB/1C юнит-экономике."
+  - path: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
+    title: "AI-аналитик отчетов: Excel MVP пилота Шумейко WB/1C"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering"]
+    source_of_truth: true
+    summary: "Accepted implementation spec текущего Excel MVP как фактического слоя пилота AI-аналитика отчетов."
+  - path: "docs/changelogs/excel-mvp.md"
+    title: "Excel MVP changelog"
+    doc_type: "changelog"
+    status: "active"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Полная история изменений accepted Excel MVP, вынесенная из длинного implementation spec."
+  - path: "docs/specs/wb-unit-economics-client-web-cabinet.md"
+    title: "Клиентский web-кабинет WB/1C юнит-экономики"
+    doc_type: "spec"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Draft spec первого клиентского web-кабинета поверх принятой Excel-методики."
+  - path: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
+    title: "AI-аналитик отчетов: Shumeyko v2 web-кабинет"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Accepted implementation spec для пилотного FastAPI/PostgreSQL-кабинета, multi-client структуры, авторизации, AI tools и закрытого экспорта."
+  - path: "docs/specs/wb-unit-economics-db-first-report-marts.md"
+    title: "Шумейко WB/1C: DB-first report marts"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Accepted spec DB-first публикации: расчетные витрины БД как источник правды, Excel/web/DOCX/PDF/HTML/CSV как экспорты."
+  - path: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
+    title: "Shumeyko source refresh hardening and provider registry"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Accepted spec для source_refresh guards, provider registry, collector contract и dry-run retention CLI."
+  - path: "docs/client-scope.md"
+    title: "AI-аналитик отчетов: пилот Шумейко WB/1C"
+    doc_type: "client_scope"
+    status: "draft"
+    audience: ["client", "consultant"]
+    source_of_truth: false
+    summary: "Короткий клиентский scope пилота для согласования."
+  - path: "docs/client-acceptance-package.md"
+    title: "Пакет приемки пилота AI-аналитика отчетов"
+    doc_type: "client_acceptance_package"
+    status: "draft"
+    audience: ["client", "consultant", "engineering"]
+    source_of_truth: false
+    summary: "Короткий клиентский пакет приемки текущей опубликованной ревизии report_run."
+  - path: "docs/client-value-proposition-ai-assistant.md"
+    title: "Выгода AI-ассистента отчетов для консалтинговой компании"
+    doc_type: "client_value_proposition"
+    status: "draft"
+    audience: ["client", "consultant"]
+    source_of_truth: false
+    summary: "Клиентское объяснение выгоды подписки, экономии времени и пилотной design-partner скидки."
+  - path: "docs/client-tz.md"
+    title: "Техническое задание на пилот AI-аналитика отчетов"
+    doc_type: "client_tz"
+    status: "draft"
+    audience: ["client", "consultant"]
+    source_of_truth: false
+    summary: "Клиентское ТЗ пилота AI-аналитика отчетов в Markdown."
+  - path: "docs/shumeyko-partners-wb-unit-economics-client-tz.docx"
+    title: "Клиентское ТЗ DOCX"
+    doc_type: "client_tz_docx"
+    status: "draft"
+    audience: ["client", "consultant"]
+    source_of_truth: false
+    summary: "DOCX-версия клиентского ТЗ."
+  - path: "docs/client-methodology.md"
+    title: "Методика расчета юнит-экономики Wildberries"
+    doc_type: "client_methodology"
+    status: "draft"
+    audience: ["client", "consultant"]
+    source_of_truth: false
+    summary: "Методика расчета простым языком."
+  - path: "docs/calculation-formulas.md"
+    title: "Формулы расчета показателей WB/1C"
+    doc_type: "formula_reference"
+    status: "draft"
+    audience: ["consultant", "engineering", "client"]
+    source_of_truth: false
+    summary: "Формулы юнит-экономики, сверок WB/1C, статусов и округления."
+  - path: "docs/power-bi-wb-model-reference.md"
+    title: "Power BI WB model reference"
+    doc_type: "reference"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Безопасная выжимка из ранней Power BI-модели WB: структура, страницы, идеи формул и ограничения переноса."
+  - path: "docs/wb-financial-report-power-bi-measures-review.md"
+    title: "Сверка финансового отчета WB с ранними Power BI-мерами"
+    doc_type: "analysis"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Сравнение текущего расчета WB-финансового отчета с ранними Power BI-мерами и список улучшений."
+  - path: "docs/client-analytical-report-draft.md"
+    title: "AI-черновик аналитического отчета к Excel юнит-экономике WB"
+    doc_type: "client_report_draft"
+    status: "draft"
+    audience: ["client", "consultant"]
+    source_of_truth: false
+    summary: "Шаблон AI-черновика аналитической записки к Excel-отчету для проверки консультантом."
+  - path: "docs/onec-access-instruction.md"
+    title: "Короткая инструкция: доступ к данным 1С только на чтение"
+    doc_type: "access_instruction"
+    status: "draft"
+    audience: ["client_admin", "engineering"]
+    source_of_truth: false
+    summary: "Инструкция по read-only доступу к 1С."
+  - path: "docs/runbooks/report-generation.md"
+    title: "Сборка и проверка DB-first отчета"
+    doc_type: "runbook"
+    status: "draft"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Как собрать DB-first report marts, опубликовать отчет и экспортировать стабильный Excel."
+  - path: "docs/runbooks/reconciliation-artifacts.md"
+    title: "Сверочные артефакты Excel MVP"
+    doc_type: "runbook"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Где хранить и как готовить локальные артефакты сверки."
+  - path: "docs/runbooks/power-bi-power-query.md"
+    title: "Power BI и Power Query для WB/1C юнит-экономики"
+    doc_type: "runbook"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Путь от Excel MVP к Power Query/Power BI через расчетные витрины."
+  - path: "docs/runbooks/web-cabinet-operations.md"
+    title: "Эксплуатация web-кабинета Shumeyko"
+    doc_type: "runbook"
+    status: "draft"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Доступы, импорт report runs, AI, live checks, backup, monitor и deployment smoke для web-кабинета."
+  - path: "docs/runbooks/source-refresh-schedule.md"
+    title: "Расписание source refresh WB/1C"
+    doc_type: "runbook"
+    status: "draft"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Установка systemd timers для hourly daily и weekly source refresh через read-only CLI."
+  - path: "docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md"
+    title: "Ключевые решения Excel MVP"
+    doc_type: "decision"
+    status: "accepted"
+    audience: ["engineering", "consultant"]
+    source_of_truth: true
+    summary: "Краткая фиксация принятых решений по текущей методике Excel MVP."
+  - path: "docs/decisions/2026-06-23-db-first-publication-baseline.md"
+    title: "DB-first publication baseline"
+    doc_type: "decision"
+    status: "accepted"
+    audience: ["engineering", "operations", "consultant"]
+    source_of_truth: true
+    summary: "Текущий published/current DB-first baseline, parity-решение 18179 vs 18820 и blocker source refresh integrations."
+  - path: "docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md"
+    title: "Provider registry and source refresh retention"
+    doc_type: "decision"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Решение по read-only provider registry, blocked source_refresh statuses и dry-run-first raw snapshot retention."

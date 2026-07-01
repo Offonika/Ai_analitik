@@ -1,0 +1,51 @@
+---
+title: "Config"
+doc_type: config_guide
+domain: "marketplace-analytics"
+audience: ["engineering", "operations"]
+status: active
+source_of_truth: true
+updated_at: "2026-06-18"
+---
+
+# Config
+
+Здесь будут храниться настройки пилота без секретов:
+
+- список кабинетов;
+- период отчета;
+- правила маппинга товаров;
+- явная связка `WB_ACCOUNT_*` с организациями 1С;
+- версия методики расчета.
+
+API-ключи Wildberries здесь не хранить. Для локальных Excel/export сценариев
+используется только runtime `.env` вне Git. Для web-кабинета ключи клиента
+вводятся в tenant-level разделе `Интеграции` и сохраняются только как
+encrypted secret при настроенном `SHUMEYKO_INTEGRATION_SECRET_KEY`; plaintext
+не должен попадать в документы, HTML, JSON или Git.
+
+Доступ к 1С OData здесь тоже не хранить. Для локального read-only подключения
+Excel/export используются переменные:
+
+- `ONEC_ODATA_BASE_URL`;
+- `ONEC_ODATA_USERNAME`;
+- `ONEC_ODATA_PASSWORD`;
+- `ONEC_ODATA_VERIFY_SSL`;
+- `ONEC_ODATA_TIMEOUT_SECONDS`.
+
+Для web-кабинета 1С read-only подключение вводится в tenant-level разделе
+`Интеграции`. Проверка подключения читает только OData `$metadata` и не
+возвращает URL с учетными данными или пароль в API/audit.
+
+Состав опубликованных объектов 1С фиксируется в документах и должен быть
+минимальным для Excel MVP.
+
+Для первого Excel MVP автоматическая связка кабинета WB и организации 1С может
+быть только provisional. Перед приемкой отчета ее нужно подтвердить с заказчиком
+или вынести в отдельный non-secret config.
+
+GUID-настройки сверки `1С ОПиУ` можно вынести в
+`config/onec_opiu_accounts.json` по шаблону
+`config/onec_opiu_accounts.example.json`. В нем хранятся только non-secret
+идентификаторы счетов выручки, себестоимости, НДС, РВБ-услуг и структурной
+единицы. Если файл не задан, Excel помечает ОПиУ-сверку как `pilot defaults`.
