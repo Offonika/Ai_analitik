@@ -364,7 +364,9 @@ def _ensure_multi_client_indexes(engine: Engine) -> None:
     specs = {
         "source_loads": "ix_source_loads_tenant_client_backfill",
         "source_refresh_runs": "ix_source_refresh_runs_tenant_client_backfill",
-        "source_refresh_collections": "ix_source_refresh_collections_tenant_client_backfill",
+        "source_refresh_collections": (
+            "ix_source_refresh_collections_tenant_client_backfill"
+        ),
         "source_snapshot_rows": "ix_source_snapshot_rows_tenant_client_backfill",
     }
     with engine.begin() as connection:
@@ -528,10 +530,13 @@ def _backfill_multi_client_hierarchy(engine: Engine) -> None:
         _bulk_backfill_source_client_ids(
             session, SourceRefreshCollection, tenant_client_ids
         )
-        _bulk_backfill_source_client_ids(
-            session, SourceSnapshotRow, tenant_client_ids
-        )
         _bulk_backfill_source_client_ids(session, SourceLoad, tenant_client_ids)
+        # Historical raw snapshot rows can be very large in production. New rows are
+        # written with client_id, and legacy rows still retain tenant_id for isolation.
+        if _schema(engine) is None:
+            _bulk_backfill_source_client_ids(
+                session, SourceSnapshotRow, tenant_client_ids
+            )
 
         session.commit()
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Repair lightweight client hierarchy links for existing web report marts."""
 
-# ruff: noqa: E402
+# ruff: noqa: E402, I001
 
 from __future__ import annotations
 
@@ -214,7 +214,10 @@ def main() -> int:
             db.commit()
             action = "APPLIED"
 
-    print(f"{action}: tenant={args.tenant_id} client={client_id} name={args.client_name}")
+    print(
+        f"{action}: tenant={args.tenant_id} "
+        f"client={client_id} name={args.client_name}"
+    )
     for key in sorted(counts):
         print(f"{key}: {counts[key]}")
     return 0

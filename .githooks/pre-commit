@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ -x ".venv/bin/python" ]; then
+  PYTHON=".venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
+"$PYTHON" scripts/check_git_safety.py --staged
+"$PYTHON" scripts/validate_no_secrets.py

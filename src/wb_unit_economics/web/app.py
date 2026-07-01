@@ -223,6 +223,7 @@ def create_app(
         repository.audit(
             db, action="login", user=user, tenant_id=_first_tenant_id(user)
         )
+        clients = repository.list_clients_for_user(db, user)
         db.commit()
         response.set_cookie(
             runtime_settings.session_cookie_name,
@@ -233,7 +234,7 @@ def create_app(
             samesite="lax",
             path="/",
         )
-        return me_payload(user)
+        return me_payload(user, clients)
 
     @app.post("/api/auth/logout")
     def logout(request: Request, response: Response, db: DbSession) -> dict[str, str]:
@@ -253,8 +254,10 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/api/me")
-    def me(current: CurrentUser) -> dict[str, Any]:
-        return me_payload(current)
+    def me(current: CurrentUser, db: DbSession) -> dict[str, Any]:
+        clients = repository.list_clients_for_user(db, current)
+        db.commit()
+        return me_payload(current, clients)
 
     @app.get("/api/clients")
     def list_clients(current: CurrentUser, db: DbSession) -> dict[str, Any]:
@@ -1364,7 +1367,10 @@ def get_current_user(request: Request, db: DbSession) -> User:
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-def me_payload(user: User) -> dict[str, Any]:
+def me_payload(
+    user: User,
+    clients: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     tenants = [
         {
             "id": item.tenant_id,
@@ -1378,18 +1384,7 @@ def me_payload(user: User) -> dict[str, Any]:
         "email": user.email,
         "name": user.name,
         "tenants": tenants,
-        "clients": [
-            {
-                "clientId": repository.client_id_for_tenant(item.tenant_id),
-                "id": repository.client_id_for_tenant(item.tenant_id),
-                "tenantId": item.tenant_id,
-                "name": item.tenant.name,
-                "firmId": repository.DEFAULT_CONSULTING_FIRM_ID,
-                "role": item.role,
-                "status": "active",
-            }
-            for item in user.access
-        ],
+        "clients": clients or [],
     }
 
 

@@ -498,26 +498,49 @@ def save_tenant_integration(
         tenant_id=tenant_id,
         name=tenant.name if tenant else tenant_id,
     )
-    company = ensure_client_company(
-        db,
-        tenant_id=tenant_id,
-        client_id=client.id,
-        display_name=organization_name,
-    )
-    company_id = company.id if company else ""
-    cabinet = (
-        ensure_wb_cabinet(
+    company_id = ""
+    cabinet = None
+    if provider_base == "wb_api":
+        cabinet_label = (cabinet_name or label).strip()
+        if cabinet_label:
+            cabinet = db.scalar(
+                select(WbCabinet)
+                .where(
+                    WbCabinet.client_id == client.id,
+                    WbCabinet.display_name == cabinet_label,
+                )
+                .order_by((WbCabinet.provider == "").desc(), WbCabinet.id)
+            )
+        if cabinet is not None:
+            company_id = cabinet.client_company_id or ""
+            if provider and not cabinet.provider:
+                cabinet.provider = provider
+                cabinet.updated_at = security.utcnow()
+        else:
+            company = ensure_client_company(
+                db,
+                tenant_id=tenant_id,
+                client_id=client.id,
+                display_name=organization_name,
+            )
+            company_id = company.id if company else ""
+            cabinet = ensure_wb_cabinet(
+                db,
+                tenant_id=tenant_id,
+                client_id=client.id,
+                display_name=cabinet_label,
+                cabinet_key=connection_key,
+                provider=provider,
+                client_company_id=company_id,
+            )
+    else:
+        company = ensure_client_company(
             db,
             tenant_id=tenant_id,
             client_id=client.id,
-            display_name=cabinet_name or label,
-            cabinet_key=connection_key,
-            provider=provider,
-            client_company_id=company_id,
+            display_name=organization_name,
         )
-        if provider_base == "wb_api"
-        else None
-    )
+        company_id = company.id if company else ""
     wb_cabinet_id = cabinet.id if cabinet else ""
     now = security.utcnow()
     integration = db.scalar(
@@ -1734,13 +1757,14 @@ def import_dashboard_payload(
         tenant_id=tenant.id,
         name=meta.get("client", tenant_name),
     )
+    client_name = client.name or meta.get("client", tenant_name)
     existing = db.get(ReportRun, report_id)
     if existing is not None:
         _clear_report_payload(db, report_id)
         report = existing
         report.tenant_id = tenant_id
         report.client_id = client.id
-        report.client_name = meta.get("client", tenant_name)
+        report.client_name = client_name
         report.title = meta.get("title", "Кабинет юнит-экономики WB")
         report.period_start = period_start
         report.period_end = period_end
@@ -1766,7 +1790,7 @@ def import_dashboard_payload(
             id=report_id,
             tenant_id=tenant_id,
             client_id=client.id,
-            client_name=meta.get("client", tenant_name),
+            client_name=client_name,
             title=meta.get("title", "Кабинет юнит-экономики WB"),
             period_start=period_start,
             period_end=period_end,
@@ -2275,11 +2299,15 @@ def _report_meta_payload(
         "title": report.title,
         "client": report.client_name,
         "period": f"{report.period_start:%d.%m.%Y} - {report.period_end:%d.%m.%Y}",
-        "reportPeriod": f"{report.period_start:%d.%m.%Y} - {report.period_end:%d.%m.%Y}",
+        "reportPeriod": (
+            f"{report.period_start:%d.%m.%Y} - {report.period_end:%d.%m.%Y}"
+        ),
         "periodText": report.period_text,
         "periodStatus": report.period_status,
         "sourceCoverage": _source_coverage_label(source_coverage),
-        "sourceCoverageStart": source_coverage[0].isoformat() if source_coverage else "",
+        "sourceCoverageStart": (
+            source_coverage[0].isoformat() if source_coverage else ""
+        ),
         "sourceCoverageEnd": source_coverage[1].isoformat() if source_coverage else "",
         "methodologyVersion": report.methodology_version,
         "generatedAt": report.generated_at.strftime("%d.%m.%Y %H:%M"),

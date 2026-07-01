@@ -529,6 +529,38 @@ def test_multi_client_backfill_is_idempotent(tmp_path: Path) -> None:
     assert all(row.wb_cabinet_id for row in document_rows)
 
 
+def test_import_uses_existing_client_name_over_legacy_meta(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        import_dashboard_payload(
+            db,
+            sample_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-1",
+        )
+        client = db.query(repository.Client).filter_by(tenant_id="shumeyko").one()
+        client.name = "Реальный клиент"
+        db.commit()
+
+        import_dashboard_payload(
+            db,
+            sample_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-2",
+        )
+        db.commit()
+        report = db.get(repository.ReportRun, "report-2")
+        client = db.query(repository.Client).filter_by(tenant_id="shumeyko").one()
+
+    assert report is not None
+    assert report.client_name == "Реальный клиент"
+    assert client.name == "Реальный клиент"
+
+
 def test_report_summary_preserves_lost_sales_onec_stock(tmp_path: Path) -> None:
     engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
     init_db(engine)
@@ -985,6 +1017,7 @@ def test_multi_client_report_access_requires_explicit_client(
 ) -> None:
     client = make_client(tmp_path)
     with client.app.state.session_factory() as db:
+        db.get(repository.Client, "shumeyko").name = "Реальный клиент"
         upsert_user(
             db,
             email="admin@example.com",
@@ -995,6 +1028,13 @@ def test_multi_client_report_access_requires_explicit_client(
         db.commit()
 
     login(client)
+
+    me = client.get("/api/me")
+    assert me.status_code == 200
+    me_clients = me.json()["clients"]
+    assert next(
+        item for item in me_clients if item["clientId"] == "shumeyko"
+    )["name"] == "Реальный клиент"
 
     clients = client.get("/api/clients")
     assert clients.status_code == 200

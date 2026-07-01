@@ -44,6 +44,7 @@ from wb_unit_economics.web.models import (
     Tenant,
     TenantIntegration,
     User,
+    WbCabinet,
 )
 from wb_unit_economics.web.settings import WebSettings
 
@@ -872,7 +873,10 @@ class SourceRefreshService:
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "shumeyko_wb_excel_mvp.xlsx"
         args = argparse.Namespace(
-            client_id="shumeyko-partners",
+            client_id=(
+                refresh_run.client_id
+                or repository.client_id_for_tenant(refresh_run.tenant_id)
+            ),
             wb_finance_dir=wb_finance_dir,
             wb_finance_source="files",
             postgres_db_name="shumeyko_wb_unit_economics",
@@ -931,8 +935,16 @@ class SourceRefreshService:
             raise ValueError("source-refresh artifact path is outside reports")
         output_dir.mkdir(parents=True, exist_ok=True)
         excel_path = output_dir / "shumeyko_wb_excel_mvp.xlsx"
+        client_name = self._client_name(db, refresh_run.tenant_id)
         args = argparse.Namespace(
-            client_id="shumeyko-partners",
+            client_id=(
+                refresh_run.client_id
+                or (
+                    source_report.client_id
+                    if source_report
+                    else repository.client_id_for_tenant(refresh_run.tenant_id)
+                )
+            ),
             wb_finance_dir=wb_finance_dir,
             wb_finance_source="files",
             postgres_db_name="shumeyko_wb_unit_economics",
@@ -958,7 +970,7 @@ class SourceRefreshService:
             report_period_end=refresh_run.period_end,
             cost_amount_field="Сумма",
             sales_cost_amount_field="Себестоимость",
-            tenant_name=self._tenant_name(db, refresh_run.tenant_id),
+            tenant_name=client_name,
         )
         build = build_db_first_payload(args)
         report = repository.save_report_marts(
@@ -1066,6 +1078,14 @@ class SourceRefreshService:
     def _tenant_name(self, db: Session, tenant_id: str) -> str:
         tenant = db.get(repository.Tenant, tenant_id)
         return tenant.name if tenant is not None else tenant_id
+
+    def _client_name(self, db: Session, tenant_id: str) -> str:
+        client = db.scalar(
+            select(repository.Client).where(repository.Client.tenant_id == tenant_id)
+        )
+        if client is not None and client.name:
+            return client.name
+        return self._tenant_name(db, tenant_id)
 
     def _onec_page_size(self) -> int:
         return max(1, min(int(self.settings.source_refresh_onec_page_size), 100000))
@@ -1342,28 +1362,47 @@ def _ensure_wb_cabinet_for_integration(
     integration: TenantIntegration,
 ):
     payload = dict(integration.config_payload or {})
+    account_name = _integration_account_name(integration)
     tenant = db.get(Tenant, integration.tenant_id)
     client = repository.ensure_client_for_tenant(
         db,
         tenant_id=integration.tenant_id,
         name=tenant.name if tenant else integration.tenant_id,
     )
-    company = repository.ensure_client_company(
-        db,
-        tenant_id=integration.tenant_id,
-        client_id=client.id,
-        display_name=str(payload.get("organizationName") or "").strip(),
+    cabinet = db.scalar(
+        select(WbCabinet)
+        .where(
+            WbCabinet.client_id == client.id,
+            WbCabinet.display_name == account_name,
+        )
+        .order_by((WbCabinet.provider == "").desc(), WbCabinet.id)
     )
-    company_id = company.id if company else str(payload.get("clientCompanyId") or "")
-    cabinet = repository.ensure_wb_cabinet(
-        db,
-        tenant_id=integration.tenant_id,
-        client_id=client.id,
-        display_name=_integration_account_name(integration),
-        cabinet_key=str(payload.get("connectionKey") or integration.provider),
-        provider=integration.provider,
-        client_company_id=company_id,
-    )
+    if cabinet is not None:
+        company_id = cabinet.client_company_id or str(
+            payload.get("clientCompanyId") or ""
+        )
+        if integration.provider and not cabinet.provider:
+            cabinet.provider = integration.provider
+            cabinet.updated_at = security.utcnow()
+    else:
+        company = repository.ensure_client_company(
+            db,
+            tenant_id=integration.tenant_id,
+            client_id=client.id,
+            display_name=str(payload.get("organizationName") or "").strip(),
+        )
+        company_id = (
+            company.id if company else str(payload.get("clientCompanyId") or "")
+        )
+        cabinet = repository.ensure_wb_cabinet(
+            db,
+            tenant_id=integration.tenant_id,
+            client_id=client.id,
+            display_name=account_name,
+            cabinet_key=str(payload.get("connectionKey") or integration.provider),
+            provider=integration.provider,
+            client_company_id=company_id,
+        )
     if cabinet is None:
         return None
     if payload.get("clientId") != client.id or payload.get("wbCabinetId") != cabinet.id:

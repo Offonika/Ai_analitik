@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-06-30"
+updated_at: "2026-07-01"
 ---
 
 # Индекс документации проекта
@@ -30,6 +30,8 @@ implementation spec, затем общий MVP spec, затем клиентск
   как экспорты.
 - `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` —
   accepted spec hardening `source_refresh`, provider registry и retention CLI.
+- `docs/specs/wb-unit-economics-ai-git-workflow.md` — accepted spec
+  безопасного Git workflow для разработки с ИИ, локальных hooks и публикации.
 - `docs/specs/wb-unit-economics-mvp.md` — продуктовая рамка пилота и будущих
   этапов.
 - `docs/specs/wb-unit-economics-client-web-cabinet.md` — draft spec первого
@@ -46,6 +48,7 @@ implementation spec, затем общий MVP spec, затем клиентск
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
+| AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, hooks, Git checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно объяснить клиенту текущий опубликованный baseline, ограничения и что именно принимается. |
 
 # Клиентский пакет
@@ -80,6 +83,8 @@ implementation spec, затем общий MVP spec, затем клиентск
   пользователи, импорт report runs, AI, live checks, backup и monitor.
 - `docs/runbooks/source-refresh-schedule.md` — установка systemd timers для
   daily/weekly source refresh WB/1C.
+- `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
+  проверки, коммит, push и локальный pre-commit hook.
 
 # Решения
 
@@ -105,6 +110,7 @@ implementation spec, затем общий MVP spec, затем клиентск
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-db-first-report-marts.md
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
+.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-ai-git-workflow.md
 .venv/bin/python scripts/validate_no_secrets.py
 ```
 

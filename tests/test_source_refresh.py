@@ -378,6 +378,43 @@ def test_source_refresh_uses_all_finance_role_wb_integrations(
     assert {item.wb_cabinet_id for item in finance_rows} == finance_cabinet_ids
 
 
+def test_wb_integration_reuses_existing_report_cabinet_by_name(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        existing = db.query(WbCabinet).filter_by(display_name="Кабинет A").one()
+        repository.save_tenant_integration(
+            db,
+            user=user,
+            tenant_id="shumeyko",
+            provider="wb_api:second",
+            secret="wb-token-secret",
+            label="Кабинет A",
+            connection_role="finance_reports",
+            cabinet_name="Кабинет A",
+            organization_name="Организация-дубль",
+            secret_storage=integrations.secret_storage_payload(
+                settings,
+                "wb-token-secret",
+            ).payload,
+        )
+        db.commit()
+        integration = (
+            db.query(repository.TenantIntegration)
+            .filter_by(provider="wb_api:second")
+            .one()
+        )
+        cabinets = db.query(WbCabinet).filter_by(display_name="Кабинет A").all()
+
+    assert integration.config_payload["wbCabinetId"] == existing.id
+    assert integration.config_payload["clientCompanyId"] == existing.client_company_id
+    assert len(cabinets) == 1
+
+
 def test_source_refresh_db_first_branch_publishes_report_and_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
