@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <title>Shumeyko WB Unit Economics</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260708-ozon-expense-detail-v3" />
   </head>
   <body>
     <main class="app-shell">
@@ -41,193 +41,854 @@
       <section id="cabinet-view" class="cabinet-view" hidden>
         <header class="topbar">
           <div class="brand-lockup">
-            <p class="eyebrow">WB/1C юнит-экономика</p>
-            <h1 id="report-title">Кабинет отчета</h1>
-            <p id="report-subtitle" class="topbar-subtitle">Расчетная витрина клиента</p>
+            <p class="eyebrow">Шумейко · WB / Ozon / 1C</p>
+            <h1 id="report-title">Пульт подготовки отчета</h1>
+            <p id="report-subtitle" class="topbar-subtitle"></p>
           </div>
           <div class="topbar-controls">
             <label class="client-switcher">
               <span>Клиент</span>
               <select id="client-select" aria-label="Выбор клиента"></select>
             </label>
-            <label class="report-switcher">
-              <span>Отчет</span>
-              <select id="report-select" aria-label="Выбор отчета"></select>
+            <label class="cabinet-switcher report-only-control">
+              <span>Кабинет МП</span>
+              <select
+                id="topbar-cabinet-select"
+                aria-label="Фильтр по кабинету маркетплейса"
+              ></select>
+            </label>
+            <label class="period-start-switcher report-only-control">
+              <span>Дата начала</span>
+              <input id="topbar-period-start" type="date" aria-label="Дата начала периода" />
+            </label>
+            <label class="period-end-switcher report-only-control">
+              <span>Дата конца</span>
+              <input id="topbar-period-end" type="date" aria-label="Дата конца периода" />
             </label>
             <div class="topbar-actions">
-              <button id="ai-open-button" type="button" class="secondary-button">AI</button>
+              <button
+                id="client-output-button"
+                type="button"
+                class="report-only-control"
+                aria-haspopup="dialog"
+                aria-controls="client-output-widget-overlay"
+                data-tooltip="Открыть текстовый вывод для клиента поверх текущего отчета."
+              >
+                Клиентский вывод
+              </button>
+              <a
+                id="excel-link"
+                class="button-link secondary-button report-only-control"
+                href="#"
+                data-tooltip="Скачать текущий расчетный Excel-артефакт."
+              >
+                Excel
+              </a>
+              <button
+                id="ai-open-button"
+                type="button"
+                class="secondary-button report-only-control"
+                aria-haspopup="dialog"
+                aria-controls="ai-widget-overlay"
+                data-tooltip="Открыть AI-аналитика поверх уже рассчитанных фактов."
+              >
+                AI
+              </button>
               <button
                 id="integrations-open-button"
                 type="button"
                 class="secondary-button"
+                aria-haspopup="dialog"
+                aria-controls="integrations-widget-overlay"
+                data-tooltip="Открыть read-only подключения WB, Ozon и 1C для выбранного клиента."
                 hidden
               >
                 Интеграции
+              </button>
+              <button
+                id="new-client-button"
+                type="button"
+                class="secondary-button"
+                aria-haspopup="dialog"
+                aria-controls="new-client-widget-overlay"
+                data-tooltip="Создать новый клиентский контур."
+                hidden
+              >
+                + Клиент
               </button>
               <button id="logout-button" type="button" class="secondary-button">Выход</button>
             </div>
           </div>
         </header>
 
-        <section class="overview-band" aria-labelledby="overview-title">
-          <div id="readiness-card" class="overview-panel readiness-neutral">
+        <section class="panel money-strip report-page-section" aria-labelledby="kpi-title">
+          <div class="panel-header">
             <div>
-              <p class="eyebrow">Главное по отчету</p>
-              <h2 id="overview-title">Обзор для отправки клиенту</h2>
-              <p id="readiness-action" class="muted">Проверяем отчет.</p>
-            </div>
-            <div class="readiness-summary" aria-label="Готовность отчета">
-              <div>
-                <span id="readiness-label">Загрузка</span>
-                <small>Готовность</small>
-              </div>
-              <div class="score-box">
-                <span id="readiness-score">0</span>
-                <small>score</small>
-              </div>
+              <p id="kpi-eyebrow" class="eyebrow" hidden></p>
+              <h2 id="kpi-title">Показатели</h2>
             </div>
           </div>
-          <div class="meta-panel">
-            <dl>
+          <div id="kpi-grid" class="metric-grid command-metrics"></div>
+        </section>
+
+        <section
+          id="ozon-diagnostics-panel"
+          class="panel full-width ozon-preview-panel"
+          aria-labelledby="ozon-preview-title"
+          hidden
+        >
+          <div class="detail-panel-header">
+            <div>
+              <p class="eyebrow">Диагностика источников</p>
+              <h2 id="ozon-preview-title">Ozon + 1C</h2>
+              <p id="ozon-preview-summary" class="muted">
+                Загружаем статус Ozon-источников.
+              </p>
+            </div>
+            <div class="ozon-preview-actions">
+              <a
+                id="ozon-excel-link"
+                class="button-link secondary-button"
+                href="#"
+                hidden
+                data-tooltip="Скачать внутреннюю Ozon-выгрузку по статьям и SKU."
+              >
+                Excel Ozon
+              </a>
+              <span id="ozon-preview-count" class="panel-counter"></span>
+            </div>
+          </div>
+          <div id="ozon-preview-grid" class="metric-grid ozon-preview-grid"></div>
+          <section
+            id="ozon-issues-panel"
+            class="ozon-issue-panel"
+            aria-labelledby="ozon-issues-title"
+          >
+            <div class="table-heading ozon-issue-heading">
               <div>
-                <dt>Период отчета</dt>
-                <dd id="meta-period">-</dd>
+                <p class="eyebrow">Ошибки Ozon</p>
+                <h3 id="ozon-issues-title">Что разобрать первым</h3>
               </div>
+              <span id="ozon-vitrine-status" class="status-pill"></span>
+            </div>
+            <div id="ozon-issue-list" class="action-insights-list ozon-issue-list"></div>
+            <div id="ozon-issue-empty" class="analytics-empty" hidden>
+              Критичных ошибок Ozon нет. Можно читать витрину и готовить вывод.
+            </div>
+          </section>
+          <div
+            id="ozon-diagnostic-message"
+            class="ozon-diagnostic-message"
+          ></div>
+          <section
+            id="ozon-pnl-section"
+            class="ozon-table-section"
+            aria-labelledby="ozon-pnl-title"
+          >
+            <div class="table-heading">
               <div>
-                <dt>Покрытие источников</dt>
-                <dd id="meta-source-coverage">-</dd>
+                <p class="eyebrow">Расчетная витрина</p>
+                <h3 id="ozon-pnl-title">Ozon v1</h3>
               </div>
+              <p class="muted">
+                Выручка по регистру продаж 1C для контрагента Ozon.
+              </p>
+            </div>
+            <div id="ozon-pnl-message" class="ozon-diagnostic-message"></div>
+            <div id="ozon-pnl-grid" class="metric-grid ozon-pnl-grid"></div>
+            <div id="ozon-pnl-empty" class="analytics-empty" hidden>
+              Нет 1C-выручки Ozon для расчетной витрины.
+            </div>
+          </section>
+          <section class="ozon-table-section" aria-labelledby="ozon-unit-title">
+            <div class="table-heading">
               <div>
-                <dt>Дата расчета</dt>
-                <dd id="meta-generated">-</dd>
+                <p class="eyebrow">Юнит-экономика</p>
+                <h3 id="ozon-unit-title">Ozon: детализация по товарам</h3>
               </div>
-              <div>
-                <dt>Методика</dt>
-                <dd id="meta-methodology">-</dd>
+              <label class="compact-filter">
+                <span>Статус</span>
+                <select
+                  id="ozon-unit-status-filter"
+                  aria-label="Фильтр детализации Ozon по статусу"
+                ></select>
+              </label>
+            </div>
+            <div id="ozon-unit-empty" class="analytics-empty" hidden>
+              Для детализации нужна 1C-выручка и сопоставление товаров.
+            </div>
+            <div class="table-wrap">
+              <table class="products-table data-table ozon-unit-table">
+                <thead>
+                  <tr>
+                    <th>Offer / SKU</th>
+                    <th>Товар</th>
+                    <th>Количество</th>
+                    <th>Выручка 1C</th>
+                    <th>Себестоимость</th>
+                    <th>Комиссии / услуги</th>
+                    <th>Партнерские услуги</th>
+                    <th>Логистика / хранение</th>
+                    <th>Прибыль до налогов / маржа</th>
+                    <th>Номенклатура 1C</th>
+                    <th>Статус</th>
+                    <th>Причина / действие</th>
+                  </tr>
+                </thead>
+                <tbody id="ozon-unit-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="ozon-table-section" aria-labelledby="ozon-buyout-title">
+            <div class="table-heading">
+              <h3 id="ozon-buyout-title">Выкупы Ozon</h3>
+              <p class="muted">Сверка 1C расходных накладных с API выкупов Ozon.</p>
+            </div>
+            <div id="ozon-buyout-empty" class="analytics-empty" hidden>
+              1C расходные накладные по выкупам Ozon не найдены.
+            </div>
+            <div class="table-wrap">
+              <table class="products-table data-table ozon-buyout-table">
+                <thead>
+                  <tr>
+                    <th>Отчет</th>
+                    <th>Период</th>
+                    <th>Документ 1C</th>
+                    <th>Количество</th>
+                    <th>Сумма 1C</th>
+                    <th>Ozon API</th>
+                  </tr>
+                </thead>
+                <tbody id="ozon-buyout-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <div id="ozon-preview-empty" class="analytics-empty" hidden>
+            Ozon-источники еще не загружались для выбранного клиента.
+          </div>
+          <section class="ozon-table-section" aria-labelledby="ozon-sources-title">
+            <div class="table-heading">
+              <h3 id="ozon-sources-title">Источники Ozon + 1C</h3>
+              <p class="muted">Статус последней загрузки по каждому источнику.</p>
+            </div>
+            <div class="table-wrap">
+              <table class="products-table data-table ozon-preview-table">
+                <thead>
+                  <tr>
+                    <th>Источник</th>
+                    <th>Статус</th>
+                    <th>Строки</th>
+                    <th>API / файл</th>
+                    <th>Код отчета</th>
+                    <th>Комментарий</th>
+                  </tr>
+                </thead>
+                <tbody id="ozon-preview-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="ozon-table-section" aria-labelledby="ozon-mapping-title">
+            <div class="table-heading">
+              <h3 id="ozon-mapping-title">Сопоставление Ozon → 1C</h3>
+              <p class="muted">Проверка товаров Ozon против загруженного сопоставления и 1C.</p>
+            </div>
+            <div id="ozon-mapping-empty" class="analytics-empty" hidden>
+              Нужен Ozon catalog: товары, offer_id, SKU и штрихкоды.
+            </div>
+            <div class="table-wrap ozon-mapping-wrap">
+              <table class="products-table data-table ozon-mapping-table">
+                <thead>
+                  <tr>
+                    <th>Offer / артикул</th>
+                    <th>Товар / SKU</th>
+                    <th>Штрихкод</th>
+                    <th>Статус</th>
+                    <th>Метод</th>
+                    <th>Номенклатура 1С</th>
+                    <th>Что сделать</th>
+                  </tr>
+                </thead>
+                <tbody id="ozon-mapping-rows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section
+          id="analytics-panel"
+          class="panel full-width analytics-panel report-page-section"
+          aria-labelledby="analytics-title"
+        >
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">По текущей витрине отчета</p>
+              <h2 id="analytics-title">Аналитика</h2>
+            </div>
+          </div>
+          <div
+            id="action-insights-panel"
+            class="action-insights-panel"
+            aria-labelledby="action-insights-title"
+          >
+            <div class="action-insights-heading">
+              <p class="eyebrow">Навигация проверки</p>
+              <h3 id="action-insights-title">Что разобрать первым</h3>
+            </div>
+            <div id="action-insights-list" class="action-insights-list"></div>
+          </div>
+          <div class="analytics-grid" aria-label="Аналитические визуализации">
+            <article class="analytics-chart" aria-labelledby="money-trend-title">
+              <div class="analytics-chart-header">
+                <h3 id="money-trend-title">Динамика денег</h3>
+                <p>Выручка, прибыль и маржа по месяцам.</p>
               </div>
-              <div>
-                <dt>Источник</dt>
-                <dd id="meta-source">-</dd>
+              <div id="money-trend-chart" class="analytics-chart-body"></div>
+            </article>
+            <article class="analytics-chart" aria-labelledby="unit-pl-title">
+              <div class="analytics-chart-header">
+                <h3 id="unit-pl-title">P&amp;L юнит-экономики</h3>
+                <p>Выручка, расходы и прибыль в управленческом виде.</p>
               </div>
-            </dl>
+              <div id="unit-pl-table" class="analytics-chart-body"></div>
+            </article>
+            <article class="analytics-chart" aria-labelledby="loss-drivers-title">
+              <div class="analytics-chart-header">
+                <h3 id="loss-drivers-title">Топ потерь</h3>
+                <p>Где больше всего отрицательной или упущенной прибыли.</p>
+              </div>
+              <div id="loss-drivers-chart" class="analytics-chart-body"></div>
+            </article>
+            <article class="analytics-chart" aria-labelledby="returns-chart-title">
+              <div class="analytics-chart-header">
+                <h3 id="returns-chart-title">Возвраты</h3>
+                <p>Возвратность и объем возвратов по месяцам.</p>
+              </div>
+              <div id="returns-chart" class="analytics-chart-body"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="control-room report-page-section" aria-labelledby="overview-title">
+          <div id="readiness-card" class="decision-strip readiness-neutral">
+            <div class="decision-main">
+              <div class="decision-status">
+                <p class="eyebrow">Статус отправки</p>
+                <span id="readiness-label" class="decision-badge">Загрузка</span>
+              </div>
+              <div class="decision-copy">
+                <h2 id="overview-title">Обзор для отправки клиенту</h2>
+                <p id="readiness-action" class="muted">Проверяем отчет.</p>
+              </div>
+              <div class="decision-metrics" aria-label="Готовность отчета">
+                <div
+                  class="score-box"
+                  data-tooltip="Оценка готовности отчета к отправке клиенту."
+                >
+                  <span id="readiness-score">0</span>
+                  <small>/100</small>
+                </div>
+                <span
+                  id="command-status"
+                  class="status-pill"
+                  data-tooltip="Сколько пунктов еще требует проверки консультанта."
+                >
+                  Проверяем
+                </span>
+              </div>
+            </div>
+            <section class="next-action-panel" aria-labelledby="next-action-title">
+              <div class="next-action-main">
+                <p class="eyebrow">Главное действие</p>
+                <h2 id="next-action-title">Проверить отчет</h2>
+                <p id="next-action-copy" class="muted">
+                  Система выберет главное действие после загрузки отчета.
+                </p>
+                <p id="next-action-meta" class="next-action-meta"></p>
+              </div>
+              <div class="next-action-controls">
+                <button id="next-action-button" type="button">Открыть действие</button>
+                <form id="next-action-upload-form" class="next-action-upload-form" hidden>
+                  <div class="upload-guidance">
+                    <strong>Файл сопоставления WB ↔ 1C</strong>
+                    <span id="next-action-upload-status">
+                      TXT/TSV/CSV из списка «Сопоставление товаров» в 1С.
+                    </span>
+                  </div>
+                  <div class="mapping-upload-actions">
+                    <label
+                      class="file-picker upload-file-button"
+                      data-tooltip="Выберите выгрузку сопоставления товаров из 1С. Файл сохранится только в локальный источник сопоставления."
+                    >
+                      <span class="upload-file-title">Вставить файл из 1С</span>
+                      <span class="upload-file-hint">TXT, TSV или CSV</span>
+                      <input
+                        id="next-action-upload-file"
+                        name="file"
+                        type="file"
+                        accept=".txt,.tsv,.csv,text/plain,text/csv"
+                      />
+                    </label>
+                    <button
+                      id="next-action-upload-submit"
+                      type="submit"
+                      class="upload-submit-button"
+                      data-tooltip="Сохранить выбранный файл как новый локальный источник sku_mapping."
+                    >
+                      Обновить сопоставление
+                    </button>
+                  </div>
+                  <details class="upload-help" open>
+                    <summary>Как выгрузить файл из 1С</summary>
+                    <ol>
+                      <li>Откройте раздел «Маркетплейс».</li>
+                      <li>В блоке «Обработки» выберите «Сопоставление товаров».</li>
+                      <li>Проверьте профиль нужного WB-кабинета или ИП.</li>
+                      <li>В таблице нажмите «Еще» → «Вывести список...».</li>
+                      <li>
+                        В списке нажмите кнопку сохранения и выберите текстовый
+                        формат TXT, TSV или CSV.
+                      </li>
+                    </ol>
+                    <p>
+                      Если 1С предлагает «Табличный документ (*.mxl)», смените
+                      тип файла перед сохранением. MXL сюда не загружаем.
+                    </p>
+                  </details>
+                </form>
+              </div>
+            </section>
           </div>
         </section>
 
         <section
-          id="source-refresh-panel"
-          class="panel full-width source-refresh-panel"
-          aria-labelledby="source-refresh-title"
-          hidden
+          class="decision-support-grid report-page-section"
+          aria-label="Подготовка и проверки"
+        >
+          <section
+            class="panel preflight-panel report-page-section"
+            aria-labelledby="preflight-title"
+          >
+            <div class="preflight-header">
+              <div>
+                <p class="eyebrow">Контроль перед отправкой</p>
+                <h2 id="preflight-title">Что проверить в отчете</h2>
+                <p id="quality-summary-text" class="preflight-summary">
+                  Загружаем качество строк и список проверок.
+                </p>
+              </div>
+              <button id="review-rows-button" type="button">Открыть проблемные строки</button>
+            </div>
+            <div class="quality-progress" aria-label="Доля строк OK">
+              <span id="quality-progress-fill"></span>
+            </div>
+            <div class="preflight-layout">
+              <aside class="quality-diagnostics" aria-labelledby="quality-title">
+                <div>
+                  <p class="eyebrow">Диагностика</p>
+                  <h3 id="quality-title">Качество данных</h3>
+                </div>
+                <div id="quality-grid" class="metric-grid quality-grid"></div>
+              </aside>
+              <div class="task-board" aria-label="Канбан исправления данных">
+                <section class="task-column task-column-blocked" aria-labelledby="blocking-title">
+                  <div class="task-column-heading">
+                    <span class="reason-step">1</span>
+                    <div>
+                      <h3 id="blocking-title">Исправить сейчас</h3>
+                      <p>Блокеры отправки и ошибки источников</p>
+                    </div>
+                  </div>
+                  <ul id="blocking-reasons" class="reason-list task-list"></ul>
+                </section>
+                <section class="task-column task-column-review" aria-labelledby="review-title">
+                  <div class="task-column-heading">
+                    <span class="reason-step">2</span>
+                    <div>
+                      <h3 id="review-title">В работе у аналитика</h3>
+                      <p>Проверки по данным и корректности строк</p>
+                    </div>
+                  </div>
+                  <ul id="review-reasons" class="reason-list task-list"></ul>
+                </section>
+                <section class="task-column task-column-done" aria-labelledby="done-title">
+                  <div class="task-column-heading">
+                    <span class="reason-step">3</span>
+                    <div>
+                      <h3 id="done-title">Готово к отправке</h3>
+                      <p>Что уже закрыто в текущей витрине</p>
+                    </div>
+                  </div>
+                  <ul id="done-reasons" class="reason-list task-list"></ul>
+                </section>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section
+          class="panel full-width detail-workspace report-page-section"
+          aria-labelledby="details-title"
         >
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Обновление источников</p>
-              <h2 id="source-refresh-title">Последний refresh WB/1C</h2>
+              <p class="eyebrow">Детализации</p>
+              <h2 id="details-title">Рабочие таблицы отчета</h2>
             </div>
-            <span id="source-refresh-status" class="status-pill">Не запускался</span>
           </div>
-          <p id="source-refresh-message" class="muted"></p>
-          <dl id="source-refresh-meta" class="source-refresh-meta"></dl>
-          <div id="source-refresh-collections" class="source-refresh-collections"></div>
-          <button id="source-refresh-new-report" type="button" class="secondary-button" hidden>
-            Открыть новый отчет
-          </button>
-        </section>
-
-        <section class="content-grid">
-          <section class="panel" aria-labelledby="kpi-title">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Финансы</p>
-                <h2 id="kpi-title">Базовые KPI</h2>
-              </div>
-              <a id="excel-link" class="button-link" href="#">Excel</a>
-            </div>
-            <div id="kpi-grid" class="metric-grid"></div>
-          </section>
-
-          <section class="panel" aria-labelledby="quality-title">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Контроль перед отправкой</p>
-                <h2 id="quality-title">Качество отчета</h2>
-              </div>
-              <button id="review-rows-button" type="button">Проблемные строки</button>
-            </div>
-            <div id="quality-grid" class="metric-grid"></div>
-          </section>
-        </section>
-
-        <section class="panel full-width" aria-labelledby="liquidity-title">
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow">Ассортимент</p>
-              <h2 id="liquidity-title">Ликвидность ассортимента</h2>
-            </div>
-            <span id="liquidity-count" class="muted"></span>
+          <div class="detail-tabs" role="tablist" aria-label="Детализации отчета">
+            <button
+              id="detail-tab-products"
+              type="button"
+              class="active"
+              data-detail-tab="products"
+              role="tab"
+              aria-selected="true"
+              aria-controls="detail-panel-products"
+            >
+              Юнит-экономика
+            </button>
+            <button
+              id="detail-tab-liquidity"
+              type="button"
+              data-detail-tab="liquidity"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-liquidity"
+            >
+              Ликвидность
+            </button>
+            <button
+              id="detail-tab-lost-sales"
+              type="button"
+              data-detail-tab="lostSales"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-lost-sales"
+            >
+              Упущенные продажи
+            </button>
+            <button
+              id="detail-tab-onec-reconciliation"
+              type="button"
+              data-detail-tab="onecReconciliation"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-onec-reconciliation"
+            >
+              Сверка WB ↔ 1С
+            </button>
           </div>
-          <div id="liquidity-grid" class="metric-grid"></div>
-          <div class="table-wrap">
-            <table class="products-table">
-              <thead>
-                <tr>
-                  <th>Месяц</th>
-                  <th>Статус ликвидности</th>
-                  <th>Драйвер</th>
-                  <th>Товар</th>
-                  <th>Артикул WB</th>
-                  <th>Артикул 1С</th>
-                  <th>Продажи</th>
-                  <th>Выручка</th>
-                  <th>МД после налогов</th>
-                  <th>На шт</th>
-                  <th>Статус данных</th>
-                </tr>
-              </thead>
-              <tbody id="liquidity-rows"></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="content-grid">
-          <section class="panel" aria-labelledby="reasons-title">
-            <div class="panel-header">
+          <section
+            id="detail-panel-liquidity"
+            class="detail-tab-panel"
+            data-detail-panel="liquidity"
+            role="tabpanel"
+            aria-labelledby="detail-tab-liquidity"
+            hidden
+          >
+            <div class="detail-panel-header">
               <div>
-                <p class="eyebrow">Причины</p>
-                <h2 id="reasons-title">Что проверить</h2>
+                <p class="eyebrow">Ассортимент</p>
+                <h3 id="liquidity-title">Ликвидность ассортимента</h3>
+                <p id="liquidity-summary" class="liquidity-summary muted">
+                  Загружаем сводку по ассортименту.
+                </p>
               </div>
+              <span id="liquidity-count" class="muted"></span>
             </div>
-            <div class="reason-columns">
-              <div>
-                <h3>Блокирует отправку</h3>
-                <ul id="blocking-reasons" class="reason-list"></ul>
-              </div>
-              <div>
-                <h3>Требует проверки</h3>
-                <ul id="review-reasons" class="reason-list"></ul>
-              </div>
+            <div id="liquidity-grid" class="metric-grid liquidity-insight-grid"></div>
+            <div class="table-wrap">
+              <table class="products-table data-table liquidity-table">
+                <thead>
+                  <tr>
+                    <th>Месяц</th>
+                    <th>Статус ликвидности</th>
+                    <th>Драйвер</th>
+                    <th>Товар</th>
+                    <th>Артикул WB</th>
+                    <th>Артикул 1С</th>
+                    <th>Продажи</th>
+                    <th>Выручка</th>
+                    <th>Себест.</th>
+                    <th>МД1 наценка</th>
+                    <th>МД2 после комиссии</th>
+                    <th>МД3 после хранения</th>
+                    <th>МД4 после логистики</th>
+                    <th>МД5 после продвижения</th>
+                    <th>МД6 до налогов</th>
+                    <th>МД после налогов</th>
+                    <th>Маржа</th>
+                    <th>На шт</th>
+                    <th>Статус данных</th>
+                  </tr>
+                </thead>
+                <tbody id="liquidity-rows"></tbody>
+              </table>
             </div>
           </section>
-
-          <section id="draft-panel" class="panel" aria-labelledby="draft-title" hidden>
-            <div class="panel-header">
+          <section
+            id="detail-panel-lost-sales"
+            class="detail-tab-panel"
+            data-detail-panel="lostSales"
+            role="tabpanel"
+            aria-labelledby="detail-tab-lost-sales"
+            hidden
+          >
+            <div class="detail-panel-header">
               <div>
-                <p class="eyebrow">Staff only</p>
-                <h2 id="draft-title">Клиентский AI-черновик</h2>
+                <p class="eyebrow">Пополнение WB</p>
+                <h3 id="lost-sales-title">Упущенные продажи</h3>
               </div>
-              <button id="draft-refresh-button" type="button">Обновить</button>
+              <span id="lost-sales-count" class="muted"></span>
             </div>
-            <div id="draft-status" class="draft-status"></div>
+            <div class="table-wrap">
+              <table class="products-table data-table lost-sales-table">
+                <thead>
+                  <tr>
+                    <th>Кабинет</th>
+                    <th>Товар</th>
+                    <th>Артикул 1С</th>
+                    <th>Баркод</th>
+                    <th>Дней без WB</th>
+                    <th>Остаток 1С</th>
+                    <th>Склады 1С</th>
+                    <th>Упущено, шт</th>
+                    <th>Упущенная прибыль</th>
+                    <th>Вывод</th>
+                  </tr>
+                </thead>
+                <tbody id="lost-sales-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section
+            id="detail-panel-onec-reconciliation"
+            class="detail-tab-panel onec-reconciliation-panel"
+            data-detail-panel="onecReconciliation"
+            role="tabpanel"
+            aria-labelledby="detail-tab-onec-reconciliation"
+            hidden
+          >
+            <div class="detail-panel-header">
+              <div>
+                <p class="eyebrow">Сверка источников</p>
+                <h3 id="onec-reconciliation-title">Сверка WB ↔ 1С</h3>
+              </div>
+              <span id="onec-reconciliation-count" class="muted"></span>
+            </div>
+            <div id="onec-reconciliation-grid" class="metric-grid"></div>
+            <form id="onec-reconciliation-filter-form" class="filters-bar">
+              <label class="filter-search">
+                Поиск
+                <input
+                  id="onec-filter-query"
+                  name="query"
+                  type="search"
+                  placeholder="Документ, кабинет, организация"
+                  autocomplete="off"
+                />
+              </label>
+              <label>
+                Статус
+                <select id="onec-filter-status" name="status"></select>
+              </label>
+              <label>
+                Начало
+                <input id="onec-filter-period-start" name="period_start" type="date" />
+              </label>
+              <label>
+                Конец
+                <input id="onec-filter-period-end" name="period_end" type="date" />
+              </label>
+              <label>
+                Кабинет
+                <select id="onec-filter-cabinet" name="wb_cabinet_id"></select>
+              </label>
+              <label>
+                Организация
+                <select id="onec-filter-organization" name="client_company_id"></select>
+              </label>
+              <label>
+                Тип документа
+                <select id="onec-filter-document-type" name="document_type"></select>
+              </label>
+              <label class="filter-checkbox">
+                <input id="onec-filter-delta-only" name="delta_only" type="checkbox" />
+                Только расхождения
+              </label>
+              <div class="filter-actions">
+                <button
+                  id="onec-reset-filters-button"
+                  type="button"
+                  class="secondary-button"
+                >
+                  Сбросить
+                </button>
+              </div>
+            </form>
+            <div class="table-wrap">
+              <table class="products-table data-table onec-reconciliation-table">
+                <thead>
+                  <tr>
+                    <th>Период продаж</th>
+                    <th>Кабинет WB</th>
+                    <th>Организация 1С</th>
+                    <th>Тип документа</th>
+                    <th>Ожидаемая дата</th>
+                    <th>Документы 1С</th>
+                    <th>WB количество</th>
+                    <th>1С количество</th>
+                    <th>Дельта количества</th>
+                    <th>WB сумма</th>
+                    <th>1С сумма</th>
+                    <th>Дельта суммы</th>
+                    <th>Статус</th>
+                    <th>Статус выплаты</th>
+                    <th>Комментарий</th>
+                  </tr>
+                </thead>
+                <tbody id="onec-reconciliation-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section
+            id="detail-panel-products"
+            class="detail-tab-panel products-panel active"
+            data-detail-panel="products"
+            role="tabpanel"
+            aria-labelledby="detail-tab-products"
+          >
+            <div class="detail-panel-header">
+              <div>
+                <p class="eyebrow">Расчетная таблица</p>
+                <h3 id="rows-title">Юнит-экономика</h3>
+              </div>
+              <span id="rows-count" class="muted"></span>
+            </div>
+            <div class="row-preset-bar" aria-label="Быстрые фильтры юнит-экономики">
+              <button type="button" class="active" data-row-preset="" aria-pressed="true">
+                Все
+              </button>
+              <button type="button" data-row-preset="losses" aria-pressed="false">
+                Убыточные
+              </button>
+              <button type="button" data-row-preset="missingCost" aria-pressed="false">
+                Без себестоимости
+              </button>
+              <button type="button" data-row-preset="missingMapping" aria-pressed="false">
+                Сопоставление
+              </button>
+              <button type="button" data-row-preset="returns" aria-pressed="false">
+                Возвраты
+              </button>
+              <button type="button" data-row-preset="review" aria-pressed="false">
+                К проверке
+              </button>
+            </div>
+            <form id="rows-filter-form" class="filters-bar">
+              <label class="filter-search">
+                Поиск
+                <input
+                  id="filter-query"
+                  name="query"
+                  type="search"
+                  placeholder="Товар, артикул, баркод, nmId"
+                  autocomplete="off"
+                />
+              </label>
+              <label>
+                Статус
+                <select id="filter-status" name="status_filter"></select>
+              </label>
+              <label>
+                Месяц 1С
+                <select id="filter-month" name="month"></select>
+              </label>
+              <label>
+                Начало
+                <input id="filter-period-start" name="period_start" type="date" />
+              </label>
+              <label>
+                Конец
+                <input id="filter-period-end" name="period_end" type="date" />
+              </label>
+              <label>
+                Кабинет
+                <select id="filter-cabinet" name="cabinet"></select>
+              </label>
+              <label>
+                Организация
+                <select id="filter-organization" name="organization"></select>
+              </label>
+              <label>
+                Схема
+                <select id="filter-scheme" name="scheme"></select>
+              </label>
+              <label>
+                Класс
+                <select id="filter-loss-class" name="loss_class"></select>
+              </label>
+              <div class="filter-actions">
+                <button id="reset-filters-button" type="button" class="secondary-button">
+                  Сбросить
+                </button>
+              </div>
+            </form>
+            <div class="table-wrap">
+              <table class="products-table data-table report-rows-table">
+                <thead id="review-rows-head">
+                  <tr>
+                    <th>Месяц 1С</th>
+                    <th>Документ-отчет</th>
+                    <th>Отчет WB</th>
+                    <th>Дата отчета</th>
+                    <th>Кабинет</th>
+                    <th>Товар</th>
+                    <th>Артикул WB</th>
+                    <th>Артикул 1С</th>
+                    <th>Баркод</th>
+                    <th>Схема</th>
+                    <th>Статус</th>
+                    <th>Продажи</th>
+                    <th>Возвраты</th>
+                    <th>Выручка</th>
+                    <th>Прибыль</th>
+                    <th>Маржа</th>
+                    <th>На шт</th>
+                  </tr>
+                </thead>
+                <tbody id="review-rows"></tbody>
+              </table>
+            </div>
           </section>
         </section>
+      </section>
 
-        <section id="ai-panel" class="panel full-width ai-panel" aria-labelledby="ai-title">
-          <div class="panel-header">
+      <div
+        id="ai-widget-overlay"
+        class="widget-overlay ai-widget-overlay"
+        aria-labelledby="ai-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
+        <section id="ai-panel" class="panel ai-panel widget-shell ai-widget">
+          <div class="panel-header widget-header ai-widget-header">
             <div>
               <p class="eyebrow">Read-only помощник</p>
               <h2 id="ai-title">AI-аналитик</h2>
             </div>
-            <span id="ai-source-status" class="status-pill">Не запускался</span>
+            <div class="widget-actions ai-widget-actions">
+              <span id="ai-source-status" class="status-pill">Не запускался</span>
+              <button
+                id="ai-widget-close"
+                type="button"
+                class="secondary-button"
+                aria-label="Закрыть AI-аналитика"
+              >
+                Закрыть
+              </button>
+            </div>
           </div>
           <div class="quick-questions" aria-label="Быстрые вопросы AI">
             <button type="button" data-ai-question="Что самое важное по убыточности?">
@@ -264,116 +925,297 @@
             </aside>
           </div>
         </section>
+      </div>
 
-        <section class="panel full-width" aria-labelledby="lost-sales-title">
-          <div class="panel-header">
+      <div
+        id="client-output-widget-overlay"
+        class="widget-overlay client-output-widget-overlay"
+        aria-labelledby="draft-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
+        <section id="draft-panel" class="panel widget-shell client-output-widget">
+          <div class="panel-header widget-header">
             <div>
-              <p class="eyebrow">Пополнение WB</p>
-              <h2 id="lost-sales-title">Упущенные продажи</h2>
+              <p class="eyebrow">Клиентский вывод</p>
+              <h2 id="draft-title">Вывод для отправки</h2>
             </div>
-            <span id="lost-sales-count" class="muted"></span>
+            <div class="widget-actions">
+              <button id="draft-refresh-button" type="button" class="secondary-button">
+                Обновить
+              </button>
+              <button
+                id="client-output-widget-close"
+                type="button"
+                class="secondary-button"
+                aria-label="Закрыть клиентский вывод"
+              >
+                Закрыть
+              </button>
+            </div>
           </div>
-          <div class="table-wrap">
-            <table class="products-table">
-              <thead>
-                <tr>
-                  <th>Кабинет</th>
-                  <th>Товар</th>
-                  <th>Артикул 1С</th>
-                  <th>Баркод</th>
-                  <th>Дней без WB</th>
-                  <th>Остаток 1С</th>
-                  <th>Склады 1С</th>
-                  <th>Упущено, шт</th>
-                  <th>Упущенная прибыль</th>
-                  <th>Вывод</th>
-                </tr>
-              </thead>
-              <tbody id="lost-sales-rows"></tbody>
-            </table>
-          </div>
+          <div id="draft-status" class="draft-status"></div>
         </section>
+      </div>
 
+      <div
+        id="integrations-widget-overlay"
+        class="widget-overlay integrations-widget-overlay"
+        aria-labelledby="integrations-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
         <section
           id="integrations-panel"
-          class="panel full-width integrations-panel"
+          class="panel integrations-panel widget-shell integrations-widget"
           aria-labelledby="integrations-title"
           hidden
         >
-          <div class="panel-header">
+          <div class="panel-header widget-header">
             <div>
               <p class="eyebrow">Контур клиента</p>
               <h2 id="integrations-title">Интеграции</h2>
             </div>
-            <span id="integrations-status" class="muted"></span>
+            <div class="widget-actions">
+              <span id="integrations-status" class="muted"></span>
+              <button
+                id="integrations-widget-close"
+                type="button"
+                class="secondary-button"
+                aria-label="Закрыть интеграции"
+              >
+                Закрыть
+              </button>
+            </div>
           </div>
+          <div
+            id="integration-provider-tabs"
+            class="integration-provider-tabs"
+            role="tablist"
+            aria-label="Типы интеграций"
+          >
+            <button
+              type="button"
+              class="active"
+              data-integration-provider-filter=""
+            >
+              Все
+            </button>
+            <button type="button" data-integration-provider-filter="wb_api">
+              WB
+            </button>
+            <button type="button" data-integration-provider-filter="onec_readonly">
+              1C
+            </button>
+            <button type="button" data-integration-provider-filter="ozon_api">
+              Ozon
+            </button>
+          </div>
+          <section
+            id="source-refresh-panel"
+            class="source-refresh-panel"
+            aria-labelledby="source-refresh-title"
+            hidden
+          >
+            <div class="source-refresh-summary">
+              <div>
+                <p class="eyebrow">Обновление данных</p>
+                <h3 id="source-refresh-title">Сопоставление и полное обновление</h3>
+                <p class="muted">
+                  Сначала загрузите сопоставление WB ↔ 1C, затем проверьте готовность и
+                  запустите обновление.
+                </p>
+              </div>
+              <div id="source-refresh-status" class="source-refresh-status">
+                Статус еще не загружен.
+              </div>
+            </div>
+            <ol
+              id="source-refresh-steps"
+              class="source-refresh-steps"
+              aria-label="Шаги обновления данных"
+            ></ol>
+            <form id="source-refresh-mapping-form" class="source-refresh-mapping-form">
+              <label class="file-picker upload-file-button compact">
+                <span class="upload-file-title">Вставить сопоставление</span>
+                <span class="upload-file-hint">TXT, TSV или CSV из 1С</span>
+                <input
+                  id="source-refresh-mapping-file"
+                  type="file"
+                  accept=".txt,.tsv,.csv,text/plain,text/csv"
+                />
+              </label>
+              <button id="source-refresh-upload-submit" type="submit">
+                Загрузить
+              </button>
+              <p id="source-refresh-mapping-status" class="muted">
+                Файл не выбран.
+              </p>
+            </form>
+            <div class="source-refresh-actions">
+              <button
+                id="source-refresh-dry-run"
+                type="button"
+                class="secondary-button"
+                data-tooltip="Проверить настройки без внешнего чтения WB и 1C."
+              >
+                Проверить
+              </button>
+              <button
+                id="source-refresh-full-run"
+                type="button"
+                data-tooltip="Запустить read-only загрузку WB + 1C + сопоставление и собрать новый отчет."
+              >
+                Запустить
+              </button>
+              <button
+                id="source-refresh-ozon-run"
+                type="button"
+                class="secondary-button"
+                data-tooltip="Загрузить Ozon + 1C без обязательного WB. Отчет не публикуется."
+              >
+                Ozon + 1C
+              </button>
+              <button
+                id="source-refresh-reload"
+                type="button"
+                class="secondary-button"
+                data-tooltip="Обновить статус последней загрузки."
+              >
+                Статус
+              </button>
+            </div>
+            <div id="source-refresh-collections" class="source-refresh-collections"></div>
+          </section>
           <div id="integration-list" class="integration-list"></div>
         </section>
+      </div>
 
-        <section class="panel full-width products-panel" aria-labelledby="rows-title">
-          <div class="panel-header">
+      <div
+        id="new-client-widget-overlay"
+        class="widget-overlay new-client-widget-overlay"
+        aria-labelledby="new-client-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
+        <section class="panel widget-shell new-client-widget">
+          <div class="panel-header widget-header">
             <div>
-              <p class="eyebrow">Детализация</p>
-              <h2 id="rows-title">Товары</h2>
+              <p class="eyebrow">Контур клиента</p>
+              <h2 id="new-client-title">Новый клиент</h2>
             </div>
-            <span id="rows-count" class="muted"></span>
+            <div class="widget-actions">
+              <button
+                id="new-client-widget-close"
+                type="button"
+                class="secondary-button"
+                aria-label="Закрыть создание клиента"
+              >
+                Закрыть
+              </button>
+            </div>
           </div>
-          <form id="rows-filter-form" class="filters-bar">
-            <label class="filter-search">
-              Поиск
+          <form id="new-client-form" class="new-client-form">
+            <label class="new-client-name-field">
+              Название клиента
               <input
-                id="filter-query"
-                name="query"
-                type="search"
-                placeholder="Товар, артикул, баркод, nmId"
+                id="new-client-name"
+                name="name"
+                type="text"
                 autocomplete="off"
+                required
               />
             </label>
             <label>
-              Статус
-              <select id="filter-status" name="status_filter"></select>
+              Код контура
+              <input
+                id="new-client-tenant-id"
+                name="tenantId"
+                type="text"
+                autocomplete="off"
+                placeholder="авто"
+              />
             </label>
             <label>
-              Месяц 1С
-              <select id="filter-month" name="month"></select>
+              Код клиента
+              <input
+                id="new-client-client-id"
+                name="clientId"
+                type="text"
+                autocomplete="off"
+                placeholder="авто"
+              />
             </label>
-            <label>
-              Начало
-              <input id="filter-period-start" name="period_start" type="date" />
+            <label class="new-client-list-field">
+              Организации 1С
+              <textarea
+                id="new-client-companies"
+                name="companies"
+                rows="3"
+                placeholder="ООО Ромашка"
+              ></textarea>
             </label>
-            <label>
-              Конец
-              <input id="filter-period-end" name="period_end" type="date" />
+            <label class="new-client-list-field">
+              WB-кабинеты
+              <textarea
+                id="new-client-cabinets"
+                name="cabinets"
+                rows="3"
+                placeholder="ООО Ромашка::Кабинет WB"
+              ></textarea>
             </label>
-            <label>
-              Документ-отчет
-              <select id="filter-document-report" name="document_report"></select>
-            </label>
-            <label>
-              Кабинет
-              <select id="filter-cabinet" name="cabinet"></select>
-            </label>
-            <label>
-              Организация
-              <select id="filter-organization" name="organization"></select>
-            </label>
-            <label>
-              Схема
-              <select id="filter-scheme" name="scheme"></select>
-            </label>
-            <label>
-              Класс
-              <select id="filter-loss-class" name="loss_class"></select>
-            </label>
-            <div class="filter-actions">
-              <button id="apply-filters-button" type="submit">Применить</button>
-              <button id="reset-filters-button" type="button" class="secondary-button">
-                Сбросить
-              </button>
+            <div class="new-client-actions">
+              <p id="new-client-status" class="muted" role="status"></p>
+              <button id="new-client-submit" type="submit">Создать</button>
             </div>
           </form>
-          <div class="table-wrap">
-            <table class="products-table">
+        </section>
+      </div>
+
+      <div
+        id="drilldown-widget-overlay"
+        class="widget-overlay drilldown-widget-overlay"
+        aria-labelledby="drilldown-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
+        <section class="panel widget-shell drilldown-widget">
+          <div class="panel-header widget-header">
+            <div>
+              <p class="eyebrow">Расшифровки проблем</p>
+              <h2 id="drilldown-title">Проблемные строки</h2>
+              <p id="drilldown-subtitle" class="muted">
+                Переключайте вкладки, чтобы сравнить причины без прокрутки страницы.
+              </p>
+            </div>
+            <div class="widget-actions">
+              <span id="drilldown-count" class="muted"></span>
+              <button
+                id="drilldown-widget-close"
+                type="button"
+                class="secondary-button"
+                aria-label="Закрыть расшифровки"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+          <div class="drilldown-tabs" role="tablist" aria-label="Тип расшифровки">
+            <button type="button" data-drilldown-preset="review">К проверке</button>
+            <button type="button" data-drilldown-preset="sources">Источники</button>
+            <button type="button" data-drilldown-preset="missingCost">
+              Без себестоимости
+            </button>
+            <button type="button" data-drilldown-preset="missingMapping">Сопоставление</button>
+            <button type="button" data-drilldown-preset="losses">Убыточные</button>
+          </div>
+          <div id="drilldown-sources" class="drilldown-sources" hidden></div>
+          <div id="drilldown-table-wrap" class="table-wrap drilldown-table-wrap">
+            <table class="products-table data-table report-rows-table drilldown-rows-table">
               <thead>
                 <tr>
                   <th>Месяц 1С</th>
@@ -391,14 +1233,16 @@
                   <th>Возвраты</th>
                   <th>Выручка</th>
                   <th>Прибыль</th>
+                  <th>Маржа</th>
+                  <th>На шт</th>
                 </tr>
               </thead>
-              <tbody id="review-rows"></tbody>
+              <tbody id="drilldown-rows"></tbody>
             </table>
           </div>
         </section>
-      </section>
+      </div>
     </main>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20260708-tax-profile-v27" defer></script>
   </body>
 </html>

@@ -18,8 +18,10 @@ from wb_unit_economics.contracts import (
     ReportReconciliationRow,
     ReportStatus,
     SkuMapping,
+    TaxProfile,
     UnitEconomicsReport,
     UnitEconomicsRow,
+    VatMode,
     WbApiSnapshot,
     WbExpenseAllocationBase,
     WbSalesReportSummaryRow,
@@ -33,6 +35,7 @@ GOODS_MOVEMENT_OPERATIONS = {"sale", "sales", "продажа", "return", "во�
 VAT_5_INCLUDED_RATIO = Decimal("5") / Decimal("105")
 USN_1_REVENUE_RATE = Decimal("0.01")
 TAX_METHOD = "НДС внутри цены 5/105; УСН 1% от выручки"
+MISSING_TAX_PROFILE_METHOD = "Налоговый профиль не найден"
 
 STATUS_PRIORITY = {
     DataQualityStatus.ACCOUNT_ORG_MISMATCH: 90,
@@ -107,6 +110,17 @@ class _CostIndex:
     by_article: dict[tuple[str, str, str], list[OnecUnfCostSnapshot]]
 
 
+@dataclass(frozen=True)
+class TaxCalculation:
+    revenue_without_vat: Decimal
+    vat: Decimal
+    revenue_tax: Decimal
+    profit_after_taxes: Decimal
+    tax_method: str
+    tax_profile_source: str
+    data_quality_status: DataQualityStatus
+
+
 def money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -124,9 +138,109 @@ def tax_amounts_from_revenue(net_revenue: Decimal) -> tuple[Decimal, Decimal, De
     return revenue_without_vat, vat, usn
 
 
+def calculate_tax_amounts(
+    net_revenue: Decimal,
+    gross_profit: Decimal,
+    tax_profile: TaxProfile | None = None,
+    *,
+    profile_required: bool = False,
+) -> TaxCalculation:
+    if tax_profile is None:
+        if profile_required:
+            return TaxCalculation(
+                revenue_without_vat=net_revenue,
+                vat=Decimal("0"),
+                revenue_tax=Decimal("0"),
+                profit_after_taxes=gross_profit,
+                tax_method=MISSING_TAX_PROFILE_METHOD,
+                tax_profile_source="missing",
+                data_quality_status=DataQualityStatus.NEEDS_REVIEW,
+            )
+        revenue_without_vat, vat, revenue_tax = tax_amounts_from_revenue(net_revenue)
+        return TaxCalculation(
+            revenue_without_vat=revenue_without_vat,
+            vat=vat,
+            revenue_tax=revenue_tax,
+            profit_after_taxes=money(gross_profit - vat - revenue_tax),
+            tax_method=TAX_METHOD,
+            tax_profile_source="legacy-default",
+            data_quality_status=DataQualityStatus.RELIABLE,
+        )
+
+    vat_rate = tax_profile.vat_rate
+    if tax_profile.vat_mode is VatMode.INCLUDED and vat_rate:
+        vat = money(net_revenue * vat_rate / (Decimal("100") + vat_rate))
+        revenue_without_vat = money(net_revenue - vat)
+    elif tax_profile.vat_mode is VatMode.EXCLUDED and vat_rate:
+        vat = money(net_revenue * vat_rate / Decimal("100"))
+        revenue_without_vat = net_revenue
+    else:
+        vat = Decimal("0")
+        revenue_without_vat = net_revenue
+    revenue_tax = money(net_revenue * tax_profile.revenue_tax_rate)
+    return TaxCalculation(
+        revenue_without_vat=revenue_without_vat,
+        vat=vat,
+        revenue_tax=revenue_tax,
+        profit_after_taxes=money(gross_profit - vat - revenue_tax),
+        tax_method=_tax_method_label(tax_profile),
+        tax_profile_source=tax_profile.source,
+        data_quality_status=DataQualityStatus.RELIABLE,
+    )
+
+
 def week_bounds(value: date) -> tuple[date, date]:
     week_start = value - timedelta(days=value.weekday())
     return week_start, week_start + timedelta(days=6)
+
+
+def _tax_method_label(tax_profile: TaxProfile) -> str:
+    parts = [tax_profile.tax_system or "Налоговый профиль"]
+    if tax_profile.vat_mode is VatMode.INCLUDED and tax_profile.vat_rate:
+        parts.append(f"НДС {tax_profile.vat_rate.normalize()}% внутри цены")
+    elif tax_profile.vat_mode is VatMode.EXCLUDED and tax_profile.vat_rate:
+        parts.append(f"НДС {tax_profile.vat_rate.normalize()}% сверху")
+    else:
+        parts.append("без НДС")
+    if tax_profile.revenue_tax_rate:
+        rate = (tax_profile.revenue_tax_rate * Decimal("100")).normalize()
+        parts.append(f"налог с выручки {rate}%")
+    else:
+        parts.append("налог с выручки 0%")
+    return "; ".join(parts)
+
+
+def _tax_profiles_by_org(
+    tax_profiles: list[TaxProfile] | None,
+) -> dict[str, list[TaxProfile]]:
+    if tax_profiles is None:
+        return {}
+    result: dict[str, list[TaxProfile]] = defaultdict(list)
+    for profile in tax_profiles:
+        result[profile.organization_id].append(profile)
+    for profiles in result.values():
+        profiles.sort(
+            key=lambda profile: (
+                profile.valid_from or date.min,
+                profile.valid_to or date.max,
+            )
+        )
+    return result
+
+
+def _tax_profile_for(
+    profiles_by_org: dict[str, list[TaxProfile]],
+    organization_id: str,
+    calculation_date: date,
+) -> TaxProfile | None:
+    candidates = profiles_by_org.get(organization_id, [])
+    for profile in reversed(candidates):
+        if profile.valid_from is not None and calculation_date < profile.valid_from:
+            continue
+        if profile.valid_to is not None and calculation_date > profile.valid_to:
+            continue
+        return profile
+    return None
 
 
 def is_partial_week(
@@ -829,6 +943,7 @@ def build_unit_economics_report(
     cost_snapshots: list[OnecUnfCostSnapshot],
     sku_mappings: list[SkuMapping],
     account_org_mapping: list[AccountOrgMapping],
+    tax_profiles: list[TaxProfile] | None = None,
     wb_sales_report_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     expense_allocation_bases: list[WbExpenseAllocationBase] | None = None,
     generated_at: datetime | None = None,
@@ -858,6 +973,8 @@ def build_unit_economics_report(
     account_to_org = {
         item.seller_account_id: item.organization_id for item in account_org_mapping
     }
+    tax_profiles_by_org = _tax_profiles_by_org(tax_profiles)
+    tax_profile_required = tax_profiles is not None
     mapping_index = _index_mappings(sku_mappings)
     cost_index = _index_costs(cost_snapshots)
     expense_allocations = _controlled_expense_allocations(
@@ -1121,8 +1238,13 @@ def build_unit_economics_report(
         spp_discount = money(bucket["spp_discount"])
         revenue_before_spp = money(net_revenue + spp_discount)
         gross_profit = money(bucket["gross_profit"])
-        revenue_without_vat, vat_5, usn_1 = tax_amounts_from_revenue(net_revenue)
-        profit_after_taxes = money(gross_profit - vat_5 - usn_1)
+        tax = calculate_tax_amounts(
+            net_revenue,
+            gross_profit,
+            _tax_profile_for(tax_profiles_by_org, organization_id, week_start),
+            profile_required=tax_profile_required,
+        )
+        row_status = _worse_status(bucket["status"], tax.data_quality_status)
         rows.append(
             UnitEconomicsRow(
                 client_id=row_client_id,
@@ -1162,19 +1284,20 @@ def build_unit_economics_report(
                 penalties_and_holdbacks=money(bucket["penalties_and_holdbacks"]),
                 acquiring=money(bucket["acquiring"]),
                 cogs_from_1c_with_extra_costs=money(bucket["cogs"]),
-                revenue_without_vat=revenue_without_vat,
+                revenue_without_vat=tax.revenue_without_vat,
                 gross_profit=gross_profit,
-                vat_5_from_revenue=vat_5,
-                usn_1_from_revenue=usn_1,
-                profit_after_taxes=profit_after_taxes,
+                vat_5_from_revenue=tax.vat,
+                usn_1_from_revenue=tax.revenue_tax,
+                profit_after_taxes=tax.profit_after_taxes,
                 margin=ratio(gross_profit, net_revenue),
-                margin_after_taxes=ratio(profit_after_taxes, net_revenue),
+                margin_after_taxes=ratio(tax.profit_after_taxes, net_revenue),
                 profit_per_unit=ratio(gross_profit, bucket["quantity"]),
                 profit_after_taxes_per_unit=ratio(
-                    profit_after_taxes, bucket["quantity"]
+                    tax.profit_after_taxes, bucket["quantity"]
                 ),
-                tax_method=TAX_METHOD,
-                data_quality_status=bucket["status"],
+                tax_method=tax.tax_method,
+                tax_profile_source=tax.tax_profile_source,
+                data_quality_status=row_status,
                 methodology_version=methodology_version,
                 source_snapshot_hashes=tuple(sorted(set(bucket["hashes"]))),
             )
@@ -1194,8 +1317,13 @@ def build_unit_economics_report(
         spp_discount = money(bucket["spp_discount"])
         revenue_before_spp = money(net_revenue + spp_discount)
         gross_profit = money(bucket["gross_profit"])
-        revenue_without_vat, vat_5, usn_1 = tax_amounts_from_revenue(net_revenue)
-        profit_after_taxes = money(gross_profit - vat_5 - usn_1)
+        tax = calculate_tax_amounts(
+            net_revenue,
+            gross_profit,
+            _tax_profile_for(tax_profiles_by_org, organization_id, week_start),
+            profile_required=tax_profile_required,
+        )
+        row_status = _worse_status(bucket["status"], tax.data_quality_status)
         report_reconciliation_rows.append(
             ReportReconciliationRow(
                 client_id=row_client_id,
@@ -1221,15 +1349,16 @@ def build_unit_economics_report(
                 penalties_and_holdbacks=money(bucket["penalties_and_holdbacks"]),
                 acquiring=money(bucket["acquiring"]),
                 cogs_from_1c_with_extra_costs=money(bucket["cogs"]),
-                revenue_without_vat=revenue_without_vat,
+                revenue_without_vat=tax.revenue_without_vat,
                 gross_profit=gross_profit,
-                vat_5_from_revenue=vat_5,
-                usn_1_from_revenue=usn_1,
-                profit_after_taxes=profit_after_taxes,
+                vat_5_from_revenue=tax.vat,
+                usn_1_from_revenue=tax.revenue_tax,
+                profit_after_taxes=tax.profit_after_taxes,
                 margin=ratio(gross_profit, net_revenue),
-                margin_after_taxes=ratio(profit_after_taxes, net_revenue),
-                tax_method=TAX_METHOD,
-                data_quality_status=bucket["status"],
+                margin_after_taxes=ratio(tax.profit_after_taxes, net_revenue),
+                tax_method=tax.tax_method,
+                tax_profile_source=tax.tax_profile_source,
+                data_quality_status=row_status,
                 source_row_count=int(bucket["source_row_count"]),
             )
         )
@@ -1250,8 +1379,13 @@ def build_unit_economics_report(
         spp_discount = money(bucket["spp_discount"])
         revenue_before_spp = money(net_revenue + spp_discount)
         gross_profit = money(bucket["gross_profit"])
-        revenue_without_vat, vat_5, usn_1 = tax_amounts_from_revenue(net_revenue)
-        profit_after_taxes = money(gross_profit - vat_5 - usn_1)
+        tax = calculate_tax_amounts(
+            net_revenue,
+            gross_profit,
+            _tax_profile_for(tax_profiles_by_org, organization_id, document_date),
+            profile_required=tax_profile_required,
+        )
+        row_status = _worse_status(bucket["status"], tax.data_quality_status)
         onec_report_reconciliation_rows.append(
             OnecReportReconciliationRow(
                 client_id=row_client_id,
@@ -1282,15 +1416,16 @@ def build_unit_economics_report(
                 penalties_and_holdbacks=money(bucket["penalties_and_holdbacks"]),
                 acquiring=money(bucket["acquiring"]),
                 cogs_from_1c_with_extra_costs=money(bucket["cogs"]),
-                revenue_without_vat=revenue_without_vat,
+                revenue_without_vat=tax.revenue_without_vat,
                 gross_profit=gross_profit,
-                vat_5_from_revenue=vat_5,
-                usn_1_from_revenue=usn_1,
-                profit_after_taxes=profit_after_taxes,
+                vat_5_from_revenue=tax.vat,
+                usn_1_from_revenue=tax.revenue_tax,
+                profit_after_taxes=tax.profit_after_taxes,
                 margin=ratio(gross_profit, net_revenue),
-                margin_after_taxes=ratio(profit_after_taxes, net_revenue),
-                tax_method=TAX_METHOD,
-                data_quality_status=bucket["status"],
+                margin_after_taxes=ratio(tax.profit_after_taxes, net_revenue),
+                tax_method=tax.tax_method,
+                tax_profile_source=tax.tax_profile_source,
+                data_quality_status=row_status,
                 source_row_count=int(bucket["source_row_count"]),
             )
         )
@@ -1316,8 +1451,13 @@ def build_unit_economics_report(
         spp_discount = money(bucket["spp_discount"])
         revenue_before_spp = money(net_revenue + spp_discount)
         gross_profit = money(bucket["gross_profit"])
-        revenue_without_vat, vat_5, usn_1 = tax_amounts_from_revenue(net_revenue)
-        profit_after_taxes = money(gross_profit - vat_5 - usn_1)
+        tax = calculate_tax_amounts(
+            net_revenue,
+            gross_profit,
+            _tax_profile_for(tax_profiles_by_org, organization_id, document_date),
+            profile_required=tax_profile_required,
+        )
+        row_status = _worse_status(bucket["status"], tax.data_quality_status)
         onec_report_product_rows.append(
             OnecReportProductRow(
                 client_id=row_client_id,
@@ -1353,19 +1493,20 @@ def build_unit_economics_report(
                 penalties_and_holdbacks=money(bucket["penalties_and_holdbacks"]),
                 acquiring=money(bucket["acquiring"]),
                 cogs_from_1c_with_extra_costs=money(bucket["cogs"]),
-                revenue_without_vat=revenue_without_vat,
+                revenue_without_vat=tax.revenue_without_vat,
                 gross_profit=gross_profit,
-                vat_5_from_revenue=vat_5,
-                usn_1_from_revenue=usn_1,
-                profit_after_taxes=profit_after_taxes,
+                vat_5_from_revenue=tax.vat,
+                usn_1_from_revenue=tax.revenue_tax,
+                profit_after_taxes=tax.profit_after_taxes,
                 margin=ratio(gross_profit, net_revenue),
-                margin_after_taxes=ratio(profit_after_taxes, net_revenue),
+                margin_after_taxes=ratio(tax.profit_after_taxes, net_revenue),
                 profit_per_unit=ratio(gross_profit, bucket["quantity"]),
                 profit_after_taxes_per_unit=ratio(
-                    profit_after_taxes, bucket["quantity"]
+                    tax.profit_after_taxes, bucket["quantity"]
                 ),
-                tax_method=TAX_METHOD,
-                data_quality_status=bucket["status"],
+                tax_method=tax.tax_method,
+                tax_profile_source=tax.tax_profile_source,
+                data_quality_status=row_status,
                 source_row_count=int(bucket["source_row_count"]),
                 source_snapshot_hashes=tuple(sorted(set(bucket["hashes"]))),
             )

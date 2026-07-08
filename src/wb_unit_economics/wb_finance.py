@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -912,6 +912,21 @@ def load_wb_finance_snapshots(
     client_id: str,
     account_org_mapping: Iterable[AccountOrgMapping],
 ) -> list[WbApiSnapshot]:
+    return list(
+        iter_wb_finance_snapshots(
+            export_dir,
+            client_id=client_id,
+            account_org_mapping=account_org_mapping,
+        )
+    )
+
+
+def iter_wb_finance_snapshots(
+    export_dir: Path,
+    *,
+    client_id: str,
+    account_org_mapping: Iterable[AccountOrgMapping],
+) -> Iterator[WbApiSnapshot]:
     manifest_path = export_dir / "manifest.json"
     manifest = _read_json_object(manifest_path)
     loaded_at = _parse_datetime(manifest.get("generated_at")) or datetime.now(
@@ -922,7 +937,6 @@ def load_wb_finance_snapshots(
     account_to_org = {
         item.seller_account_id: item.organization_id for item in account_org_mapping
     }
-    snapshots: list[WbApiSnapshot] = []
     for result in manifest.get("results", []):
         if not isinstance(result, dict) or result.get("status") != "ok":
             continue
@@ -930,22 +944,20 @@ def load_wb_finance_snapshots(
         output_file = _text(result.get("output_file"))
         if not seller_account_id or not output_file:
             continue
-        rows = _read_json_list(export_dir / output_file)
-        snapshots.extend(
-            normalize_finance_rows(
-                rows,
+        is_partial_source = not _manifest_complete_for_account(
+            manifest, seller_account_id
+        )
+        for row in _iter_json_list_objects(export_dir / output_file):
+            yield normalize_finance_row(
+                row,
                 client_id=client_id,
                 seller_account_id=seller_account_id,
                 organization_id=account_to_org.get(seller_account_id, ""),
                 period_start=period_start,
                 period_end=period_end,
                 loaded_at=loaded_at,
-                is_partial_source=not _manifest_complete_for_account(
-                    manifest, seller_account_id
-                ),
+                is_partial_source=is_partial_source,
             )
-        )
-    return snapshots
 
 
 def load_wb_sales_report_summary_rows(
@@ -1305,6 +1317,58 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError(f"Expected JSON list: {path}")
     return [item for item in data if isinstance(item, dict)]
+
+
+def _iter_json_list_objects(
+    path: Path,
+    *,
+    chunk_size: int = 1024 * 1024,
+) -> Iterator[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    buffer = ""
+    pos = 0
+    seen_array_start = False
+    with path.open("r", encoding="utf-8") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            eof = chunk == ""
+            buffer += chunk
+            while True:
+                while pos < len(buffer) and buffer[pos].isspace():
+                    pos += 1
+                if not seen_array_start:
+                    if pos >= len(buffer):
+                        break
+                    if buffer[pos] != "[":
+                        raise ValueError(f"Expected JSON list: {path}")
+                    seen_array_start = True
+                    pos += 1
+                    continue
+                while pos < len(buffer) and buffer[pos].isspace():
+                    pos += 1
+                if pos >= len(buffer):
+                    break
+                if buffer[pos] == "]":
+                    return
+                if buffer[pos] == ",":
+                    pos += 1
+                    continue
+                try:
+                    item, next_pos = decoder.raw_decode(buffer, pos)
+                except json.JSONDecodeError:
+                    if eof:
+                        raise
+                    break
+                if isinstance(item, dict):
+                    yield item
+                pos = next_pos
+            if eof:
+                if seen_array_start:
+                    raise ValueError(f"Unterminated JSON list: {path}")
+                raise ValueError(f"Empty JSON file: {path}")
+            if pos > chunk_size:
+                buffer = buffer[pos:]
+                pos = 0
 
 
 def _load_env_values(path: Path) -> dict[str, str]:

@@ -230,6 +230,10 @@ def normalize_article(value: object) -> str:
     return _text(value).lower()
 
 
+def normalize_name(value: object) -> str:
+    return " ".join(_text(value).lower().split())
+
+
 def has_onec_marketplace_mapping_files(path: Path) -> bool:
     return path.is_dir() and any(path.glob("*.txt"))
 
@@ -259,14 +263,18 @@ def _nomenclature_lookup(
     lookup: dict[str, dict[str, list[Mapping[str, Any]]]] = {
         "article": defaultdict(list),
         "code": defaultdict(list),
+        "name": defaultdict(list),
     }
     for row in rows:
         article = normalize_article(row.get("Артикул") or row.get("article"))
         code = _text(row.get("Code") or row.get("Код"))
+        name = normalize_name(row.get("Description") or row.get("НаименованиеПолное"))
         if article:
             lookup["article"][article].append(row)
         if code:
             lookup["code"][code].append(row)
+        if name:
+            lookup["name"][name].append(row)
     return lookup
 
 
@@ -278,32 +286,83 @@ def _read_onec_marketplace_tsv(path: Path) -> list[dict[str, str]]:
             header = next(reader)
         except StopIteration:
             return rows
+        normalized_header = [_normalized_header_name(item) for item in header]
         for values in reader:
-            row = {
-                "wb_name": _value(values, 0),
-                "vendor_code": _value(values, 1),
-                "nm_id": _value(values, 2),
-                "wb_size": _value(values, 3),
-                "onec_name": _value(values, 4),
-                "onec_code": "",
-                "onec_article": "",
-                "onec_barcode": "",
-                "onec_characteristic": "",
-            }
-            if len(header) >= 12:
-                row["onec_code"] = _value(values, 5)
-                row["onec_article"] = _value(values, 7)
-                row["onec_barcode"] = _value(values, 8)
-                row["onec_characteristic"] = _value(values, 10)
+            if "артикулпоставщика" in normalized_header:
+                row = _read_onec_marketplace_vendor_article_row(
+                    values,
+                    normalized_header,
+                )
             else:
-                row["onec_article"] = _value(values, 5)
-                row["onec_characteristic"] = _value(values, 6)
+                row = _read_onec_marketplace_nm_only_row(values, normalized_header)
             rows.append(row)
     return rows
 
 
 def _value(values: list[str], index: int) -> str:
     return values[index].strip() if index < len(values) else ""
+
+
+def _read_onec_marketplace_vendor_article_row(
+    values: list[str],
+    header: list[str],
+) -> dict[str, str]:
+    return {
+        "wb_name": _header_value(values, header, "номенклатураwb", fallback=0),
+        "vendor_code": _header_value(values, header, "артикулпоставщика", fallback=1),
+        "nm_id": _header_value(values, header, "артикулwb", fallback=2),
+        "wb_size": _header_value(values, header, "размерwb", fallback=3),
+        "onec_name": _header_value(values, header, "номенклатура", fallback=4),
+        "onec_code": _header_value(values, header, "код", fallback=5),
+        "onec_article": _header_value(values, header, "артикул", fallback=7),
+        "onec_barcode": _header_value(values, header, "штрихкод", fallback=8),
+        "onec_characteristic": _header_value(
+            values,
+            header,
+            "характеристика",
+            fallback=10,
+        ),
+    }
+
+
+def _read_onec_marketplace_nm_only_row(
+    values: list[str],
+    header: list[str],
+) -> dict[str, str]:
+    return {
+        "wb_name": _header_value(values, header, "номенклатураwb", fallback=0),
+        "vendor_code": "",
+        "nm_id": _header_value(values, header, "артикулwb", fallback=1),
+        "wb_size": _header_value(values, header, "размерwb", fallback=2),
+        "onec_name": _header_value(values, header, "номенклатура", fallback=3),
+        "onec_code": _header_value(values, header, "код", fallback=-1),
+        "onec_article": _header_value(values, header, "артикул", fallback=-1),
+        "onec_barcode": _header_value(values, header, "штрихкод", fallback=-1),
+        "onec_characteristic": _header_value(
+            values,
+            header,
+            "характеристика",
+            fallback=4,
+        ),
+    }
+
+
+def _header_value(
+    values: list[str],
+    header: list[str],
+    name: str,
+    *,
+    fallback: int,
+) -> str:
+    try:
+        index = header.index(name)
+    except ValueError:
+        index = fallback
+    return _value(values, index) if index >= 0 else ""
+
+
+def _normalized_header_name(value: str) -> str:
+    return "".join(char for char in value.lower() if char.isalnum())
 
 
 def _match_account_for_file(
@@ -352,14 +411,16 @@ def _resolve_onec_mapping_candidates(
         candidates = list(nomenclature_lookup["code"].get(onec_code, []))
     if not candidates and onec_article:
         candidates = list(nomenclature_lookup["article"].get(onec_article, []))
-    onec_name = _text(row.get("onec_name")).lower()
+    onec_name = normalize_name(row.get("onec_name"))
+    if not candidates and onec_name:
+        candidates = list(nomenclature_lookup["name"].get(onec_name, []))
     if onec_name and candidates:
         named_candidates = [
             candidate
             for candidate in candidates
-            if _text(
+            if normalize_name(
                 candidate.get("Description") or candidate.get("НаименованиеПолное")
-            ).lower()
+            )
             == onec_name
         ]
         if named_candidates:

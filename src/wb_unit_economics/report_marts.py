@@ -219,6 +219,8 @@ def unit_rows_mart(
                 "profit": _number(row.profit_after_taxes),
                 "margin": _nullable_number(row.margin_after_taxes),
                 "unitProfit": _nullable_number(row.profit_after_taxes_per_unit),
+                "taxMethod": row.tax_method,
+                "taxProfileSource": row.tax_profile_source,
                 "status": status,
                 "statusReason": _status_reason(row, cost_methods),
                 "sppStatus": row.spp_source_status,

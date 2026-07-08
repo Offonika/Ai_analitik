@@ -142,6 +142,12 @@ data/onec_marketplace_mapping/
 `sku_mapping`. Автоматическое сопоставление по артикулу 1С остается fallback,
 если TXT-выгрузки нет.
 
+Если OData не отдает объекты расширения `ИС_Маркетплейс`, предпочтительный
+автоматический путь - установить наше read-only расширение 1С
+`offonika` из
+`docs/runbooks/onec-marketplace-mapping-client-extension.md`; TXT остается
+ручным fallback.
+
 # Быстрая выгрузка финансового факта WB
 
 Для первого реального Excel MVP используется новый WB Finance endpoint:

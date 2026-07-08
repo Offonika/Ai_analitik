@@ -24,6 +24,7 @@ from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshRun, Tenant, TenantIntegration
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
+    OZON_REFRESH_ROLES,
     SOURCE_REFRESH_MODES,
     WB_FINANCE_REFRESH_ROLES,
     inspect_mapping_source,
@@ -102,6 +103,7 @@ def _check_integrations(
         )
     if mode != "onec-only":
         _check_wb_integrations(integrations, blockers, warnings)
+        _check_ozon_integrations(integrations, warnings)
     _check_onec_integration(integrations, blockers)
 
 
@@ -153,6 +155,38 @@ def _check_onec_integration(
         blockers.append("onec_readonly tenant integration is not runtime-ready")
         return
     print("1C read-only integration: runtime-ready")
+
+
+def _check_ozon_integrations(
+    integrations: list[TenantIntegration],
+    warnings: list[str],
+) -> None:
+    ozon_items = [
+        item
+        for item in integrations
+        if repository.integration_provider_base(item.provider) == "ozon_api"
+    ]
+    if not ozon_items:
+        print("Ozon API integrations: not configured (optional)")
+        return
+    ready = []
+    skipped_roles = []
+    for item in ozon_items:
+        payload = item.config_payload or {}
+        role = str(payload.get("connectionRole") or "").strip()
+        if role and role not in OZON_REFRESH_ROLES:
+            skipped_roles.append(item.provider)
+            continue
+        if _integration_ready(item):
+            ready.append(item.provider)
+    if ready:
+        print(f"Ozon API ready integrations: {len(ready)}")
+    else:
+        warnings.append("ozon_api integrations are configured but not runtime-ready")
+    if skipped_roles:
+        warnings.append(
+            "ozon_api integrations skipped by role: " + ", ".join(skipped_roles)
+        )
 
 
 def _integration_ready(item: TenantIntegration) -> bool:

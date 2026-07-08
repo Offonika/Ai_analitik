@@ -185,20 +185,27 @@ def _ensure_report_unit_row_columns(engine: Engine) -> None:
         column["name"]
         for column in inspect(engine).get_columns("report_unit_rows", schema=schema)
     }
+    column_specs = {
+        "document_report": "VARCHAR NOT NULL DEFAULT ''",
+        "wb_report_id": "VARCHAR NOT NULL DEFAULT ''",
+        "wb_report_date": "VARCHAR NOT NULL DEFAULT ''",
+        "tax_method": "VARCHAR NOT NULL DEFAULT ''",
+        "tax_profile_source": "VARCHAR NOT NULL DEFAULT ''",
+    }
     missing = [
-        column
-        for column in ("document_report", "wb_report_id", "wb_report_date")
+        (column, definition)
+        for column, definition in column_specs.items()
         if column not in existing
     ]
     if not missing:
         return
     table_name = _table_name(engine, "report_unit_rows")
     with engine.begin() as connection:
-        for column in missing:
+        for column, definition in missing:
             connection.execute(
                 text(
                     f"ALTER TABLE {table_name} "
-                    f"ADD COLUMN {column} VARCHAR NOT NULL DEFAULT ''"
+                    f"ADD COLUMN {column} {definition}"
                 )
             )
 

@@ -218,3 +218,51 @@ def test_onec_marketplace_mapping_export_keeps_empty_rows_missing(tmp_path) -> N
     assert {mapping.comment for mapping in mappings} == {
         "нет сопоставления в выгрузке 1С"
     }
+
+
+def test_onec_marketplace_mapping_export_short_nm_size_format(tmp_path) -> None:
+    export_path = tmp_path / "Галустов.txt"
+    export_path.write_text(
+        "\ufeffНоменклатура WB\tАртикул WB\tРазмер WB\t"
+        "Номенклатура\tХарактеристика\tУпаковка\n"
+        "Джинсы\t698880158\t2049879068542\tДжинсы женские\t\tшт\n",
+        encoding="utf-8",
+    )
+    mappings = build_sku_mapping_from_onec_marketplace_files(
+        client_id="client",
+        mapping_dir=tmp_path,
+        nomenclature_rows=[
+            {
+                "Ref_Key": "ITEM-1",
+                "Артикул": "A-1",
+                "Description": "Джинсы женские",
+            }
+        ],
+        account_org_mapping=[
+            AccountOrgMapping(
+                client_id="client",
+                seller_account_id="WB_ACCOUNT_1",
+                organization_id="ORG-1",
+                seller_account_name="ИП Галустов",
+                organization_name="Галустов Рафаэль",
+            )
+        ],
+        updated_at=datetime(2026, 7, 4, 12, 0, tzinfo=TZ),
+    )
+
+    product_mapping = next(
+        mapping
+        for mapping in mappings
+        if mapping.match_method == "onec_marketplace_mapping"
+    )
+    sku_mapping = next(
+        mapping
+        for mapping in mappings
+        if mapping.match_method == "onec_marketplace_mapping_sku"
+    )
+    assert product_mapping.nm_id == 698880158
+    assert product_mapping.vendor_code == ""
+    assert product_mapping.onec_item_id == "ITEM-1"
+    assert product_mapping.status is MappingStatus.MATCHED
+    assert sku_mapping.barcode == "2049879068542"
+    assert sku_mapping.onec_item_id == "ITEM-1"

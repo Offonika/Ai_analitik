@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
@@ -16,6 +27,7 @@ from scripts.build_client_analytical_report import (
     ClientAnalyticalReportArtifacts,
     build_client_analytical_report,
 )
+from wb_unit_economics.report_exports import write_ozon_diagnostics_excel
 from wb_unit_economics.web import integrations, providers, repository, security
 from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
@@ -32,8 +44,16 @@ from wb_unit_economics.web.refresh import (
     OnecAutoRefreshService,
 )
 from wb_unit_economics.web.settings import WebSettings
+from wb_unit_economics.web.source_refresh import (
+    SourceRefreshBusyError,
+    SourceRefreshConfigError,
+    SourceRefreshDisabledError,
+    SourceRefreshService,
+)
 
 STATIC_DIR = Path(__file__).with_name("static")
+MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
+MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 
 
 class LoginRequest(BaseModel):
@@ -75,6 +95,20 @@ class AdminUserCreateRequest(BaseModel):
     client_id: str | None = None
     tenant_id: str | None = None
     password: str | None = Field(default=None, min_length=10)
+
+
+class ClientCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    tenant_id: str = Field(default="", max_length=120)
+    client_id: str = Field(default="", max_length=120)
+    companies: list[str] = Field(default_factory=list)
+    cabinets: list[str] = Field(default_factory=list)
+
+
+class WbCabinetSaveRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    organization_name: str = Field(default="", max_length=200)
+    status: str = Field(default="active", pattern="^(active|disabled)$")
 
 
 class AdminUserPatchRequest(BaseModel):
@@ -130,6 +164,15 @@ class TenantIntegrationActionRequest(BaseModel):
     tenant_id: str | None = None
 
 
+class SourceRefreshRequest(BaseModel):
+    mode: str = Field(
+        default="full",
+        pattern="^(daily|weekly|full|onec-only|ozon-only)$",
+    )
+    dry_run: bool = False
+    reason: str = Field(default="", max_length=4000)
+
+
 def create_app(
     settings: WebSettings | None = None,
     session_factory: sessionmaker[Session] | None = None,
@@ -144,12 +187,16 @@ def create_app(
         init_db(engine, run_backfill=False)
         session_factory = make_session_factory(engine)
     refresh_service = auto_refresh_service or OnecAutoRefreshService(runtime_settings)
+    source_refresh_service = getattr(refresh_service, "source_refresh_service", None)
+    if source_refresh_service is None:
+        source_refresh_service = SourceRefreshService(runtime_settings)
     analyst = AiAnalyst(runtime_settings, auto_refresh_service=refresh_service)
     app = FastAPI(title="Shumeyko WB Unit Economics Cabinet", version="0.2.0")
     app.state.settings = runtime_settings
     app.state.session_factory = session_factory
     app.state.analyst = analyst
     app.state.auto_refresh_service = refresh_service
+    app.state.source_refresh_service = source_refresh_service
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")
@@ -158,6 +205,14 @@ def create_app(
 
     @app.get("/cabinet")
     def cabinet() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/ai")
+    def ai_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/integrations")
+    def integrations_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/health")
@@ -264,6 +319,302 @@ def create_app(
         items = repository.list_clients_for_user(db, current)
         db.commit()
         return {"items": items}
+
+    @app.post("/api/clients")
+    def create_client(
+        payload: ClientCreateRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            client = repository.create_client_workspace(
+                db,
+                user=current,
+                name=payload.name,
+                tenant_id=payload.tenant_id,
+                client_id=payload.client_id,
+                companies=payload.companies,
+                cabinets=payload.cabinets,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {"client": repository.client_payload(db, current, client)}
+
+    @app.post("/api/clients/{client_id}/cabinets")
+    def create_client_cabinet(
+        client_id: str,
+        payload: WbCabinetSaveRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            client = repository.upsert_client_wb_cabinet(
+                db,
+                user=current,
+                client_id=client_id,
+                display_name=payload.label,
+                organization_name=payload.organization_name,
+                status=payload.status,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {"client": repository.client_payload(db, current, client)}
+
+    @app.get("/api/clients/{client_id}/source-refresh/latest")
+    def client_source_refresh_latest(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        return {
+            "latest": repository.latest_source_refresh_payload(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                include_sensitive=False,
+            )
+        }
+
+    @app.get("/api/clients/{client_id}/ozon-diagnostics")
+    def client_ozon_diagnostics(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        limit: int = 50,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        return repository.latest_ozon_diagnostics_payload(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+            limit=limit,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+        )
+
+    @app.get("/api/clients/{client_id}/ozon-diagnostics/export.xlsx")
+    def client_ozon_diagnostics_export(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+    ) -> FileResponse:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        diagnostics = repository.latest_ozon_diagnostics_payload(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+            limit=repository.OZON_PNL_MAX_SOURCE_ROWS,
+            preview_max_rows=repository.OZON_PNL_MAX_SOURCE_ROWS,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+        )
+        output_dir = (
+            runtime_settings.export_root_path
+            / "ozon_diagnostics"
+            / _safe_path_segment(resolved_client_id)
+        ).resolve()
+        allowed = runtime_settings.export_root_path.resolve()
+        if output_dir != allowed and allowed not in output_dir.parents:
+            raise HTTPException(
+                status_code=400,
+                detail="export path is outside reports",
+            )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        period_label = _ozon_export_period_label(
+            diagnostics,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        stamp = security.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"ozon_unit_economics_{period_label}_{stamp}.xlsx"
+        path = output_dir / filename
+        write_ozon_diagnostics_excel(diagnostics, path)
+        repository.audit(
+            db,
+            action="ozon_diagnostics_excel_exported",
+            user=current,
+            tenant_id=tenant_id,
+            entity_type="client",
+            entity_id=resolved_client_id,
+            payload={
+                "periodStart": period_start.isoformat() if period_start else None,
+                "periodEnd": period_end.isoformat() if period_end else None,
+                "wbCabinetId": wb_cabinet_id,
+                "path": str(path.relative_to(allowed)),
+            },
+        )
+        db.commit()
+        return FileResponse(
+            path,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            filename=filename,
+        )
+
+    @app.post("/api/clients/{client_id}/mapping-file")
+    async def upload_client_mapping_file(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        file: Annotated[UploadFile, File(...)],
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        target_name, size_bytes = await _save_mapping_upload(
+            runtime_settings,
+            file,
+        )
+        repository.audit(
+            db,
+            action="mapping_file_uploaded",
+            user=current,
+            tenant_id=tenant_id,
+            entity_type="client",
+            entity_id=resolved_client_id,
+            payload={
+                "fileName": target_name,
+                "sizeBytes": size_bytes,
+            },
+        )
+        db.commit()
+        return {
+            "status": "uploaded",
+            "fileName": target_name,
+            "sizeBytes": size_bytes,
+            "latestSourceRefresh": repository.latest_source_refresh_payload(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                include_sensitive=False,
+            ),
+        }
+
+    @app.post("/api/clients/{client_id}/source-refresh")
+    def run_client_source_refresh(
+        client_id: str,
+        payload: SourceRefreshRequest,
+        background_tasks: BackgroundTasks,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        reason = payload.reason.strip() or (
+            "Ручная проверка готовности source refresh"
+            if payload.dry_run
+            else "Ручной full source refresh из web-кабинета"
+        )
+        try:
+            if payload.dry_run:
+                refresh_payload = app.state.source_refresh_service.run(
+                    db,
+                    tenant_id=tenant_id,
+                    client_id=resolved_client_id,
+                    mode=payload.mode,
+                    credential_source="tenant",
+                    dry_run=True,
+                    user=current,
+                    reason=reason,
+                )
+            else:
+                refresh_payload = app.state.source_refresh_service.enqueue(
+                    db,
+                    tenant_id=tenant_id,
+                    client_id=resolved_client_id,
+                    mode=payload.mode,
+                    credential_source="tenant",
+                    user=current,
+                    reason=reason,
+                )
+        except SourceRefreshDisabledError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SourceRefreshBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SourceRefreshConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        if not payload.dry_run and refresh_payload.get("finishedAt") is None:
+            background_tasks.add_task(
+                _run_source_refresh_background,
+                app.state.session_factory,
+                app.state.source_refresh_service,
+                refresh_payload["id"],
+            )
+        refresh_run = db.get(SourceRefreshRun, refresh_payload["id"])
+        return {
+            "latest": repository.source_refresh_run_payload(
+                refresh_run,
+                include_sensitive=False,
+            )
+            if refresh_run is not None
+            else refresh_payload,
+        }
+
+    @app.patch("/api/clients/{client_id}/cabinets/{cabinet_id}")
+    def update_client_cabinet(
+        client_id: str,
+        cabinet_id: str,
+        payload: WbCabinetSaveRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            client = repository.upsert_client_wb_cabinet(
+                db,
+                user=current,
+                client_id=client_id,
+                cabinet_id=cabinet_id,
+                display_name=payload.label,
+                organization_name=payload.organization_name,
+                status=payload.status,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="cabinet not found") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {"client": repository.client_payload(db, current, client)}
 
     @app.get("/api/admin/users")
     def admin_users(current: CurrentUser, db: DbSession) -> dict[str, Any]:
@@ -690,6 +1041,46 @@ def create_app(
             include_staff_readiness=_include_staff_readiness(current, report.tenant_id),
         )
 
+    @app.post("/api/reports/{report_id}/mapping-file")
+    async def upload_mapping_file(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        file: Annotated[UploadFile, File(...)],
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_staff_or_403(current, report.tenant_id)
+        target_name, size_bytes = await _save_mapping_upload(
+            runtime_settings,
+            file,
+        )
+        repository.audit(
+            db,
+            action="mapping_file_uploaded",
+            user=current,
+            tenant_id=report.tenant_id,
+            entity_type="report_run",
+            entity_id=report.id,
+            payload={
+                "fileName": target_name,
+                "sizeBytes": size_bytes,
+            },
+        )
+        refresh_payload = _run_mapping_upload_refresh(
+            app,
+            db,
+            current=current,
+            report=report,
+            file_name=target_name,
+        )
+        db.commit()
+        return {
+            "status": "uploaded",
+            "fileName": target_name,
+            "sizeBytes": size_bytes,
+            "autoRefresh": refresh_payload,
+        }
+
     @app.get("/api/reports/{report_id}/management-report")
     def report_management_report(
         report_id: str, current: CurrentUser, db: DbSession
@@ -935,6 +1326,40 @@ def create_app(
             loss_class=loss_class,
             document_report=document_report,
             preset=preset,
+            limit=min(max(limit, 1), 1000),
+            offset=max(offset, 0),
+        )
+
+    @app.get("/api/reports/{report_id}/document-reconciliation")
+    def report_document_reconciliation(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        query: str = "",
+        status: str = "",
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+        client_company_id: str = "",
+        document_type: str = "",
+        document_report: str = "",
+        delta_only: bool = False,
+        limit: int = 250,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        return repository.query_document_reconciliation_rows(
+            db,
+            report,
+            query=query,
+            status=status,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+            document_type=document_type,
+            document_report=document_report,
+            delta_only=delta_only,
             limit=min(max(limit, 1), 1000),
             offset=max(offset, 0),
         )
@@ -1341,6 +1766,47 @@ def create_app(
     return app
 
 
+def _run_source_refresh_background(
+    session_factory: sessionmaker[Session],
+    source_refresh_service: SourceRefreshService,
+    refresh_run_id: str,
+) -> None:
+    with session_factory() as db:
+        try:
+            source_refresh_service.run_existing(db, refresh_run_id)
+            db.commit()
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                return
+            refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+            if refresh_run is None or refresh_run.finished_at is not None:
+                return
+            repository.update_source_refresh_run(
+                db,
+                refresh_run,
+                status="failed",
+                error_message=(
+                    f"{exc.__class__.__name__}: background source refresh failed"
+                ),
+                finished_at=security.utcnow(),
+            )
+            repository.audit(
+                db,
+                action="source_refresh_failed",
+                user=None,
+                tenant_id=refresh_run.tenant_id,
+                entity_type="source_refresh_run",
+                entity_id=refresh_run.id,
+                payload={
+                    "mode": refresh_run.mode,
+                    "errorType": exc.__class__.__name__,
+                },
+            )
+            db.commit()
+
+
 def get_db(request: Request):
     session_factory: sessionmaker[Session] = request.app.state.session_factory
     db = session_factory()
@@ -1443,6 +1909,56 @@ def _sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _mapping_upload_target_name(file_name: str) -> str:
+    safe_name = Path(file_name).name.strip()
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in MAPPING_UPLOAD_ALLOWED_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail="mapping file must be TXT, TSV or CSV",
+        )
+    stem = Path(safe_name).stem.strip()
+    safe_stem = re.sub(r"[^\w .-]+", "_", stem, flags=re.UNICODE)
+    safe_stem = re.sub(r"\s+", "_", safe_stem, flags=re.UNICODE).strip("._-")
+    if not safe_stem:
+        raise HTTPException(status_code=400, detail="mapping file name is empty")
+    return f"{safe_stem}.txt"
+
+
+async def _save_mapping_upload(
+    settings: WebSettings,
+    file: UploadFile,
+) -> tuple[str, int]:
+    target_name = _mapping_upload_target_name(file.filename or "")
+    mapping_dir = settings.source_refresh_mapping_path
+    mapping_dir.mkdir(parents=True, exist_ok=True)
+    target_path = mapping_dir / target_name
+    size_bytes = await _write_upload_file(file, target_path)
+    return target_name, size_bytes
+
+
+async def _write_upload_file(file: UploadFile, target_path: Path) -> int:
+    size_bytes = 0
+    try:
+        with target_path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size_bytes += len(chunk)
+                if size_bytes > MAPPING_UPLOAD_MAX_BYTES:
+                    output.close()
+                    target_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail="mapping file is too large",
+                    )
+                output.write(chunk)
+    finally:
+        await file.close()
+    if size_bytes == 0:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="mapping file is empty")
+    return size_bytes
+
+
 def _first_tenant_id(user: User) -> str | None:
     return user.access[0].tenant_id if user.access else None
 
@@ -1486,7 +2002,10 @@ def _resolve_latest_client_id_or_400(
     client_id: str | None,
 ) -> str:
     if client_id:
-        repository.require_client_access(db, user, client_id)
+        try:
+            repository.require_client_access(db, user, client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
         return client_id
     clients = repository.list_clients_for_user(db, user)
     if len(clients) == 1:
@@ -1531,6 +2050,38 @@ def _require_staff_or_403(user: User, tenant_id: str) -> None:
         repository.require_staff(user, tenant_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="staff role required") from exc
+
+
+def _run_mapping_upload_refresh(
+    app: FastAPI,
+    db: Session,
+    *,
+    current: User,
+    report: ReportRun,
+    file_name: str,
+) -> dict[str, Any]:
+    reason = (
+        "Автоматическая пересборка после загрузки mapping WB ↔ 1C: "
+        f"{file_name}"
+    )
+    try:
+        payload = app.state.auto_refresh_service.run(
+            db,
+            user=current,
+            report=report,
+            reason=reason,
+        )
+    except AutoRefreshDisabledError as exc:
+        return {
+            "status": "disabled",
+            "safeMessage": str(exc),
+        }
+    except AutoRefreshBusyError as exc:
+        return {
+            "status": "busy",
+            "safeMessage": str(exc),
+        }
+    return payload
 
 
 def _include_staff_readiness(user: User, tenant_id: str) -> bool:
@@ -1579,6 +2130,20 @@ def _report_id_from_workbook(workbook: Path) -> str:
         char.lower() if char.isalnum() else "_" for char in workbook.stem
     ).strip("_")
     return f"{safe_stem or 'excel_mvp'}_{stamp}"
+
+
+def _ozon_export_period_label(
+    diagnostics: dict[str, Any],
+    *,
+    period_start: date | None,
+    period_end: date | None,
+) -> str:
+    latest = diagnostics.get("latestRun") or {}
+    start = period_start.isoformat() if period_start else latest.get("periodStart")
+    end = period_end.isoformat() if period_end else latest.get("periodEnd")
+    if start or end:
+        return _safe_path_segment(f"{start or 'from'}_{end or 'to'}")
+    return "latest"
 
 
 def _analytical_report_dir(settings: WebSettings, report_id: str) -> Path:

@@ -11,10 +11,18 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from wb_unit_economics.onec_odata import OnecODataSettings
+from wb_unit_economics.ozon import OzonConfigError, ozon_settings_from_secret
 from wb_unit_economics.web import providers, security
 from wb_unit_economics.web.settings import WebSettings
 
 WB_FINANCE_PING_URL = "https://finance-api.wildberries.ru/ping"
+OZON_SELLER_INFO_URL = "https://api-seller.ozon.ru/v1/seller/info"
+OZON_CASH_FLOW_CHECK_URL = (
+    "https://api-seller.ozon.ru/v1/finance/cash-flow-statement/list"
+)
+OZON_STOCK_CHECK_URL = (
+    "https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses"
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,7 @@ def run_provider_check(
     handlers = {
         "wb_api": _check_wb_api,
         "onec_readonly": _check_onec_readonly,
+        "ozon_api": _check_ozon_api,
     }
     handler = handlers.get(definition.check_handler)
     if handler is not None:
@@ -204,6 +213,119 @@ def _check_onec_readonly(
     )
 
 
+def _check_ozon_api(settings: WebSettings, secret: str) -> IntegrationCheckResult:
+    checked_at = security.utcnow().isoformat()
+    try:
+        ozon_settings = ozon_settings_from_secret(secret)
+    except OzonConfigError as exc:
+        return IntegrationCheckResult(
+            status="check_failed",
+            message=(
+                "Ozon secret должен содержать Client-Id и Api-Key в JSON "
+                "или key=value формате."
+            ),
+            payload={
+                "provider": "ozon_api",
+                "checkedAt": checked_at,
+                "checkMode": "parse_only",
+                "endpointCategory": "seller_info",
+                "errorType": str(exc),
+            },
+        )
+    account = ozon_settings.accounts[0]
+    try:
+        with httpx.Client(
+            headers={
+                "Client-Id": account.client_id,
+                "Api-Key": account.api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=settings.integration_check_timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            results = []
+            for endpoint_category, url, body in _ozon_readonly_check_requests():
+                response = client.post(url, json=body)
+                results.append(
+                    {
+                        "endpointCategory": endpoint_category,
+                        "httpStatus": response.status_code,
+                    }
+                )
+                if response.status_code == 200:
+                    return IntegrationCheckResult(
+                        status="check_ok",
+                        message=(
+                            "Ozon read-only проверка прошла по рабочему "
+                            f"источнику {endpoint_category}."
+                        ),
+                        payload={
+                            "provider": "ozon_api",
+                            "checkedAt": checked_at,
+                            "checkMode": "live_read_only",
+                            "endpointCategory": endpoint_category,
+                            "httpStatus": response.status_code,
+                            "checkedEndpoints": results,
+                        },
+                    )
+    except httpx.HTTPError as exc:
+        return IntegrationCheckResult(
+            status="check_failed",
+            message="Ozon Seller API не ответил на read-only проверку.",
+            payload={
+                "provider": "ozon_api",
+                "checkedAt": checked_at,
+                "checkMode": "live_read_only",
+                "endpointCategory": "ozon_readonly_sources",
+                "errorType": exc.__class__.__name__,
+            },
+        )
+    payload: dict[str, Any] = {
+        "provider": "ozon_api",
+        "checkedAt": checked_at,
+        "checkMode": "live_read_only",
+        "endpointCategory": "ozon_readonly_sources",
+        "httpStatus": results[-1]["httpStatus"] if results else None,
+        "checkedEndpoints": results,
+    }
+    if any(item["httpStatus"] == 429 for item in results):
+        return IntegrationCheckResult(
+            status="check_failed",
+            message="Ozon ограничил частоту проверки. Повторите позже.",
+            payload=payload,
+        )
+    return IntegrationCheckResult(
+        status="check_failed",
+        message="Ozon не принял Client-Id/Api-Key для read-only проверки.",
+        payload=payload,
+    )
+
+
+def _ozon_readonly_check_requests() -> list[tuple[str, str, dict[str, Any]]]:
+    checked_on = security.utcnow().date().isoformat()
+    return [
+        (
+            "finance_cash_flow",
+            OZON_CASH_FLOW_CHECK_URL,
+            {
+                "page": 1,
+                "page_size": 1,
+                "date": {
+                    "from": f"{checked_on}T00:00:00Z",
+                    "to": f"{checked_on}T23:59:59Z",
+                },
+                "with_details": False,
+            },
+        ),
+        (
+            "stock_on_warehouses",
+            OZON_STOCK_CHECK_URL,
+            {"limit": 1, "offset": 0},
+        ),
+    ]
+
+
 def _parse_onec_secret(secret: str) -> dict[str, Any]:
     raw = secret.strip()
     if raw.startswith("{"):
@@ -250,6 +372,7 @@ def _parse_onec_secret(secret: str) -> dict[str, Any]:
     )
     if not base_url or not username or not password:
         raise IntegrationSecretError("onec_secret_missing_required_fields")
+    base_url = _normalize_onec_base_url(base_url)
     parsed_url = urlparse(base_url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
         raise IntegrationSecretError("onec_base_url_invalid")
@@ -258,7 +381,7 @@ def _parse_onec_secret(secret: str) -> dict[str, Any]:
         default=True,
     )
     return {
-        "base_url": base_url.rstrip("/"),
+        "base_url": base_url,
         "username": username,
         "password": password,
         "verify_ssl": verify_ssl,
@@ -271,6 +394,14 @@ def _first_value(values: dict[str, Any], *keys: str) -> str:
         if value is not None and str(value).strip():
             return str(value).strip()
     return ""
+
+
+def _normalize_onec_base_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    metadata_suffix = "/$metadata"
+    if normalized.lower().endswith(metadata_suffix):
+        normalized = normalized[: -len(metadata_suffix)].rstrip("/")
+    return normalized
 
 
 def _parse_bool(value: str, *, default: bool) -> bool:

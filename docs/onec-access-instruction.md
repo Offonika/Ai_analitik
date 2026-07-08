@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["client_admin", "engineering"]
 status: draft
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-06-18"
+updated_at: "2026-07-06"
 ---
 
 # Короткая инструкция: доступ к данным 1С только на чтение
@@ -110,7 +110,7 @@ API нашего сервиса и доступ к SQL-базе 1С — разн
 ```text
 Тип доступа: OData
 URL: https://example.1cfresh.com/base/odata/standard.odata/
-Пользователь: shumeyko_readonly
+Пользователь: offonika_readonly
 Пароль: передан отдельно
 Доступ: только чтение
 IP нашего сервера для белого списка: 102.129.178.65
@@ -162,6 +162,40 @@ read-only объекты:
 Запись, изменение, проведение документов и изменение справочников должны быть
 запрещены.
 
+# Если OData не показывает объекты расширения маркетплейса
+
+Если стандартная публикация OData не отдает справочники и регистры расширения
+`ИС_Маркетплейс`, для сопоставления WB и 1С нужно использовать наше отдельное
+read-only расширение 1С `offonika`. Оно публикует узкий
+HTTP-сервис вместо публикации всего расширения поставщика.
+
+Главный документ по клиентскому расширению:
+`docs/specs/onec-marketplace-mapping-client-extension.md`.
+
+Инструкция по установке расширения:
+`docs/runbooks/onec-marketplace-mapping-client-extension.md`.
+
+Контракт HTTP-сервиса:
+`docs/specs/onec-marketplace-mapping-http-service.md`.
+
+Технический шаблон модуля HTTP-сервиса:
+`docs/runbooks/onec-marketplace-mapping-http-service.md`.
+
+Минимальные объекты, которые читает HTTP-сервис:
+
+- `РегистрСведений.ИС_WB_СоответствиеРазмеров`;
+- `Справочник.ИС_WB_РазмерыНоменклатур`;
+- `Справочник.ИС_WB_Номенклатура`;
+- `РегистрСведений.ИС_WB_ШтрихкодыРазмеров`;
+- стандартные `Справочник.Номенклатура` и
+  `Справочник.ХарактеристикиНоменклатуры` только по ссылкам из регистра
+  соответствия.
+
+Расширение должно поддерживать только `GET /health` и `GET /mapping`, не
+возвращать WB токены, настройки профилей, пароли и raw payload WB. Результат
+сохраняется у нас только как локальный snapshot в `data/` и затем нормализуется
+в существующий контракт `sku_mapping`.
+
 # Sample-выгрузка для проверки формулы себестоимости
 
 После настройки OData можно выгрузить маленький sample с нашего сервера:
@@ -211,7 +245,7 @@ sample регистров:
 IP сервера: 10.10.10.25
 Порт: 1433
 База: UNF
-Пользователь: shumeyko_readonly
+Пользователь: offonika_readonly
 Пароль: передан отдельно
 Доступ: только чтение
 IP нашего сервера для белого списка: 102.129.178.65
@@ -224,13 +258,13 @@ IP нашего сервера для белого списка: 102.129.178.65
 Вариант с SQL-администратором:
 
 ```bash
-sqlcmd -S <SQL_SERVER_IP>,1433 -U <ADMIN_USER> -P '<ADMIN_PASSWORD>' -Q "CREATE LOGIN shumeyko_readonly WITH PASSWORD = '<STRONG_PASSWORD>'; USE [<DATABASE_NAME>]; CREATE USER shumeyko_readonly FOR LOGIN shumeyko_readonly; ALTER ROLE db_datareader ADD MEMBER shumeyko_readonly;"
+sqlcmd -S <SQL_SERVER_IP>,1433 -U <ADMIN_USER> -P '<ADMIN_PASSWORD>' -Q "CREATE LOGIN offonika_readonly WITH PASSWORD = '<STRONG_PASSWORD>'; USE [<DATABASE_NAME>]; CREATE USER offonika_readonly FOR LOGIN offonika_readonly; ALTER ROLE db_datareader ADD MEMBER offonika_readonly;"
 ```
 
 Вариант с Windows-авторизацией:
 
 ```bash
-sqlcmd -S <SQL_SERVER_IP>,1433 -E -Q "CREATE LOGIN shumeyko_readonly WITH PASSWORD = '<STRONG_PASSWORD>'; USE [<DATABASE_NAME>]; CREATE USER shumeyko_readonly FOR LOGIN shumeyko_readonly; ALTER ROLE db_datareader ADD MEMBER shumeyko_readonly;"
+sqlcmd -S <SQL_SERVER_IP>,1433 -E -Q "CREATE LOGIN offonika_readonly WITH PASSWORD = '<STRONG_PASSWORD>'; USE [<DATABASE_NAME>]; CREATE USER offonika_readonly FOR LOGIN offonika_readonly; ALTER ROLE db_datareader ADD MEMBER offonika_readonly;"
 ```
 
 Что заменить:
@@ -240,14 +274,14 @@ sqlcmd -S <SQL_SERVER_IP>,1433 -E -Q "CREATE LOGIN shumeyko_readonly WITH PASSWO
 - `<ADMIN_PASSWORD>` — пароль администратора;
 - `<DATABASE_NAME>` — имя базы 1С;
 - `<STRONG_PASSWORD>` — новый сложный пароль для пользователя
-  `shumeyko_readonly`.
+  `offonika_readonly`.
 
 # Команда для PostgreSQL
 
 Команду выполняет администратор базы из терминала, где доступен `psql`.
 
 ```bash
-psql "host=<DB_SERVER_IP> port=5432 dbname=<DATABASE_NAME> user=<ADMIN_USER>" -c "CREATE USER shumeyko_readonly WITH PASSWORD '<STRONG_PASSWORD>'; GRANT CONNECT ON DATABASE <DATABASE_NAME> TO shumeyko_readonly; GRANT USAGE ON SCHEMA public TO shumeyko_readonly; GRANT SELECT ON ALL TABLES IN SCHEMA public TO shumeyko_readonly; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO shumeyko_readonly;"
+psql "host=<DB_SERVER_IP> port=5432 dbname=<DATABASE_NAME> user=<ADMIN_USER>" -c "CREATE USER offonika_readonly WITH PASSWORD '<STRONG_PASSWORD>'; GRANT CONNECT ON DATABASE <DATABASE_NAME> TO offonika_readonly; GRANT USAGE ON SCHEMA public TO offonika_readonly; GRANT SELECT ON ALL TABLES IN SCHEMA public TO offonika_readonly; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO offonika_readonly;"
 ```
 
 Что заменить:
@@ -256,11 +290,11 @@ psql "host=<DB_SERVER_IP> port=5432 dbname=<DATABASE_NAME> user=<ADMIN_USER>" -c
 - `<DATABASE_NAME>` — имя базы 1С;
 - `<ADMIN_USER>` — администратор PostgreSQL;
 - `<STRONG_PASSWORD>` — новый сложный пароль для пользователя
-  `shumeyko_readonly`.
+  `offonika_readonly`.
 
 # Что важно
 
-- Пользователь должен быть отдельный: `shumeyko_readonly`.
+- Пользователь должен быть отдельный: `offonika_readonly`.
 - У пользователя не должно быть прав записи.
 - Нельзя выдавать администратора 1С или SQL.
 - Лучше разрешить подключение только с IP нашего сервера или через VPN.

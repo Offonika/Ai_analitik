@@ -36,6 +36,8 @@ def test_report_marts_build_without_excel_and_preserve_quality_statuses(
     ).to_dashboard_payload()
 
     assert payload["unitRows"]
+    assert payload["unitRows"][0]["taxMethod"]
+    assert payload["unitRows"][0]["taxProfileSource"] == "legacy-default"
     assert payload["liquidityRows"]
     assert payload["options"]["liquidityStatuses"]
     assert payload["meta"]["lineageType"] == "db_first_report_marts"

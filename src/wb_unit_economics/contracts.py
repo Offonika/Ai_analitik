@@ -12,6 +12,11 @@ class SalesModel(StrEnum):
     FBS = "fbs"
 
 
+class Marketplace(StrEnum):
+    WB = "wb"
+    OZON = "ozon"
+
+
 class MappingStatus(StrEnum):
     MATCHED = "matched"
     MISSING = "missing"
@@ -70,6 +75,39 @@ class AccountOrgMapping(ProjectModel):
     valid_to: date | None = None
 
 
+class VatMode(StrEnum):
+    INCLUDED = "included"
+    EXCLUDED = "excluded"
+    NONE = "none"
+
+
+class TaxProfile(ProjectModel):
+    client_id: str
+    organization_id: str
+    tax_system: str
+    vat_rate: Decimal = Decimal("0")
+    vat_mode: VatMode = VatMode.NONE
+    revenue_tax_rate: Decimal = Decimal("0")
+    valid_from: date | None = None
+    valid_to: date | None = None
+    source: str = "config"
+
+    @field_validator("vat_rate", "revenue_tax_rate", mode="before")
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+    @model_validator(mode="after")
+    def validate_period(self) -> TaxProfile:
+        if (
+            self.valid_from is not None
+            and self.valid_to is not None
+            and self.valid_to < self.valid_from
+        ):
+            raise ValueError("valid_to must be greater than or equal to valid_from")
+        return self
+
+
 class WbApiSnapshot(ProjectModel):
     client_id: str
     seller_account_id: str
@@ -119,6 +157,205 @@ class WbApiSnapshot(ProjectModel):
 
     @model_validator(mode="after")
     def validate_period(self) -> WbApiSnapshot:
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must be greater than or equal to period_start")
+        return self
+
+
+class OzonApiSnapshot(ProjectModel):
+    client_id: str
+    seller_account_id: str
+    organization_id: str = ""
+    period_start: date
+    period_end: date
+    source_endpoint: str
+    loaded_at: datetime
+    source_report_code: str = ""
+    product_id: str = ""
+    ozon_sku: str = ""
+    offer_id: str = ""
+    vendor_code: str = ""
+    barcode: str = ""
+    sales_model: str = ""
+    operation_type: str = ""
+    sales_quantity: Decimal = Decimal("0")
+    return_quantity: Decimal = Decimal("0")
+    quantity: Decimal = Decimal("0")
+    gross_revenue: Decimal = Decimal("0")
+    net_revenue: Decimal = Decimal("0")
+    commission: Decimal = Decimal("0")
+    logistics: Decimal = Decimal("0")
+    storage: Decimal = Decimal("0")
+    promotion: Decimal = Decimal("0")
+    penalties_and_holdbacks: Decimal = Decimal("0")
+    acquiring: Decimal = Decimal("0")
+    payout: Decimal = Decimal("0")
+    currency: str = "RUB"
+    raw_payload_hash: str
+    is_partial_source: bool = False
+
+    @field_validator(
+        "sales_quantity",
+        "return_quantity",
+        "quantity",
+        "gross_revenue",
+        "net_revenue",
+        "commission",
+        "logistics",
+        "storage",
+        "promotion",
+        "penalties_and_holdbacks",
+        "acquiring",
+        "payout",
+        mode="before",
+    )
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+    @model_validator(mode="after")
+    def validate_period(self) -> OzonApiSnapshot:
+        if self.period_end < self.period_start:
+            raise ValueError("period_end must be greater than or equal to period_start")
+        return self
+
+
+class OzonProductSnapshot(ProjectModel):
+    client_id: str
+    seller_account_id: str
+    loaded_at: datetime
+    source_endpoint: str
+    product_id: str = ""
+    ozon_sku: str = ""
+    fbo_sku: str = ""
+    fbs_sku: str = ""
+    offer_id: str = ""
+    vendor_code: str = ""
+    barcode: str = ""
+    name: str = ""
+    status: str = ""
+    visibility: str = ""
+    price: Decimal = Decimal("0")
+    old_price: Decimal = Decimal("0")
+    currency: str = "RUB"
+    raw_payload_hash: str
+
+    @field_validator("price", "old_price", mode="before")
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+
+class OzonStockSnapshot(ProjectModel):
+    client_id: str
+    seller_account_id: str
+    loaded_at: datetime
+    source_endpoint: str
+    product_id: str = ""
+    ozon_sku: str = ""
+    offer_id: str = ""
+    warehouse_id: str = ""
+    warehouse_name: str = ""
+    stock_type: str = ""
+    present: Decimal = Decimal("0")
+    reserved: Decimal = Decimal("0")
+    in_way_to_client: Decimal = Decimal("0")
+    in_way_from_client: Decimal = Decimal("0")
+    raw_payload_hash: str
+
+    @field_validator(
+        "present",
+        "reserved",
+        "in_way_to_client",
+        "in_way_from_client",
+        mode="before",
+    )
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+
+class OzonSkuMapping(ProjectModel):
+    client_id: str
+    seller_account_id: str
+    organization_id: str = ""
+    product_id: str = ""
+    ozon_sku: str = ""
+    offer_id: str = ""
+    barcode: str = ""
+    onec_item_id: str
+    onec_article: str
+    onec_characteristic: str = ""
+    match_method: str
+    confidence: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
+    status: MappingStatus
+    comment: str = ""
+    updated_by: str
+    updated_at: datetime
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+
+class MarketplaceApiSnapshot(ProjectModel):
+    marketplace: Marketplace
+    client_id: str
+    seller_account_id: str
+    organization_id: str = ""
+    period_start: date
+    period_end: date
+    source_endpoint: str
+    loaded_at: datetime
+    source_document_id: str = ""
+    product_id: str = ""
+    nm_id: int | None = None
+    ozon_sku: str = ""
+    offer_id: str = ""
+    vendor_code: str = ""
+    barcode: str = ""
+    sales_model: str = ""
+    operation_type: str = ""
+    sales_quantity: Decimal = Decimal("0")
+    return_quantity: Decimal = Decimal("0")
+    quantity: Decimal = Decimal("0")
+    gross_revenue: Decimal = Decimal("0")
+    net_revenue: Decimal = Decimal("0")
+    commission: Decimal = Decimal("0")
+    logistics: Decimal = Decimal("0")
+    storage: Decimal = Decimal("0")
+    acceptance: Decimal = Decimal("0")
+    promotion: Decimal = Decimal("0")
+    penalties_and_holdbacks: Decimal = Decimal("0")
+    acquiring: Decimal = Decimal("0")
+    payout: Decimal = Decimal("0")
+    currency: str = "RUB"
+    raw_payload_hash: str
+    is_partial_source: bool = False
+
+    @field_validator(
+        "sales_quantity",
+        "return_quantity",
+        "quantity",
+        "gross_revenue",
+        "net_revenue",
+        "commission",
+        "logistics",
+        "storage",
+        "acceptance",
+        "promotion",
+        "penalties_and_holdbacks",
+        "acquiring",
+        "payout",
+        mode="before",
+    )
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+    @model_validator(mode="after")
+    def validate_period(self) -> MarketplaceApiSnapshot:
         if self.period_end < self.period_start:
             raise ValueError("period_end must be greater than or equal to period_start")
         return self
@@ -226,6 +463,7 @@ class UnitEconomicsRow(ProjectModel):
     profit_per_unit: Decimal | None
     profit_after_taxes_per_unit: Decimal | None = None
     tax_method: str = ""
+    tax_profile_source: str = ""
     advertising_scope: AdvertisingScope = AdvertisingScope.EXCLUDED_FROM_MVP
     data_quality_status: DataQualityStatus
     methodology_version: str
@@ -264,6 +502,7 @@ class ReportReconciliationRow(ProjectModel):
     margin: Decimal | None
     margin_after_taxes: Decimal | None = None
     tax_method: str = ""
+    tax_profile_source: str = ""
     data_quality_status: DataQualityStatus
     source_row_count: int
 
@@ -305,6 +544,7 @@ class OnecReportReconciliationRow(ProjectModel):
     margin: Decimal | None
     margin_after_taxes: Decimal | None = None
     tax_method: str = ""
+    tax_profile_source: str = ""
     data_quality_status: DataQualityStatus
     source_row_count: int
 
@@ -353,6 +593,7 @@ class OnecReportProductRow(ProjectModel):
     profit_per_unit: Decimal | None
     profit_after_taxes_per_unit: Decimal | None = None
     tax_method: str = ""
+    tax_profile_source: str = ""
     data_quality_status: DataQualityStatus
     source_row_count: int
     source_snapshot_hashes: tuple[str, ...]

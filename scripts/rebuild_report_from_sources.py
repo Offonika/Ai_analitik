@@ -39,6 +39,7 @@ from wb_unit_economics.postgres_finance import (
     load_wb_finance_snapshots_from_postgres,
 )
 from wb_unit_economics.report_marts import build_report_marts
+from wb_unit_economics.streaming_report import build_streamed_unit_economics_report
 from wb_unit_economics.wb_expenses import load_wb_expense_allocation_bases
 from wb_unit_economics.wb_finance import (
     load_wb_finance_snapshots,
@@ -156,13 +157,15 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
             client_id=args.client_id,
             snapshot_id=args.postgres_snapshot_id,
         )
-    else:
+    elif args.wb_finance_source == "files":
         wb_snapshots = load_wb_finance_snapshots(
             wb_finance_dir,
             client_id=args.client_id,
             account_org_mapping=account_mapping,
         )
-    if not wb_snapshots:
+    else:
+        wb_snapshots = []
+    if args.wb_finance_source != "files-stream" and not wb_snapshots:
         raise SystemExit("No WB Finance rows found.")
 
     if args.mapping_source == "postgres":
@@ -223,18 +226,38 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
         paid_storage_dir=args.wb_paid_storage_dir,
         promotion_stats_dir=args.wb_promotion_stats_dir,
     )
-    report = build_unit_economics_report(
-        client_id=args.client_id,
-        wb_snapshots=wb_snapshots,
-        cost_snapshots=cost_snapshots,
-        sku_mappings=sku_mappings,
-        account_org_mapping=account_mapping,
-        wb_sales_report_summary_rows=wb_summary_rows,
-        expense_allocation_bases=expense_allocation_bases,
-        generated_at=datetime.now(tz=excel_mvp.MOSCOW_TZ),
-        report_period_start=report_period_start,
-        report_period_end=report_period_end,
-    )
+    generated_at = datetime.now(tz=excel_mvp.MOSCOW_TZ)
+    if args.wb_finance_source == "files-stream":
+        streamed = build_streamed_unit_economics_report(
+            client_id=args.client_id,
+            wb_finance_dir=wb_finance_dir,
+            cost_snapshots=cost_snapshots,
+            sku_mappings=sku_mappings,
+            account_org_mapping=account_mapping,
+            wb_sales_report_summary_rows=wb_summary_rows,
+            expense_allocation_bases=expense_allocation_bases,
+            generated_at=generated_at,
+            report_period_start=report_period_start,
+            report_period_end=report_period_end,
+            stream_cache_dir=args.stream_cache_dir,
+            keep_stream_cache=args.keep_stream_cache,
+        )
+        report = streamed.report
+        wb_row_count = streamed.wb_rows
+    else:
+        report = build_unit_economics_report(
+            client_id=args.client_id,
+            wb_snapshots=wb_snapshots,
+            cost_snapshots=cost_snapshots,
+            sku_mappings=sku_mappings,
+            account_org_mapping=account_mapping,
+            wb_sales_report_summary_rows=wb_summary_rows,
+            expense_allocation_bases=expense_allocation_bases,
+            generated_at=generated_at,
+            report_period_start=report_period_start,
+            report_period_end=report_period_end,
+        )
+        wb_row_count = len(wb_snapshots)
     marts = build_report_marts(
         report,
         cost_snapshots=cost_snapshots,
@@ -245,10 +268,12 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
         organization_labels=organization_labels,
         client_name=args.tenant_name,
     )
+    if not report.rows:
+        raise SystemExit("No WB Finance rows found in report period.")
     return {
         "payload": marts.to_dashboard_payload(),
         "report": report,
-        "wb_rows": len(wb_snapshots),
+        "wb_rows": wb_row_count,
         "cost_candidates": len(cost_snapshots),
         "sku_mappings": len(sku_mappings),
     }
@@ -297,7 +322,20 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--wb-finance-source", choices=["files", "postgres"], default="files"
+        "--wb-finance-source",
+        choices=["files", "files-stream", "postgres"],
+        default="files",
+    )
+    parser.add_argument(
+        "--stream-cache-dir",
+        type=Path,
+        default=Path("data/.cache/wb_stream_rebuild"),
+        help="Ignored local directory for temporary files-stream bucket files.",
+    )
+    parser.add_argument(
+        "--keep-stream-cache",
+        action="store_true",
+        help="Keep temporary files-stream bucket files for diagnostics.",
     )
     parser.add_argument(
         "--mapping-source", choices=["files", "postgres"], default="files"

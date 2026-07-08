@@ -60,6 +60,32 @@ def test_source_refresh_storage_audit_reports_low_disk_without_delete(
     assert (root / "full-20260624-001500").exists()
 
 
+def test_source_refresh_storage_audit_marks_explicit_protection(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source_refresh"
+    root.mkdir()
+    _snapshot_dir(root / "full-20260620-001500", mtime=1, payload="old")
+
+    result = _run_storage(
+        root,
+        "--full-keep",
+        "0",
+        "--daily-keep",
+        "0",
+        "--protect-snapshot-set",
+        "full-20260620-001500",
+        "--min-free-gb",
+        "0",
+        "--scan-root",
+        str(tmp_path),
+    )
+
+    assert result.returncode == 0
+    assert "full-20260620-001500" in result.stdout
+    assert "protected: explicit protection" in result.stdout
+
+
 def _snapshot_dir(path: Path, *, mtime: int, payload: str) -> None:
     path.mkdir()
     (path / "payload.json").write_text(payload, encoding="utf-8")

@@ -20,6 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshRun
 from wb_unit_economics.web.settings import WebSettings
+from wb_unit_economics.web.source_refresh import SOURCE_REFRESH_MODES
 
 OK_STATUSES = {"source_loaded", "report_created", "needs_review", "dry_run_ready"}
 FAILED_STATUSES = {
@@ -169,7 +170,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         default="daily",
-        choices=["daily", "weekly", "full", "onec-only"],
+        choices=sorted(SOURCE_REFRESH_MODES),
         help="Refresh mode to inspect.",
     )
     parser.add_argument(

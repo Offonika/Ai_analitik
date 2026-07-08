@@ -26,7 +26,6 @@ from wb_unit_economics.web.source_refresh import (
 
 FAILED_EXIT_STATUSES = {
     "failed",
-    "needs_configuration",
 }
 
 
@@ -34,7 +33,7 @@ def main() -> int:
     args = _parse_args()
     settings = _settings_from_args(args)
     engine = make_engine(settings.database_url)
-    init_db(engine)
+    init_db(engine, run_backfill=False)
     session_factory = make_session_factory(engine)
     service = SourceRefreshService(settings)
     with session_factory() as db:

@@ -12,7 +12,7 @@ contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-client-web-cabinet.md]
 supersedes: []
 rollout_required: true
-updated_at: "2026-06-30"
+updated_at: "2026-07-01"
 ---
 
 # Goal
@@ -53,9 +53,10 @@ PostgreSQL, управляемый Excel export и AI-аналитик отче�
   consultant/admin видел, можно ли отправлять отчет клиенту, что требует
   проверки и что блокирует отправку;
 - lightweight authenticated UI shell без отдельного frontend-сборщика:
-  `/` и `/cabinet` отдают login/report shell, `/static/*` отдает локальные
-  CSS/JS assets, а все данные отчета загружаются только через защищенные
-  `/api/*`;
+  `/` и `/cabinet` отдают login/report shell, `/ai` и `/integrations`
+  остаются совместимыми deep-link shell для открытия соответствующего виджета
+  поверх отчета, `/static/*` отдает локальные CSS/JS assets, а все данные
+  отчета загружаются только через защищенные `/api/*`;
 - формирование фирменного клиентского аналитического отчета из Excel MVP в
   Markdown, DOCX и PDF, если на сервере доступен PDF-конвертер;
 - AI-аналитик отчетов через OpenAI Responses API и серверные read-only tools;
@@ -214,6 +215,7 @@ Auth:
 Client workspace:
 
 - `GET /api/clients`;
+- `POST /api/clients`;
 - `GET /api/clients/{client_id}/reports`;
 - `GET /api/clients/{client_id}/integrations`.
 
@@ -229,10 +231,22 @@ Reports:
 - `GET /api/reports`;
 - `GET /api/reports/{id}/summary`;
 - `GET /api/reports/{id}/freshness`;
-- `GET /api/reports/{id}/rows`;
+- `GET /api/reports/{id}/rows`, with response page `limit` capped at 1000 and
+  filtered `kpis` calculated across the full matching row set, not just the
+  returned page;
+- `GET /api/reports/{id}/document-reconciliation`, with response page `limit`
+  capped at 1000 and filtered `kpis` calculated across the full matching
+  document-level WB ↔ 1С reconciliation row set;
 - `GET /api/reports/{id}/sku/{sku}`;
 - `GET /api/reports/{id}/export.xlsx`;
 - `GET /api/reports/{id}/management-report`;
+- `POST /api/reports/{id}/mapping-file` для staff-only загрузки текущей
+  TXT/TSV/CSV выгрузки сопоставления WB ↔ 1C в локальный `sku_mapping`
+  source directory без записи в 1С/WB и без возврата содержимого файла; после
+  успешного сохранения endpoint автоматически запускает staff-only source
+  refresh/rebuild для исходного report run и возвращает safe `autoRefresh`
+  payload, чтобы UI мог открыть новый `report_run` без ручного действия
+  пользователя;
 - `POST /api/reports/{id}/analytical-report`;
 - `GET /api/reports/{id}/analytical-report.md`;
 - `GET /api/reports/{id}/analytical-report.docx`;
@@ -289,6 +303,13 @@ includes `clientId`, `tenantId`, `firmId`, display name, role, current report id
 readiness status and safe counts of active WB/1С connections. It must not return
 secrets, raw source paths or clients outside the user's access scope.
 
+`POST /api/clients` is available only to `consultant/admin` users. It creates a
+new client workspace with a separate `tenant_id`/`client_id`, optional initial
+1C organizations and WB cabinets, assigns the creator to that tenant with a
+staff role, writes an audit event and returns the same safe client payload used
+by `GET /api/clients`. Role `client` must receive 403 and no public
+registration is introduced.
+
 `GET /api/clients/{client_id}/reports` returns report runs only for that client.
 The endpoint must reject a mismatched `client_id`/`tenant_id`/`report_id`
 combination even if the user has access to another client.
@@ -328,30 +349,121 @@ UI readiness behavior:
 - unauthenticated visitor sees only the login shell and no report data;
 - after login, UI shows a client switcher when the user has more than one
   available client;
+- `consultant/admin` can create a new client workspace from the topbar; after
+  creation the UI switches to that client and prompts staff to add integrations
+  before report data exists;
 - selecting a client reloads only that client's reports, integrations, readiness
   and AI context;
 - if a user has exactly one client, UI may load the latest available report for
   that client automatically;
+- topbar includes quick filters for `Кабинет WB`, `Дата начала` and
+  `Дата конца`, synchronized with the detailed row filters for cabinet,
+  `period_start` and `period_end`;
+- topbar does not expose an `Отчет` selector; selecting a client loads the
+  current available report slice automatically;
+- report meta, source freshness and client hierarchy are not repeated as a
+  separate middle-screen block; the topbar and readiness strip are the canonical
+  context, and mapping upload appears only in the main next-action area;
+- topbar action `Клиентский вывод` opens the staff/client output state as a
+  modal widget over the current report instead of scrolling to a lower report
+  section;
+- topbar action `Интеграции` opens read-only WB/1C tenant connections as a
+  modal widget over the current report instead of scrolling to a lower report
+  section or navigating away; the compatible `/integrations` deep link opens
+  the same widget after the current client context loads;
+- topbar action `AI` opens the AI analyst as a modal widget over the current
+  report instead of scrolling to a lower report section or navigating away; the
+  compatible `/ai` deep link opens the same widget after the current client
+  report loads;
 - readiness panel shows label, score, next action, blocking reasons and review
   reasons;
-- data-quality panel summarizes rows `ОК`, missing 1C cost, mapping issues,
-  incomplete sources and partial period;
-- products section shows filters for search, status, period start/end, month,
-  cabinet, organization, scheme and loss class, then loads rows through
-  `/api/reports/{id}/rows`;
+- when the next action is `Обновить mapping WB ↔ 1C`, the readiness panel shows
+  a direct staff-only TXT/TSV/CSV file upload control instead of sending the
+  consultant to source details first; the same control includes visible
+  instructions for exporting `Сопоставление товаров` from 1С through
+  `Маркетплейс` -> `Сопоставление товаров` -> `Еще` -> `Вывести список...` and
+  saving a text TXT/TSV/CSV file rather than the default MXL tabular document;
+  after a file is accepted, the UI starts from the returned `autoRefresh`
+  result: if a new report run exists, it opens that recalculated vitrine
+  automatically; if refresh is disabled, busy or failed, it shows a safe status
+  instead of asking the user to run refresh manually;
+- if readiness includes `partial_period`, the next-action copy explicitly tells
+  the consultant to either state the preliminary period to the client or wait
+  for the complete period, even when the primary action is mapping refresh;
+- ambiguous controls use the shared `data-tooltip` UI hint pattern, visible on
+  hover and keyboard focus, without exposing raw data or secrets;
+- preflight panel spans the report width and shows compact quality diagnostics
+  as a horizontal row above the task kanban; the kanban columns for consultant
+  work are `Исправить сейчас`, `В работе у аналитика` and
+  `Готово к отправке`; diagnostics keep an `OK` progress summary and compact
+  metrics for rows `ОК`, missing 1C cost, mapping issues, incomplete sources
+  and partial period; every open task card includes a short explanation and a
+  direct action to the relevant row filter, period controls, integrations
+  widget, client-output widget or WB ↔ 1С reconciliation tab; document
+  reconciliation issues add a dedicated `onec_reconciliation_review` task;
+  consultant/admin may also mark a task card as `Проверено` in the browser UI,
+  which moves it to `Готово к отправке` as a local workflow acknowledgement for
+  the current report but does not mutate source data, calculation facts,
+  readiness score or report status;
+- preflight deciphering opens a modal `Расшифровки проблем` widget with tabs
+  for review rows, source refresh diagnostics, missing 1C cost, mapping issues
+  and losses, so consultants can switch contexts without scrolling through
+  stacked tables; source-load reasons open the source diagnostics tab instead
+  of the generic integrations widget and show safe statuses such as
+  `blocked_low_disk`, period, refresh mode and source collection counts;
+- lower detail tables are grouped into one `Детализации` workspace where
+  `Юнит-экономика` is the first/default tab, followed by liquidity, lost sales
+  and document-level `Сверка WB ↔ 1С`;
+  switching tabs does not reload report data; the reconciliation tab loads
+  rows from `/api/reports/{id}/document-reconciliation`, shows metrics for
+  documents, OK rows, rows needing review, quantity delta, amount delta and
+  missing 1С fact, and supports filters for search, status, period start/end,
+  cabinet, organization, document type and `Только расхождения`; the
+  `Юнит-экономика` tab keeps filters for search, status, period start/end,
+  month, cabinet, organization, scheme and loss class before loading rows
+  through `/api/reports/{id}/rows`, and shows revenue, profit, margin and unit
+  profit for every report row;
+- unit-economics filters auto-apply on change/input; the UI does not require a
+  separate `Применить` action, while `Сбросить` clears the slice explicitly;
+- `Показатели` is recalculated from the filtered `rows` response, so
+  cabinet/date/detail filters change the displayed money KPIs together with the
+  table; the strip also shows management-estimated `Упущенные продажи` from
+  `report_lost_sales_rows` as lost revenue for the current report run/cabinet,
+  and lays out the cards as two rows with revenue, profit, margin, lost sales,
+  sales, net sales, returns, return rate, revenue per sale and loss-row count;
+- `Аналитика` appears after `Показатели` and before the readiness command
+  board; v1 renders embedded dependency-free visualizations from
+  `summary.monthly`, `summary.expenses`, `summary.lostSales`,
+  `summary.liquidityRows` and `summary.kpis`: grouped column charts for money
+  dynamics, a P&L-style unit economics table, horizontal bars for top losses
+  and return columns with return-rate context;
+- `Аналитика` also works as a review navigator: a compact
+  `Что разобрать первым` row prioritizes missing 1C cost, mapping, WB ↔ 1C
+  reconciliation, loss rows, lost sales and returns, and every card/chart click
+  opens the relevant drilldown, detail tab or unit-economics preset without
+  mutating source data;
+- the unit-economics tab exposes quick row presets `Все`, `Убыточные`,
+  `Без себестоимости`, `Mapping`, `Возвраты` and `К проверке`; `preset=returns`
+  filters rows with returns or positive return rate;
+- analytics charts are read-only and show the current report run as a whole;
+  dashboard-wide filterable analytics can be added later through a dedicated
+  read-only analytics endpoint or filtered rows aggregation;
+- period filters use row `week` when available and fall back to the row month or
+  ISO WB report date for imported rows without a week date, so partial date
+  metadata does not silently zero the money KPIs;
 - the cabinet filter defaults to all active WB cabinets of the selected client;
   choosing a cabinet changes all KPI/detail blocks to that slice without
   changing tenant security scope;
 - the organization filter defaults to all active client companies/1C
   organizations of the selected client;
-- products table must stay inside its panel and scroll horizontally on narrow
-  screens instead of clipping the right-side columns;
-- AI-аналитик отображается как отдельная панель отчета: быстрые вопросы,
-  история сообщений, линия событий read-only tools и источник ответа
+- unit-economics table must stay inside its panel and scroll horizontally on
+  narrow screens instead of clipping the right-side columns;
+- AI-аналитик отображается как всплывающий виджет поверх отчета: быстрые
+  вопросы, история сообщений, линия событий read-only tools и источник ответа
   `openai`/`fallback`;
 - `consultant/admin` видит staff-only раздел `Интеграции` для tenant-level
   WB API и 1С read-only подключений; ключи не относятся к профилю пользователя;
-- `consultant/admin` may see client-draft status in a separate staff-only panel;
+- `consultant/admin` may see client-draft status in a modal staff-only widget;
 - `client` role does not see client-draft status or draft-related readiness
   reasons.
 
@@ -495,9 +607,10 @@ blocks publication, optional source failure allows publication only with
 
 ## Staff-Only Client Draft Workflow
 
-В AI drawer для ролей `consultant` и `admin` есть отдельный режим
-`Клиентский черновик`. Роль `client` не видит вкладку, API, версии, замечания
-аналитика, историю доработок и внутренний evidence этого процесса.
+В виджетах AI/клиентского вывода для ролей `consultant` и `admin` есть
+отдельный режим `Клиентский черновик`. Роль `client` не видит вкладку, API,
+версии, замечания аналитика, историю доработок и внутренний evidence этого
+процесса.
 
 Workflow:
 
@@ -612,6 +725,12 @@ API:
 provider/status, safe message, check mode, endpoint category и HTTP status без
 тела ответа и без секрета.
 
+Staff UI может создавать новую карточку подключения выбором `providerBase`
+(`wb_api`, `onec_readonly`, `ozon_api`) и безопасного имени. Для WB это также
+сохраняет карточку `wb_cabinets`; для 1С/Ozon UI открывает draft-карточку
+настройки, которая не попадает в `tenant_integrations` до сохранения read-only
+секрета через существующий `POST /api/integrations`.
+
 Совместимость: текущий штатный source refresh читает основные слоты `wb_api` и
 `onec_readonly`. Расширенный source refresh должен читать все enabled WB
 подключения с ролью `finance_reports` или `full_readonly` для выбранного
@@ -719,7 +838,7 @@ Monitoring:
 - Admin can create, reset and disable users without public registration.
 - Consultant/admin can review audit events.
 - AI chat returns answers based on report tools and logs tool calls.
-- AI drawer shows messages, quick questions, safe step timeline, source status
+- AI widget shows messages, quick questions, safe step timeline, source status
   `OpenAI`/`fallback` and evidence cards for used tools.
 - Consultant/admin can save, check and disable tenant integrations without full
   secrets being returned by API or audit.
@@ -732,8 +851,8 @@ Monitoring:
 - Client role cannot read or infer staff client drafts through UI or API.
 - Summary/freshness include `readiness`; consultant/admin sees client-draft
   readiness checks, client role does not infer staff draft state.
-- `/` and `/cabinet` serve a lightweight UI shell that does not embed report
-  data before authenticated API calls.
+- `/`, `/cabinet`, `/ai` and `/integrations` serve a lightweight UI shell that
+  does not embed report data before authenticated API calls.
 - UI displays `ready`, `needs_review`, `partial_period`, `partial_source`,
   `source_coverage_gap` and `failed` states with stable mobile layout and safe
   text rendering.
@@ -792,13 +911,16 @@ Monitoring:
   1С data, is not called for generic questions such as `что главное`, and cannot
   be triggered by client role.
 - Import tests from an Excel-derived dashboard payload.
-- Frontend smoke: login/authenticated API load, filters, AI panel and mobile
+- Frontend smoke: login/authenticated API load, filters, AI widget and mobile
   overflow.
 - Deployment smoke: HTTPS 200, `/api/health`, secure headers, no public data
   artifacts.
 
 # Changelog
 
+- 2026-07-02: v2.12 clarified the mapping upload UX with visible 1С export
+  instructions and an explicit preliminary-period client notice in next action
+  copy.
 - 2026-06-30: v2.11 added multi-client consulting-firm hierarchy: client
   switcher, `clients`, `client_companies`, `wb_cabinets`, stable row ids and
   explicit rule that WB cabinets are filters inside a client tenant, not

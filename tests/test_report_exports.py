@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from openpyxl import load_workbook
+
+from wb_unit_economics.report_exports import (
+    write_excel_from_marts,
+    write_ozon_diagnostics_excel,
+)
+
+
+def test_db_first_excel_export_uses_client_facing_russian_headers(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "report.xlsx"
+    write_excel_from_marts(
+        {
+            "meta": {
+                "client": "Тестовый клиент",
+                "period": "01.03.2026 - 31.03.2026",
+                "methodologyVersion": "test",
+                "source": "DB report marts",
+                "lineageType": "db_first_report_marts",
+            },
+            "readiness": {"status": "source_coverage_gap"},
+            "unitRows": [
+                {
+                    "product": "Товар",
+                    "week": "2026-03-02",
+                    "month": "Март 2026",
+                    "organization": "Организация A",
+                    "cabinet": "Кабинет A",
+                    "articleWb": "WB-1",
+                    "article1c": "A-1",
+                    "barcode": "BAR-1",
+                    "sales": 1,
+                    "returns": 0,
+                    "revenue": 1000.0,
+                    "profit": 120.0,
+                    "status": "ОК",
+                }
+            ],
+            "liquidityRows": [
+                {
+                    "product": "Товар",
+                    "month": "Март 2026",
+                    "organization": "Организация A",
+                    "cabinet": "Кабинет A",
+                    "articleWb": "WB-1",
+                    "article1c": "A-1",
+                    "barcode": "BAR-1",
+                    "sales": 1,
+                    "returns": 0,
+                    "revenue": 1000.0,
+                    "profit": 120.0,
+                    "liquidityStatus": "Прибыльный до 500 руб. в месяц",
+                    "status": "ОК",
+                }
+            ],
+            "monthly": [{"month": "Март 2026", "status": "ok", "profit": 120.0}],
+            "expenses": [{"expense": "Комиссия WB", "amount": 100.0, "share": 0.1}],
+            "returns": [],
+            "lostSales": [{"product": "Товар", "sourceStatus": "ok"}],
+            "documentReconciliation": [
+                {"documentReport": "Отчет комиссионера", "status": "OK"}
+            ],
+            "reconciliationMonthly": [{"month": "Март 2026", "wb_cogs": 300.0}],
+        },
+        output,
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        assert "Ликвидность МД" in workbook.sheetnames
+        readme_rows = {
+            row[0].value: row[1].value
+            for row in workbook["README"].iter_rows(max_col=2)
+            if row[0].value
+        }
+        unit_headers = [cell.value for cell in workbook["Юнит экономика"][1]]
+        liquidity_sheet = workbook["Ликвидность МД"]
+        liquidity_headers = [cell.value for cell in liquidity_sheet[1]]
+        liquidity_values = [cell.value for cell in liquidity_sheet[2]]
+        returns_headers = [cell.value for cell in workbook["Возвраты"][1]]
+        lost_sales_headers = [cell.value for cell in workbook["Упущенные продажи"][1]]
+        lost_sales_values = [cell.value for cell in workbook["Упущенные продажи"][2]]
+        document_values = [cell.value for cell in workbook["Сверка документов 1С"][2]]
+    finally:
+        workbook.close()
+
+    assert readme_rows["Источник"] == "Расчетные витрины отчета"
+    assert (
+        readme_rows["Статус готовности"] == "Недостаточное покрытие источников"
+    )
+    assert readme_rows["Происхождение данных"] == "DB-first витрины отчета"
+    assert "Товар" in unit_headers
+    assert "product" not in unit_headers
+    assert "Статус ликвидности" in liquidity_headers
+    assert "Драйвер ликвидности" in liquidity_headers
+    assert "МД после налогов" in liquidity_headers
+    assert "liquidityStatus" not in liquidity_headers
+    assert "product" not in liquidity_headers
+    assert liquidity_values[liquidity_headers.index("Товар")] == "Товар"
+    assert (
+        liquidity_values[liquidity_headers.index("Статус ликвидности")]
+        == "Прибыльный до 500 руб. в месяц"
+    )
+    assert returns_headers[:3] == ["Неделя", "Месяц", "Организация 1С"]
+    assert "sourceStatus" not in lost_sales_headers
+    assert (
+        lost_sales_values[lost_sales_headers.index("Статус источника")] == "ОК"
+    )
+    assert document_values[0] == "ОК"
+
+
+def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "ozon.xlsx"
+    write_ozon_diagnostics_excel(
+        {
+            "status": "ready",
+            "message": "Ozon diagnostics ready",
+            "latestRun": {
+                "snapshotSetId": "snapshot-1",
+                "periodStart": "2026-04-01",
+                "periodEnd": "2026-04-30",
+            },
+            "expenseReconciliation": {
+                "status": "review",
+                "articleRows": [
+                    {
+                        "kind": "onec_unmatched",
+                        "label": "1C без пары в Ozon: приходная 175",
+                        "ozonAmount": 0.0,
+                        "onecAmount": 550.0,
+                        "deltaAmount": 550.0,
+                        "includedInExpense": True,
+                        "note": "Проверить соседний месяц mutual settlement.",
+                    }
+                ],
+            },
+            "ozonMart": {
+                "totals": {"onecRevenue": 1000.0},
+                "articleRows": [
+                    {
+                        "articleId": "revenue",
+                        "label": "Выручка 1C Ozon SKU",
+                        "group": "revenue",
+                        "amount": 1000.0,
+                        "effectAmount": 1000.0,
+                    },
+                    {
+                        "articleId": "services",
+                        "label": "Услуги Ozon",
+                        "group": "services",
+                        "amount": 100.0,
+                        "effectAmount": -100.0,
+                    },
+                ],
+                "rows": [
+                    {
+                        "offerId": "OZ-1",
+                        "sku": "123",
+                        "productName": "Товар",
+                        "onecRevenue": 1000.0,
+                        "ozonServices": 100.0,
+                        "ozonPartnerServices": 0.0,
+                        "profit": 900.0,
+                        "qualityStatus": "ready",
+                    }
+                ],
+                "articleDrilldown": [
+                    {
+                        "kind": "sku_allocation",
+                        "articleId": "services",
+                        "label": "Услуги Ozon",
+                        "offerId": "OZ-1",
+                        "sku": "123",
+                        "productName": "Товар",
+                        "amount": 100.0,
+                        "effectAmount": -100.0,
+                        "includedInSkuProfit": True,
+                        "basis": "ozon_mutual_settlement_expense_documents",
+                        "status": "ready",
+                    }
+                ],
+            },
+        },
+        output,
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        assert workbook.sheetnames == [
+            "Сводная Ozon",
+            "Юнит экономика Ozon",
+            "Начисления услуг Ozon",
+            "Статьи по SKU",
+            "Сверка Ozon 1C",
+            "Методика",
+        ]
+        sku_values = [
+            cell.value for row in workbook["Статьи по SKU"].iter_rows() for cell in row
+        ]
+        reconciliation_values = [
+            cell.value
+            for row in workbook["Сверка Ozon 1C"].iter_rows()
+            for cell in row
+        ]
+        unit_headers = [cell.value for cell in workbook["Юнит экономика Ozon"][1]]
+    finally:
+        workbook.close()
+
+    assert "Услуги партнеров / перевыставление" in unit_headers
+    assert "550" not in {str(value) for value in sku_values}
+    assert "1C без пары в Ozon: приходная 175" in reconciliation_values

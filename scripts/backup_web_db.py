@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import gzip
 import os
+import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlparse
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,9 +37,7 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     target = args.output_dir / f"shumeiko-web-{stamp}.sql.gz"
-    process = run_pg_dump(pg_dump_url(args.database_url))
-    with gzip.open(target, "wb") as handle:
-        handle.write(process.stdout)
+    write_pg_dump_backup(pg_dump_url(args.database_url), target)
     target.chmod(0o600)
     removed = prune_old_backups(args.output_dir, args.retention_days)
     print(f"backup={target} removed_old={removed}")
@@ -47,16 +48,57 @@ def pg_dump_url(database_url: str) -> str:
     return database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def run_pg_dump(database_url: str) -> subprocess.CompletedProcess[bytes]:
+def write_pg_dump_backup(database_url: str, target: Path) -> None:
+    tmp_target = target.with_name(f"{target.name}.tmp")
+    tmp_target.unlink(missing_ok=True)
+    command, env = pg_dump_command(database_url)
     try:
-        return subprocess.run(
+        with tempfile.TemporaryFile() as stderr_file:
+            process = subprocess.Popen(
+                command,
+                env=env,
+                stderr=stderr_file,
+                stdout=subprocess.PIPE,
+            )
+            if process.stdout is None:
+                raise SystemExit("pg_dump stdout pipe was not created")
+            with process.stdout, gzip.open(tmp_target, "wb") as handle:
+                shutil.copyfileobj(process.stdout, handle, length=1024 * 1024)
+            return_code = process.wait()
+            if return_code != 0:
+                stderr_file.seek(0)
+                detail = stderr_file.read().decode("utf-8", errors="replace").strip()
+                raise SystemExit(f"pg_dump failed: {detail or 'unknown error'}")
+        tmp_target.replace(target)
+    except BaseException:
+        tmp_target.unlink(missing_ok=True)
+        raise
+
+
+def pg_dump_command(database_url: str) -> tuple[list[str], dict[str, str]]:
+    parsed = urlparse(database_url)
+    if parsed.scheme not in {"postgresql", "postgres"}:
+        return (
             ["pg_dump", "--no-owner", "--no-privileges", database_url],
-            check=True,
-            capture_output=True,
+            os.environ.copy(),
         )
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.decode("utf-8", errors="replace").strip()
-        raise SystemExit(f"pg_dump failed: {detail or 'unknown error'}") from exc
+
+    env = os.environ.copy()
+    if parsed.hostname:
+        env["PGHOST"] = parsed.hostname
+    if parsed.port:
+        env["PGPORT"] = str(parsed.port)
+    if parsed.username:
+        env["PGUSER"] = unquote(parsed.username)
+    if parsed.password:
+        env["PGPASSWORD"] = unquote(parsed.password)
+    database = unquote(parsed.path.lstrip("/"))
+    if database:
+        env["PGDATABASE"] = database
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() == "sslmode" and value:
+            env["PGSSLMODE"] = value
+    return ["pg_dump", "--no-owner", "--no-privileges"], env
 
 
 def prune_old_backups(output_dir: Path, retention_days: int) -> int:

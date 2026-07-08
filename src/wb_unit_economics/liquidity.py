@@ -247,7 +247,7 @@ def _liquidity_status(
     for value, status, driver in checks:
         if value < 0:
             return status, driver
-    return "Убыточный: налоги", "НДС 5% и УСН 1% выводят МД ниже нуля"
+    return "Убыточный: налоги", "НДС и налог с выручки выводят МД ниже нуля"
 
 
 def _worst_status(statuses: Counter[str]) -> str:

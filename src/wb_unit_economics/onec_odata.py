@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,6 +38,7 @@ TIMEOUT_KEYS = (
     "ONEC_ODATA_TIMEOUT_SECONDS",
     "ONEC_ODATA_TIMEOUT",
 )
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -205,6 +207,14 @@ GROSS_PROFIT_SAMPLE_COLLECTIONS = (
 
 SERVICE_SAMPLE_COLLECTIONS = (
     OnecSampleCollection(
+        sample_id="incoming_invoices",
+        collection_name="Document_ПриходнаяНакладная",
+        purpose=(
+            "Приходные накладные Ozon: поступления от поставщика и возвраты "
+            "от комиссионера для контроля расходов Ozon."
+        ),
+    ),
+    OnecSampleCollection(
         sample_id="supplier_receipts",
         collection_name="Document_ПоступлениеТоваровУслуг",
         purpose="Поступления/УПД услуг WB для сверки расходов маркетплейса.",
@@ -280,8 +290,12 @@ def export_collection_sample(
     *,
     top: int,
     max_pages: int = 1,
+    retry_attempts: int = 2,
+    retry_delay_seconds: float = 2.0,
 ) -> OnecSampleExportResult:
     max_pages = max(1, max_pages)
+    retry_attempts = max(0, retry_attempts)
+    retry_delay_seconds = max(0.0, retry_delay_seconds)
     all_rows: list[Any] = []
     page_meta: list[dict[str, Any]] = []
     last_payload: dict[str, Any] | None = None
@@ -289,11 +303,14 @@ def export_collection_sample(
     try:
         for page_index in range(max_pages):
             skip = page_index * top
-            payload, status_code = client.fetch_collection(
+            payload, status_code = _fetch_collection_with_retries(
+                client,
                 collection.collection_name,
                 top=top,
                 skip=skip,
                 params=collection.params,
+                retry_attempts=retry_attempts,
+                retry_delay_seconds=retry_delay_seconds,
             )
             rows = extract_odata_rows(payload)
             all_rows.extend(rows)
@@ -352,6 +369,8 @@ def export_onec_samples(
     *,
     top: int = 25,
     max_pages: int = 1,
+    retry_attempts: int = 2,
+    retry_delay_seconds: float = 2.0,
 ) -> list[OnecSampleExportResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
     with OnecODataClient(settings) as client:
@@ -362,11 +381,59 @@ def export_onec_samples(
                 output_dir,
                 top=top,
                 max_pages=max_pages,
+                retry_attempts=retry_attempts,
+                retry_delay_seconds=retry_delay_seconds,
             )
             for collection in collections
         ]
     _write_manifest(output_dir / "manifest.json", results, top=top, max_pages=max_pages)
     return results
+
+
+def _fetch_collection_with_retries(
+    client: OnecODataClient,
+    collection_name: str,
+    *,
+    top: int,
+    skip: int,
+    params: Mapping[str, str],
+    retry_attempts: int,
+    retry_delay_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    for attempt in range(retry_attempts + 1):
+        try:
+            return client.fetch_collection(
+                collection_name,
+                top=top,
+                skip=skip,
+                params=params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if not _should_retry_status(
+                exc.response.status_code,
+                attempt,
+                retry_attempts,
+            ):
+                raise
+            _sleep_before_retry(retry_delay_seconds)
+        except httpx.HTTPError:
+            if attempt >= retry_attempts:
+                raise
+            _sleep_before_retry(retry_delay_seconds)
+    raise RuntimeError("unreachable retry state")
+
+
+def _should_retry_status(
+    status_code: int,
+    attempt: int,
+    retry_attempts: int,
+) -> bool:
+    return status_code in RETRYABLE_STATUS_CODES and attempt < retry_attempts
+
+
+def _sleep_before_retry(delay_seconds: float) -> None:
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
 
 
 def extract_odata_rows(payload: Mapping[str, Any]) -> list[Any]:

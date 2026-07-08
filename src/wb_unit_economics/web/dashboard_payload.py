@@ -144,7 +144,8 @@ def loss_details(row: dict[str, Any]) -> tuple[str, str]:
         "WB Продвижение": demo._num(row.get("Продвижение WB")),
         "Штрафы/удержания WB": demo._num(row.get("Штрафы/доплаты WB")),
         "Эквайринг WB": demo._num(row.get("Эквайринг WB")),
-        "Налоги": demo._num(row.get("НДС 5%")) + demo._num(row.get("УСН 1%")),
+        "Налоги": demo._num(row.get("НДС") or row.get("НДС 5%"))
+        + demo._num(row.get("Налог с выручки") or row.get("УСН 1%")),
     }
     if return_rate >= 0.18:
         factors["Возвраты + логистика"] = demo._num(
@@ -193,7 +194,7 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "spp": demo._round(row.get("СПП")),
                 "sppRate": demo._round(row.get("% СПП"), 4),
                 "revenue": round(revenue, 2),
-                "vat": demo._round(row.get("НДС 5%")),
+                "vat": demo._round(row.get("НДС") or row.get("НДС 5%")),
                 "revenueWithoutVat": demo._round(row.get("Выручка без НДС")),
                 "cost": demo._round(row.get("Себестоимость 1С")),
                 "commission": demo._round(row.get("Комиссия WB")),
@@ -203,7 +204,7 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "promotion": demo._round(row.get("Продвижение WB")),
                 "penalties": demo._round(row.get("Штрафы/доплаты WB")),
                 "acquiring": demo._round(row.get("Эквайринг WB")),
-                "usn": demo._round(row.get("УСН 1%")),
+                "usn": demo._round(row.get("Налог с выручки") or row.get("УСН 1%")),
                 "profitBeforeTax": demo._round(
                     row.get("Маржинальный доход WB до налогов")
                 ),
@@ -211,6 +212,10 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "margin": demo._round(row.get("Маржа WB после налогов"), 4),
                 "unitProfit": demo._round(
                     row.get("Маржинальный доход WB после налогов на шт")
+                ),
+                "taxMethod": demo._text(row.get("Налоговый режим/ставка")),
+                "taxProfileSource": demo._text(
+                    row.get("Источник налогового профиля")
                 ),
                 "status": demo._text(row.get("Статус данных")) or "Не указан",
                 "statusReason": demo._text(row.get("Причина статуса")),

@@ -20,6 +20,11 @@ Shumeyko. Расписание запускает только read-only CLI
 - Daily refresh: каждый час в `*:15 MSK`, режим `daily`.
 - Weekly full refresh: понедельник в `08:15 MSK`, режим `full`.
 
+Режим `onec-only` использовать только для диагностики/перезагрузки 1С raw
+snapshots. Он не должен публиковать клиентский `report_run`: клиентская витрина
+создается только из `weekly`/`full` или ручного DB-first rebuild, где явно
+переданы и WB, и 1С snapshots.
+
 На текущем сервере systemd работает в timezone `Europe/Moscow`, поэтому
 `OnCalendar` в unit-файлах задан локальным московским временем. Если сервер
 переезжает в другой timezone, перед установкой timers нужно либо вернуть
@@ -140,9 +145,10 @@ Helper печатает только `source_refresh_run_id`, статус, пе
 `newReportRunId`, active run, свободное место source root и статусы collections.
 Raw paths, raw payload и секреты не выводятся.
 
-`scripts/run_source_refresh.py` возвращает код `0` для управляемых
-`blocked_low_disk` и `blocked_active_refresh`, чтобы systemd oneshot не
-переходил в failed при штатном guard. Для мониторинга blocked statuses
+`scripts/run_source_refresh.py` возвращает код `0` для управляемых статусов
+без внешних чтений (`blocked_low_disk`, `blocked_active_refresh`,
+`needs_configuration`) и для `needs_review`, чтобы systemd oneshot не переходил
+в failed при штатном guard. Для мониторинга blocked/config/review statuses
 использовать health helper выше.
 Для неожиданных падений `errorMessage` содержит тип исключения и короткое
 очищенное сообщение; длинные token/password/secret-подобные значения
@@ -157,11 +163,15 @@ refresh. Если сборка артефактов прошла, но позж�
 .venv/bin/python scripts/prune_source_refresh.py \
   --source-root data/source_refresh \
   --daily-keep 3 \
-  --full-keep 2
+  --full-keep 2 \
+  --protect-snapshot-set <published_snapshot_set_id>
 ```
 
 Удаление выполняется только при явном `--apply`. Скрипт не трогает `.env`,
 `reports`, `data/web`, PostgreSQL и пути вне `source_refresh_root`.
+Если скрипт не может прочитать PostgreSQL из-за peer-auth, перед `--apply`
+передать все `source_snapshot_set_id` опубликованных отчетов через
+`--protect-snapshot-set`.
 
 Для общей DB-first готовности публикации и интеграций:
 

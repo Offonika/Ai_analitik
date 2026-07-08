@@ -7,7 +7,9 @@ from wb_unit_economics.contracts import (
     OnecUnfCostSnapshot,
     SalesModel,
     SkuMapping,
+    TaxProfile,
     UnitEconomicsReport,
+    VatMode,
     WbApiSnapshot,
 )
 
@@ -17,7 +19,9 @@ __all__ = [
     "OnecUnfCostSnapshot",
     "SalesModel",
     "SkuMapping",
+    "TaxProfile",
     "UnitEconomicsReport",
+    "VatMode",
     "WbApiSnapshot",
     "build_unit_economics_report",
 ]

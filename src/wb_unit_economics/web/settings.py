@@ -42,6 +42,9 @@ class WebSettings(BaseSettings):
     source_refresh_wb_limit: int = 100000
     source_refresh_wb_max_pages: int = 50
     source_refresh_wb_request_delay_seconds: float = 61.0
+    source_refresh_ozon_page_size: int = 1000
+    source_refresh_ozon_max_pages: int = 50
+    source_refresh_ozon_request_delay_seconds: float = 1.0
     source_refresh_mapping_dir: str = "data/onec_marketplace_mapping"
     source_refresh_mapping_stale_days: int = 7
     source_refresh_min_free_gb: float = 8.0

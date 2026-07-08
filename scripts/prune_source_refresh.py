@@ -37,6 +37,7 @@ def main() -> int:
         database_url=args.database_url or os.getenv("SHUMEYKO_DATABASE_URL") or "",
         daily_keep=args.daily_keep,
         full_keep=args.full_keep,
+        extra_protected=set(args.protect_snapshot_set),
     )
     deletable = [item for item in candidates if item.name not in protected]
     print(f"Source refresh root: {source_root}")
@@ -82,8 +83,10 @@ def _protected_snapshot_names(
     database_url: str,
     daily_keep: int,
     full_keep: int,
+    extra_protected: set[str] | None = None,
 ) -> set[str]:
     protected: set[str] = set()
+    protected.update(value for value in (extra_protected or set()) if value)
     protected.update(
         path.name for path in _latest_by_prefix(candidates, "daily-", daily_keep)
     )
@@ -173,6 +176,12 @@ def _parse_args() -> argparse.Namespace:
         "--apply",
         action="store_true",
         help="Actually delete candidates. Default is dry-run.",
+    )
+    parser.add_argument(
+        "--protect-snapshot-set",
+        action="append",
+        default=[],
+        help="Snapshot set id to keep even if it is outside retention.",
     )
     return parser.parse_args()
 

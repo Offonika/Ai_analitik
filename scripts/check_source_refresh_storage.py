@@ -49,6 +49,7 @@ def main() -> int:
         database_url=args.database_url or os.getenv("SHUMEYKO_DATABASE_URL") or "",
         daily_keep=args.daily_keep,
         full_keep=args.full_keep,
+        extra_protected=set(args.protect_snapshot_set),
     )
     reclaimable_bytes = _print_source_refresh_snapshots(source_root, protected)
     reclaimable_gb = reclaimable_bytes / (1024**3)
@@ -134,9 +135,13 @@ def _protected_snapshot_reasons(
     database_url: str,
     daily_keep: int,
     full_keep: int,
+    extra_protected: set[str] | None = None,
 ) -> dict[str, set[str]]:
     snapshots = _snapshot_dirs(source_root)
     protected: dict[str, set[str]] = defaultdict(set)
+    for name in sorted(extra_protected or set()):
+        if name:
+            protected[name].add("explicit protection")
     for path in _latest_by_prefix(snapshots, "daily-", daily_keep):
         protected[path.name].add("daily retention")
     for path in _latest_by_prefix(snapshots, "full-", full_keep):
@@ -213,6 +218,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--full-keep", type=int, default=2)
     parser.add_argument("--min-free-gb", type=float, default=None)
     parser.add_argument("--top", type=int, default=12)
+    parser.add_argument("--protect-snapshot-set", action="append", default=[])
     return parser.parse_args()
 
 

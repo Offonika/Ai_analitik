@@ -7,10 +7,13 @@ status: accepted
 owner: "engineering"
 source_of_truth: true
 related_code:
+  - src/wb_unit_economics/web/app.py
   - src/wb_unit_economics/web/source_refresh.py
   - src/wb_unit_economics/web/providers.py
+  - src/wb_unit_economics/web/static/app.js
   - scripts/prune_source_refresh.py
 related_tests:
+  - tests/test_web_app.py
   - tests/test_source_refresh.py
   - tests/test_provider_registry.py
   - tests/test_source_refresh_prune.py
@@ -20,7 +23,7 @@ depends_on:
   - docs/specs/wb-unit-economics-db-first-report-marts.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-06-24"
+updated_at: "2026-07-04"
 ---
 
 # Goal
@@ -38,6 +41,8 @@ updated_at: "2026-06-24"
 - provider registry для read-only интеграций;
 - metadata в `GET /api/integrations`;
 - collector contract для текущих источников refresh.
+- staff-only UI/API в разделе интеграций для загрузки mapping, dry-run проверки
+  и ручного `full` refresh по выбранному клиентскому контуру.
 
 Не входит:
 
@@ -94,6 +99,12 @@ payload `tenant_integrations` сохраняются совместимыми.
 - `wb_sales_report_list`;
 - `onec_odata`.
 
+До отдельного accepted spec на API-сопоставление из 1С `sku_mapping` остается
+локальным файловым источником: консультант может загрузить актуальную
+TXT/TSV/CSV выгрузку сопоставления WB ↔ 1C через staff-only web-кабинет, файл
+сохраняется в `SHUMEYKO_SOURCE_REFRESH_MAPPING_DIR`, а refresh читает его как
+read-only snapshot source без записи в 1С или WB.
+
 План режимов:
 
 - `daily`: mapping, WB finance, 1C OData;
@@ -102,6 +113,31 @@ payload `tenant_integrations` сохраняются совместимыми.
 
 Новые провайдеры можно сохранять и проверять read-only через registry, но они не
 попадают в расчет без отдельного accepted spec для collector, lineage и формул.
+
+# Staff Refresh Control UX
+
+Для нового клиента нельзя зависеть от уже опубликованного отчета: у такого
+клиента может еще не быть `report_run`, поэтому mapping upload и первый `full`
+refresh должны быть доступны из staff-only раздела `Интеграции`.
+
+Требования:
+
+- `consultant/admin` видит в модальном окне интеграций отдельный блок
+  `Обновление данных`;
+- блок показывает последний `source_refresh` выбранного клиента: статус, режим,
+  период, safe-сообщение, новый report id и статусы коллекций без raw payloads,
+  секретов и connection strings;
+- staff может загрузить TXT/TSV/CSV mapping WB ↔ 1C на уровне клиента через
+  `/api/clients/{client_id}/mapping-file`; файл сохраняется в
+  `SHUMEYKO_SOURCE_REFRESH_MAPPING_DIR`, audit пишет только имя и размер файла;
+- staff может запустить dry-run через `/api/clients/{client_id}/source-refresh`
+  с `dry_run=true`, чтобы проверить конфигурацию без внешних WB/1C чтений;
+- staff может запустить явный `full` refresh через тот же endpoint с
+  `mode=full`; запуск использует encrypted tenant integrations и создает новый
+  report run только если mandatory sources прошли;
+- клиентская роль не видит эти controls и получает `403` на staff endpoints;
+- если refresh уже идет, source refresh guard возвращает safe статус
+  `blocked_active_refresh`, а UI показывает это как штатную занятость.
 
 # Retention
 
@@ -125,6 +161,12 @@ payload `tenant_integrations` сохраняются совместимыми.
 - Active full блокирует daily статусом `blocked_active_refresh`.
 - Provider registry отдает WB/1C metadata и default roles.
 - `/api/integrations` совместим по `items` и содержит `providers`.
+- `/api/clients/{client_id}/mapping-file` staff-only сохраняет mapping-файл без
+  публикации raw содержимого в API/audit.
+- `/api/clients/{client_id}/source-refresh` staff-only запускает dry-run или
+  `full` refresh и возвращает safe payload последнего run.
+- UI раздела `Интеграции` содержит блок `Обновление данных` с upload mapping,
+  dry-run, full refresh и статусом коллекций.
 - `prune_source_refresh.py` dry-run ничего не удаляет.
 - Non-SQLite SQLAlchemy engine использует `pool_pre_ping` и `pool_recycle`.
 - Тесты, ruff, docs validators и no-secrets validators проходят.
@@ -141,5 +183,7 @@ payload `tenant_integrations` сохраняются совместимыми.
 
 # Changelog
 
+- 2026-07-04: added staff refresh control UX/API for client-level mapping
+  upload, dry-run readiness check and manual full refresh from integrations.
 - 2026-06-24: accepted spec for source refresh hardening, provider registry,
   collector contract and retention CLI.

@@ -77,6 +77,68 @@ def test_collection_sample_export_writes_raw_payload(tmp_path: Path) -> None:
     assert requested[0].url.params["$format"] == "json"
 
 
+def test_collection_sample_export_retries_transient_timeout(tmp_path: Path) -> None:
+    requested: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request)
+        if len(requested) == 1:
+            raise httpx.ReadTimeout("temporary 1C timeout", request=request)
+        return httpx.Response(200, json={"value": [{"Ref_Key": "item-1"}]})
+
+    settings = OnecODataSettings(
+        base_url="https://onec.example/base/odata/standard.odata",
+        username="readonly",
+        password="secret",
+    )
+    client = OnecODataClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        result = export_collection_sample(
+            client,
+            DEFAULT_SAMPLE_COLLECTIONS[0],
+            tmp_path,
+            top=3,
+            retry_attempts=1,
+            retry_delay_seconds=0,
+        )
+    finally:
+        client.close()
+
+    assert result.ok is True
+    assert result.row_count == 1
+    assert len(requested) == 2
+
+
+def test_collection_sample_export_does_not_retry_not_found(tmp_path: Path) -> None:
+    requested: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request)
+        return httpx.Response(404, json={"error": "not found"})
+
+    settings = OnecODataSettings(
+        base_url="https://onec.example/base/odata/standard.odata",
+        username="readonly",
+        password="secret",
+    )
+    client = OnecODataClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        result = export_collection_sample(
+            client,
+            DEFAULT_SAMPLE_COLLECTIONS[0],
+            tmp_path,
+            top=3,
+            retry_attempts=2,
+            retry_delay_seconds=0,
+        )
+    finally:
+        client.close()
+
+    assert result.ok is False
+    assert result.status_code == 404
+    assert len(requested) == 1
+
+
 def test_collection_sample_export_supports_skip_pagination(tmp_path: Path) -> None:
     requested: list[httpx.Request] = []
 

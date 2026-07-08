@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
+import os
 import re
 import shutil
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,6 +29,21 @@ from wb_unit_economics.onec_odata import (
     OnecODataSettings,
     OnecSampleExportResult,
     export_onec_samples,
+)
+from wb_unit_economics.ozon import (
+    OzonConfigError,
+    OzonPageResult,
+    OzonSettings,
+    export_ozon_b2b_sales_json,
+    export_ozon_cash_flow,
+    export_ozon_mutual_settlement,
+    export_ozon_products_buyout,
+    export_ozon_products_report,
+    export_ozon_realization,
+    export_ozon_realization_posting,
+    export_ozon_returns_report,
+    export_ozon_stock_on_warehouses,
+    ozon_settings_from_secret,
 )
 from wb_unit_economics.wb_finance import (
     WbFinanceConfigError,
@@ -48,8 +68,13 @@ from wb_unit_economics.web.models import (
 )
 from wb_unit_economics.web.settings import WebSettings
 
-SOURCE_REFRESH_MODES = {"daily", "weekly", "full", "onec-only"}
+SOURCE_REFRESH_MODES = {"daily", "weekly", "full", "onec-only", "ozon-only"}
+WB_REQUIRED_MODES = {"daily", "weekly", "full"}
+OZON_REQUIRED_MODES = {"ozon-only"}
+OZON_OPTIONAL_MODES = {"daily", "weekly", "full"}
 CREDENTIAL_SOURCES = {"tenant", "env"}
+SOURCE_SNAPSHOT_ROW_CHUNK_SIZE = 5000
+READY_INTEGRATION_STATUSES = {"configured", "check_ok"}
 ONEC_REFRESH_COLLECTIONS = (
     *DEFAULT_SAMPLE_COLLECTIONS,
     *GROSS_PROFIT_SAMPLE_COLLECTIONS,
@@ -65,6 +90,13 @@ MANDATORY_OK_STATUSES = {"loaded", "empty_expected"}
 OPTIONAL_OK_STATUSES = {"loaded", "empty_expected"}
 REVIEW_STATUSES = {"needs_review", "stale", "partial_source"}
 WB_FINANCE_REFRESH_ROLES = {"finance_reports", "full_readonly"}
+OZON_REFRESH_ROLES = {
+    "finance_reports",
+    "products_catalog",
+    "stocks_analytics",
+    "returns_reports",
+    "full_readonly",
+}
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -84,8 +116,11 @@ class SourceRefreshConfigError(RuntimeError):
 class SourceCredentials:
     wb_settings: WbFinanceSettings | None
     onec_settings: OnecODataSettings | None
+    ozon_settings: OzonSettings | None
     wb_cabinet_ids: dict[str, str]
+    ozon_cabinet_ids: dict[str, str]
     issues: tuple[dict[str, Any], ...]
+    optional_issues: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,6 +170,33 @@ class SourceRefreshService:
         wb_report_list_exporter: Callable[
             ..., list[WbSalesReportListPageResult]
         ] = export_wb_sales_report_list,
+        ozon_cash_flow_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_cash_flow
+        ),
+        ozon_realization_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_realization
+        ),
+        ozon_realization_posting_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_realization_posting
+        ),
+        ozon_products_buyout_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_products_buyout
+        ),
+        ozon_b2b_sales_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_b2b_sales_json
+        ),
+        ozon_mutual_settlement_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_mutual_settlement
+        ),
+        ozon_products_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_products_report
+        ),
+        ozon_stocks_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_stock_on_warehouses
+        ),
+        ozon_returns_exporter: Callable[..., list[OzonPageResult]] = (
+            export_ozon_returns_report
+        ),
         onec_exporter: Callable[..., list[OnecSampleExportResult]] = (
             export_onec_samples
         ),
@@ -148,6 +210,15 @@ class SourceRefreshService:
         self.settings = settings
         self._wb_finance_exporter = wb_finance_exporter
         self._wb_report_list_exporter = wb_report_list_exporter
+        self._ozon_cash_flow_exporter = ozon_cash_flow_exporter
+        self._ozon_realization_exporter = ozon_realization_exporter
+        self._ozon_realization_posting_exporter = ozon_realization_posting_exporter
+        self._ozon_products_buyout_exporter = ozon_products_buyout_exporter
+        self._ozon_b2b_sales_exporter = ozon_b2b_sales_exporter
+        self._ozon_mutual_settlement_exporter = ozon_mutual_settlement_exporter
+        self._ozon_products_exporter = ozon_products_exporter
+        self._ozon_stocks_exporter = ozon_stocks_exporter
+        self._ozon_returns_exporter = ozon_returns_exporter
         self._onec_exporter = onec_exporter
         self._workbook_builder = workbook_builder
         self._dashboard_payload_builder = dashboard_payload_builder
@@ -157,6 +228,7 @@ class SourceRefreshService:
         db: Session,
         *,
         tenant_id: str,
+        client_id: str | None = None,
         mode: str,
         credential_source: str = "tenant",
         dry_run: bool = False,
@@ -164,6 +236,80 @@ class SourceRefreshService:
         source_report: ReportRun | None = None,
         reason: str = "",
     ) -> dict[str, Any]:
+        refresh_run = self._create_refresh_run(
+            db,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            mode=mode,
+            credential_source=credential_source,
+            dry_run=dry_run,
+            user=user,
+            source_report=source_report,
+            reason=reason,
+        )
+        if isinstance(refresh_run, dict):
+            return refresh_run
+        return self.run_existing(db, refresh_run.id)
+
+    def enqueue(
+        self,
+        db: Session,
+        *,
+        tenant_id: str,
+        client_id: str | None = None,
+        mode: str,
+        credential_source: str = "tenant",
+        user: User | None = None,
+        source_report: ReportRun | None = None,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        refresh_run = self._create_refresh_run(
+            db,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            mode=mode,
+            credential_source=credential_source,
+            dry_run=False,
+            user=user,
+            source_report=source_report,
+            reason=reason,
+        )
+        if isinstance(refresh_run, dict):
+            return refresh_run
+        return repository.source_refresh_run_payload(refresh_run)
+
+    def run_existing(
+        self,
+        db: Session,
+        refresh_run_id: str,
+    ) -> dict[str, Any]:
+        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        if refresh_run is None:
+            raise SourceRefreshConfigError(
+                f"source refresh run not found: {refresh_run_id}"
+            )
+        if refresh_run.finished_at is not None:
+            return repository.source_refresh_run_payload(refresh_run)
+        user = (
+            db.get(User, refresh_run.requested_by_user_id)
+            if refresh_run.requested_by_user_id
+            else None
+        )
+        return self._execute_run(db, refresh_run, user=user)
+
+    def _create_refresh_run(
+        self,
+        db: Session,
+        *,
+        tenant_id: str,
+        client_id: str | None,
+        mode: str,
+        credential_source: str,
+        dry_run: bool,
+        user: User | None,
+        source_report: ReportRun | None,
+        reason: str,
+    ) -> SourceRefreshRun | dict[str, Any]:
         mode = mode.strip()
         credential_source = credential_source.strip()
         if mode not in SOURCE_REFRESH_MODES:
@@ -193,6 +339,7 @@ class SourceRefreshService:
                 return self._create_blocked_run(
                     db,
                     tenant_id=tenant_id,
+                    client_id=client_id,
                     mode=mode,
                     credential_source=credential_source,
                     dry_run=dry_run,
@@ -218,6 +365,7 @@ class SourceRefreshService:
                 snapshot_set_id=snapshot_set_id,
                 period_start=period_start,
                 period_end=period_end,
+                client_id=client_id,
                 user=user,
                 source_report=source_report,
                 reason=reason,
@@ -225,8 +373,29 @@ class SourceRefreshService:
         except ValueError as exc:
             raise SourceRefreshBusyError(str(exc)) from exc
         db.flush()
+        return refresh_run
 
-        root_dir = (self.settings.source_refresh_root_path / snapshot_set_id).resolve()
+    def _execute_run(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        *,
+        user: User | None,
+    ) -> dict[str, Any]:
+        tenant_id = refresh_run.tenant_id
+        mode = refresh_run.mode
+        credential_source = refresh_run.credential_source
+        dry_run = refresh_run.dry_run
+        period_start = refresh_run.period_start
+        period_end = refresh_run.period_end
+        source_report = (
+            db.get(ReportRun, refresh_run.source_report_run_id)
+            if refresh_run.source_report_run_id
+            else None
+        )
+        root_dir = (
+            self.settings.source_refresh_root_path / refresh_run.snapshot_set_id
+        ).resolve()
         try:
             repository.update_source_refresh_run(
                 db,
@@ -235,6 +404,7 @@ class SourceRefreshService:
                 started_at=security.utcnow(),
                 root_dir=str(root_dir),
             )
+            _commit_source_refresh_progress(db)
             if not dry_run:
                 disk_issue = self._low_disk_issue()
                 if disk_issue is not None:
@@ -250,7 +420,7 @@ class SourceRefreshService:
                 credential_source=credential_source,
                 mode=mode,
             )
-            for issue in credentials.issues:
+            for issue in (*credentials.issues, *credentials.optional_issues):
                 repository.add_source_refresh_collection(
                     db,
                     refresh_run,
@@ -324,6 +494,7 @@ class SourceRefreshService:
                 refresh_run,
                 status="source_loaded",
             )
+            _commit_source_refresh_progress(db)
             if self._mandatory_failed(refresh_run):
                 return self._finish_without_report(
                     db,
@@ -331,7 +502,7 @@ class SourceRefreshService:
                     status="failed",
                     error_message="Mandatory source refresh collection failed.",
                 )
-            if mode == "daily":
+            if mode in {"daily", "onec-only", "ozon-only"}:
                 status = (
                     "needs_review"
                     if self._needs_review(refresh_run, mapping_collection)
@@ -344,6 +515,7 @@ class SourceRefreshService:
                 )
 
             repository.update_source_refresh_run(db, refresh_run, status="rebuilding")
+            _commit_source_refresh_progress(db)
             if self.settings.db_first_reports_enabled:
                 new_report, workbook_path = self._build_db_first_report(
                     db,
@@ -371,6 +543,7 @@ class SourceRefreshService:
                     publication_status="draft",
                     publish=False,
                 )
+            _commit_source_refresh_progress(db)
             self._attach_source_loads(db, new_report, refresh_run)
             final_status = (
                 "needs_review"
@@ -401,13 +574,18 @@ class SourceRefreshService:
             )
             payload = repository.source_refresh_run_payload(refresh_run)
             repository.publish_report(db, new_report)
+            _commit_source_refresh_progress(db)
             return payload
         except Exception as exc:
+            safe_error = _safe_error(exc)
+            with suppress(Exception):
+                db.rollback()
+            refresh_run = db.get(SourceRefreshRun, refresh_run.id) or refresh_run
             repository.update_source_refresh_run(
                 db,
                 refresh_run,
                 status="failed",
-                error_message=_safe_error(exc),
+                error_message=safe_error,
                 finished_at=security.utcnow(),
             )
             repository.audit(
@@ -422,6 +600,7 @@ class SourceRefreshService:
                     "errorType": exc.__class__.__name__,
                 },
             )
+            _commit_source_refresh_progress(db)
             return repository.source_refresh_run_payload(refresh_run)
 
     def _create_blocked_run(
@@ -429,6 +608,7 @@ class SourceRefreshService:
         db: Session,
         *,
         tenant_id: str,
+        client_id: str | None,
         mode: str,
         credential_source: str,
         dry_run: bool,
@@ -450,6 +630,7 @@ class SourceRefreshService:
             snapshot_set_id=snapshot_set_id,
             period_start=period_start,
             period_end=period_end,
+            client_id=client_id,
             user=user,
             source_report=source_report,
             reason=reason,
@@ -478,6 +659,7 @@ class SourceRefreshService:
                 output_dirs[collector.source_type] = result.output_dir
             if collector.source_type == "sku_mapping":
                 mapping_collection = result.collection
+            _commit_source_refresh_progress(context.db)
         if mapping_collection is None and not include_external:
             raise RuntimeError("mapping collector did not create a collection")
         return CollectorOutputs(
@@ -510,6 +692,78 @@ class SourceRefreshService:
                 modes=frozenset({"weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_report_list,
+            ),
+            SourceCollector(
+                source_type="ozon_finance_cash_flow",
+                label="Ozon financial cash-flow statement",
+                required=False,
+                modes=frozenset({"daily", "weekly", "full", "ozon-only"}),
+                roles=frozenset({"finance_reports", "full_readonly"}),
+                collect=_collect_ozon_cash_flow,
+            ),
+            SourceCollector(
+                source_type="ozon_realization",
+                label="Ozon realization report",
+                required=False,
+                modes=frozenset({"weekly", "full", "ozon-only"}),
+                roles=frozenset({"finance_reports", "full_readonly"}),
+                collect=_collect_ozon_realization,
+            ),
+            SourceCollector(
+                source_type="ozon_mutual_settlement",
+                label="Ozon mutual settlement report",
+                required=False,
+                modes=frozenset({"weekly", "full", "ozon-only"}),
+                roles=frozenset({"finance_reports", "full_readonly"}),
+                collect=_collect_ozon_mutual_settlement,
+            ),
+            SourceCollector(
+                source_type="ozon_realization_posting",
+                label="Ozon realization posting report",
+                required=False,
+                modes=frozenset({"weekly", "full", "ozon-only"}),
+                roles=frozenset({"finance_reports", "full_readonly"}),
+                collect=_collect_ozon_realization_posting,
+            ),
+            SourceCollector(
+                source_type="ozon_products_buyout",
+                label="Ozon products buyout report",
+                required=False,
+                modes=frozenset({"weekly", "full", "ozon-only"}),
+                roles=frozenset({"finance_reports", "full_readonly"}),
+                collect=_collect_ozon_products_buyout,
+            ),
+            SourceCollector(
+                source_type="ozon_b2b_sales_json",
+                label="Ozon B2B sales JSON",
+                required=False,
+                modes=frozenset({"weekly", "full", "ozon-only"}),
+                roles=frozenset({"finance_reports", "full_readonly"}),
+                collect=_collect_ozon_b2b_sales,
+            ),
+            SourceCollector(
+                source_type="ozon_products_report",
+                label="Ozon products report",
+                required=False,
+                modes=frozenset({"weekly", "full", "ozon-only"}),
+                roles=frozenset({"products_catalog", "full_readonly"}),
+                collect=_collect_ozon_products,
+            ),
+            SourceCollector(
+                source_type="ozon_stock_on_warehouses",
+                label="Ozon stock on warehouses",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset({"stocks_analytics", "full_readonly"}),
+                collect=_collect_ozon_stocks,
+            ),
+            SourceCollector(
+                source_type="ozon_returns_report",
+                label="Ozon returns report",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset({"returns_reports", "full_readonly"}),
+                collect=_collect_ozon_returns,
             ),
             SourceCollector(
                 source_type="onec_odata",
@@ -558,18 +812,40 @@ class SourceRefreshService:
 
     def _env_credentials(self, mode: str) -> SourceCredentials:
         issues: list[dict[str, Any]] = []
+        optional_issues: list[dict[str, Any]] = []
         wb_settings = None
+        ozon_settings = None
         onec_settings = None
-        if mode != "onec-only":
+        if mode in WB_REQUIRED_MODES:
             try:
                 wb_settings = WbFinanceSettings.from_env_file()
             except WbFinanceConfigError as exc:
                 issues.append(_credential_issue("wb_api", True, str(exc)))
+        if mode in OZON_REQUIRED_MODES:
+            try:
+                ozon_settings = OzonSettings.from_env_file()
+            except OzonConfigError as exc:
+                issues.append(_credential_issue("ozon_api", True, str(exc)))
+        elif mode in OZON_OPTIONAL_MODES and _env_has_ozon_credentials():
+            try:
+                ozon_settings = OzonSettings.from_env_file()
+            except OzonConfigError as exc:
+                optional_issues.append(
+                    _credential_issue("ozon_api", False, str(exc))
+                )
         try:
             onec_settings = OnecODataSettings.from_env_file()
         except OnecODataConfigError as exc:
             issues.append(_credential_issue("onec_readonly", True, str(exc)))
-        return SourceCredentials(wb_settings, onec_settings, {}, tuple(issues))
+        return SourceCredentials(
+            wb_settings,
+            onec_settings,
+            ozon_settings,
+            {},
+            {},
+            tuple(issues),
+            tuple(optional_issues),
+        )
 
     def _tenant_credentials(
         self,
@@ -579,10 +855,13 @@ class SourceRefreshService:
         mode: str,
     ) -> SourceCredentials:
         issues: list[dict[str, Any]] = []
+        optional_issues: list[dict[str, Any]] = []
         wb_settings = None
         wb_cabinet_ids: dict[str, str] = {}
+        ozon_settings = None
+        ozon_cabinet_ids: dict[str, str] = {}
         onec_settings = None
-        if mode != "onec-only":
+        if mode in WB_REQUIRED_MODES:
             wb_integrations = _tenant_integrations_by_base(db, tenant_id, "wb_api")
             if not wb_integrations:
                 issues.append(_credential_issue("wb_api", True, "not_configured"))
@@ -592,6 +871,18 @@ class SourceRefreshService:
                     wb_integrations,
                     issues,
                 )
+        if mode in OZON_REQUIRED_MODES | OZON_OPTIONAL_MODES:
+            ozon_integrations = _tenant_integrations_by_base(db, tenant_id, "ozon_api")
+            ozon_required = mode in OZON_REQUIRED_MODES
+            if not ozon_integrations and ozon_required:
+                issues.append(_credential_issue("ozon_api", True, "not_configured"))
+            elif ozon_integrations:
+                ozon_settings, ozon_cabinet_ids = self._ozon_settings_from_integrations(
+                    db,
+                    ozon_integrations,
+                    issues if ozon_required else optional_issues,
+                    required=ozon_required,
+                )
         integration = _tenant_integration(db, tenant_id, "onec_readonly")
         if integration is None:
             issues.append(_credential_issue("onec_readonly", True, "not_configured"))
@@ -600,8 +891,11 @@ class SourceRefreshService:
         return SourceCredentials(
             wb_settings,
             onec_settings,
+            ozon_settings,
             wb_cabinet_ids,
+            ozon_cabinet_ids,
             tuple(issues),
+            tuple(optional_issues),
         )
 
     def _wb_settings_from_integrations(
@@ -668,6 +962,70 @@ class SourceRefreshService:
             issues.append(_credential_issue(integration.provider, True, str(exc)))
             return None
 
+    def _ozon_settings_from_integrations(
+        self,
+        db: Session,
+        integrations_list: list[TenantIntegration],
+        issues: list[dict[str, Any]],
+        *,
+        required: bool = False,
+    ) -> tuple[OzonSettings | None, dict[str, str]]:
+        accounts = []
+        ozon_cabinet_ids: dict[str, str] = {}
+        skipped_roles: list[str] = []
+        for integration in integrations_list:
+            if integration.status == "disabled":
+                continue
+            role = str(
+                (integration.config_payload or {}).get("connectionRole") or ""
+            ).strip()
+            if role and role not in OZON_REFRESH_ROLES:
+                skipped_roles.append(integration.provider)
+                continue
+            settings = self._ozon_settings_from_integration(
+                integration,
+                issues,
+                required=required,
+            )
+            if settings is not None:
+                accounts.extend(settings.accounts)
+                cabinet = _ensure_wb_cabinet_for_integration(db, integration)
+                if cabinet is not None:
+                    for account in settings.accounts:
+                        ozon_cabinet_ids[account.seller_account_id] = cabinet.id
+        if accounts:
+            return OzonSettings(accounts=tuple(accounts)), ozon_cabinet_ids
+        if skipped_roles:
+            issues.append(
+                _credential_issue(
+                    "ozon_api",
+                    required,
+                    "no_matching_ozon_refresh_roles",
+                    payload={"skippedProviders": skipped_roles},
+                )
+            )
+        return None, ozon_cabinet_ids
+
+    def _ozon_settings_from_integration(
+        self,
+        integration: TenantIntegration,
+        issues: list[dict[str, Any]],
+        *,
+        required: bool = False,
+    ) -> OzonSettings | None:
+        secret = self._encrypted_secret_or_issue(integration, issues, required=required)
+        if not secret:
+            return None
+        try:
+            return ozon_settings_from_secret(
+                secret,
+                default_name=_integration_account_name(integration),
+                default_seller_account_id=_safe_ozon_account_id(integration.provider),
+            )
+        except OzonConfigError as exc:
+            issues.append(_credential_issue(integration.provider, required, str(exc)))
+            return None
+
     def _onec_settings_from_integration(
         self,
         integration: TenantIntegration,
@@ -686,18 +1044,41 @@ class SourceRefreshService:
         self,
         integration: TenantIntegration,
         issues: list[dict[str, Any]],
+        *,
+        required: bool = True,
     ) -> str:
         payload = integration.config_payload or {}
         if integration.status == "disabled":
             issues.append(
-                _credential_issue(integration.provider, True, "integration_disabled")
+                _credential_issue(
+                    integration.provider,
+                    required,
+                    "integration_disabled",
+                )
+            )
+            return ""
+        if integration.status not in READY_INTEGRATION_STATUSES:
+            issues.append(
+                _credential_issue(
+                    integration.provider,
+                    required,
+                    "integration_not_runtime_ready",
+                    payload={
+                        "status": integration.status,
+                        "lastCheckedAt": (
+                            integration.last_checked_at.isoformat()
+                            if integration.last_checked_at
+                            else ""
+                        ),
+                    },
+                )
             )
             return ""
         if payload.get("storage") != "encrypted":
             issues.append(
                 _credential_issue(
                     integration.provider,
-                    True,
+                    required,
                     "secret_storage_is_not_encrypted",
                     payload={"storageMode": payload.get("storage", "hash_only")},
                 )
@@ -706,7 +1087,7 @@ class SourceRefreshService:
         try:
             return integrations.decrypt_secret(self.settings, payload)
         except integrations.IntegrationSecretError as exc:
-            issues.append(_credential_issue(integration.provider, True, str(exc)))
+            issues.append(_credential_issue(integration.provider, required, str(exc)))
             return ""
 
     def _record_mapping_source(
@@ -808,6 +1189,48 @@ class SourceRefreshService:
             collection,
             result_items,
             wb_cabinet_ids=wb_cabinet_ids,
+        )
+
+    def _record_ozon_results(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        output_dir: Path,
+        results: Iterable[OzonPageResult],
+        *,
+        source_type: str,
+        source_label: str,
+        ozon_cabinet_ids: dict[str, str],
+        required: bool = False,
+    ) -> None:
+        result_items = list(results)
+        payload_items = [
+            _ozon_result_payload(
+                item,
+                ozon_cabinet_id=ozon_cabinet_ids.get(item.seller_account_id, ""),
+            )
+            for item in result_items
+        ]
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type=source_type,
+            source_label=source_label,
+            required=required,
+            status=_aggregate_status(payload_items, required=required),
+            snapshot_hash=_hash_payload(payload_items),
+            row_count=_ozon_collection_row_count(result_items),
+            raw_path=str(output_dir),
+            payload={
+                "marketplace": "ozon",
+                "results": payload_items,
+            },
+        )
+        _persist_ozon_rows(
+            db,
+            collection,
+            result_items,
+            ozon_cabinet_ids=ozon_cabinet_ids,
         )
 
     def _record_onec(
@@ -1102,6 +1525,15 @@ class SourceRefreshService:
     def _wb_delay_seconds(self) -> float:
         return max(0.0, float(self.settings.source_refresh_wb_request_delay_seconds))
 
+    def _ozon_page_size(self) -> int:
+        return max(1, min(int(self.settings.source_refresh_ozon_page_size), 1000))
+
+    def _ozon_max_pages(self) -> int:
+        return max(1, min(int(self.settings.source_refresh_ozon_max_pages), 10000))
+
+    def _ozon_delay_seconds(self) -> float:
+        return max(0.0, float(self.settings.source_refresh_ozon_request_delay_seconds))
+
     def _mapping_stale_days(self) -> int:
         return max(1, int(self.settings.source_refresh_mapping_stale_days))
 
@@ -1164,6 +1596,242 @@ def _collect_wb_report_list(
         output_dir,
         results,
         wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_cash_flow(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_finance_cash_flow"
+    results = service._ozon_cash_flow_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        page_size=service._ozon_page_size(),
+        max_pages=service._ozon_max_pages(),
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_finance_cash_flow",
+        source_label="Ozon financial cash-flow statement",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+        required=context.mode == "ozon-only",
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_realization(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_realization"
+    results = service._ozon_realization_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_realization",
+        source_label="Ozon realization report",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_mutual_settlement(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_mutual_settlement"
+    results = service._ozon_mutual_settlement_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_mutual_settlement",
+        source_label="Ozon mutual settlement report",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_realization_posting(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_realization_posting"
+    results = service._ozon_realization_posting_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        max_pages=min(service._ozon_max_pages(), 3),
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_realization_posting",
+        source_label="Ozon realization posting report",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_products_buyout(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_products_buyout"
+    results = service._ozon_products_buyout_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_products_buyout",
+        source_label="Ozon products buyout report",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_b2b_sales(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_b2b_sales_json"
+    results = service._ozon_b2b_sales_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_b2b_sales_json",
+        source_label="Ozon B2B sales JSON",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_products(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_products_report"
+    results = service._ozon_products_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_products_report",
+        source_label="Ozon products report",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_stocks(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_stock_on_warehouses"
+    results = service._ozon_stocks_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        limit=service._ozon_page_size(),
+        max_pages=service._ozon_max_pages(),
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_stock_on_warehouses",
+        source_label="Ozon stock on warehouses",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_ozon_returns(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.ozon_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "ozon_returns_report"
+    results = service._ozon_returns_exporter(
+        context.credentials.ozon_settings,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+        request_delay_seconds=service._ozon_delay_seconds(),
+    )
+    service._record_ozon_results(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type="ozon_returns_report",
+        source_label="Ozon returns report",
+        ozon_cabinet_ids=context.credentials.ozon_cabinet_ids,
     )
     return CollectorResult(output_dir=output_dir)
 
@@ -1422,6 +2090,36 @@ def _safe_wb_account_id(value: str) -> str:
     return normalized or "WB_ACCOUNT"
 
 
+def _safe_ozon_account_id(value: str) -> str:
+    normalized = "".join(
+        char if char.isalnum() else "_" for char in value.strip().upper()
+    ).strip("_")
+    return normalized or "OZON_ACCOUNT"
+
+
+def _env_has_ozon_credentials(env_file: Path = Path(".env")) -> bool:
+    env_keys = set(os.environ)
+    if any(
+        key.startswith("OZON_ACCOUNT_") and key.endswith(("_CLIENT_ID", "_API_KEY"))
+        for key in env_keys
+    ):
+        return True
+    if not env_file.exists():
+        return False
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if (
+                stripped.startswith("OZON_ACCOUNT_")
+                and ("_CLIENT_ID=" in stripped or "_API_KEY=" in stripped)
+                and stripped.partition("=")[2].strip().strip('"').strip("'")
+            ):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _accounts_from_wb_env_style_object(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     accounts: list[dict[str, Any]] = []
     for index in range(1, 11):
@@ -1454,11 +2152,14 @@ def _credential_issue(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider_base = repository.integration_provider_base(provider)
+    labels = {
+        "wb_api": "Wildberries API",
+        "ozon_api": "Ozon Seller API",
+        "onec_readonly": "1С read-only",
+    }
     return {
         "source_type": provider,
-        "source_label": (
-            "Wildberries API" if provider_base == "wb_api" else "1С read-only"
-        ),
+        "source_label": labels.get(provider_base, provider),
         "required": required,
         "status": "needs_configuration",
         "error_message": message,
@@ -1507,6 +2208,57 @@ def _wb_report_list_payload(
         "outputFile": item.output_path.name if item.output_path else None,
         "error": item.error,
     }
+
+
+def _ozon_result_payload(
+    item: OzonPageResult,
+    *,
+    ozon_cabinet_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "marketplace": "ozon",
+        "sellerAccountId": item.seller_account_id,
+        "accountName": item.account_name,
+        "wbCabinetId": ozon_cabinet_id,
+        "pageIndex": item.page_index,
+        "status": _ozon_status(item),
+        "sourceStatus": item.status,
+        "ok": item.ok,
+        "rowCount": item.row_count,
+        "statusCode": item.status_code,
+        "sourceEndpoint": item.source_endpoint,
+        "rawPayloadHash": item.raw_payload_hash,
+        "outputFile": item.output_path.name if item.output_path else None,
+        "reportCode": item.report_code,
+        "error": item.error,
+    }
+
+
+def _ozon_status(item: OzonPageResult) -> str:
+    if item.ok and item.status == "ok" and item.row_count > 0:
+        return "loaded"
+    if item.ok and item.status == "ok" and item.row_count == 0:
+        return "empty_expected"
+    if item.ok and item.status == "empty_expected":
+        return "empty_expected"
+    if item.status == "access_error":
+        return "auth_failed"
+    if item.status == "rate_limited":
+        return "rate_limited"
+    if item.status == "transport_error":
+        return "schema_error"
+    return "failed" if not item.ok else "loaded"
+
+
+def _ozon_collection_row_count(results: list[OzonPageResult]) -> int:
+    has_report_info = any(item.source_type.endswith("_info") for item in results)
+    if has_report_info:
+        return sum(
+            item.row_count
+            for item in results
+            if item.source_type.endswith("_file")
+        )
+    return sum(item.row_count for item in results)
 
 
 def _wb_status(item: WbFinancePageResult | WbSalesReportListPageResult) -> str:
@@ -1558,6 +2310,10 @@ def _source_load_status(item: SourceRefreshCollection) -> str:
     return item.status if item.status == "loaded" else "needs_review"
 
 
+def _commit_source_refresh_progress(db: Session) -> None:
+    db.commit()
+
+
 def _persist_wb_finance_rows(
     db: Session,
     collection: SourceRefreshCollection,
@@ -1567,22 +2323,28 @@ def _persist_wb_finance_rows(
 ) -> None:
     try:
         row_number = 1
+        batch: list[dict[str, Any]] = []
         for result in results:
             for local_index, row in enumerate(_read_json_list(result.output_path), 1):
                 source_row_id = _first_row_id(row, "rrdId", "srid", "orderUid")
                 if not source_row_id:
                     source_row_id = f"{result.page_index}:{local_index}"
-                repository.add_source_snapshot_row(
-                    db,
-                    collection,
-                    row_number=row_number,
-                    raw_payload_hash=_hash_payload(row),
-                    row_payload=row,
-                    source_row_id=source_row_id,
-                    wb_cabinet_id=wb_cabinet_ids.get(result.seller_account_id, ""),
-                    loaded_at=collection.loaded_at,
+                batch.append(
+                    {
+                        "row_number": row_number,
+                        "raw_payload_hash": _hash_payload(row),
+                        "row_payload": row,
+                        "source_row_id": source_row_id,
+                        "wb_cabinet_id": wb_cabinet_ids.get(
+                            result.seller_account_id,
+                            "",
+                        ),
+                        "loaded_at": collection.loaded_at,
+                    }
                 )
                 row_number += 1
+                _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
 
@@ -1596,22 +2358,91 @@ def _persist_wb_report_list_rows(
 ) -> None:
     try:
         row_number = 1
+        batch: list[dict[str, Any]] = []
         for result in results:
             for local_index, row in enumerate(_read_json_list(result.output_path), 1):
                 source_row_id = _first_row_id(row, "reportId")
                 if not source_row_id:
                     source_row_id = f"{result.page_index}:{local_index}"
-                repository.add_source_snapshot_row(
-                    db,
-                    collection,
-                    row_number=row_number,
-                    raw_payload_hash=_hash_payload(row),
-                    row_payload=row,
-                    source_row_id=source_row_id,
-                    wb_cabinet_id=wb_cabinet_ids.get(result.seller_account_id, ""),
-                    loaded_at=collection.loaded_at,
+                batch.append(
+                    {
+                        "row_number": row_number,
+                        "raw_payload_hash": _hash_payload(row),
+                        "row_payload": row,
+                        "source_row_id": source_row_id,
+                        "wb_cabinet_id": wb_cabinet_ids.get(
+                            result.seller_account_id,
+                            "",
+                        ),
+                        "loaded_at": collection.loaded_at,
+                    }
                 )
                 row_number += 1
+                _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
+    except (OSError, ValueError, TypeError) as exc:
+        _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_ozon_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    results: Iterable[OzonPageResult],
+    *,
+    ozon_cabinet_ids: dict[str, str],
+) -> None:
+    try:
+        row_number = 1
+        batch: list[dict[str, Any]] = []
+        for result in results:
+            for local_index, row in enumerate(_read_ozon_rows(result.output_path), 1):
+                source_row_id = _first_row_id(
+                    row,
+                    "id",
+                    "operation_id",
+                    "posting_number",
+                    "product_id",
+                    "offer_id",
+                    "sku",
+                    "code",
+                    "ID товара",
+                    "Идентификатор товара",
+                    "Артикул",
+                    "Артикул продавца",
+                    "SKU",
+                    "Штрихкод",
+                    "Баркод",
+                )
+                if not source_row_id:
+                    source_row_id = (
+                        f"{result.source_type}:{result.page_index}:{local_index}"
+                    )
+                row_payload = {
+                    **row,
+                    "marketplace": "ozon",
+                    "seller_account_id": result.seller_account_id,
+                    "source_endpoint": result.source_endpoint,
+                    "source_page_index": result.page_index,
+                    "source_output_file": (
+                        result.output_path.name if result.output_path else ""
+                    ),
+                }
+                batch.append(
+                    {
+                        "row_number": row_number,
+                        "raw_payload_hash": _hash_payload(row_payload),
+                        "row_payload": row_payload,
+                        "source_row_id": source_row_id,
+                        "wb_cabinet_id": ozon_cabinet_ids.get(
+                            result.seller_account_id,
+                            "",
+                        ),
+                        "loaded_at": collection.loaded_at,
+                    }
+                )
+                row_number += 1
+                _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
 
@@ -1625,19 +2456,22 @@ def _persist_onec_rows(
         return
     try:
         rows = _extract_onec_rows(_read_json_object(result.output_path))
+        batch: list[dict[str, Any]] = []
         for row_number, row in enumerate(rows, 1):
             source_row_id = _first_row_id(row, "Ref_Key", "LineNumber", "НомерСтроки")
             if not source_row_id:
                 source_row_id = f"{result.sample_id}:{row_number}"
-            repository.add_source_snapshot_row(
-                db,
-                collection,
-                row_number=row_number,
-                raw_payload_hash=_hash_payload(row),
-                row_payload=row,
-                source_row_id=source_row_id,
-                loaded_at=collection.loaded_at,
+            batch.append(
+                {
+                    "row_number": row_number,
+                    "raw_payload_hash": _hash_payload(row),
+                    "row_payload": row,
+                    "source_row_id": source_row_id,
+                    "loaded_at": collection.loaded_at,
+                }
             )
+            _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
 
@@ -1649,6 +2483,7 @@ def _persist_mapping_rows(
 ) -> None:
     try:
         row_number = 1
+        batch: list[dict[str, Any]] = []
         for path in sorted(item for item in mapping_dir.rglob("*") if item.is_file()):
             stat = path.stat()
             relative_path = str(path.relative_to(mapping_dir))
@@ -1662,18 +2497,34 @@ def _persist_mapping_rows(
                 ).isoformat(),
                 "sha256": _file_sha256(path),
             }
-            repository.add_source_snapshot_row(
-                db,
-                collection,
-                row_number=row_number,
-                raw_payload_hash=_hash_payload(row),
-                row_payload=row,
-                source_row_id=relative_path,
-                loaded_at=collection.loaded_at,
+            batch.append(
+                {
+                    "row_number": row_number,
+                    "raw_payload_hash": _hash_payload(row),
+                    "row_payload": row,
+                    "source_row_id": relative_path,
+                    "loaded_at": collection.loaded_at,
+                }
             )
             row_number += 1
+            _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _flush_snapshot_batch(
+    db: Session,
+    collection: SourceRefreshCollection,
+    batch: list[dict[str, Any]],
+    *,
+    force: bool = False,
+) -> None:
+    if not batch or (not force and len(batch) < SOURCE_SNAPSHOT_ROW_CHUNK_SIZE):
+        return
+    repository.add_source_snapshot_rows(db, collection, batch)
+    batch.clear()
+    _commit_source_refresh_progress(db)
 
 
 def _read_json_list(path: Path | None) -> list[dict[str, Any]]:
@@ -1690,6 +2541,132 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("raw JSON payload is not an object")
     return payload
+
+
+def _read_ozon_rows(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    if _path_has_xlsx_signature(path):
+        return _read_ozon_xlsx_rows(path)
+    if path.suffix.lower() == ".xlsx":
+        return _read_ozon_xlsx_rows(path)
+    if path.suffix.lower() in {".csv", ".tsv", ".txt"}:
+        return _read_ozon_tabular_rows(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    result = payload.get("result")
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+    if isinstance(result, dict):
+        for key in ("items", "rows", "data"):
+            value = result.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        details = result.get("details")
+        if isinstance(details, dict):
+            return [details]
+        return [result]
+    for key in ("items", "rows", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return [payload]
+
+
+def _read_ozon_tabular_rows(path: Path) -> list[dict[str, Any]]:
+    text = _read_text_with_encoding_fallback(path)
+    delimiter = _tabular_delimiter(text)
+    reader = csv.DictReader(StringIO(text, newline=""), delimiter=delimiter)
+    return [
+        {
+            str(key or "").strip(): str(value or "").strip()
+            for key, value in row.items()
+        }
+        for row in reader
+    ]
+
+
+def _read_ozon_xlsx_rows(path: Path) -> list[dict[str, Any]]:
+    workbook = load_workbook(
+        BytesIO(path.read_bytes()),
+        read_only=True,
+        data_only=True,
+    )
+    try:
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = list(sheet.iter_rows(values_only=True))
+    finally:
+        workbook.close()
+    return _rows_from_table_values(rows)
+
+
+def _rows_from_table_values(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    normalized_rows = [
+        [_cell_text(value) for value in values]
+        for values in rows
+        if any(_cell_text(value) for value in values)
+    ]
+    if not normalized_rows:
+        return []
+    header_index = max(
+        range(len(normalized_rows)),
+        key=lambda index: (sum(1 for value in normalized_rows[index] if value), -index),
+    )
+    header_values = normalized_rows[header_index]
+    header: list[str] = [
+        value if value else f"column_{index}"
+        for index, value in enumerate(header_values, start=1)
+    ]
+    data_rows: list[dict[str, Any]] = []
+    for text_values in normalized_rows[header_index + 1 :]:
+        data_rows.append(
+            {
+                header[index]: text_values[index]
+                for index in range(min(len(header), len(text_values)))
+            }
+        )
+    return data_rows
+
+
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def _path_has_xlsx_signature(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"PK\x03\x04"
+    except OSError:
+        return False
+
+
+def _read_text_with_encoding_fallback(path: Path) -> str:
+    content = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16", "cp1251"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="replace")
+
+
+def _tabular_delimiter(text: str) -> str:
+    sample = text[:4096]
+    candidates = {
+        "\t": sample.count("\t"),
+        ";": sample.count(";"),
+        ",": sample.count(","),
+    }
+    return max(candidates, key=candidates.get)
 
 
 def _extract_onec_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:

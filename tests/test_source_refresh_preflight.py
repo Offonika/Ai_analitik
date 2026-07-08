@@ -29,6 +29,7 @@ def test_source_refresh_preflight_reports_missing_integrations_and_disk(
 
     assert result.returncode == 1
     assert "wb_api tenant integration is not configured" in result.stdout
+    assert "Ozon API integrations: not configured (optional)" in result.stdout
     assert "onec_readonly tenant integration is not configured" in result.stdout
     assert "Mapping source: loaded" in result.stdout
     assert "source refresh low disk:" in result.stdout
@@ -57,6 +58,7 @@ def test_source_refresh_preflight_accepts_runtime_ready_integrations(
 
     assert result.returncode == 0
     assert "WB API ready integrations: 1" in result.stdout
+    assert "Ozon API ready integrations: 1" in result.stdout
     assert "1C read-only integration: runtime-ready" in result.stdout
     assert "Health: ready_with_warnings" in result.stdout
 
@@ -98,6 +100,23 @@ def _seed_db(database_url: str, *, integrations: bool = False) -> None:
                         "storage": "encrypted",
                         "providerBase": "onec_readonly",
                         "connectionRole": "full_readonly",
+                    },
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                TenantIntegration(
+                    tenant_id="shumeyko",
+                    provider="ozon_api",
+                    label="Ozon Seller API",
+                    status="configured",
+                    secret_hash="hash",
+                    secret_hint="",
+                    config_payload={
+                        "storage": "encrypted",
+                        "providerBase": "ozon_api",
+                        "connectionRole": "finance_reports",
                     },
                     created_at=now,
                     updated_at=now,

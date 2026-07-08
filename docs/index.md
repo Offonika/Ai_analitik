@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-01"
+updated_at: "2026-07-04"
 ---
 
 # Индекс документации проекта
@@ -23,6 +23,12 @@ implementation spec, затем общий MVP spec, затем клиентск
   названием всего продукта.
 - `docs/specs/wb-unit-economics-excel-mvp-implementation.md` — accepted spec
   текущего Excel MVP.
+- `docs/specs/onec-marketplace-mapping-http-service.md` — accepted spec узкого
+  read-only HTTP-сервиса 1С для сопоставления WB и 1С из расширения
+  `ИС_Маркетплейс`.
+- `docs/specs/onec-marketplace-mapping-client-extension.md` — accepted spec
+  клиентского `.cfe` расширения, которое пакует read-only HTTP-сервис для
+  установки в базы клиентов.
 - `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` — accepted
   spec авторизованного web-кабинета, PostgreSQL-витрины и AI-аналитика.
 - `docs/specs/wb-unit-economics-db-first-report-marts.md` — accepted spec
@@ -30,6 +36,8 @@ implementation spec, затем общий MVP spec, затем клиентск
   как экспорты.
 - `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` —
   accepted spec hardening `source_refresh`, provider registry и retention CLI.
+- `docs/specs/marketplace-unit-economics-ozon-integration.md` — accepted spec
+  read-only Ozon Seller API, raw snapshots и общего marketplace-слоя WB/Ozon.
 - `docs/specs/wb-unit-economics-ai-git-workflow.md` — accepted spec
   безопасного Git workflow для разработки с ИИ, локальных hooks и публикации.
 - `docs/specs/wb-unit-economics-mvp.md` — продуктовая рамка пилота и будущих
@@ -45,9 +53,11 @@ implementation spec, затем общий MVP spec, затем клиентск
 | --- | --- | --- | --- |
 | Product frame | `docs/product-concept-ai-report-analyst.md` | accepted | Уточнить, что Шумейко WB/1C является пилотом продукта `AI-аналитик отчетов`. |
 | Excel MVP | `docs/specs/wb-unit-economics-excel-mvp-implementation.md` | accepted | Меняется методика, состав workbook, формулы, источники WB/1С или критерии приемки Excel. |
+| 1C marketplace mapping | `docs/specs/onec-marketplace-mapping-client-extension.md` | accepted | Нужно подключить сопоставление WB и 1С из расширения `ИС_Маркетплейс` через устанавливаемое read-only `.cfe` расширение. |
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
+| Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
 | AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, hooks, Git checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно объяснить клиенту текущий опубликованный baseline, ограничения и что именно принимается. |
 
@@ -74,6 +84,10 @@ implementation spec, затем общий MVP spec, затем клиентск
 # Доступы и операционные инструкции
 
 - `docs/onec-access-instruction.md` — инструкция по read-only доступу к 1С.
+- `docs/runbooks/onec-marketplace-mapping-client-extension.md` — установка и
+  проверка клиентского `.cfe` расширения 1С для экспорта сопоставления WB и 1С.
+- `docs/runbooks/onec-marketplace-mapping-http-service.md` — настройка
+  HTTP-сервиса 1С и BSL-модуля, который входит в клиентское расширение.
 - `docs/runbooks/report-generation.md` — сборка и проверка Excel MVP.
 - `docs/runbooks/reconciliation-artifacts.md` — локальные артефакты для сверки
   WB и 1С.
@@ -107,6 +121,8 @@ implementation spec, затем общий MVP spec, затем клиентск
 .venv/bin/python scripts/validate_llm_docs.py
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-mvp.md
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-excel-mvp-implementation.md
+.venv/bin/python scripts/validate_specs.py docs/specs/onec-marketplace-mapping-client-extension.md
+.venv/bin/python scripts/validate_specs.py docs/specs/onec-marketplace-mapping-http-service.md
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-db-first-report-marts.md
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md

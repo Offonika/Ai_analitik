@@ -342,7 +342,7 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert summary_values["Маржинальный доход WB до налогов"] == float(
         report.total_gross_profit
     )
-    assert summary_values["НДС 5% из выручки"] == 47.62
+    assert summary_values["НДС"] == 47.62
     assert summary_values["Маржинальный доход WB после налогов"] == float(
         report.total_profit_after_taxes
     )
@@ -364,8 +364,8 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert (
         report_reconciliation.cell(2, report_idx["Выручка после СПП"] + 1).value == 1000
     )
-    assert report_reconciliation.cell(2, report_idx["НДС 5%"] + 1).value == 47.62
-    assert report_reconciliation.cell(2, report_idx["УСН 1%"] + 1).value == 10
+    assert report_reconciliation.cell(2, report_idx["НДС"] + 1).value == 47.62
+    assert report_reconciliation.cell(2, report_idx["Налог с выручки"] + 1).value == 10
     assert (
         report_reconciliation.cell(
             2, report_idx["Маржинальный доход WB до налогов"] + 1
@@ -602,16 +602,21 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert unit_headers[unit_idx["СПП"]] == "СПП"
     assert unit_headers[unit_idx["% СПП"]] == "% СПП"
     assert unit_headers[unit_idx["Выручка после СПП"]] == "Выручка после СПП"
-    assert unit_headers[unit_idx["НДС 5%"]] == "НДС 5%"
+    assert unit_headers[unit_idx["НДС"]] == "НДС"
     assert unit_headers[unit_idx["Хранение WB"]] == "Хранение WB"
     assert unit_headers[unit_idx["Продвижение WB"]] == "Продвижение WB"
-    assert unit_headers[unit_idx["УСН 1%"]] == "УСН 1%"
+    assert unit_headers[unit_idx["Налог с выручки"]] == "Налог с выручки"
     assert (
         unit_headers[unit_idx["Маржинальный доход WB после налогов"]]
         == "Маржинальный доход WB после налогов"
     )
     assert unit_headers[unit_idx["Причина статуса"]] == "Причина статуса"
     assert unit_headers[unit_idx["Статус СПП"]] == "Статус СПП"
+    assert unit_headers[unit_idx["Налоговый режим/ставка"]] == "Налоговый режим/ставка"
+    assert (
+        unit_headers[unit_idx["Источник налогового профиля"]]
+        == "Источник налогового профиля"
+    )
     unit_rows = [
         row
         for row in unit_economics.iter_rows(min_row=2, max_col=len(unit_headers))
@@ -637,8 +642,16 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert unit_rows[0][unit_idx["Выручка после СПП"]].value == 1000
     assert unit_rows[0][unit_idx["Хранение WB"]].value == 20
     assert unit_rows[0][unit_idx["Продвижение WB"]].value == 0
-    assert unit_rows[0][unit_idx["УСН 1%"]].value == 10
+    assert unit_rows[0][unit_idx["Налог с выручки"]].value == 10
     assert unit_rows[0][unit_idx["Маржинальный доход WB после налогов"]].value == 512.38
+    assert (
+        unit_rows[0][unit_idx["Налоговый режим/ставка"]].value
+        == "НДС внутри цены 5/105; УСН 1% от выручки"
+    )
+    assert (
+        unit_rows[0][unit_idx["Источник налогового профиля"]].value
+        == "legacy-default"
+    )
     assert unit_rows[0][unit_idx["Статус СПП"]].value == (
         "СПП не передается текущим источником"
     )

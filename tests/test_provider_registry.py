@@ -17,5 +17,13 @@ def test_provider_registry_defaults_and_validation() -> None:
     assert onec.default_role == "cost_documents"
     assert providers.normalize_role("onec_readonly", "unknown") == "cost_documents"
 
+    ozon = providers.provider_definition("ozon_api:finance")
+    assert ozon.provider_base == "ozon_api"
+    assert ozon.label == "Ozon Seller API"
+    assert providers.normalize_role("ozon_api", "") == "finance_reports"
+    assert providers.normalize_role("ozon_api", "returns_reports") == "returns_reports"
+    assert providers.connection_key("ozon_api:finance") == "finance"
+    providers.validate_provider("ozon_api")
+
     with pytest.raises(ValueError):
-        providers.validate_provider("ozon_api")
+        providers.validate_provider("unknown_api")

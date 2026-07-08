@@ -8,8 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
+from openpyxl import Workbook
 
 from wb_unit_economics.onec_odata import OnecSampleExportResult
+from wb_unit_economics.ozon import OzonPageResult
 from wb_unit_economics.wb_finance import (
     WbFinancePageResult,
     WbSalesReportListPageResult,
@@ -22,6 +24,7 @@ from wb_unit_economics.web.models import (
     SourceLoad,
     SourceRefreshCollection,
     SourceSnapshotRow,
+    TenantIntegration,
     WbCabinet,
 )
 from wb_unit_economics.web.repository import import_dashboard_payload, upsert_user
@@ -29,6 +32,7 @@ from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
     ONEC_REFRESH_COLLECTIONS,
     SourceRefreshService,
+    _read_ozon_rows,
     _safe_error,
 )
 
@@ -134,6 +138,52 @@ def test_source_refresh_blocks_hash_only_tenant_credentials(tmp_path: Path) -> N
     assert mapping_dir.exists()
 
 
+def test_source_refresh_blocks_check_failed_tenant_integration_before_external_reads(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+
+    def exporter_should_not_run(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("external exporter should not run")
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        onec_integration = (
+            db.query(TenantIntegration)
+            .filter_by(tenant_id="shumeyko", provider="onec_readonly")
+            .one()
+        )
+        onec_integration.status = "check_failed"
+        onec_integration.last_checked_at = datetime(2026, 7, 5, 14, 20)
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=exporter_should_not_run,
+            onec_exporter=exporter_should_not_run,
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            user=user,
+            source_report=report,
+        )
+        onec_collection = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="onec_readonly")
+            .one()
+        )
+
+    assert payload["status"] == "needs_configuration"
+    assert onec_collection.status == "needs_configuration"
+    assert onec_collection.error_message == "integration_not_runtime_ready"
+    assert onec_collection.payload["status"] == "check_failed"
+
+
 def test_source_refresh_uses_encrypted_tenant_credentials_and_creates_report(
     tmp_path: Path,
 ) -> None:
@@ -195,6 +245,223 @@ def test_source_refresh_uses_encrypted_tenant_credentials_and_creates_report(
         and item.source_row_id == "sales_register-ref"
         for item in snapshot_rows
     )
+
+
+def test_source_refresh_collects_optional_ozon_finance_without_blocking_wb(
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_ozon_request_delay_seconds = 0
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        ozon_secret = (
+            '{"clientId":"ozon-client","apiKey":"ozon-key",'
+            '"sellerAccountId":"OZON_ACCOUNT_1","accountName":"Ozon кабинет"}'
+        )
+        repository.save_tenant_integration(
+            db,
+            user=user,
+            tenant_id="shumeyko",
+            provider="ozon_api",
+            secret=ozon_secret,
+            secret_storage=integrations.secret_storage_payload(
+                settings,
+                ozon_secret,
+            ).payload,
+        )
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=_fake_wb_finance_exporter(seen),
+            ozon_cash_flow_exporter=_fake_ozon_cash_flow_exporter(seen),
+            onec_exporter=_fake_onec_exporter(seen),
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            user=user,
+            source_report=report,
+        )
+        ozon_collection = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="ozon_finance_cash_flow")
+            .one()
+        )
+        ozon_rows = (
+            db.query(SourceSnapshotRow)
+            .filter_by(source_type="ozon_finance_cash_flow")
+            .all()
+        )
+
+    assert payload["status"] == "source_loaded"
+    assert seen["ozon_client_id"] == "ozon-client"
+    assert seen["ozon_api_key"] == "ozon-key"
+    assert ozon_collection.required is False
+    assert ozon_collection.status == "loaded"
+    assert ozon_collection.payload["marketplace"] == "ozon"
+    assert ozon_collection.payload["results"][0]["sourceEndpoint"] == (
+        "/v1/finance/cash-flow-statement/list"
+    )
+    assert len(ozon_rows) == 1
+    assert ozon_rows[0].source_row_id == "op-ozon-1"
+    assert ozon_rows[0].row_payload["marketplace"] == "ozon"
+    assert ozon_rows[0].row_payload["offer_id"] == "A-1"
+
+
+def test_source_refresh_ozon_only_skips_wb_and_does_not_publish_report(
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_ozon_request_delay_seconds = 0
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        onec_secret = _onec_secret()
+        repository.save_tenant_integration(
+            db,
+            user=user,
+            tenant_id="shumeyko",
+            provider="onec_readonly",
+            secret=onec_secret,
+            secret_storage=integrations.secret_storage_payload(
+                settings,
+                onec_secret,
+            ).payload,
+        )
+        ozon_secret = (
+            '{"clientId":"ozon-client","apiKey":"ozon-key",'
+            '"sellerAccountId":"OZON_ACCOUNT_1","accountName":"Ozon кабинет"}'
+        )
+        repository.save_tenant_integration(
+            db,
+            user=user,
+            tenant_id="shumeyko",
+            provider="ozon_api",
+            secret=ozon_secret,
+            secret_storage=integrations.secret_storage_payload(
+                settings,
+                ozon_secret,
+            ).payload,
+        )
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=_builder_should_not_run,
+            ozon_cash_flow_exporter=_fake_ozon_cash_flow_exporter(seen),
+            ozon_realization_exporter=_fake_ozon_realization_exporter(seen),
+            ozon_realization_posting_exporter=_fake_ozon_extra_exporter(
+                seen,
+                source_type="ozon_realization_posting",
+                seen_key="ozon_realization_posting_client_id",
+                endpoint="/v1/finance/realization/posting",
+            ),
+            ozon_products_buyout_exporter=_fake_ozon_extra_exporter(
+                seen,
+                source_type="ozon_products_buyout",
+                seen_key="ozon_products_buyout_client_id",
+                endpoint="/v1/finance/products/buyout",
+            ),
+            ozon_b2b_sales_exporter=_fake_ozon_extra_exporter(
+                seen,
+                source_type="ozon_b2b_sales_json",
+                seen_key="ozon_b2b_sales_client_id",
+                endpoint="/v1/finance/document-b2b-sales/json",
+            ),
+            ozon_mutual_settlement_exporter=_fake_ozon_extra_exporter(
+                seen,
+                source_type="ozon_mutual_settlement",
+                seen_key="ozon_mutual_settlement_client_id",
+                endpoint="/v1/finance/mutual-settlement",
+            ),
+            ozon_products_exporter=_fake_ozon_products_exporter(seen),
+            onec_exporter=_fake_onec_exporter(seen),
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            mode="ozon-only",
+            user=user,
+            source_report=report,
+        )
+        reports = db.query(ReportRun).filter_by(tenant_id="shumeyko").all()
+        ozon_collection = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="ozon_finance_cash_flow")
+            .one()
+        )
+        ozon_products = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="ozon_products_report")
+            .one()
+        )
+        ozon_realization = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="ozon_realization")
+            .one()
+        )
+        ozon_realization_row = (
+            db.query(SourceSnapshotRow)
+            .filter_by(collection_id=ozon_realization.id)
+            .one()
+        )
+        ozon_extra = {
+            item.source_type: item
+            for item in db.query(SourceRefreshCollection)
+            .filter(SourceRefreshCollection.source_type.like("ozon_%"))
+            .all()
+        }
+
+    assert payload["status"] == "source_loaded"
+    assert payload["newReportRunId"] is None
+    assert [item.id for item in reports] == ["report-1"]
+    assert seen["ozon_client_id"] == "ozon-client"
+    assert "wb_api_key" not in seen
+    assert ozon_collection.required is True
+    assert ozon_collection.status == "loaded"
+    assert seen["ozon_realization_client_id"] == "ozon-client"
+    assert ozon_realization.required is False
+    assert ozon_realization.status == "loaded"
+    assert ozon_realization_row.row_payload["seller_account_id"] == "OZON_ACCOUNT_1"
+    assert ozon_realization_row.row_payload["source_page_index"] == 1
+    assert seen["ozon_realization_posting_client_id"] == "ozon-client"
+    assert seen["ozon_products_buyout_client_id"] == "ozon-client"
+    assert seen["ozon_b2b_sales_client_id"] == "ozon-client"
+    assert seen["ozon_mutual_settlement_client_id"] == "ozon-client"
+    assert ozon_extra["ozon_realization_posting"].status == "loaded"
+    assert ozon_extra["ozon_products_buyout"].status == "loaded"
+    assert ozon_extra["ozon_b2b_sales_json"].status == "loaded"
+    assert ozon_extra["ozon_mutual_settlement"].status == "loaded"
+    assert ozon_products.required is False
+    assert ozon_products.status == "loaded"
+    assert "wb_api" not in {item["sourceType"] for item in payload["collections"]}
+
+
+def test_read_ozon_rows_handles_xlsx_report_with_csv_suffix(tmp_path: Path) -> None:
+    path = tmp_path / "ozon-mutual-file.raw.csv"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["operation_type", "amount"])
+    sheet.append(["MarketplaceServiceCostPerClick", -100])
+    workbook.save(path)
+    workbook.close()
+
+    rows = _read_ozon_rows(path)
+
+    assert rows == [
+        {
+            "operation_type": "MarketplaceServiceCostPerClick",
+            "amount": "-100",
+        }
+    ]
 
 
 def test_source_refresh_uses_all_finance_role_wb_integrations(
@@ -1056,6 +1323,38 @@ def test_source_refresh_daily_stale_mapping_returns_needs_review(
     assert payload["newReportRunId"] is None
 
 
+def test_source_refresh_onec_only_does_not_publish_report(
+    tmp_path: Path,
+) -> None:
+    seen: dict[str, object] = {}
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=_fake_wb_finance_exporter(seen),
+            wb_report_list_exporter=_fake_report_list_exporter(seen),
+            onec_exporter=_fake_onec_exporter(seen),
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            mode="onec-only",
+            user=user,
+            source_report=report,
+        )
+        reports = db.query(ReportRun).filter_by(tenant_id="shumeyko").all()
+
+    assert payload["status"] == "source_loaded"
+    assert payload["newReportRunId"] is None
+    assert [item.id for item in reports] == ["report-1"]
+
+
 def test_source_refresh_fails_if_workbook_builder_does_not_create_file(
     tmp_path: Path,
 ) -> None:
@@ -1323,6 +1622,182 @@ def _fake_wb_empty_first_page_exporter(_settings, _output_dir: Path, **_kwargs):
             status_code=200,
         )
     ]
+
+
+def _fake_ozon_cash_flow_exporter(seen: dict[str, object]):
+    def fake(settings, output_dir: Path, **_kwargs):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        account = settings.accounts[0]
+        seen["ozon_client_id"] = account.client_id
+        seen["ozon_api_key"] = account.api_key
+        output_path = output_dir / "ozon.raw.json"
+        output_path.write_text(
+            json.dumps(
+                {
+                    "result": {
+                        "items": [
+                            {
+                                "operation_id": "op-ozon-1",
+                                "offer_id": "A-1",
+                                "price": "1000",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return [
+            OzonPageResult(
+                source_type="ozon_finance_cash_flow",
+                seller_account_id=account.seller_account_id,
+                account_name=account.account_name,
+                page_index=1,
+                ok=True,
+                status="ok",
+                row_count=1,
+                raw_payload_hash="ozon-hash",
+                output_path=output_path,
+                status_code=200,
+                source_endpoint="/v1/finance/cash-flow-statement/list",
+            )
+        ]
+
+    return fake
+
+
+def _fake_ozon_products_exporter(seen: dict[str, object]):
+    def fake(settings, output_dir: Path, **_kwargs):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        account = settings.accounts[0]
+        seen["ozon_products_client_id"] = account.client_id
+        output_path = output_dir / "ozon-products.raw.json"
+        output_path.write_text(
+            json.dumps(
+                {
+                    "result": {
+                        "items": [
+                            {
+                                "offer_id": "A-1",
+                                "product_id": "product-1",
+                                "sku": "12345",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return [
+            OzonPageResult(
+                source_type="ozon_products_report",
+                seller_account_id=account.seller_account_id,
+                account_name=account.account_name,
+                page_index=1,
+                ok=True,
+                status="ok",
+                row_count=1,
+                raw_payload_hash="ozon-products-hash",
+                output_path=output_path,
+                status_code=200,
+                source_endpoint="/v1/report/products/info",
+            )
+        ]
+
+    return fake
+
+
+def _fake_ozon_realization_exporter(seen: dict[str, object]):
+    def fake(settings, output_dir: Path, **_kwargs):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        account = settings.accounts[0]
+        seen["ozon_realization_client_id"] = account.client_id
+        output_path = output_dir / "ozon-realization.raw.json"
+        output_path.write_text(
+            json.dumps(
+                {
+                    "result": {
+                        "rows": [
+                            {
+                                "offer_id": "A-1",
+                                "seller_account_id": "raw-should-not-win",
+                                "source_page_index": 99,
+                                "sale_qty": "2",
+                                "sale_amount": "1000",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return [
+            OzonPageResult(
+                source_type="ozon_realization",
+                seller_account_id=account.seller_account_id,
+                account_name=account.account_name,
+                page_index=1,
+                ok=True,
+                status="ok",
+                row_count=1,
+                raw_payload_hash="ozon-realization-hash",
+                output_path=output_path,
+                status_code=200,
+                source_endpoint="/v2/finance/realization",
+            )
+        ]
+
+    return fake
+
+
+def _fake_ozon_extra_exporter(
+    seen: dict[str, object],
+    *,
+    source_type: str,
+    seen_key: str,
+    endpoint: str,
+):
+    def fake(settings, output_dir: Path, **_kwargs):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        account = settings.accounts[0]
+        seen[seen_key] = account.client_id
+        output_path = output_dir / f"{source_type}.raw.json"
+        output_path.write_text(
+            json.dumps(
+                {
+                    "result": {
+                        "items": [
+                            {
+                                "id": f"{source_type}-1",
+                                "amount": "100",
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return [
+            OzonPageResult(
+                source_type=source_type,
+                seller_account_id=account.seller_account_id,
+                account_name=account.account_name,
+                page_index=1,
+                ok=True,
+                status="ok",
+                row_count=1,
+                raw_payload_hash=f"{source_type}-hash",
+                output_path=output_path,
+                status_code=200,
+                source_endpoint=endpoint,
+            )
+        ]
+
+    return fake
 
 
 def _fake_report_list_exporter(seen: dict[str, object]):

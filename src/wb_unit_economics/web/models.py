@@ -416,6 +416,8 @@ class ReportUnitRow(Base):
     profit: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     margin: Mapped[Decimal | None] = mapped_column(Numeric)
     unit_profit: Mapped[Decimal | None] = mapped_column(Numeric)
+    tax_method: Mapped[str] = mapped_column(String, nullable=False, default="")
+    tax_profile_source: Mapped[str] = mapped_column(String, nullable=False, default="")
     status: Mapped[str] = mapped_column(String, nullable=False, default="")
     status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     spp_status: Mapped[str] = mapped_column(String, nullable=False, default="")

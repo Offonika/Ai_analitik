@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from wb_unit_economics.contracts import (
+    Marketplace,
+    MarketplaceApiSnapshot,
+    OzonApiSnapshot,
+    WbApiSnapshot,
+)
+
+
+def wb_snapshot_to_marketplace(snapshot: WbApiSnapshot) -> MarketplaceApiSnapshot:
+    return MarketplaceApiSnapshot(
+        marketplace=Marketplace.WB,
+        client_id=snapshot.client_id,
+        seller_account_id=snapshot.seller_account_id,
+        organization_id=snapshot.organization_id,
+        period_start=snapshot.period_start,
+        period_end=snapshot.period_end,
+        source_endpoint=snapshot.source_endpoint,
+        loaded_at=snapshot.loaded_at,
+        source_document_id=snapshot.wb_report_id or snapshot.wb_document_id,
+        nm_id=snapshot.nm_id,
+        vendor_code=snapshot.vendor_code,
+        barcode=snapshot.barcode,
+        sales_model=snapshot.sales_model.value,
+        operation_type=snapshot.operation_type,
+        quantity=snapshot.quantity,
+        net_revenue=snapshot.net_revenue,
+        commission=snapshot.wb_commission,
+        logistics=snapshot.logistics,
+        storage=snapshot.storage,
+        acceptance=snapshot.acceptance,
+        promotion=snapshot.wb_promotion,
+        penalties_and_holdbacks=snapshot.penalties_and_holdbacks,
+        acquiring=snapshot.acquiring,
+        currency=snapshot.currency,
+        raw_payload_hash=snapshot.raw_payload_hash,
+        is_partial_source=snapshot.is_partial_source,
+    )
+
+
+def ozon_snapshot_to_marketplace(snapshot: OzonApiSnapshot) -> MarketplaceApiSnapshot:
+    return MarketplaceApiSnapshot(
+        marketplace=Marketplace.OZON,
+        client_id=snapshot.client_id,
+        seller_account_id=snapshot.seller_account_id,
+        organization_id=snapshot.organization_id,
+        period_start=snapshot.period_start,
+        period_end=snapshot.period_end,
+        source_endpoint=snapshot.source_endpoint,
+        loaded_at=snapshot.loaded_at,
+        source_document_id=snapshot.source_report_code,
+        product_id=snapshot.product_id,
+        ozon_sku=snapshot.ozon_sku,
+        offer_id=snapshot.offer_id,
+        vendor_code=snapshot.vendor_code,
+        barcode=snapshot.barcode,
+        sales_model=snapshot.sales_model,
+        operation_type=snapshot.operation_type,
+        sales_quantity=snapshot.sales_quantity,
+        return_quantity=snapshot.return_quantity,
+        quantity=snapshot.quantity,
+        gross_revenue=snapshot.gross_revenue,
+        net_revenue=snapshot.net_revenue,
+        commission=snapshot.commission,
+        logistics=snapshot.logistics,
+        storage=snapshot.storage,
+        promotion=snapshot.promotion,
+        penalties_and_holdbacks=snapshot.penalties_and_holdbacks,
+        acquiring=snapshot.acquiring,
+        payout=snapshot.payout,
+        currency=snapshot.currency,
+        raw_payload_hash=snapshot.raw_payload_hash,
+        is_partial_source=snapshot.is_partial_source,
+    )

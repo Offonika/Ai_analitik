@@ -20,6 +20,8 @@ from wb_unit_economics.contracts import (
     ReportStatus,
     SalesModel,
     SkuMapping,
+    TaxProfile,
+    VatMode,
     WbExpenseAllocationBase,
     WbSalesReportSummaryRow,
 )
@@ -101,6 +103,105 @@ def test_profit_formula_includes_acquiring_and_cost_extra() -> None:
     assert row.tax_method == "НДС внутри цены 5/105; УСН 1% от выручки"
     assert row.data_quality_status is DataQualityStatus.RELIABLE
     assert row.advertising_scope is AdvertisingScope.EXCLUDED_FROM_MVP
+
+
+def test_osno_tax_profile_uses_vat_22_inside_price() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                revenue_tax_rate=Decimal("0"),
+                source="Catalog_Организации",
+            )
+        ],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = next(item for item in report.rows if item.nm_id == 101)
+    assert row.revenue_without_vat == Decimal("819.67")
+    assert row.vat_5_from_revenue == Decimal("180.33")
+    assert row.usn_1_from_revenue == Decimal("0.00")
+    assert row.profit_after_taxes == Decimal("389.67")
+    assert row.tax_method == "ОСНО; НДС 22% внутри цены; налог с выручки 0%"
+    assert row.tax_profile_source == "Catalog_Организации"
+
+
+def test_tax_profiles_are_selected_by_organization() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                source="Catalog_Организации",
+            ),
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_2",
+                tax_system="legacy_mvp",
+                vat_rate=Decimal("5"),
+                vat_mode=VatMode.INCLUDED,
+                revenue_tax_rate=Decimal("0.01"),
+                source="fixture",
+            ),
+        ],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    osno_row = next(item for item in report.rows if item.nm_id == 101)
+    legacy_row = next(item for item in report.rows if item.nm_id == 202)
+    assert osno_row.vat_5_from_revenue == Decimal("180.33")
+    assert osno_row.usn_1_from_revenue == Decimal("0.00")
+    assert legacy_row.vat_5_from_revenue == Decimal("-23.81")
+    assert legacy_row.usn_1_from_revenue == Decimal("-5.00")
+
+
+def test_missing_required_tax_profile_marks_row_needs_review() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                source="Catalog_Организации",
+            )
+        ],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = next(item for item in report.rows if item.nm_id == 202)
+    assert row.data_quality_status is DataQualityStatus.NEEDS_REVIEW
+    assert row.vat_5_from_revenue == Decimal("0")
+    assert row.usn_1_from_revenue == Decimal("0")
+    assert row.profit_after_taxes == row.gross_profit
+    assert row.tax_method == "Налоговый профиль не найден"
+    assert row.tax_profile_source == "missing"
 
 
 def test_unit_economics_row_keeps_sales_returns_and_net_quantity() -> None:

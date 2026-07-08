@@ -41,6 +41,30 @@ def test_prune_source_refresh_dry_run_and_apply(tmp_path: Path) -> None:
     assert (root / "full-20260624-001500").exists()
 
 
+def test_prune_source_refresh_keeps_explicitly_protected_snapshot(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source_refresh"
+    root.mkdir()
+    _snapshot_dir(root / "daily-20260622-001500", mtime=1)
+    _snapshot_dir(root / "daily-20260623-001500", mtime=2)
+
+    applied = _run_prune(
+        root,
+        "--daily-keep",
+        "0",
+        "--full-keep",
+        "0",
+        "--protect-snapshot-set",
+        "daily-20260622-001500",
+        "--apply",
+    )
+
+    assert applied.returncode == 0
+    assert (root / "daily-20260622-001500").exists()
+    assert not (root / "daily-20260623-001500").exists()
+
+
 def _snapshot_dir(path: Path, *, mtime: int) -> None:
     path.mkdir()
     (path / "payload.json").write_text("{}", encoding="utf-8")

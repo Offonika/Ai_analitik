@@ -48,6 +48,19 @@ PROVIDER_DEFINITIONS: dict[str, ProviderDefinition] = {
             ProviderRole("full_readonly", "Полный read-only доступ"),
         ),
     ),
+    "ozon_api": ProviderDefinition(
+        provider_base="ozon_api",
+        label="Ozon Seller API",
+        default_role="finance_reports",
+        check_handler="ozon_api",
+        roles=(
+            ProviderRole("finance_reports", "Финансовые отчеты"),
+            ProviderRole("products_catalog", "Товары и каталог"),
+            ProviderRole("stocks_analytics", "Остатки и аналитика"),
+            ProviderRole("returns_reports", "Возвраты"),
+            ProviderRole("full_readonly", "Полный read-only доступ"),
+        ),
+    ),
 }
 PROVIDER_ORDER = tuple(PROVIDER_DEFINITIONS)
 
