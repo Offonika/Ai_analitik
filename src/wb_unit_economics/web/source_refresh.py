@@ -1366,6 +1366,8 @@ class SourceRefreshService:
         results: Iterable[WbFinancePageResult],
         *,
         wb_cabinet_ids: dict[str, str],
+        source_coverage_start: date,
+        source_coverage_end: date,
     ) -> None:
         result_items = list(results)
         payload_items = [
@@ -1387,7 +1389,11 @@ class SourceRefreshService:
             int(self.settings.source_refresh_wb_persist_row_limit),
         )
         skip_row_persistence = row_count > persist_row_limit
-        payload: dict[str, Any] = {"results": payload_items}
+        payload: dict[str, Any] = {
+            "results": payload_items,
+            "sourceCoverageStart": source_coverage_start.isoformat(),
+            "sourceCoverageEnd": source_coverage_end.isoformat(),
+        }
         if skip_row_persistence:
             payload["rowPersistence"] = {
                 "status": "skipped_large_snapshot",
@@ -2208,10 +2214,13 @@ def _collect_wb_finance(
     if context.credentials.wb_settings is None:
         return CollectorResult()
     output_dir = context.root_dir / "wb_finance"
+    source_coverage_start = context.period_start - timedelta(
+        days=context.period_start.weekday()
+    )
     results = service._wb_finance_exporter(
         context.credentials.wb_settings,
         output_dir,
-        period_start=context.period_start,
+        period_start=source_coverage_start,
         period_end=context.period_end,
         limit=service._wb_limit(),
         max_pages=service._wb_max_pages(),
@@ -2224,6 +2233,8 @@ def _collect_wb_finance(
         output_dir,
         results,
         wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+        source_coverage_start=source_coverage_start,
+        source_coverage_end=context.period_end,
     )
     return CollectorResult(output_dir=output_dir)
 

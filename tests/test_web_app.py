@@ -5301,6 +5301,25 @@ def test_wb_finance_lineage_must_cover_first_closing_week() -> None:
         load,
         report,
     )
+    same_run = SimpleNamespace(
+        id="refresh-1",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+    )
+    collection = SimpleNamespace(
+        payload={
+            "sourceCoverageStart": "2026-03-30",
+            "sourceCoverageEnd": "2026-04-30",
+        }
+    )
+    assert repository._source_load_covers_report(
+        SimpleNamespace(
+            get=lambda _model, _id: same_run,
+            scalar=lambda _query: collection,
+        ),
+        load,
+        report,
+    )
 
 
 def test_missing_tax_profile_blocks_without_inheriting_current_osno(
@@ -5449,6 +5468,48 @@ def test_confirmed_usn_draft_does_not_inherit_current_osno_requirements(
         }
 
     assert "tax_profile_unconfirmed" not in codes
+    assert "pnl_method_mismatch" not in codes
+    assert "vat_input_unconfirmed" not in codes
+
+
+def test_non_osno_report_still_checks_common_financial_blockers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        repository,
+        "_report_tax_profile_publication_context",
+        lambda *_args, **_kwargs: (0, set()),
+    )
+    monkeypatch.setattr(repository, "_count_rows", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(repository, "_sum_column", lambda *_args, **_kwargs: 0)
+    report = SimpleNamespace(
+        id="usn-report",
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 7, 10),
+        source_snapshot_set_id="snapshot",
+    )
+    source_load = SimpleNamespace(
+        source_type="sku_mapping",
+        required=True,
+        publication_required=False,
+        status="needs_review",
+        row_count=1,
+        source_refresh_run_id="refresh-1",
+    )
+    db = SimpleNamespace(scalar=lambda _query: 0)
+
+    blockers = repository._financial_integrity_blockers(
+        db,
+        report,
+        source_loads=[source_load],
+        missing_cost_count=0,
+        mapping_count=2,
+        document_reconciliation_issue_count=0,
+    )
+    codes = {item["code"] for item in blockers}
+
+    assert "cogs_reconciliation_failed" in codes
+    assert "source_lineage_failed" in codes
     assert "pnl_method_mismatch" not in codes
     assert "vat_input_unconfirmed" not in codes
 

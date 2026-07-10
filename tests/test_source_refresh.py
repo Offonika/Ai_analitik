@@ -893,6 +893,8 @@ def test_source_refresh_uses_encrypted_tenant_credentials_and_creates_report(
 
     assert payload["status"] == "needs_review"
     assert seen["wb_api_key"] == "wb-token-secret"
+    assert seen["wb_finance_period_start"] == date(2026, 2, 23)
+    assert seen["wb_finance_period_end"] == date(2026, 6, 17)
     assert seen["onec_username"] == "readonly"
     assert seen["onec_password"] == "onec-secret"
     assert seen["onec_period_start"] == date(2026, 3, 1)
@@ -2779,6 +2781,8 @@ def _fake_wb_finance_exporter(seen: dict[str, object]):
     def fake(settings, output_dir: Path, **_kwargs):
         output_dir.mkdir(parents=True, exist_ok=True)
         seen["wb_api_key"] = settings.accounts[0].api_key
+        seen["wb_finance_period_start"] = _kwargs.get("period_start")
+        seen["wb_finance_period_end"] = _kwargs.get("period_end")
         output_path = output_dir / "wb.raw.json"
         output_path.write_text(
             json.dumps(

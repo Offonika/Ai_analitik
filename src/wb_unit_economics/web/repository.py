@@ -11613,6 +11613,9 @@ def _financial_integrity_blockers(
         osno_markers.append(ReportUnitRow.client_company_id.in_(osno_company_ids))
     osno_condition = and_(report_condition, or_(*osno_markers))
     osno_rows = _count_rows(db, osno_condition)
+    source_refresh_backed = bool(report.source_snapshot_set_id) or any(
+        bool(load.source_refresh_run_id) for load in source_loads
+    )
 
     blockers: list[dict[str, Any]] = []
     if tax_profile_issue_count:
@@ -11624,54 +11627,52 @@ def _financial_integrity_blockers(
             )
         )
 
-    if not osno_rows:
-        return blockers
-
-    method_mismatch = _count_rows(
-        db,
-        osno_condition,
-        ReportUnitRow.pnl_vat_mode != PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO,
-    )
-    if method_mismatch:
-        blockers.append(
-            _readiness_reason(
-                "pnl_method_mismatch",
-                "Смешаны несовместимые методы прибыли и НДС.",
-                method_mismatch,
-            )
+    if osno_rows:
+        method_mismatch = _count_rows(
+            db,
+            osno_condition,
+            ReportUnitRow.pnl_vat_mode != PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO,
         )
-
-    profit_mismatch = _count_rows(
-        db,
-        osno_condition,
-        ReportUnitRow.income_tax_included.is_(False),
-        func.abs(ReportUnitRow.profit - ReportUnitRow.profit_before_tax) > 1,
-    )
-    if profit_mismatch:
-        blockers.append(
-            _readiness_reason(
-                "profit_semantics_mismatch",
-                "Прибыль до НДФЛ расходится между полями profit и profitBeforeTax.",
-                profit_mismatch,
+        if method_mismatch:
+            blockers.append(
+                _readiness_reason(
+                    "pnl_method_mismatch",
+                    "Смешаны несовместимые методы прибыли и НДС.",
+                    method_mismatch,
+                )
             )
-        )
 
-    vat_unconfirmed = _count_rows(
-        db,
-        osno_condition,
-        func.lower(func.coalesce(ReportUnitRow.vat_input_completeness, ""))
-        != "confirmed",
-    )
-    if vat_unconfirmed:
-        blockers.append(
-            _readiness_reason(
-                "vat_input_unconfirmed",
-                "Входящий НДС не подтвержден независимым источником 1С.",
-                vat_unconfirmed,
+        profit_mismatch = _count_rows(
+            db,
+            osno_condition,
+            ReportUnitRow.income_tax_included.is_(False),
+            func.abs(ReportUnitRow.profit - ReportUnitRow.profit_before_tax) > 1,
+        )
+        if profit_mismatch:
+            blockers.append(
+                _readiness_reason(
+                    "profit_semantics_mismatch",
+                    "Прибыль до НДФЛ расходится между полями profit и profitBeforeTax.",
+                    profit_mismatch,
+                )
             )
-        )
 
-    if missing_cost_count or mapping_count:
+        vat_unconfirmed = _count_rows(
+            db,
+            osno_condition,
+            func.lower(func.coalesce(ReportUnitRow.vat_input_completeness, ""))
+            != "confirmed",
+        )
+        if vat_unconfirmed:
+            blockers.append(
+                _readiness_reason(
+                    "vat_input_unconfirmed",
+                    "Входящий НДС не подтвержден независимым источником 1С.",
+                    vat_unconfirmed,
+                )
+            )
+
+    if source_refresh_backed and (missing_cost_count or mapping_count):
         blockers.append(
             _readiness_reason(
                 "cogs_reconciliation_failed",
@@ -11718,7 +11719,12 @@ def _financial_integrity_blockers(
         and _source_load_covers_report(db, load, report)
         for load in source_loads
     )
-    if sales > 0 and storage_and_acceptance == 0 and not expense_control_loaded:
+    if (
+        source_refresh_backed
+        and sales > 0
+        and storage_and_acceptance == 0
+        and not expense_control_loaded
+    ):
         blockers.append(
             _readiness_reason(
                 "required_wb_expense_source_missing",
@@ -11732,12 +11738,14 @@ def _financial_integrity_blockers(
             .select_from(ReportReconciliationMonthly)
             .where(
                 ReportReconciliationMonthly.report_run_id == report.id,
+                func.trim(func.coalesce(ReportReconciliationMonthly.status, ""))
+                != "",
                 ReportReconciliationMonthly.status != "Сходится",
             )
         )
         or 0
     )
-    if monthly_reconciliation_issues:
+    if source_refresh_backed and monthly_reconciliation_issues:
         blockers.append(
             _readiness_reason(
                 "monthly_reconciliation_unresolved",
@@ -11745,7 +11753,7 @@ def _financial_integrity_blockers(
                 monthly_reconciliation_issues,
             )
         )
-    if document_reconciliation_issue_count:
+    if source_refresh_backed and document_reconciliation_issue_count:
         blockers.append(
             _readiness_reason(
                 "document_reconciliation_unresolved",
@@ -11766,15 +11774,34 @@ def _source_load_covers_report(
     refresh_run = db.get(SourceRefreshRun, load.source_refresh_run_id)
     if refresh_run is None:
         return False
+    coverage_start = refresh_run.period_start
+    coverage_end = refresh_run.period_end
     required_start = report.period_start
     required_end = report.period_end
     if load.source_type == "wb_finance_detail":
         required_start -= timedelta(days=required_start.weekday())
         required_end -= timedelta(days=(required_end.weekday() + 1) % 7)
-    return (
-        refresh_run.period_start <= required_start
-        and refresh_run.period_end >= required_end
-    )
+        scalar = getattr(db, "scalar", None)
+        if callable(scalar):
+            collection = scalar(
+                select(SourceRefreshCollection)
+                .where(
+                    SourceRefreshCollection.refresh_run_id == refresh_run.id,
+                    SourceRefreshCollection.source_type == "wb_finance_detail",
+                )
+                .order_by(SourceRefreshCollection.id.desc())
+            )
+            payload = collection.payload if collection is not None else {}
+            try:
+                coverage_start = date.fromisoformat(
+                    str((payload or {}).get("sourceCoverageStart") or "")
+                )
+                coverage_end = date.fromisoformat(
+                    str((payload or {}).get("sourceCoverageEnd") or "")
+                )
+            except ValueError:
+                pass
+    return coverage_start <= required_start and coverage_end >= required_end
 
 
 def report_publication_blockers(
