@@ -5273,6 +5273,91 @@ def test_financial_publication_gate_keeps_current_report_on_blocker(
     assert draft.publication_status == "draft"
 
 
+def test_staff_can_publish_blocked_report_as_audited_kanban_tasks(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, payload=ready_payload())
+    with client.app.state.session_factory() as db:
+        draft = import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="publish-with-tasks-draft",
+            publication_status="draft",
+            publish=False,
+            source_snapshot_set_id="publish-with-tasks-snapshot",
+        )
+        draft_id = draft.id
+        db.commit()
+
+    login(client)
+    missing_confirmation = client.post(
+        f"/api/reports/{draft_id}/publish-with-tasks",
+        json={
+            "reason": "Публикуем с прозрачными задачами канбана",
+            "confirm_blocking_tasks": False,
+        },
+    )
+    assert missing_confirmation.status_code == 400
+
+    published = client.post(
+        f"/api/reports/{draft_id}/publish-with-tasks",
+        json={
+            "reason": "Публикуем с прозрачными задачами канбана",
+            "confirm_blocking_tasks": True,
+        },
+    )
+    assert published.status_code == 200
+    payload = published.json()
+    assert payload["publicationStatus"] == "published"
+    assert payload["isCurrent"] is True
+    assert payload["blockingTasks"]
+    assert payload["readiness"]["blockingReasons"] == payload["blockingTasks"]
+
+    with client.app.state.session_factory() as db:
+        current = db.scalar(
+            select(repository.ReportRun).where(
+                repository.ReportRun.client_id == "shumeyko",
+                repository.ReportRun.is_current.is_(True),
+            )
+        )
+        assert current is not None
+        assert current.id == draft_id
+        event = db.scalar(
+            select(repository.AuditEvent)
+            .where(
+                repository.AuditEvent.action == "report_published_with_tasks",
+                repository.AuditEvent.entity_id == draft_id,
+            )
+            .order_by(repository.AuditEvent.id.desc())
+        )
+        assert event is not None
+        assert event.payload["reason"] == (
+            "Публикуем с прозрачными задачами канбана"
+        )
+        assert event.payload["blockingTasks"]
+        upsert_user(
+            db,
+            email="publish-tasks-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+
+    client.post("/api/auth/logout")
+    login_as(client, "publish-tasks-client@example.com", "secret")
+    forbidden = client.post(
+        f"/api/reports/{draft_id}/publish-with-tasks",
+        json={
+            "reason": "Клиент не может публиковать",
+            "confirm_blocking_tasks": True,
+        },
+    )
+    assert forbidden.status_code == 403
+
+
 def test_wb_finance_lineage_must_cover_first_closing_week() -> None:
     report = SimpleNamespace(
         period_start=date(2026, 4, 1),

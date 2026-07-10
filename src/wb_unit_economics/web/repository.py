@@ -8883,6 +8883,62 @@ def publish_report(db: Session, report: ReportRun) -> ReportRun:
             payload={"blockers": blockers},
         )
         raise ReportPublicationBlocked(blockers)
+    _set_report_current(db, report)
+    audit(
+        db,
+        action="report_published_current",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={"lineageType": report.lineage_type},
+    )
+    db.flush()
+    return report
+
+
+def publish_report_with_tasks(
+    db: Session,
+    report: ReportRun,
+    *,
+    user: User,
+    reason: str,
+) -> tuple[ReportRun, list[dict[str, Any]]]:
+    """Publish an explicitly accepted draft while retaining blockers as Kanban tasks."""
+
+    require_staff(user, report.tenant_id)
+    audit_reason = reason.strip()
+    if not audit_reason:
+        raise ValueError("publication reason is required")
+    db.flush()
+    blockers = report_publication_blockers(db, report)
+    if not blockers:
+        return publish_report(db, report), []
+    _set_report_current(db, report)
+    audit(
+        db,
+        action="report_published_with_tasks",
+        user=user,
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "lineageType": report.lineage_type,
+            "reason": audit_reason,
+            "blockingTasks": [
+                {
+                    "code": as_text(item.get("code")),
+                    "message": as_text(item.get("message")),
+                    "count": item.get("count"),
+                }
+                for item in blockers
+            ],
+        },
+    )
+    db.flush()
+    return report, blockers
+
+
+def _set_report_current(db: Session, report: ReportRun) -> None:
     previous_reports = list(
         db.scalars(
             select(ReportRun).where(
@@ -8899,16 +8955,6 @@ def publish_report(db: Session, report: ReportRun) -> ReportRun:
             previous.publication_status = "superseded"
     report.publication_status = "published"
     report.is_current = True
-    audit(
-        db,
-        action="report_published_current",
-        tenant_id=report.tenant_id,
-        entity_type="report_run",
-        entity_id=report.id,
-        payload={"lineageType": report.lineage_type},
-    )
-    db.flush()
-    return report
 
 
 def _clear_report_payload(db: Session, report_id: str) -> None:

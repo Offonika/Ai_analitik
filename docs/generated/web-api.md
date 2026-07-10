@@ -84,6 +84,7 @@ updated_at: "2026-07-10"
 | `POST` | `/api/reports/{report_id}/live-checks/wb-stock` | `live_check_wb_stock_api_reports__report_id__live_checks_wb_stock_post` | Live Check Wb Stock |
 | `GET` | `/api/reports/{report_id}/management-report` | `report_management_report_api_reports__report_id__management_report_get` | Report Management Report |
 | `POST` | `/api/reports/{report_id}/mapping-file` | `upload_mapping_file_api_reports__report_id__mapping_file_post` | Upload Mapping File |
+| `POST` | `/api/reports/{report_id}/publish-with-tasks` | `publish_report_with_tasks_api_reports__report_id__publish_with_tasks_post` | Publish Report With Tasks |
 | `GET` | `/api/reports/{report_id}/refresh-jobs/{job_id}` | `get_refresh_job_api_reports__report_id__refresh_jobs__job_id__get` | Get Refresh Job |
 | `POST` | `/api/reports/{report_id}/refresh/onec-auto` | `refresh_onec_auto_api_reports__report_id__refresh_onec_auto_post` | Refresh Onec Auto |
 | `GET` | `/api/reports/{report_id}/rows` | `report_rows_api_reports__report_id__rows_get` | Report Rows |
@@ -92,4 +93,4 @@ updated_at: "2026-07-10"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **71**.
+Всего маршрутов: **72**.

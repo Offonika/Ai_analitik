@@ -171,6 +171,11 @@ class AnalyticalReportRequest(BaseModel):
     branded: bool = True
 
 
+class PublishWithTasksRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+    confirm_blocking_tasks: bool = False
+
+
 class TenantIntegrationSaveRequest(BaseModel):
     client_id: str | None = None
     tenant_id: str | None = None
@@ -1515,6 +1520,40 @@ def create_app(
             report,
             include_staff_readiness=_include_staff_readiness(current, report.tenant_id),
         )
+
+    @app.post("/api/reports/{report_id}/publish-with-tasks")
+    def publish_report_with_tasks(
+        report_id: str,
+        payload: PublishWithTasksRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_staff_or_403(current, report.tenant_id)
+        if not payload.confirm_blocking_tasks:
+            raise HTTPException(
+                status_code=400,
+                detail="explicit blocking task confirmation required",
+            )
+        try:
+            report, tasks = repository.publish_report_with_tasks(
+                db,
+                report,
+                user=current,
+                reason=payload.reason,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {
+            "reportId": report.id,
+            "publicationStatus": report.publication_status,
+            "isCurrent": report.is_current,
+            "blockingTasks": tasks,
+            "readiness": repository.report_readiness_payload(db, report),
+        }
 
     @app.post("/api/reports/{report_id}/mapping-file")
     async def upload_mapping_file(

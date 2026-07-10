@@ -348,6 +348,13 @@ UI readiness behavior:
   which moves it to `Готово к отправке` as a local workflow acknowledgement for
   the current report but does not mutate source data, calculation facts,
   readiness score or report status;
+- обычный `publish_report` остается строгим и отклоняет report с блокерами;
+  отдельный staff-only `POST /api/reports/{report_id}/publish-with-tasks`
+  требует явного подтверждения и причины, атомарно переключает current и пишет
+  audit-событие `report_published_with_tasks`. Все `blockingReasons` остаются
+  карточками `Исправить сейчас`, отсутствующие финансовые показатели остаются
+  `null`, а клиентские финансовые рекомендации остаются заблокированными до
+  фактического закрытия readiness;
 - preflight deciphering opens a modal `Расшифровки проблем` widget with tabs
   for review rows, source refresh diagnostics, missing 1C cost, mapping issues
   and losses, so consultants can switch contexts without scrolling through
