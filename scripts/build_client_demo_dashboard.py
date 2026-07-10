@@ -297,7 +297,11 @@ def _read_lost_sales(workbook: Any) -> list[dict[str, Any]]:
                     or row.get("Потенциально упущенная выручка")
                 ),
                 "lost_profit": _round(
-                    row.get("Упущенная прибыль")
+                    row.get(
+                        "Оценка недополученного маржинального дохода "
+                        "до налогов"
+                    )
+                    or row.get("Упущенная прибыль")
                     or row.get("Потенциально упущенная прибыль")
                 ),
                 "note": _text(row.get("Ограничение") or row.get("Вывод")),

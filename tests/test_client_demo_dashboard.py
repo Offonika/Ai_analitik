@@ -148,7 +148,7 @@ def _create_demo_workbook(path: Path) -> None:
             "Продажи, шт",
             "Потенциально упущено, шт",
             "Упущенная выручка",
-            "Упущенная прибыль",
+            "Оценка недополученного маржинального дохода до налогов",
             "Ограничение",
         ]
     )
@@ -311,6 +311,7 @@ def test_build_client_demo_dashboard_from_visible_sheets(tmp_path: Path) -> None
     payload = collect_dashboard_data(workbook_path)
     assert payload["views"]["Все кабинеты"]["kpis"]["sales"] == 10
     assert payload["views"]["Все кабинеты"]["kpis"]["lost_products"] == 1
+    assert payload["views"]["Все кабинеты"]["kpis"]["lost_profit"] == 6000
     assert [row["month"] for row in payload["views"]["Все кабинеты"]["monthly"]] == [
         "Апрель 2026",
         "Май 2026",
