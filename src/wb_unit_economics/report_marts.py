@@ -10,9 +10,12 @@ from typing import Any
 
 from wb_unit_economics.contracts import (
     DataQualityStatus,
+    OnecGrossProfitDocumentRow,
+    OnecMarketplaceServiceRow,
     OnecUnfCostSnapshot,
     SkuMapping,
     UnitEconomicsReport,
+    WbSalesReportSummaryRow,
 )
 from wb_unit_economics.excel import (
     REPORT_STATUS_LABELS,
@@ -23,17 +26,24 @@ from wb_unit_economics.excel import (
     _cost_method_lookup,
     _cost_name_lookup,
     _data_quality_label,
+    _document_reconciliation_actuals,
+    _document_reconciliation_row,
+    _index_onec_document_rows,
     _load_onec_stock_by_warehouse,
     _load_stock_history,
     _lost_sales_rows,
     _mapping_article_lookup,
+    _match_onec_document_rows,
     _month_label,
     _onec_article_label,
+    _onec_document_actual_key,
     _product_label,
     _row_month_start,
     _safe_margin,
     _sales_model_label,
     _status_reason,
+    _unmatched_onec_document_row,
+    _weekly_summary_rows_by_type,
 )
 from wb_unit_economics.liquidity import aggregate_liquidity_rows, liquidity_rows_payload
 from wb_unit_economics.web.repository import (
@@ -56,9 +66,11 @@ class ReportMarts:
     liquidityRows: list[dict[str, Any]]
     returns: list[dict[str, Any]]
     lostSales: list[dict[str, Any]]
+    lostSalesCoverage: dict[str, Any] = field(default_factory=dict)
     reconciliation: list[dict[str, Any]] = field(default_factory=list)
     reconciliationMonthly: list[dict[str, Any]] = field(default_factory=list)
     documentReconciliation: list[dict[str, Any]] = field(default_factory=list)
+    taxInputReconciliation: list[dict[str, Any]] = field(default_factory=list)
     readiness: dict[str, Any] = field(default_factory=dict)
 
     def to_dashboard_payload(self) -> dict[str, Any]:
@@ -72,9 +84,11 @@ class ReportMarts:
             "liquidityRows": self.liquidityRows,
             "returns": self.returns,
             "lostSales": self.lostSales,
+            "lostSalesCoverage": self.lostSalesCoverage,
             "reconciliation": self.reconciliation,
             "reconciliationMonthly": self.reconciliationMonthly,
             "documentReconciliation": self.documentReconciliation,
+            "taxInputReconciliation": self.taxInputReconciliation,
         }
 
 
@@ -87,11 +101,18 @@ def build_report_marts(
     onec_stock_dir: Path | None = None,
     account_labels: Mapping[str, str] | None = None,
     organization_labels: Mapping[str, str] | None = None,
+    onec_gross_profit_rows: Iterable[OnecGrossProfitDocumentRow] = (),
+    onec_marketplace_service_rows: Iterable[OnecMarketplaceServiceRow] = (),
+    wb_sales_report_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
+    source_run_id: str = "",
     client_name: str = "Шумейко и Партнеры",
     source_label: str = "DB report marts",
 ) -> ReportMarts:
     cost_rows = list(cost_snapshots)
     mapping_rows = list(sku_mappings)
+    onec_gross_rows = list(onec_gross_profit_rows)
+    onec_service_rows = list(onec_marketplace_service_rows)
+    wb_summary_rows = list(wb_sales_report_summary_rows)
     unit_rows = unit_rows_mart(
         report,
         cost_snapshots=cost_rows,
@@ -102,6 +123,13 @@ def build_report_marts(
     liquidity_rows = liquidity_rows_payload(aggregate_liquidity_rows(unit_rows))
     document_reconciliation = document_reconciliation_mart(
         report,
+        onec_gross_profit_rows=onec_gross_rows,
+        wb_sales_report_summary_rows=wb_summary_rows,
+        account_labels=account_labels,
+        organization_labels=organization_labels,
+    )
+    tax_input_reconciliation = tax_input_reconciliation_mart(
+        report,
         account_labels=account_labels,
         organization_labels=organization_labels,
     )
@@ -111,6 +139,11 @@ def build_report_marts(
         sku_mappings=mapping_rows,
         stock_history_dir=stock_history_dir,
         onec_stock_dir=onec_stock_dir,
+        account_labels=account_labels,
+    )
+    lost_sales_coverage = lost_sales_coverage_mart(
+        report,
+        stock_history_dir=stock_history_dir,
         account_labels=account_labels,
     )
     meta = {
@@ -149,15 +182,26 @@ def build_report_marts(
         meta=meta,
         readiness=readiness_mart(unit_rows, report=report),
         options=options,
-        monthly=monthly_payload(unit_rows),
+        monthly=monthly_payload(
+            unit_rows,
+            period_start=report.report_period_start,
+            period_end=report.report_period_end,
+        ),
         expenses=expense_payload(unit_rows),
         unitRows=unit_rows,
         liquidityRows=liquidity_rows,
         returns=returns_payload(unit_rows, RETURN_REASON_LIMITATION),
         lostSales=lost_sales,
+        lostSalesCoverage=lost_sales_coverage,
         reconciliation=[],
-        reconciliationMonthly=reconciliation_monthly_mart(report),
+        reconciliationMonthly=reconciliation_monthly_mart(
+            report,
+            onec_gross_profit_rows=onec_gross_rows,
+            onec_marketplace_service_rows=onec_service_rows,
+            source_run_id=source_run_id,
+        ),
         documentReconciliation=document_reconciliation,
+        taxInputReconciliation=tax_input_reconciliation,
     )
 
 
@@ -205,6 +249,13 @@ def unit_rows_mart(
                 "sppRate": _nullable_number(row.spp_discount_rate),
                 "revenue": _number(row.net_revenue),
                 "vat": _number(row.vat_5_from_revenue),
+                "vatOutput": _number(row.vat_output),
+                "vatInput": _number(row.vat_input),
+                "vatInputFromWb": _number(row.vat_input_from_wb),
+                "vatInputFrom1c": _number(row.vat_input_from_1c),
+                "vatInputDifference": _number(row.vat_input_difference),
+                "vatInputCompleteness": row.vat_input_completeness,
+                "vatPayable": _number(row.vat_payable),
                 "revenueWithoutVat": _number(row.revenue_without_vat),
                 "cost": _number(row.cogs_from_1c_with_extra_costs),
                 "commission": _number(row.wb_commission),
@@ -215,12 +266,18 @@ def unit_rows_mart(
                 "penalties": _number(row.penalties_and_holdbacks),
                 "acquiring": _number(row.acquiring),
                 "usn": _number(row.usn_1_from_revenue),
+                "incomeTaxKind": row.income_tax_kind,
+                "incomeTaxBase": _number(row.income_tax_base),
+                "incomeTax": _number(row.income_tax),
+                "incomeTaxIncluded": row.income_tax_included,
                 "profitBeforeTax": _number(row.gross_profit),
                 "profit": _number(row.profit_after_taxes),
                 "margin": _nullable_number(row.margin_after_taxes),
                 "unitProfit": _nullable_number(row.profit_after_taxes_per_unit),
                 "taxMethod": row.tax_method,
                 "taxProfileSource": row.tax_profile_source,
+                "taxCompleteness": row.tax_completeness,
+                "pnlVatMode": row.pnl_vat_mode,
                 "status": status,
                 "statusReason": _status_reason(row, cost_methods),
                 "sppStatus": row.spp_source_status,
@@ -281,8 +338,17 @@ def lost_sales_mart(
                 "avgDailySales": _number(row[12]),
                 "lostUnits": _number(row[13]),
                 "lostRevenue": _number(row[14]),
+                "lostContributionMargin": _number(row[15]),
                 "lostProfit": _number(row[15]),
+                "preventedLoss": (
+                    _number(abs(Decimal(str(row[13])) * Decimal(str(row[16]))))
+                    if Decimal(str(row[16])) < 0
+                    else 0.0
+                ),
                 "profitPerSale": _number(row[16]),
+                "estimateType": (
+                    "prevented_loss" if Decimal(str(row[16])) < 0 else "lost_margin"
+                ),
                 "note": row[17],
                 "sourceStatus": row[18],
             }
@@ -290,134 +356,408 @@ def lost_sales_mart(
     return result
 
 
-def reconciliation_monthly_mart(report: UnitEconomicsReport) -> list[dict[str, Any]]:
-    buckets: dict[str, dict[str, Decimal]] = {}
+def lost_sales_coverage_mart(
+    report: UnitEconomicsReport,
+    *,
+    stock_history_dir: Path | None,
+    account_labels: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    coverage = _load_stock_history(stock_history_dir, report)
+    accounts = []
+    for item in coverage.get("accounts", []):
+        if not isinstance(item, Mapping):
+            continue
+        seller_account_id = str(item.get("seller_account_id") or "")
+        accounts.append(
+            {
+                "sellerAccountId": seller_account_id,
+                "cabinet": _account_label(seller_account_id, account_labels),
+                "status": str(item.get("status") or "incomplete"),
+                "coveredDays": int(item.get("covered_days") or 0),
+                "totalDays": int(item.get("total_days") or 0),
+                "calculated": bool(item.get("calculated")),
+            }
+        )
+    return {
+        "status": str(coverage.get("status") or "not_loaded"),
+        "calculated": bool(coverage.get("calculated")),
+        "coveredDays": int(coverage.get("covered_days") or 0),
+        "totalDays": int(coverage.get("total_days") or 0),
+        "message": str(coverage.get("message") or coverage.get("source_label") or ""),
+        "accounts": accounts,
+    }
+
+
+def reconciliation_monthly_mart(
+    report: UnitEconomicsReport,
+    *,
+    onec_gross_profit_rows: Iterable[OnecGrossProfitDocumentRow] = (),
+    onec_marketplace_service_rows: Iterable[OnecMarketplaceServiceRow] = (),
+    source_run_id: str = "",
+) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Decimal | bool]] = {}
     for row in report.report_reconciliation_rows:
         label = _month_label(_row_month_start(row, report.report_period_start), report)
         bucket = buckets.setdefault(
             label,
             {
                 "wb_quantity": Decimal("0"),
-                "onec_quantity": Decimal("0"),
-                "quantity_delta": Decimal("0"),
                 "wb_cogs": Decimal("0"),
-                "onec_cogs": Decimal("0"),
-                "cogs_delta": Decimal("0"),
                 "wb_mp_expenses": Decimal("0"),
+                "onec_quantity": Decimal("0"),
+                "onec_cogs": Decimal("0"),
                 "onec_mp_expenses": Decimal("0"),
-                "mp_expenses_delta": Decimal("0"),
+                "onec_sales_available": False,
+                "onec_services_available": False,
             },
         )
         bucket["wb_quantity"] += row.quantity
-        bucket["onec_quantity"] += row.quantity
         bucket["wb_cogs"] += row.cogs_from_1c_with_extra_costs
-        bucket["onec_cogs"] += row.cogs_from_1c_with_extra_costs
-        wb_expenses = (
-            row.wb_commission
-            + row.logistics
-            + row.storage
-            + row.acceptance
-            + row.wb_promotion
-            + row.penalties_and_holdbacks
-            + row.acquiring
+        bucket["wb_mp_expenses"] += (
+            row.revenue_without_vat
+            - row.gross_profit
+            - row.cogs_from_1c_with_extra_costs
         )
-        bucket["wb_mp_expenses"] += wb_expenses
-        bucket["onec_mp_expenses"] += wb_expenses
+
+    for row in onec_gross_profit_rows:
+        if not (
+            report.report_period_start <= row.document_date <= report.report_period_end
+        ):
+            continue
+        label = _month_label(
+            date(row.document_date.year, row.document_date.month, 1), report
+        )
+        bucket = buckets.setdefault(label, _empty_monthly_reconciliation_bucket())
+        bucket["onec_quantity"] += row.quantity
+        bucket["onec_cogs"] += row.cogs_without_vat
+        bucket["onec_sales_available"] = True
+
+    for row in onec_marketplace_service_rows:
+        if not (
+            report.report_period_start <= row.document_date <= report.report_period_end
+        ):
+            continue
+        label = _month_label(
+            date(row.document_date.year, row.document_date.month, 1), report
+        )
+        bucket = buckets.setdefault(label, _empty_monthly_reconciliation_bucket())
+        net_amount = row.amount - row.vat if row.amount_includes_vat else row.amount
+        bucket["onec_mp_expenses"] += net_amount
+        bucket["onec_services_available"] = True
+
     result = []
     for month, values in buckets.items():
+        onec_quantity = (
+            Decimal(values["onec_quantity"]) if values["onec_sales_available"] else None
+        )
+        onec_cogs = (
+            Decimal(values["onec_cogs"]) if values["onec_sales_available"] else None
+        )
+        onec_mp_expenses = (
+            Decimal(values["onec_mp_expenses"])
+            if values["onec_services_available"]
+            else None
+        )
+        quantity_delta = (
+            onec_quantity - Decimal(values["wb_quantity"])
+            if onec_quantity is not None
+            else None
+        )
+        cogs_delta = (
+            onec_cogs - Decimal(values["wb_cogs"]) if onec_cogs is not None else None
+        )
+        mp_expenses_delta = (
+            onec_mp_expenses - Decimal(values["wb_mp_expenses"])
+            if onec_mp_expenses is not None
+            else None
+        )
+        status = _monthly_reconciliation_status(
+            quantity_delta,
+            cogs_delta,
+            mp_expenses_delta,
+        )
         result.append(
             {
                 "month": month,
                 "wb_quantity": _number(values["wb_quantity"]),
-                "onec_quantity": _number(values["onec_quantity"]),
-                "quantity_delta": _number(values["quantity_delta"]),
+                "onec_quantity": _nullable_number(onec_quantity),
+                "quantity_delta": _nullable_number(quantity_delta),
                 "wb_cogs": _number(values["wb_cogs"]),
-                "onec_cogs": _number(values["onec_cogs"]),
-                "cogs_delta": _number(values["cogs_delta"]),
+                "onec_cogs": _nullable_number(onec_cogs),
+                "cogs_delta": _nullable_number(cogs_delta),
                 "wb_mp_expenses": _number(values["wb_mp_expenses"]),
-                "onec_mp_expenses": _number(values["onec_mp_expenses"]),
-                "mp_expenses_delta": _number(values["mp_expenses_delta"]),
-                "comment": (
-                    "DB-first контрольная витрина; детальная сверка 1С ОПиУ "
-                    "добавляется отдельным источником."
-                ),
+                "onec_mp_expenses": _nullable_number(onec_mp_expenses),
+                "mp_expenses_delta": _nullable_number(mp_expenses_delta),
+                "status": status,
+                "wbBasis": "week_end; P&L без НДС",
+                "onecBasis": "фактическая дата регистра/документа 1С",
+                "sourceRunId": source_run_id,
+                "comment": _monthly_reconciliation_comment(status),
             }
         )
-    return result
+    return sorted(result, key=lambda item: item["month"])
+
+
+def _empty_monthly_reconciliation_bucket() -> dict[str, Decimal | bool]:
+    return {
+        "wb_quantity": Decimal("0"),
+        "wb_cogs": Decimal("0"),
+        "wb_mp_expenses": Decimal("0"),
+        "onec_quantity": Decimal("0"),
+        "onec_cogs": Decimal("0"),
+        "onec_mp_expenses": Decimal("0"),
+        "onec_sales_available": False,
+        "onec_services_available": False,
+    }
+
+
+def _monthly_reconciliation_status(*deltas: Decimal | None) -> str:
+    if any(value is None for value in deltas):
+        return "Нет источника 1С"
+    if all(abs(value or Decimal("0")) <= Decimal("1") for value in deltas):
+        return "Сходится"
+    return "Расхождение"
+
+
+def _monthly_reconciliation_comment(status: str) -> str:
+    if status == "Сходится":
+        return "Независимые суммы WB и 1С сходятся в пределах 1 ₽."
+    if status == "Нет источника 1С":
+        return "Отсутствующий источник оставлен пустым и не подменен нулем."
+    return (
+        "Требуется документальная расшифровка дельты; "
+        "взаимозачет недель не закрывает сверку."
+    )
 
 
 def document_reconciliation_mart(
     report: UnitEconomicsReport,
     *,
+    onec_gross_profit_rows: Iterable[OnecGrossProfitDocumentRow] = (),
+    wb_sales_report_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
     account_labels: Mapping[str, str] | None = None,
     organization_labels: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    result = []
+    onec_rows = list(onec_gross_profit_rows)
+    weekly_summaries = _weekly_summary_rows_by_type(wb_sales_report_summary_rows)
+    onec_index = _index_onec_document_rows(onec_rows)
+    matched_actual_keys: set[tuple[object, ...]] = set()
+    result: list[dict[str, Any]] = []
     for index, row in enumerate(report.onec_report_reconciliation_rows, start=1):
+        sales_summaries = weekly_summaries.get(
+            (row.seller_account_id, row.week_start, "Отчет комиссионера"),
+            [],
+        )
+        buyout_summaries = weekly_summaries.get(
+            (row.seller_account_id, row.week_start, "Уведомление о выкупе"),
+            [],
+        )
+        summaries = weekly_summaries.get(
+            (row.seller_account_id, row.week_start, row.document_label),
+            [],
+        )
+        matched_candidates = _match_onec_document_rows(row, onec_index, summaries)
+        for actual in matched_candidates:
+            matched_actual_keys.add(_onec_document_actual_key(actual))
+        actuals = _document_reconciliation_actuals(matched_candidates)
+        reconciled = _document_reconciliation_row(
+            row,
+            actuals,
+            summaries,
+            report_period_end=report.report_period_end,
+            sales_summaries=sales_summaries,
+            buyout_summaries=buyout_summaries,
+            account_labels=account_labels,
+            organization_labels=organization_labels,
+        )
         result.append(
-            {
-                "id": f"document-reconciliation-{index}",
-                "status": _data_quality_label(row.data_quality_status),
-                "payoutStatus": "",
-                "periodStatus": _period_status(row.week_end, report.report_period_end),
-                "documentReport": _document_report_label(
+            _document_reconciliation_payload(
+                index,
+                reconciled,
+                document_report=_document_report_label(
                     row.document_label,
                     row.week_start,
                     row.week_end,
                     row.document_date,
                 ),
-                "salesPeriod": (
-                    f"{row.week_start.isoformat()} - {row.week_end.isoformat()}"
-                ),
-                "salesPeriodStart": row.week_start.isoformat(),
-                "salesPeriodEnd": row.week_end.isoformat(),
-                "expectedDocumentDate": row.document_date.isoformat(),
-                "documentType": row.document_label,
+            )
+        )
+    for actual in onec_rows:
+        if _onec_document_actual_key(actual) in matched_actual_keys:
+            continue
+        unmatched = _unmatched_onec_document_row(
+            actual,
+            organization_labels=organization_labels,
+        )
+        result.append(
+            _document_reconciliation_payload(
+                len(result) + 1,
+                unmatched,
+                document_report=str(unmatched["document_label"]),
+            )
+        )
+    return result
+
+
+def _document_reconciliation_payload(
+    index: int,
+    row: Mapping[str, object],
+    *,
+    document_report: str,
+) -> dict[str, Any]:
+    sales_period = str(row["sales_period"])
+    period_parts = sales_period.split(" - ", maxsplit=1)
+    sales_period_start = period_parts[0] if period_parts else ""
+    sales_period_end = period_parts[1] if len(period_parts) > 1 else ""
+    expected_document_date = row["expected_document_date"]
+    return {
+        "id": f"document-reconciliation-{index}",
+        "status": str(row["status"]),
+        "payoutStatus": str(row["payout_status"]),
+        "periodStatus": str(row["period_status"]),
+        "documentReport": document_report,
+        "salesPeriod": sales_period,
+        "salesPeriodStart": sales_period_start,
+        "salesPeriodEnd": sales_period_end,
+        "expectedDocumentDate": (
+            expected_document_date.isoformat()
+            if isinstance(expected_document_date, date)
+            else str(expected_document_date)
+        ),
+        "documentType": str(row["document_label"]),
+        "cabinet": str(row["account_label"]),
+        "organization": str(row["organization_label"]),
+        "summaryReportId": str(row["summary_report_ids"]),
+        "weeklySalesReportId": str(row["weekly_sales_report_ids"]),
+        "weeklyBuyoutReportId": str(row["weekly_buyout_report_ids"]),
+        "wbReportIds": str(row["wb_report_ids"]),
+        "onecDocuments": str(row["onec_document_ids"]),
+        "onecDocumentTypes": str(row["onec_document_types"]),
+        "onecDocumentDates": str(row["onec_document_dates"]),
+        "wbSalesQuantity": _nullable_number(row["expected_sales_quantity"]),
+        "wbReturnQuantity": _nullable_number(row["expected_return_quantity"]),
+        "wbNetQuantity": _nullable_number(row["expected_net_quantity"]),
+        "onecSalesQuantity": _nullable_number(row["onec_sales_quantity"]),
+        "onecReturnQuantity": _nullable_number(row["onec_return_quantity"]),
+        "onecNetQuantity": _nullable_number(row["onec_net_quantity"]),
+        "salesQuantityDelta": _nullable_number(row["sales_quantity_delta"]),
+        "returnQuantityDelta": _nullable_number(row["return_quantity_delta"]),
+        "netQuantityDelta": _nullable_number(row["net_quantity_delta"]),
+        "wbQuantity": _nullable_number(row["expected_quantity"]),
+        "onecQuantity": _nullable_number(row["onec_quantity"]),
+        "quantityDelta": _nullable_number(row["quantity_delta"]),
+        "wbAmount": _nullable_number(row["expected_amount"]),
+        "onecAmount": _nullable_number(row["onec_amount"]),
+        "amountDelta": _nullable_number(row["amount_delta"]),
+        "buyoutRetailAmountSum": _nullable_number(row["buyout_retail_amount_sum"]),
+        "buyoutForPaySum": _nullable_number(row["buyout_for_pay_sum"]),
+        "buyoutBankPaymentSum": _nullable_number(row["buyout_bank_payment_sum"]),
+        "onecExpenseInvoiceAmount": _nullable_number(
+            row["onec_expense_invoice_amount"]
+        ),
+        "buyoutRetailDelta": _nullable_number(row["buyout_retail_delta"]),
+        "buyoutForPayDelta": _nullable_number(row["buyout_for_pay_delta"]),
+        "buyoutBankDelta": _nullable_number(row["buyout_bank_delta"]),
+        "pdfBankPayment": _nullable_number(row["summary_bank"]),
+        "wbForPaySum": _nullable_number(row["expected_settlement"]),
+        "onecSettlementTotal": _nullable_number(row["onec_settlement"]),
+        "settlementDelta": _nullable_number(row["settlement_delta"]),
+        "onecSourceRows": row["onec_source_rows"],
+        "comment": str(row["comment"]),
+    }
+
+
+def tax_input_reconciliation_mart(
+    report: UnitEconomicsReport,
+    *,
+    account_labels: Mapping[str, str] | None = None,
+    organization_labels: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    buckets: dict[tuple[date, str, str], dict[str, Any]] = {}
+    for row in report.rows:
+        key = (row.week_start, row.seller_account_id, row.organization_id)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "week": row.week_start.isoformat(),
+                "weekEnd": row.week_end.isoformat(),
                 "cabinet": _account_label(row.seller_account_id, account_labels),
                 "organization": _organization_label(
                     row.organization_id, organization_labels
                 ),
-                "summaryReportId": "",
-                "weeklySalesReportId": "",
-                "weeklyBuyoutReportId": "",
-                "wbReportIds": ", ".join(row.wb_report_ids),
-                "onecDocuments": "",
-                "onecDocumentTypes": "",
-                "onecDocumentDates": "",
-                "wbSalesQuantity": _number(row.sales_quantity),
-                "wbReturnQuantity": _number(row.return_quantity),
-                "wbNetQuantity": _number(row.quantity),
-                "onecSalesQuantity": None,
-                "onecReturnQuantity": None,
-                "onecNetQuantity": None,
-                "salesQuantityDelta": None,
-                "returnQuantityDelta": None,
-                "netQuantityDelta": None,
-                "wbQuantity": _number(row.quantity),
-                "onecQuantity": None,
-                "quantityDelta": None,
-                "wbAmount": _number(row.revenue_after_spp),
-                "onecAmount": None,
-                "amountDelta": None,
-                "buyoutRetailAmountSum": None,
-                "buyoutForPaySum": None,
-                "buyoutBankPaymentSum": None,
-                "onecExpenseInvoiceAmount": None,
-                "buyoutRetailDelta": None,
-                "buyoutForPayDelta": None,
-                "buyoutBankDelta": None,
-                "pdfBankPayment": None,
-                "wbForPaySum": None,
-                "onecSettlementTotal": None,
-                "settlementDelta": None,
-                "onecSourceRows": None,
-                "comment": (
-                    "Ожидаемый документ из расчетной витрины; факт 1С "
-                    "сверяется отдельным source layer."
+                "vatInputFromWb": Decimal("0"),
+                "vatInputFromWbCharges": Decimal("0"),
+                "vatInputFromWbReversals": Decimal("0"),
+                "vatInputFrom1c": Decimal("0"),
+                "vatInputFrom1cCharges": Decimal("0"),
+                "vatInputFrom1cReversals": Decimal("0"),
+                "sourceRowCount": 0,
+                "statuses": set(),
+            },
+        )
+        wb_value = row.vat_input_from_wb
+        onec_value = row.vat_input_from_1c
+        bucket["vatInputFromWb"] += wb_value
+        bucket["vatInputFrom1c"] += onec_value
+        bucket["sourceRowCount"] += 1
+        if row.vat_input_completeness:
+            bucket["statuses"].add(row.vat_input_completeness)
+    result: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        wb_net = bucket["vatInputFromWb"]
+        onec_net = bucket["vatInputFrom1c"]
+        bucket["vatInputFromWbCharges"] = max(wb_net, Decimal("0"))
+        bucket["vatInputFromWbReversals"] = min(wb_net, Decimal("0"))
+        bucket["vatInputFrom1cCharges"] = max(onec_net, Decimal("0"))
+        bucket["vatInputFrom1cReversals"] = min(onec_net, Decimal("0"))
+        onec_has_documents = bool(
+            bucket["vatInputFrom1cCharges"] or bucket["vatInputFrom1cReversals"]
+        )
+        statuses = bucket.pop("statuses")
+        bucket.update(
+            {
+                "vatInputFromWb": _number(wb_net),
+                "vatInputFromWbCharges": _number(bucket["vatInputFromWbCharges"]),
+                "vatInputFromWbReversals": _number(
+                    bucket["vatInputFromWbReversals"]
+                ),
+                "vatInputFrom1c": _number(onec_net),
+                "vatInputFrom1cCharges": _number(bucket["vatInputFrom1cCharges"]),
+                "vatInputFrom1cReversals": _number(
+                    bucket["vatInputFrom1cReversals"]
+                ),
+                "vatInputDifference": _number(onec_net - wb_net),
+                "vatInputCompleteness": (
+                    _worst_vat_reconciliation_status(statuses)
+                    if onec_has_documents
+                    else "missing"
+                ),
+                "wbEvidenceStatus": "confirmed" if wb_net else "missing",
+                "onecEvidenceStatus": (
+                    "confirmed" if onec_has_documents else "missing"
+                ),
+                "vatDeductionMode": "unknown",
+                "wbSource": "WB weekly realization report",
+                "onecSource": (
+                    "1C confirming documents" if onec_has_documents else "missing"
                 ),
             }
         )
+        result.append(bucket)
+    result.sort(
+        key=lambda item: (abs(float(item["vatInputDifference"])), item["week"]),
+        reverse=True,
+    )
+    for index, item in enumerate(result, start=1):
+        item["id"] = f"tax-input-reconciliation-{index}"
     return result
+
+
+def _worst_vat_reconciliation_status(statuses: set[str]) -> str:
+    priority = {"mismatch": 30, "partial": 20, "missing": 10, "confirmed": 0}
+    if not statuses:
+        return "missing"
+    return max(statuses, key=lambda status: priority.get(status, 0))
 
 
 def readiness_mart(
@@ -500,12 +840,20 @@ def _partial_report_period(report: UnitEconomicsReport | None) -> bool:
 
 
 def _loss_details(row: object, status: str) -> tuple[str, str]:
+    if _is_penalty_only_row(row):
+        return (
+            "Штрафной инцидент без продаж",
+            "Штраф WB при отсутствии продаж, возвратов и товарной себестоимости",
+        )
     if row.data_quality_status is not DataQualityStatus.RELIABLE:
         return "Нужна проверка данных", status
     profit = row.profit_after_taxes
     if profit >= 0:
         return "Прибыльный / нейтральный", "Маржинальный доход не отрицательный"
     return_rate = _safe_margin(row.return_quantity, row.sales_quantity) or Decimal("0")
+    tax_factor = row.usn_1_from_revenue
+    if getattr(row, "pnl_vat_mode", "") != "without_vat_for_osno":
+        tax_factor += row.vat_5_from_revenue
     factors = {
         "Высокая себестоимость": row.cogs_from_1c_with_extra_costs,
         "Высокая логистика WB": row.logistics,
@@ -514,7 +862,7 @@ def _loss_details(row: object, status: str) -> tuple[str, str]:
         "WB Продвижение": row.wb_promotion,
         "Штрафы/удержания WB": row.penalties_and_holdbacks,
         "Эквайринг WB": row.acquiring,
-        "Налоги": row.vat_5_from_revenue + row.usn_1_from_revenue,
+        "Налоги": tax_factor,
     }
     if return_rate >= Decimal("0.18"):
         factors["Возвраты + логистика"] = abs(row.return_amount) + row.logistics
@@ -524,6 +872,23 @@ def _loss_details(row: object, status: str) -> tuple[str, str]:
     if driver == "Возвраты + логистика":
         return "Возвраты + логистика", driver
     return "Прочие расходы", driver
+
+
+def _is_penalty_only_row(row: object) -> bool:
+    return (
+        row.sales_quantity == 0
+        and row.return_quantity == 0
+        and row.quantity == 0
+        and row.net_revenue == 0
+        and row.cogs_from_1c_with_extra_costs == 0
+        and row.wb_commission == 0
+        and row.logistics == 0
+        and row.storage == 0
+        and row.acceptance == 0
+        and row.wb_promotion == 0
+        and row.acquiring == 0
+        and row.penalties_and_holdbacks != 0
+    )
 
 
 def _period_label(start: date, end: date) -> str:

@@ -25,6 +25,7 @@ from wb_unit_economics.wb_finance import (
     export_wb_finance_report_id_page,
     extract_next_rrd_id,
     normalize_finance_row,
+    resume_wb_finance_export,
 )
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -98,6 +99,8 @@ def test_normalize_finance_row_maps_new_camel_case_fields() -> None:
             "deduction": "3",
             "additionalPayment": "2",
             "acquiringFee": "15",
+            "vwNds": "4.45",
+            "agencyVat": "1.55",
             "deliveryMethod": "FBS, courier",
             "currency": "RUB",
         },
@@ -121,6 +124,7 @@ def test_normalize_finance_row_maps_new_camel_case_fields() -> None:
     assert snapshot.wb_promotion == Decimal("3")
     assert snapshot.penalties_and_holdbacks == Decimal("3")
     assert snapshot.acquiring == Decimal("15")
+    assert snapshot.vat_input_from_wb == Decimal("6.00")
 
 
 def test_normalize_finance_row_maps_old_snake_case_names_and_returns() -> None:
@@ -310,6 +314,145 @@ def test_finance_export_retries_rate_limited_page(
     assert results[0].ok is True
     assert results[0].status == "ok"
     assert results[0].output_path.exists()
+
+
+def test_finance_resume_continues_from_manifest_rrd_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "wb_account_1_finance_page_1.raw.json").write_text(
+        json.dumps([{"rrdId": 10, "nmId": 1001}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-08T21:00:00+03:00",
+                "source": "wb_finance_sales_reports_detailed",
+                "period_start": "2026-03-01",
+                "period_end": "2026-06-16",
+                "period": "daily",
+                "limit": 100000,
+                "max_pages": 50,
+                "request_delay_seconds": 61,
+                "fields": ["rrdId", "nmId"],
+                "results": [
+                    {
+                        "seller_account_id": "WB_ACCOUNT_1",
+                        "account_name": "First cabinet",
+                        "page_index": 1,
+                        "ok": True,
+                        "status": "ok",
+                        "row_count": 1,
+                        "status_code": 200,
+                        "rrd_id_start": 0,
+                        "rrd_id_next": 10,
+                        "raw_payload_hash": "hash-1",
+                        "output_file": "wb_account_1_finance_page_1.raw.json",
+                        "error": "",
+                        "wb_report_id": "",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_page(*_args, **kwargs) -> WbFinancePageResult:
+        calls.append(dict(kwargs))
+        output_path = tmp_path / "wb_account_1_finance_page_2.raw.json"
+        output_path.write_text(
+            json.dumps([{"rrdId": 20, "nmId": 1002}]),
+            encoding="utf-8",
+        )
+        return WbFinancePageResult(
+            seller_account_id="WB_ACCOUNT_1",
+            account_name="First cabinet",
+            page_index=kwargs["page_index"],
+            ok=True,
+            status="ok",
+            row_count=1,
+            rrd_id_start=kwargs["rrd_id"],
+            rrd_id_next=20,
+            output_path=output_path,
+            raw_payload_hash="hash-2",
+            status_code=200,
+        )
+
+    monkeypatch.setattr(wb_finance, "export_wb_finance_page", fake_page)
+    account = WbFinanceSellerAccount("WB_ACCOUNT_1", "First cabinet", "test-key")
+    settings = WbFinanceSettings(accounts=(account,))
+    results = resume_wb_finance_export(
+        settings,
+        tmp_path,
+        max_pages=1,
+        request_delay_seconds=0,
+    )
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert calls == [
+        {
+            "period_start": date(2026, 3, 1),
+            "period_end": date(2026, 6, 16),
+            "rrd_id": 10,
+            "limit": 100000,
+            "page_index": 2,
+            "period": "daily",
+            "fields": ["rrdId", "nmId"],
+        }
+    ]
+    assert [item.page_index for item in results] == [2]
+    assert len(manifest["results"]) == 2
+    assert manifest["results"][1]["rrd_id_start"] == 10
+    assert manifest["results"][1]["rrd_id_next"] == 20
+    assert manifest["resume"]["previous_result_count"] == 1
+    assert list(tmp_path.glob("manifest.before-resume-*.json"))
+
+
+def test_finance_resume_skips_completed_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-08T21:00:00+03:00",
+                "source": "wb_finance_sales_reports_detailed",
+                "period_start": "2026-03-01",
+                "period_end": "2026-06-16",
+                "period": "daily",
+                "limit": 100000,
+                "fields": ["rrdId", "nmId"],
+                "results": [
+                    {
+                        "seller_account_id": "WB_ACCOUNT_1",
+                        "account_name": "First cabinet",
+                        "page_index": 51,
+                        "ok": True,
+                        "status": "no_data",
+                        "row_count": 0,
+                        "status_code": 204,
+                        "rrd_id_start": 20,
+                        "rrd_id_next": None,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_page(*_args, **_kwargs) -> WbFinancePageResult:
+        raise AssertionError("completed manifest should not be resumed")
+
+    monkeypatch.setattr(wb_finance, "export_wb_finance_page", fake_page)
+    account = WbFinanceSellerAccount("WB_ACCOUNT_1", "First cabinet", "test-key")
+    settings = WbFinanceSettings(accounts=(account,))
+
+    assert resume_wb_finance_export(settings, tmp_path, max_pages=1) == []
+    assert not list(tmp_path.glob("manifest.before-resume-*.json"))
 
 
 def test_finance_report_id_page_export_uses_report_id_path(tmp_path: Path) -> None:

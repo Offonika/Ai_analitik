@@ -5,14 +5,15 @@ doc_type: spec
 domain: "marketplace-analytics"
 status: accepted
 owner: "engineering"
+audience: ["engineering", "operations"]
 source_of_truth: true
 related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
 related_tests: [tests/test_web_app.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
-depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-client-web-cabinet.md]
-supersedes: []
+depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/marketplace-1c-mapping-service.md]
+supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-01"
+updated_at: "2026-07-10"
 ---
 
 # Goal
@@ -46,9 +47,13 @@ PostgreSQL, управляемый Excel export и AI-аналитик отче�
 - API для истории расчетов, freshness, повторного импорта Excel MVP и
   управленческой записки;
 - web-фильтр `Месяц 1С` для строк отчета: недельная строка относится к месяцу
-  по середине недели (`week_start + 3 дня`), чтобы пограничные недели
-  `30.03–05.04` и `27.04–03.05` попадали в апрельское закрытие 1С при сверке с
-  отчетом `Валовая прибыль по номенклатуре`;
+  фактического закрытия недели (`week_end`, воскресенье). Неделя
+  `30.03–05.04` относится к апрелю, а `27.04–03.05` — к маю; кабинет не
+  подменяет фактическую дату закрытия серединой недели или последним днем
+  месяца;
+- completeness check WB Finance требует raw coverage с понедельника первой
+  недели, закрывающейся внутри периода; строки входят в отчет только при
+  `report_period_start <= week_end <= report_period_end`;
 - computed `report readiness score` в `summary` и `freshness`, чтобы
   consultant/admin видел, можно ли отправлять отчет клиенту, что требует
   проверки и что блокирует отправку;
@@ -206,92 +211,23 @@ consulting_firm
 
 # Public API
 
-Auth:
+Фактический список методов и путей не дублируется вручную. Он генерируется из
+текущего OpenAPI в `docs/generated/web-api.md` командой
+`python scripts/generate_web_api_reference.py`; `--check` выявляет рассинхрон.
 
-- `POST /api/auth/login`;
-- `POST /api/auth/logout`;
-- `GET /api/me`.
+Этот spec закрепляет бизнес-права независимо от конкретного route inventory:
 
-Client workspace:
-
-- `GET /api/clients`;
-- `POST /api/clients`;
-- `GET /api/clients/{client_id}/reports`;
-- `GET /api/clients/{client_id}/integrations`.
-
-UI:
-
-- `GET /`;
-- `GET /cabinet`;
-- `GET /static/app.js`;
-- `GET /static/styles.css`.
-
-Reports:
-
-- `GET /api/reports`;
-- `GET /api/reports/{id}/summary`;
-- `GET /api/reports/{id}/freshness`;
-- `GET /api/reports/{id}/rows`, with response page `limit` capped at 1000 and
-  filtered `kpis` calculated across the full matching row set, not just the
-  returned page;
-- `GET /api/reports/{id}/document-reconciliation`, with response page `limit`
-  capped at 1000 and filtered `kpis` calculated across the full matching
-  document-level WB ↔ 1С reconciliation row set;
-- `GET /api/reports/{id}/sku/{sku}`;
-- `GET /api/reports/{id}/export.xlsx`;
-- `GET /api/reports/{id}/management-report`;
-- `POST /api/reports/{id}/mapping-file` для staff-only загрузки текущей
-  TXT/TSV/CSV выгрузки сопоставления WB ↔ 1C в локальный `sku_mapping`
-  source directory без записи в 1С/WB и без возврата содержимого файла; после
-  успешного сохранения endpoint автоматически запускает staff-only source
-  refresh/rebuild для исходного report run и возвращает safe `autoRefresh`
-  payload, чтобы UI мог открыть новый `report_run` без ручного действия
-  пользователя;
-- `POST /api/reports/{id}/analytical-report`;
-- `GET /api/reports/{id}/analytical-report.md`;
-- `GET /api/reports/{id}/analytical-report.docx`;
-- `GET /api/reports/{id}/analytical-report.pdf`.
-- `GET /api/reports/{id}/client-draft`;
-- `PUT /api/reports/{id}/client-draft`;
-- `POST /api/reports/{id}/client-draft/refine`;
-- `POST /api/reports/{id}/client-draft/finalize`.
-- `POST /api/reports/{id}/refresh/onec-auto`;
-- `GET /api/reports/{id}/refresh-jobs/{job_id}`.
-
-Admin:
-
-- `GET /api/admin/users`;
-- `POST /api/admin/users`;
-- `PATCH /api/admin/users/{id}`;
-- `POST /api/admin/users/{id}/reset-password`;
-- `GET /api/admin/audit`;
-- `POST /api/admin/reports/import`.
-
-Integrations:
-
-- `GET /api/integrations`;
-- `POST /api/integrations`;
-- `PUT /api/integrations/{provider}`;
-- `POST /api/integrations/{provider}/check`;
-- `POST /api/integrations/{provider}/disable`.
-
-AI:
-
-- `POST /api/ai/threads`;
-- `GET /api/ai/threads/{id}`;
-- `GET /api/ai/threads/{id}/events`;
-- `POST /api/ai/threads/{id}/messages`;
-- `POST /api/ai/threads/{id}/messages/stream`.
-
-Live checks:
-
-- `POST /api/reports/{id}/live-checks/onec-cost`;
-- `POST /api/reports/{id}/live-checks/wb-card`;
-- `POST /api/reports/{id}/live-checks/wb-stock`.
-
-All endpoints except health and login require a valid session. Every client,
-report, integration and AI request must resolve to a tenant/client available to
-the authenticated user.
+- health, login shell и статические UI assets доступны без report data;
+- все клиентские, отчетные, integration, mapping и AI операции требуют сессию;
+- роль `client` читает только разрешенный client/report scope и не видит
+  staff draft, audit, секреты, raw paths или integration configuration;
+- роли `consultant/admin` управляют клиентскими workspace, mapping decisions,
+  client drafts и read-only refresh в пределах разрешенных tenants;
+- только `admin` управляет пользователями и системным audit;
+- live checks и source refresh читают внешние системы, но не записывают в WB,
+  Ozon или 1С;
+- каждый запрос с `client_id`, `tenant_id` или `report_id` повторно проверяет
+  принадлежность объекта доступному пользователю контуру.
 
 `GET /api/me` returns the user's available client workspaces. If the user has
 access to multiple clients, the UI must require an explicit selected client
@@ -344,6 +280,14 @@ Readiness v1 rules:
   client draft state; draft-related reasons are included only for
   `consultant/admin`.
 
+Финансовые причины всегда являются блокирующими: смешение методов P&L,
+расхождение `profit` и `profitBeforeTax` до НДФЛ, неподтвержденный входящий НДС,
+незакрытая себестоимость, неуспешный обязательный source lineage, отсутствие
+подтверждения нулевых хранения/приемки, незакрытая независимая месячная или
+документная сверка. При наличии такой причины UI показывает точный заголовок
+`Финансовая проверка не пройдена`, а клиентский AI не формирует рекомендации и
+возвращает HTTP 409.
+
 UI readiness behavior:
 
 - unauthenticated visitor sees only the login shell and no report data;
@@ -363,7 +307,7 @@ UI readiness behavior:
   current available report slice automatically;
 - report meta, source freshness and client hierarchy are not repeated as a
   separate middle-screen block; the topbar and readiness strip are the canonical
-  context, and mapping upload appears only in the main next-action area;
+  context, and mapping service entry appears only in the main next-action area;
 - topbar action `Клиентский вывод` opens the staff/client output state as a
   modal widget over the current report instead of scrolling to a lower report
   section;
@@ -377,13 +321,12 @@ UI readiness behavior:
   report loads;
 - readiness panel shows label, score, next action, blocking reasons and review
   reasons;
-- when the next action is `Обновить mapping WB ↔ 1C`, the readiness panel shows
-  a direct staff-only TXT/TSV/CSV file upload control instead of sending the
-  consultant to source details first; the same control includes visible
-  instructions for exporting `Сопоставление товаров` from 1С through
-  `Маркетплейс` -> `Сопоставление товаров` -> `Еще` -> `Вывести список...` and
-  saving a text TXT/TSV/CSV file rather than the default MXL tabular document;
-  after a file is accepted, the UI starts from the returned `autoRefresh`
+- when the next action is `Обновить mapping WB ↔ 1C`, the readiness panel opens
+  the staff-only mapping service first: consultant sees marketplace rows,
+  1C candidates, accept/reject/revoke/exclude actions and history. A
+  TXT/TSV/CSV file upload remains visible as bulk accepted import for already
+  mapped rows, while skipped/conflict rows stay in the manual queue; after
+  mapping decisions or import, the UI starts from the returned `autoRefresh`
   result: if a new report run exists, it opens that recalculated vitrine
   automatically; if refresh is disabled, busy or failed, it shows a safe status
   instead of asking the user to run refresh manually;
@@ -412,13 +355,28 @@ UI readiness behavior:
   of the generic integrations widget and show safe statuses such as
   `blocked_low_disk`, period, refresh mode and source collection counts;
 - lower detail tables are grouped into one `Детализации` workspace where
-  `Юнит-экономика` is the first/default tab, followed by liquidity, lost sales
-  and document-level `Сверка WB ↔ 1С`;
+  `Юнит-экономика` is the first/default tab, followed by the prominent
+  `Сверка документов`, liquidity and lost sales;
   switching tabs does not reload report data; the reconciliation tab loads
   rows from `/api/reports/{id}/document-reconciliation`, shows metrics for
   documents, OK rows, rows needing review, quantity delta, amount delta and
   missing 1С fact, and supports filters for search, status, period start/end,
   cabinet, organization, document type and `Только расхождения`; the
+  same tab first shows financial reconciliation from
+  `/api/reports/{id}/financial-document-reconciliation`: KPI pairs `WB`, `1С`
+  and `Дельта 1С − WB` for revenue with VAT and penalties, followed by rows
+  with the WB report, actual 1С documents, amounts, status and explanation;
+  `Статья` filters the rows by revenue with VAT or penalties. The WB side uses
+  report rows whose weekly closing date (`week + 6 days`) falls inside the
+  selected period, while the 1С side uses actual register `Period` or
+  incoming-invoice `Date` inside that period.
+  A matching 1С document outside the selected dates is not silently included:
+  it is named in the row and receives status `Документ 1С вне периода`. The
+  signed delta is always `1С − WB`, tolerance for `Сходится` is 1 ruble, and
+  unavailable source facts remain missing instead of being coerced to source
+  zero;
+  the existing generic document-load reconciliation remains below the
+  financial block for quantity, payout and completeness controls; the
   `Юнит-экономика` tab keeps filters for search, status, period start/end,
   month, cabinet, organization, scheme and loss class before loading rows
   through `/api/reports/{id}/rows`, and shows revenue, profit, margin and unit
@@ -431,6 +389,22 @@ UI readiness behavior:
   `report_lost_sales_rows` as lost revenue for the current report run/cabinet,
   and lays out the cards as two rows with revenue, profit, margin, lost sales,
   sales, net sales, returns, return rate, revenue per sale and loss-row count;
+- summary exposes `lostSalesCoverage`, `taxContext` and calendar month metadata.
+  A missing tax profile or incomplete stock-history is rendered as a visible
+  `Не рассчитано` state with the exact coverage/source reason; it is never
+  rendered as a confirmed zero and the analytics block is not removed;
+- `taxContext.calculated` remains `false` when any report organization has no
+  profile for part of the report period, when `vatDeductionMode=unknown`, or
+  when the confirmed tax object is not supported by the current methodology;
+  `readiness.blockingReasons[]` exposes `tax_profile_unconfirmed` in these
+  cases;
+- when WB limits daily stock history to its last three calendar months,
+  `lostSalesCoverage` keeps the full requested report period and the actual
+  provider window separately; the uncovered earlier days remain explicit;
+- `lostSales[].lostContributionMargin` is the canonical preliminary estimate
+  before tax. `lostProfit` remains a compatibility alias. Aggregate lost-sales
+  KPI is nullable unless every selected cabinet has complete daily stock
+  coverage for the report period;
 - `Аналитика` appears after `Показатели` and before the readiness command
   board; v1 renders embedded dependency-free visualizations from
   `summary.monthly`, `summary.expenses`, `summary.lostSales`,
@@ -448,9 +422,18 @@ UI readiness behavior:
 - analytics charts are read-only and show the current report run as a whole;
   dashboard-wide filterable analytics can be added later through a dedicated
   read-only analytics endpoint or filtered rows aggregation;
+- return months are ordered by machine-readable `monthStart`; an incomplete
+  month stays last, shows `daysElapsed/daysInMonth`, and is not presented as a
+  like-for-like comparison with complete months;
+- VAT reconciliation preserves signed amounts and shows charges, reversals and
+  net separately. It includes cabinet/organization and source evidence status,
+  uses a full-width semantic table, and never labels VAT as deductible while
+  `taxContext.vatDeductionMode` is `unknown`;
 - period filters use row `week` when available and fall back to the row month or
-  ISO WB report date for imported rows without a week date, so partial date
-  metadata does not silently zero the money KPIs;
+  ISO WB report date for imported rows without a week date; for rows with a
+  week the month/date filter uses the closing Sunday (`week + 6 days`) so a
+  cross-month week is not assigned by its Monday start. Partial date metadata
+  does not silently zero the money KPIs;
 - the cabinet filter defaults to all active WB cabinets of the selected client;
   choosing a cabinet changes all KPI/detail blocks to that slice without
   changing tenant security scope;
@@ -584,26 +567,67 @@ Lineage tables:
 - `source_refresh_collections` stores mandatory/optional source status, row
   counts, snapshot hashes and raw snapshot directory/file pointers;
 - `source_snapshot_rows` is the generic idempotent raw-row lineage table for
-  WB Finance, weekly report list, 1C OData and mapping metadata persistence.
+  weekly report list, 1C OData, mapping metadata and small WB Finance
+  snapshots. A WB Finance collection larger than
+  `SHUMEYKO_SOURCE_REFRESH_WB_PERSIST_ROW_LIMIT` is not duplicated row-by-row
+  in PostgreSQL: immutable JSON remains the authoritative raw snapshot, while
+  `source_refresh_collections` keeps its row count, snapshot hash, raw path and
+  `rowPersistence.status=skipped_large_snapshot`.
+- WB Finance and WB Content pagination use separate configured request delays;
+  the conservative Finance delay must not be applied to product-card pages.
+  A full final page at configured `max_pages` is recorded as `partial_source`
+  for product cards and weekly report list instead of being labelled loaded.
 
 Mandatory sources are WB Finance detail, 1C nomenclature, organizations,
 barcodes, sales register and mapping. Their failure blocks a new report.
 Optional sources such as weekly report list, storage, promotion, stock and
 service/OPIU extensions may create a report only with `needs_review`.
 
-Mapping freshness is a separate source health check. If
-`data/onec_marketplace_mapping/` is missing, the run is blocked. If the mapping
-hash exists but the newest file is older than the configured stale threshold,
-the new report may be created only with `needs_review`.
+Source refresh never publishes a report automatically. It creates a staff-only
+draft; after financial acceptance, a separate explicit `publish_report` call
+applies the publication gate and atomically switches `is_current`.
+
+`/api/health` scopes latest/finished source-refresh status to the configured
+`SHUMEYKO_SOURCE_REFRESH_TENANT`. A later diagnostic canary for another tenant
+must not degrade the Shumeyko cabinet health or replace its latest refresh id.
+
+The publication gate derives tax rules exclusively from the target draft and
+its organization profiles. It never inherits ОСНО requirements from the current
+published report. ОСНО-specific P&L and input-VAT checks apply only to target
+rows whose confirmed organization profile is ОСНО; a confirmed new УСН draft
+therefore does not receive false blockers from an older ОСНО report.
+
+Historical acceptance snapshot as of 2026-07-10 used two immutable staff
+drafts: primary finance period `2026-03-01..2026-07-10` and stock-control
+period `2026-04-10..2026-07-10`. That snapshot does not identify the live
+report; operations always resolve the target draft from the database by
+explicit `report_id`. The shorter draft was used only to validate complete
+92-day provider-window stock coverage and was never a publication candidate.
+
+Mapping freshness is a separate source health check against the project-owned
+mapping service. If current mapping view is missing or has blocking
+`missing`/`ambiguous` rows for mandatory marketplace items, the run is blocked
+or published only with `needs_review` according to readiness rules. A stale
+fallback file under `data/onec_marketplace_mapping/` is diagnostic context, not
+the primary freshness signal.
 
 Every created report run receives `SourceLoad` rows copied from refresh
 collections. The client-facing cabinet uses readiness/freshness over
 `SourceLoad`, not raw snapshots, so raw WB/1C payloads remain staff-only and
 local.
 
-Raw-row persistence errors are source quality errors: mandatory source failure
-blocks publication, optional source failure allows publication only with
-`needs_review`.
+Raw-row persistence errors are source quality errors. Mandatory source failure
+blocks publication. Нулевые хранение и приемка считаются подтвержденными только
+при загруженном контрольном WB-источнике с полным покрытием периода и явным
+нулевым результатом; иначе прибыль не считается подтвержденной и report run
+остается staff draft.
+
+Каждая пересборка сначала создает immutable staff draft и копирует в
+`SourceLoad` фактические нижележащие коллекции: `source_refresh_run_id`,
+обязательность, статус, число строк и snapshot hash. `publish_report` не меняет
+`is_current` и возвращает конфликт при любом финансовом блокере. Успешная
+публикация выполняется одной транзакцией: прежний current получает
+`superseded`, но остается доступен сотрудникам для аудита.
 
 ## Staff-Only Client Draft Workflow
 
@@ -851,6 +875,13 @@ Monitoring:
 - Client role cannot read or infer staff client drafts through UI or API.
 - Summary/freshness include `readiness`; consultant/admin sees client-draft
   readiness checks, client role does not infer staff draft state.
+- KPI block uses tax-context-aware wording. With an unconfirmed profile it
+  labels the canonical result `Маржинальный доход до налогов`, reports that the
+  profile is missing and returns nullable tax KPIs instead of zeroes.
+- Loss navigation separates product-margin losses, returns, penalty incidents
+  without sales and rows with unconfirmed COGS.
+- A report with a financial blocker shows `Финансовая проверка не пройдена`,
+  cannot generate client recommendations and cannot replace the current report.
 - `/`, `/cabinet`, `/ai` and `/integrations` serve a lightweight UI shell that
   does not embed report data before authenticated API calls.
 - UI displays `ready`, `needs_review`, `partial_period`, `partial_source`,
@@ -864,6 +895,9 @@ Monitoring:
 - 1С auto-refresh is staff-only, feature-flagged, audited, creates a new
   `report_run`, leaves the source report unchanged, and marks partial 1С
   collections as `partial_source` without zero substitution.
+- Manual/source-refresh API accepts an explicit `period_start`/`period_end` so
+  staff can build the April acceptance snapshot before the full historical
+  regression; the persisted run period is the source coverage boundary.
 - Public URLs for JSON/Excel return 404 or do not exist.
 - Existing Excel MVP tests and no-secrets checks still pass.
 
@@ -882,6 +916,10 @@ Monitoring:
 - Report-readiness tests for `needs_review`, `ready`, `partial_period`,
   `partial_source`, `source_coverage_gap`, `failed`, tenant isolation and
   client-role redaction of staff-only draft reasons.
+- Publication-gate tests prove that financial blockers return a conflict and do
+  not change `is_current`; reconciliation tests prove that missing 1C sources
+  remain null and independent WB/1C amounts do not create artificial zero
+  deltas.
 - UI shell tests for public login shell, protected API data loading, static
   assets, readiness API usage, products filters, horizontal table scroll, safe
   text rendering and responsive CSS.
@@ -918,6 +956,22 @@ Monitoring:
 
 # Changelog
 
+- 2026-07-10: v2.17 specified strict stock-history coverage, nullable tax
+  context, signed VAT reconciliation, chronological return months and visible
+  non-calculated development states for the three analytics blocks.
+- 2026-07-10: v2.16 added the OSNO financial publication gate, immutable staff
+  drafts with lower-level source lineage, independent nullable monthly
+  reconciliation, canonical profit-before-NDFL UI and a separate penalty-only
+  incident class.
+- 2026-07-10: v2.15 changed cabinet monthly P&L and date filters from week-start
+  attribution to weekly closing-date attribution and removed artificial
+  month-end closing labels.
+- 2026-07-10: v2.14 added source-backed financial document reconciliation for
+  revenue with VAT and penalties, explicit `1С − WB` deltas and visible period
+  boundary diagnostics in the cabinet.
+- 2026-07-08: v2.13 switched mapping UX/readiness from 1С export upload to the
+  project-owned marketplace/1C mapping service; file upload remains a bulk
+  accepted import for unambiguous rows and manual-queue input for the rest.
 - 2026-07-02: v2.12 clarified the mapping upload UX with visible 1С export
   instructions and an explicit preliminary-period client notice in next action
   copy.

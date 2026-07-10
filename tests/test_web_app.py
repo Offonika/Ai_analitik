@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
+from sqlalchemy import select
 
 from wb_unit_economics.web import integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
@@ -21,10 +24,232 @@ from wb_unit_economics.web.dashboard_payload import (
     period_label_from_value,
 )
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
-from wb_unit_economics.web.models import SourceRefreshRun, TenantIntegration, WbCabinet
+from wb_unit_economics.web.models import (
+    OrganizationTaxProfile,
+    OrganizationTaxProfileOverride,
+    SourceLoad,
+    SourceRefreshRun,
+    TenantIntegration,
+    WbCabinet,
+)
 from wb_unit_economics.web.refresh import AutoRefreshBusyError, OnecAutoRefreshService
 from wb_unit_economics.web.repository import import_dashboard_payload, upsert_user
 from wb_unit_economics.web.settings import WebSettings
+
+
+def test_health_is_degraded_while_new_run_follows_failed_completed_run(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        failed = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="daily-failed",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 9),
+            reason="health test failure",
+        )
+        repository.update_source_refresh_run(
+            db,
+            failed,
+            status="failed",
+            finished_at=datetime(2026, 7, 10, 1, 0),
+        )
+        running = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="daily-running",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 9),
+            reason="health test active",
+        )
+        repository.update_source_refresh_run(
+            db,
+            running,
+            status="running",
+            started_at=datetime(2026, 7, 10, 1, 1),
+        )
+        db.commit()
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["latestSourceRefreshStatus"] == "running"
+    assert payload["latestSourceRefreshActive"] is True
+    assert payload["latestCompletedSourceRefreshStatus"] == "failed"
+    assert payload["sourceRefreshHealthStatus"] == "failed"
+
+
+def test_health_uses_most_recent_finish_not_later_blocked_attempt(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        completed = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-completed",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 7, 10),
+            reason="completed after blocked attempt",
+        )
+        completed.created_at = datetime(2026, 7, 10, 16, 0)
+        repository.update_source_refresh_run(
+            db,
+            completed,
+            status="needs_review",
+            finished_at=datetime(2026, 7, 10, 16, 17),
+        )
+        blocked = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="daily-blocked",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 10),
+            reason="blocked while full was active",
+        )
+        blocked.created_at = datetime(2026, 7, 10, 16, 15)
+        repository.update_source_refresh_run(
+            db,
+            blocked,
+            status="blocked_active_refresh",
+            finished_at=datetime(2026, 7, 10, 16, 15),
+        )
+        db.commit()
+
+    payload = client.get("/api/health").json()
+
+    assert payload["status"] == "ok"
+    assert payload["latestSourceRefreshStatus"] == "blocked_active_refresh"
+    assert payload["latestCompletedSourceRefreshStatus"] == "needs_review"
+    assert payload["sourceRefreshHealthStatus"] == "needs_review"
+
+
+def test_health_ignores_later_refresh_from_another_tenant(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        shumeyko_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="shumeyko-completed",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 10),
+            reason="tenant-scoped health success",
+        )
+        repository.update_source_refresh_run(
+            db,
+            shumeyko_run,
+            status="needs_review",
+            finished_at=datetime(2026, 7, 10, 16, 0),
+        )
+        other_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="other",
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="other-failed",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            reason="other tenant canary",
+        )
+        repository.update_source_refresh_run(
+            db,
+            other_run,
+            status="failed",
+            finished_at=datetime(2026, 7, 10, 16, 1),
+        )
+        db.commit()
+
+    payload = client.get("/api/health").json()
+
+    assert payload["status"] == "ok"
+    assert payload["sourceRefreshTenantId"] == "shumeyko"
+    assert payload["latestSourceRefreshRunId"] == shumeyko_run.id
+    assert payload["latestCompletedSourceRefreshStatus"] == "needs_review"
+
+
+def test_ozon_mapping_candidate_uses_later_precise_match_after_ambiguous() -> None:
+    result = repository._check_ozon_mapping_candidate(
+        {
+            "rowNumber": 1,
+            "sourceRowId": "ozon-row-1",
+            "productName": "Ozon item",
+            "offerId": "OZ-1",
+            "barcode": "460000000001",
+        },
+        {
+            "byOzonMarketplaceOffer": {
+                "oz-1": [
+                    {"id": "ITEM-1", "name": "Wrong candidate", "article": "OZ-1"},
+                    {"id": "ITEM-2", "name": "Right candidate", "article": "OZ-1"},
+                ]
+            },
+            "byOzonMarketplaceBarcode": {
+                "460000000001": [
+                    {
+                        "id": "ITEM-2",
+                        "name": "Right candidate",
+                        "article": "OZ-1",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert result["statusCounter"] == "matched"
+    assert result["row"]["status"] == "matched"
+    assert result["row"]["matchMethod"] == "onec_marketplace_ozon_barcode"
+    assert result["row"]["onecItemId"] == "ITEM-2"
+
+
+def test_ozon_mapping_candidate_uses_period_financials_to_narrow_ambiguous() -> None:
+    result = repository._check_ozon_mapping_candidate(
+        {
+            "rowNumber": 1,
+            "sourceRowId": "ozon-row-1",
+            "productName": "Ozon item",
+            "offerId": "OZ-1",
+        },
+        {
+            "byArticle": {
+                "oz-1": [
+                    {"id": "ITEM-1", "name": "Old duplicate", "article": "OZ-1"},
+                    {"id": "ITEM-2", "name": "Current item", "article": "OZ-1"},
+                ]
+            }
+        },
+        preferred_onec_item_ids={"ITEM-2"},
+    )
+
+    assert result["statusCounter"] == "matched"
+    assert result["row"]["status"] == "matched"
+    assert result["row"]["matchMethod"] == "offer_id_period_financials"
+    assert result["row"]["onecItemId"] == "ITEM-2"
 
 
 def test_ozon_expense_reconciliation_uses_api_expenses_and_onec_control() -> None:
@@ -170,7 +395,13 @@ def test_ozon_mutual_settlement_expenses_use_document_rows() -> None:
 
     assert mutual["status"] == "loaded"
     assert mutual["basis"] == "ozon_mutual_settlement_expense_documents"
-    assert mutual["summary"]["expenseAmount"] == 5585666.09
+    assert mutual["summary"]["expenseAmount"] == 5433950.6
+    assert any(
+        item["label"] == "Отчет о реализации"
+        and item["includedInExpense"] is False
+        and item["expenseEffectAmount"] == 0.0
+        for item in mutual["categoryRows"]
+    )
     assert any(
         item["label"] == "Фактическая оплата селлеров"
         and item["includedInExpense"] is False
@@ -256,6 +487,8 @@ def test_ozon_expense_reconciliation_shows_unmatched_onec_article() -> None:
     ]
 
     assert reconciliation["deltaAmount"] == 550.0
+    assert reconciliation["controlOnlyMatchedAmount"] == 151715.49
+    assert reconciliation["onecComparableExpenseAmount"] == 5434500.6
     assert reconciliation["status"] == "review"
     assert "статьи без пары" in reconciliation["message"]
     assert len(unmatched) == 1
@@ -264,12 +497,83 @@ def test_ozon_expense_reconciliation_shows_unmatched_onec_article() -> None:
     assert unmatched[0]["deltaAmount"] == 550.0
     assert "1C без пары в Ozon" in unmatched[0]["label"]
     assert "соседний месяц mutual settlement" in unmatched[0]["note"]
+    assert any(
+        item["kind"] == "control_matched"
+        and item["onecAmount"] == 151715.49
+        and item["includedInExpense"] is False
+        for item in reconciliation["articleRows"]
+    )
 
 
 def test_ozon_period_from_output_file_accepts_mutual_settlement_xlsx() -> None:
     assert repository._ozon_period_from_output_file(
         "OZON_API_ozon_mutual_settlement_2026-04_file.raw.xlsx"
     ) == (date(2026, 4, 1), date(2026, 4, 30))
+
+
+def test_ozon_cost_index_is_scoped_by_month_and_organization() -> None:
+    rows = [
+        SimpleNamespace(
+            row_payload={
+                "RecordSet": [
+                    {
+                        "Period": "2026-04-30",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "2",
+                        "Себестоимость": "200",
+                        "ВходящийНДСИтого": "20",
+                    },
+                    {
+                        "Period": "2026-05-31",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "2",
+                        "Себестоимость": "600",
+                        "ВходящийНДСИтого": "60",
+                    },
+                    {
+                        "Period": "2026-04-30",
+                        "Организация_Key": "ORG-2",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "2",
+                        "Себестоимость": "1800",
+                        "ВходящийНДСИтого": "180",
+                    },
+                ]
+            }
+        )
+    ]
+
+    april_org_1 = repository._onec_sales_cost_index(
+        rows,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        organization_id="ORG-1",
+    )
+    may_org_1 = repository._onec_sales_cost_index(
+        rows,
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        organization_id="ORG-1",
+    )
+    april_org_2 = repository._onec_sales_cost_index(
+        rows,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        organization_id="ORG-2",
+    )
+    april_input_vat_org_1 = repository._onec_sales_input_vat_index(
+        rows,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        organization_id="ORG-1",
+    )
+
+    assert april_org_1 == {"ITEM-1": 100}
+    assert may_org_1 == {"ITEM-1": 300}
+    assert april_org_2 == {"ITEM-1": 900}
+    assert april_input_vat_org_1 == {"ITEM-1": 20}
 
 
 def sample_payload() -> dict:
@@ -474,6 +778,40 @@ def sample_payload() -> dict:
     }
 
 
+def test_tax_input_reconciliation_keeps_signed_charges_reversals_and_net() -> None:
+    rows = [
+        SimpleNamespace(
+            week=date(2026, 3, 9),
+            cabinet="Кабинет A",
+            organization="Организация A",
+            vat_input_from_wb=Decimal("616959.76"),
+            vat_input_from_1c=Decimal("0"),
+            vat_input_completeness="partial",
+        ),
+        SimpleNamespace(
+            week=date(2026, 3, 2),
+            cabinet="Кабинет A",
+            organization="Организация A",
+            vat_input_from_wb=Decimal("-501265.06"),
+            vat_input_from_1c=Decimal("0"),
+            vat_input_completeness="partial",
+        ),
+    ]
+
+    result = repository._tax_input_reconciliation_payload_from_unit_rows(
+        rows,
+        tax_context={"vatDeductionMode": "unknown"},
+    )
+
+    assert len(result) == 2
+    assert sum(item["vatInputFromWbCharges"] for item in result) == 616959.76
+    assert sum(item["vatInputFromWbReversals"] for item in result) == -501265.06
+    assert sum(item["vatInputFromWb"] for item in result) == pytest.approx(115694.70)
+    assert all(item["onecEvidenceStatus"] == "missing" for item in result)
+    assert all(item["vatInputCompleteness"] == "missing" for item in result)
+    assert all(item["vatDeductionMode"] == "unknown" for item in result)
+
+
 def ready_payload() -> dict:
     payload = deepcopy(sample_payload())
     payload["meta"] = {
@@ -641,6 +979,10 @@ class FakeSourceRefreshService:
         user,
         reason,
         source_report=None,
+        period_start=None,
+        period_end=None,
+        resume_mode="auto",
+        resume_from_run_id=None,
     ):
         self.calls.append(
             {
@@ -650,6 +992,10 @@ class FakeSourceRefreshService:
                 "credential_source": credential_source,
                 "dry_run": dry_run,
                 "reason": reason,
+                "period_start": period_start,
+                "period_end": period_end,
+                "resume_mode": resume_mode,
+                "resume_from_run_id": resume_from_run_id,
             }
         )
         refresh_run = repository.create_source_refresh_run(
@@ -659,8 +1005,8 @@ class FakeSourceRefreshService:
             credential_source=credential_source,
             dry_run=dry_run,
             snapshot_set_id=("dry-run-test" if dry_run else "full-test"),
-            period_start=date(2026, 3, 1),
-            period_end=date(2026, 6, 17),
+            period_start=period_start or date(2026, 3, 1),
+            period_end=period_end or date(2026, 6, 17),
             client_id=client_id,
             user=user,
             source_report=source_report,
@@ -724,6 +1070,10 @@ class FakeSourceRefreshService:
         user,
         reason,
         source_report=None,
+        period_start=None,
+        period_end=None,
+        resume_mode="auto",
+        resume_from_run_id=None,
     ):
         self.calls.append(
             {
@@ -733,6 +1083,10 @@ class FakeSourceRefreshService:
                 "credential_source": credential_source,
                 "dry_run": False,
                 "reason": reason,
+                "period_start": period_start,
+                "period_end": period_end,
+                "resume_mode": resume_mode,
+                "resume_from_run_id": resume_from_run_id,
             }
         )
         refresh_run = repository.create_source_refresh_run(
@@ -742,8 +1096,8 @@ class FakeSourceRefreshService:
             credential_source=credential_source,
             dry_run=False,
             snapshot_set_id="full-test",
-            period_start=date(2026, 3, 1),
-            period_end=date(2026, 6, 17),
+            period_start=period_start or date(2026, 3, 1),
+            period_end=period_end or date(2026, 6, 17),
             client_id=client_id,
             user=user,
             source_report=source_report,
@@ -799,6 +1153,7 @@ def make_client(
     payload: dict | None = None,
     settings_overrides: dict | None = None,
     auto_refresh_service=None,
+    publish_report: bool = True,
 ) -> TestClient:
     export = tmp_path / "reports" / "shumeyko_wb_excel_mvp.xlsx"
     export.parent.mkdir()
@@ -814,6 +1169,8 @@ def make_client(
             tenant_name="Шумейко и Партнеры",
             report_id="report-1",
             source_workbook_path=str(export),
+            publication_status="published" if publish_report else "draft",
+            publish=publish_report,
         )
         upsert_user(
             db,
@@ -904,6 +1261,9 @@ def test_import_dashboard_payload_replaces_existing_report_rows(tmp_path: Path) 
     assert summary["reconciliationMonthly"][0]["onec_quantity"] == 91.0
     assert summary["reconciliationMonthly"][0]["quantity_delta"] == -1.0
     assert summary["documentReconciliation"] == []
+    expense_labels = {item["expense"] for item in summary["expenses"]}
+    assert "НДС к уплате" not in expense_labels
+    assert "Налог с выручки/НДФЛ" not in expense_labels
 
 
 def test_multi_client_backfill_is_idempotent(tmp_path: Path) -> None:
@@ -987,6 +1347,78 @@ def test_import_uses_existing_client_name_over_legacy_meta(tmp_path: Path) -> No
     assert client.name == "Реальный клиент"
 
 
+def test_import_prefers_single_active_wb_provider_cabinet(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    now = repository.security.utcnow()
+    with session_factory() as db:
+        repository.ensure_tenant(db, "galustov", "Галустов")
+        repository.ensure_client_for_tenant(
+            db,
+            tenant_id="galustov",
+            name="Галустов",
+        )
+        db.add(
+            WbCabinet(
+                id="wb-active",
+                tenant_id="galustov",
+                client_id="galustov",
+                client_company_id=None,
+                display_name="ИП Галустов",
+                cabinet_key="ip-galustov",
+                provider="wb_api",
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            WbCabinet(
+                id="wb-disabled",
+                tenant_id="galustov",
+                client_id="galustov",
+                client_company_id=None,
+                display_name="Галустов Рафаэль Рудольфович",
+                cabinet_key="galustov-rafael-rudolfovich",
+                provider="",
+                status="disabled",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.commit()
+
+        payload = deepcopy(sample_payload())
+        payload["meta"]["client"] = "Галустов"
+        for row in payload["unitRows"]:
+            row["organization"] = "Галустов Рафаэль Рудольфович"
+            row["cabinet"] = "Галустов Рафаэль Рудольфович"
+        for row in payload["lostSales"]:
+            row["cabinet"] = "Галустов Рафаэль Рудольфович"
+        for row in payload["documentReconciliation"]:
+            row["organization"] = "Галустов Рафаэль Рудольфович"
+            row["cabinet"] = "Галустов Рафаэль Рудольфович"
+
+        import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="galustov",
+            tenant_name="Галустов",
+            report_id="report-galustov",
+        )
+
+        unit_rows = db.query(repository.ReportUnitRow).all()
+        document_rows = db.query(repository.ReportDocumentReconciliationRow).all()
+
+    assert {row.wb_cabinet_id for row in unit_rows} == {"wb-active"}
+    assert {row.cabinet for row in unit_rows} == {"ИП Галустов"}
+    assert {row.wb_cabinet_id for row in document_rows} == {"wb-active"}
+    assert all(row.wb_cabinet_id != "wb-disabled" for row in unit_rows)
+
+
 def test_report_summary_preserves_lost_sales_onec_stock(tmp_path: Path) -> None:
     engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
     init_db(engine)
@@ -1016,6 +1448,7 @@ def test_report_summary_includes_document_reconciliation(tmp_path: Path) -> None
 
     assert response.status_code == 200
     summary = response.json()
+    assert datetime.fromisoformat(summary["meta"]["generatedAtIso"])
     assert summary["documentReconciliation"][0]["status"] == "OK"
     assert (
         summary["documentReconciliation"][0]["payoutStatus"]
@@ -1038,7 +1471,7 @@ def test_report_summary_includes_document_reconciliation(tmp_path: Path) -> None
         in summary["options"]["documentReports"]
     )
     assert summary["quality"]["documentReconciliationRows"] == 1
-    assert summary["quality"]["documentReconciliationIssues"] == 1
+    assert summary["quality"]["documentReconciliationIssues"] == 0
     assert summary["quality"]["documentReconciliationMissingOnec"] == 0
     assert "Отчет комиссионера" in summary["options"]["documentTypes"]
     assert "OK" in summary["options"]["documentReconciliationStatuses"]
@@ -1104,6 +1537,163 @@ def test_document_reconciliation_endpoint_filters_and_kpis(tmp_path: Path) -> No
     ).json()
     assert status_rows["total"] == 1
     assert status_rows["items"][0]["cabinet"] == "Кабинет B"
+
+
+def test_financial_document_reconciliation_uses_actual_onec_dates(
+    tmp_path: Path,
+) -> None:
+    payload = deepcopy(sample_payload())
+    payload["unitRows"][0]["penalties"] = 100
+    payload["unitRows"].append(
+        {
+            **payload["unitRows"][0],
+            "id": "unit-period-boundary",
+            "week": "2026-04-27",
+            "documentReport": (
+                "Отчет комиссионера · 27.04.2026-03.05.2026 · закрытие 03.05.2026"
+            ),
+            "wbReportId": "BOUNDARY-REPORT",
+            "revenue": 0,
+            "revenueWithoutVat": 0,
+            "penalties": 40,
+        }
+    )
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="financial-reconciliation-test",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 5, 3),
+            user=user,
+            source_report=report,
+            reason="financial reconciliation test",
+        )
+        sales_collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="onec_sales_register",
+            source_label="AccumulationRegister_Продажи",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            sales_collection,
+            row_number=1,
+            raw_payload_hash="financial-sales-1",
+            source_row_id="financial-sales-1",
+            row_payload={
+                "RecordSet": [
+                    {
+                        "Active": True,
+                        "Period": "2026-04-12T23:59:59",
+                        "Документ": "COMMISSIONER-1",
+                        "Документ_Type": ("StandardODATA.Document_ОтчетКомиссионера"),
+                        "Сумма": 100000,
+                    }
+                ]
+            },
+        )
+        invoice_collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="onec_incoming_invoices",
+            source_label="Document_ПриходнаяНакладная",
+            required=True,
+            status="loaded",
+            row_count=2,
+        )
+        for row_number, invoice_date, number, amount in (
+            (1, "2026-04-12T23:59:59", "НФНФ-TEST-1", 95),
+            (2, "2026-05-03T23:59:59", "НФНФ-TEST-2", 40),
+        ):
+            repository.add_source_snapshot_row(
+                db,
+                invoice_collection,
+                row_number=row_number,
+                raw_payload_hash=f"financial-invoice-{row_number}",
+                source_row_id=f"financial-invoice-{row_number}",
+                row_payload={
+                    "Ref_Key": f"invoice-{row_number}",
+                    "Number": number,
+                    "Date": invoice_date,
+                    "Posted": True,
+                    "DeletionMark": False,
+                    "НомерВходящегоДокумента": f"IN-{row_number}",
+                    "Расходы": [
+                        {
+                            "Содержание": "Штрафы",
+                            "Сумма": amount,
+                        }
+                    ],
+                },
+            )
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            status="needs_review",
+            finished_at=repository.security.utcnow(),
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/reports/report-1/financial-document-reconciliation",
+        params={"period_start": "2026-04-01", "period_end": "2026-04-30"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kpis"] == {
+        "revenueWb": 99000.0,
+        "revenueOnec": 100000.0,
+        "revenueDelta": 1000.0,
+        "penaltiesWb": 100.0,
+        "penaltiesOnec": 95.0,
+        "penaltiesDelta": -5.0,
+        "issueRows": 2,
+    }
+    assert body["source"]["snapshotSetId"] == "financial-reconciliation-test"
+    penalty_rows = [row for row in body["items"] if row["controlType"] == "penalties"]
+    assert penalty_rows[0]["onecDocuments"].startswith(
+        "Приходная накладная НФНФ-TEST-1"
+    )
+    assert len(penalty_rows) == 1
+
+    filtered = client.get(
+        "/api/reports/report-1/financial-document-reconciliation",
+        params={
+            "period_start": "2026-04-01",
+            "period_end": "2026-04-30",
+            "control_type": "penalties",
+            "delta_only": "true",
+        },
+    ).json()
+    assert filtered["total"] == 1
+    assert {row["controlType"] for row in filtered["items"]} == {"penalties"}
+
+    may = client.get(
+        "/api/reports/report-1/financial-document-reconciliation",
+        params={
+            "period_start": "2026-05-01",
+            "period_end": "2026-05-31",
+            "control_type": "penalties",
+        },
+    ).json()
+    assert may["kpis"]["penaltiesWb"] == 40.0
+    assert may["kpis"]["penaltiesOnec"] == 40.0
+    assert may["kpis"]["penaltiesDelta"] == 0.0
+    assert may["items"][0]["status"] == "Сходится"
+    assert "03.05.2026" in may["items"][0]["onecDocuments"]
 
 
 def test_document_reconciliation_endpoint_caps_limit(tmp_path: Path) -> None:
@@ -1318,8 +1908,7 @@ def test_report_requires_auth(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     assert client.get("/api/reports/report-1/summary").status_code == 401
     assert (
-        client.get("/api/reports/report-1/document-reconciliation").status_code
-        == 401
+        client.get("/api/reports/report-1/document-reconciliation").status_code == 401
     )
 
 
@@ -1412,8 +2001,12 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="money-trend-chart"' in cabinet.text
     assert 'id="unit-pl-table"' in cabinet.text
     assert "P&amp;L юнит-экономики" in cabinet.text
+    assert "Для ОСНО выручка и расходы показываются без НДС." in cabinet.text
     assert 'id="loss-drivers-chart"' in cabinet.text
     assert 'id="returns-chart"' in cabinet.text
+    assert 'id="data-trust-strip"' in cabinet.text
+    assert 'id="lost-margin-chart"' in cabinet.text
+    assert 'class="analytics-chart tax-input-chart-card"' in cabinet.text
     assert (
         'class="panel full-width detail-workspace report-page-section"' in cabinet.text
     )
@@ -1428,18 +2021,26 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="ozon-preview-rows"' in cabinet.text
     assert 'id="ozon-issue-list"' in cabinet.text
     assert 'id="ozon-vitrine-status"' in cabinet.text
-    assert 'id="ozon-pnl-grid"' in cabinet.text
+    assert 'id="ozon-pnl-grid"' not in cabinet.text
     assert 'id="ozon-buyout-rows"' in cabinet.text
     assert 'id="ozon-diagnostic-message"' in cabinet.text
     assert 'id="ozon-mapping-rows"' in cabinet.text
-    assert "Диагностика источников" in cabinet.text
+    assert "Служебная витрина" in cabinet.text
+    assert "Ozon: расчет экономики" in cabinet.text
+    assert "Ozon: расчет и сверка" not in cabinet.text
     assert "Ошибки Ozon" in cabinet.text
     assert "Что разобрать первым" in cabinet.text
-    assert "Расчетная витрина" in cabinet.text
-    assert "Ozon v1" in cabinet.text
+    assert "Итоги P&amp;L" not in cabinet.text
+    assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert "Excel Ozon" in cabinet.text
+    assert "styles.css?v=20260710-tax-source-diagnostics-v1" in cabinet.text
+    assert "app.js?v=20260710-tax-source-diagnostics-v1" in cabinet.text
+    assert "Очередь аналитика" in cabinet.text
+    assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
+    assert "Источники и сопоставление" in cabinet.text
+    assert "Техническая сверка загрузки Ozon" in cabinet.text
     assert "Источники Ozon + 1C" in cabinet.text
     assert "Сопоставление Ozon → 1C" in cabinet.text
     assert "Ozon finance" not in cabinet.text
@@ -1490,7 +2091,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert cabinet.text.index('id="source-refresh-panel"') < cabinet.text.index(
         'id="integration-list"'
     )
-    assert "Сопоставление и полное обновление" in cabinet.text
+    assert "Обновление данных маркетплейса" in cabinet.text
     assert "Вставить сопоставление" in cabinet.text
     assert "Проверить" in cabinet.text
     assert "Запустить" in cabinet.text
@@ -1550,6 +2151,20 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "/messages/stream" in app_js.text
     assert "answerSource" in app_js.text
     assert "latestSourceRefresh" in app_js.text
+    assert "integrationEffectiveStatus" in app_js.text
+    assert "runtimeCheckedAt" in app_js.text
+    assert "1С недоступна" in app_js.text
+    assert "updateExcelLink" in app_js.text
+    assert "generatedAtIso" in app_js.text
+    assert "Пересобрать" in app_js.text
+    assert "Открыть новый" in app_js.text
+    assert "Excel готовится" in app_js.text
+    assert "Данные обновляются" in app_js.text
+    assert "Источники свежее текущего Excel" in app_js.text
+    assert "reportFreshnessSubtitle" in app_js.text
+    assert "reportCoversRefresh" in app_js.text
+    assert "Данные в отчете" in app_js.text
+    assert "Последний refresh" in app_js.text
     assert "sourceRefreshNewReport" not in app_js.text
     assert "sourceRefreshIssueSummary" not in app_js.text
     assert "/mapping-file" in app_js.text
@@ -1563,7 +2178,39 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "/ozon-diagnostics/export.xlsx" in app_js.text
     assert "updateOzonExcelLink" in app_js.text
     assert "Статьи экономики Ozon" in app_js.text
+    assert "Расходы по SKU из Ozon detail" in app_js.text
+    assert "Часть расходов распределена" in app_js.text
+    assert "нераспределенный остаток" in app_js.text
+    assert "сверка 1C/Ozon" in app_js.text
     assert "ozonPartnerServices" in app_js.text
+    assert "renderOzonMoneyTrendChart" in app_js.text
+    assert "ozonMoneyTrendRows" in app_js.text
+    assert "ozonMoneyTrendTotalsRow" in app_js.text
+    assert "ozonMoneyTrendRowsFromItems" in app_js.text
+    assert "ozonPeriodMonthKey" in app_js.text
+    assert "renderOzonArticleEconomics" in app_js.text
+    assert "ozonArticleEconomicsCards" in app_js.text
+    assert "ozonArticleEconomicsCard" in app_js.text
+    assert "ozonArticleDrilldownRows" in app_js.text
+    assert 'grid.className = "metric-grid ozon-economics-grid";' in app_js.text
+    assert "renderAnalyticsMetricsGrid" in app_js.text
+    assert "clearAnalyticsMetricsGrid" in app_js.text
+    assert "resetOzonAnalyticsCardGrids" in app_js.text
+    assert (
+        'document.body.classList.toggle("ozon-analytics-mode", ozonMode)' in app_js.text
+    )
+    assert "Документный контроль Ozon + 1C" in app_js.text
+    assert "Комиссионер, выкупы и расходы: что сходится и что проверить." in app_js.text
+    assert "Сверка Ozon ↔ 1C" not in app_js.text
+    assert "Комиссионер, выкупы и расходы по статьям." not in app_js.text
+    assert 'els.moneyTrendTitle.textContent = "Динамика денег";' in app_js.text
+    assert (
+        'els.moneyTrendCopy.textContent = "Выручка, прибыль и маржа по месяцам.";'
+        in app_js.text
+    )
+    assert "renderOzonMartKpis" not in app_js.text
+    assert "Расчетная витрина Ozon" not in app_js.text
+    assert "Итоги экономики по товарам за выбранный период." not in app_js.text
     assert 'params.set("limit", "50")' in app_js.text
     assert 'params.set("period_start"' in app_js.text
     assert 'params.set("period_end"' in app_js.text
@@ -1571,19 +2218,32 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "params !== state.ozonDiagnosticsParams" in app_js.text
     assert 'applyTopbarFilter("cabinet")' in app_js.text
     assert "renderOzonIssues" in app_js.text
-    assert "renderOzonPnl" in app_js.text
-    assert "payload.expenseReconciliation || {}" in app_js.text
+    assert "els.ozonIssuesPanel.hidden = false;" in app_js.text
+    assert "renderOzonPnl" not in app_js.text
+    assert "diagnostics.expenseReconciliation || {}" in app_js.text
     assert "expenseReconciliation.articleRows" in app_js.text
     assert "Из чего состоит дельта расходов" in app_js.text
     assert "Строки без пары" in app_js.text
     assert "setOzonDiagnosticCalculationSectionsVisible" in app_js.text
     assert (
-        "const showDiagnosticCalculation = !shouldUseOzonWorkingView();"
-        in app_js.text
+        "const showDiagnosticCalculation = !shouldUseOzonWorkingView();" in app_js.text
     )
     assert "if (showDiagnosticCalculation) {" in app_js.text
     assert "renderOzonBuyouts" in app_js.text
     assert "ozonVitrineStatus" in app_js.text
+    assert "ROW_PRESET_LABELS" in app_js.text
+    assert "applyRowsFilterMode" in app_js.text
+    assert "filteredOzonMartRows" in app_js.text
+    assert "ozonMartRowMatchesQuery" in app_js.text
+    assert "ozonMartRowMatchesPreset" in app_js.text
+    assert "presetBar.hidden = false" in app_js.text
+    assert "els.rowsFilterForm.hidden = false" in app_js.text
+    assert "setRowsFilterHidden(els.filterMonth, ozonMode)" in app_js.text
+    assert "Все статусы Ozon" in app_js.text
+    assert "Без связи" in app_js.text
+    assert "Выкупы" in app_js.text
+    assert "Товар, offer_id, SKU, баркод, 1C" in app_js.text
+    assert "Служебная витрина Ozon" in app_js.text
     assert "sourceRefreshPanel" in app_js.text
     assert "sourceRefreshSteps" in app_js.text
     assert "Сопоставление" in app_js.text
@@ -1594,7 +2254,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "runClientSourceRefresh" in app_js.text
     assert "sourceRefreshOzonRun" in app_js.text
     assert 'mode: "ozon-only"' in app_js.text
-    assert "Загружаем Ozon + 1C без обязательного WB" in app_js.text
+    assert "Загружаем служебную витрину Ozon + 1C без обязательного WB" in app_js.text
     assert "Проверить готовность" not in app_js.text
     assert "Запустите refresh" not in app_js.text
     assert "Отправляем файл и запускаем пересборку" in app_js.text
@@ -1618,11 +2278,13 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "marketplaceCabinetLabel" in app_js.text
     assert "shouldShowOzonPreview" in app_js.text
     assert "ozonMappingRowNode" in app_js.text
+    assert "openMappingAnalystQueue" in app_js.text
+    assert "Открыть в очереди" in app_js.text
+    assert "Выбрать эту номенклатуру" in app_js.text
     assert "Ozon → 1C" in app_js.text
     assert "offer_id → артикул 1C" in app_js.text
     assert (
-        "setEmptyCabinet();\n      await loadOzonDiagnostics(context);"
-        in app_js.text
+        "setEmptyCabinet();\n      await loadOzonDiagnostics(context);" in app_js.text
     )
     assert "ozonFinanceRowNode" not in app_js.text
     assert "cash-flow" not in app_js.text
@@ -1630,7 +2292,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "integrationRowsForActiveProvider" in app_js.text
     assert "Ozon еще не подключен" in app_js.text
     assert "isWbClientCabinet(item)" in app_js.text
-    assert "label.includes(\"ozon seller\")" in app_js.text
+    assert 'label.includes("ozon seller")' in app_js.text
     assert "syncIntegrationsEntryPoint" in app_js.text
     assert "clientLoadToken" in app_js.text
     assert "currentClientLoadContext" in app_js.text
@@ -1657,6 +2319,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert 'selectDetailTab("lostSales")' in app_js.text
     assert "renderMoneyTrendChart" in app_js.text
     assert "renderUnitProfitAndLossTable" in app_js.text
+    assert "isTaxBridgeExpense" in app_js.text
+    assert ".filter((row) => !isTaxBridgeExpense(row))" in app_js.text
+    assert (
+        "profitManagement ?? kpis.managementProfit ?? kpis.profitBeforeTax"
+        in app_js.text
+    )
     assert "renderLossDriversChart" in app_js.text
     assert "renderReturnsChart" in app_js.text
     assert "renderColumnChart" in app_js.text
@@ -1673,19 +2341,33 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "decisionHeadline" in app_js.text
     assert "preliminaryPeriodNotice" in app_js.text
     assert "Период предварительный: укажите это клиенту" in app_js.text
-    assert "Выручка после СПП" in app_js.text
-    assert "Упущенные продажи" in app_js.text
-    assert "lostSalesRevenue" in app_js.text
+    assert "revenueWithVat" in app_js.text
+    assert 'label: showRevenueWithVat ? "Выручка без НДС" : "Выручка"' in app_js.text
+    assert 'label: "Выручка с НДС"' in app_js.text
+    assert 'shareDisplay: "справочно"' in app_js.text
+    assert "Недополученный маржинальный доход" in app_js.text
+    assert "lostContributionMargin" in app_js.text
+    assert "Нет подтверждающих документов" in app_js.text
+    assert "tax-input-semantic-table" in app_js.text
+    assert "sourceRows.slice(0, 8)" not in app_js.text
+    assert "taxInputPage" in app_js.text
+    assert "monthStart" in app_js.text
+    assert "isPartial" in app_js.text
     assert "Чистые продажи, шт" in app_js.text
     assert "Возвратность" in app_js.text
     assert "Выручка / продажа" in app_js.text
     assert "item.unitProfit" in app_js.text
-    assert "Убыточных строк" in app_js.text
+    assert "Убыточных продаж" in app_js.text
+    assert "Штрафы без продаж" in app_js.text
+    assert "Финансовая проверка не пройдена" in app_js.text
+    assert 'profitUnavailable ? "не рассчитано" : money(profit)' in app_js.text
+    assert "P&L не рассчитан: финансовая проверка" in app_js.text
     assert "nonOkSourceCount" in app_js.text
     assert "refreshHasCollectionStatus" in app_js.text
     assert "applyTopbarFilter" in app_js.text
     assert "syncTopbarFiltersFromRows" in app_js.text
     assert "topbarCabinetSelect" in app_js.text
+    assert "seenLabels" in app_js.text
     assert "topbarPeriodStart" in app_js.text
     assert "topbarPeriodEnd" in app_js.text
     assert "newClientButton" in app_js.text
@@ -1790,6 +2472,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert 'selectDetailTab(tab = "products")' in app_js.text
     assert "localStorage" in app_js.text
     assert "/document-reconciliation" in app_js.text
+    assert "/financial-document-reconciliation" in app_js.text
+    assert "renderFinancialReconciliation" in app_js.text
+    assert "Дельта выручки · 1С − WB" in app_js.text
     assert "loadOnecReconciliation" in app_js.text
     assert "renderOnecReconciliation" in app_js.text
     assert "onecReconciliationFilterParams" in app_js.text
@@ -1809,7 +2494,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "statusTone" in app_js.text
     assert "is-missing-cost" in app_js.text
     assert "has-delta" in app_js.text
-    assert "products-panel\").scrollIntoView" not in app_js.text
+    assert 'products-panel").scrollIntoView' not in app_js.text
     assert "missingMapping" in app_js.text
     assert "Показать строки сопоставления" in app_js.text
     assert "Показать источники" in app_js.text
@@ -1915,9 +2600,44 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert ".client-structure-grid" not in css.text
     assert ".source-refresh-panel" in css.text
     assert ".source-refresh-collections" in css.text
+    assert "#excel-link.is-warning" in css.text
     assert ".ozon-preview-grid" in css.text
+    assert (
+        '.ozon-analytics-mode .analytics-chart[aria-labelledby="loss-drivers-title"],'
+        in css.text
+    )
+    assert (
+        '.ozon-analytics-mode .analytics-chart[aria-labelledby="returns-chart-title"],'
+        in css.text
+    )
+    assert (
+        ".ozon-analytics-mode "
+        '.analytics-chart[aria-labelledby="loss-drivers-title"] '
+        ".analytics-chart-body" in css.text
+    )
+    assert (
+        ".ozon-analytics-mode "
+        '.analytics-chart[aria-labelledby="returns-chart-title"] '
+        ".analytics-chart-body" in css.text
+    )
+    assert (
+        '.ozon-analytics-mode .analytics-chart[aria-labelledby="tax-input-title"]'
+        in css.text
+    )
+    assert (
+        ".ozon-analytics-mode "
+        '.analytics-chart[aria-labelledby="tax-input-title"] '
+        ".analytics-chart-body" in css.text
+    )
+    assert ".ozon-economics-grid" in css.text
+    assert ".ozon-economics-grid .metric" in css.text
+    assert ".ozon-economics-grid .metric strong" in css.text
+    assert ".ozon-analytics-card-grid" in css.text
+    assert ".ozon-analytics-card-grid .metric" in css.text
+    assert ".ozon-analytics-card-grid .metric strong" in css.text
     assert ".ozon-issue-panel" in css.text
     assert ".ozon-issue-list" in css.text
+    assert ".ozon-technical-details" in css.text
     assert ".ozon-pnl-grid" in css.text
     assert ".ozon-pnl-table" in css.text
     assert ".ozon-buyout-table" in css.text
@@ -1926,6 +2646,52 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "reason-columns" not in css.text
     assert ".file-picker" in css.text
     assert "overflow-wrap: anywhere" in css.text
+
+
+def test_frontend_guards_stale_filter_requests(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+    assert app_js.status_code == 200
+    text = app_js.text
+
+    assert "rowsRequestKey(reportId, params)" in text
+    assert "isCurrentRowsRequest(context, reportId, requestKey)" in text
+    assert "renderRowsLoadingState()" in text
+    assert "renderRowsErrorState()" in text
+    assert "onecReconciliationRequestKey(reportId, params)" in text
+    assert "isCurrentOnecReconciliationRequest(context, reportId, requestKey)" in text
+    assert "renderOnecReconciliationStatus(" in text
+    assert "mappingItemsRequestKey(clientId, paramsKey)" in text
+    assert "isCurrentMappingItemsRequest(context, requestKey)" in text
+    assert "params !== state.ozonDiagnosticsParams" in text
+    assert 'els.filterQuery.value = "";' not in text
+    assert 'els.filterStatus.value = "";' not in text
+
+
+def test_frontend_login_and_widget_accessibility_regressions(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+    assert app_js.status_code == 200
+    text = app_js.text
+    assert "error?.status === 401" in text
+    assert "Сессия временно занята" not in text
+    assert "openWidgetOverlay" in text
+    assert "closeWidgetOverlay" in text
+    assert "trapWidgetFocus" in text
+    assert "!els.newClientWidgetOverlay.hidden" in text
+
+    cabinet = client.get("/cabinet")
+    assert cabinet.status_code == 200
+    assert 'aria-label="Вопрос AI-аналитику"' in cabinet.text
+    assert (
+        'data-drilldown-preset="review" role="tab" aria-selected="true"' in cabinet.text
+    )
+    assert (
+        'data-drilldown-preset="sources" role="tab" aria-selected="false"'
+        in cabinet.text
+    )
 
 
 def test_mapping_file_upload_saves_local_source_and_audits(tmp_path: Path) -> None:
@@ -1985,8 +2751,7 @@ def test_mapping_file_upload_auto_refreshes_and_returns_new_report(
     assert payload["autoRefresh"]["sourceReportRunId"] == "report-1"
     assert payload["autoRefresh"]["newReportRunId"] == "report-1-refresh"
     assert (
-        "Автоматическая пересборка после загрузки mapping"
-        in fake_service.last_reason
+        "Автоматическая пересборка после загрузки mapping" in fake_service.last_reason
     )
     assert "a\tb" not in str(payload)
     assert (mapping_dir / "СопоставлениеНоменклатуры.txt").read_bytes() == b"a\tb\n"
@@ -2157,6 +2922,7 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
             row_payload={
                 "RecordSet": [
                     {
+                        "Period": "2026-05-31T01:00:00",
                         "Номенклатура_Key": "ITEM-1",
                         "Количество": "2",
                         "Себестоимость": "600",
@@ -2169,7 +2935,7 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
                         "Количество": "3",
                         "Сумма": "900",
                         "Себестоимость": "0",
-                    }
+                    },
                 ]
             },
         )
@@ -2504,6 +3270,26 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
             status="source_loaded",
             finished_at=repository.security.utcnow(),
         )
+        dry_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=True,
+            snapshot_set_id="ozon-only-dry-run-after-real-snapshot",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 17),
+            user=user,
+            reason="test dry-run must not mask real diagnostics",
+        )
+        repository.update_source_refresh_run(
+            db,
+            dry_run,
+            status="needs_review",
+            started_at=repository.security.utcnow(),
+            finished_at=repository.security.utcnow(),
+        )
         db.commit()
 
     response = client.get("/api/clients/shumeyko/ozon-diagnostics?limit=1")
@@ -2645,9 +3431,9 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
     assert payload["pnl"]["totals"]["profitBeforeCogs"] == 800.0
     assert payload["pnl"]["totals"]["onecCogs"] == 600.0
     assert payload["pnl"]["totals"]["profitAfterCogs"] == 200.0
-    assert payload["unitRows"]["rowCount"] == 2
+    assert payload["unitRows"]["rowCount"] == 1
     assert payload["unitRows"]["previewRowCount"] == 1
-    assert payload["unitRows"]["previewLimited"] is True
+    assert payload["unitRows"]["previewLimited"] is False
     assert payload["unitRows"]["summary"] == {
         "ready": 1,
         "partialSource": 0,
@@ -2655,65 +3441,45 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
         "ambiguousMapping": 0,
         "missingCost": 0,
         "missing1cCommissioner": 0,
-        "buyoutPeriodOnly": 1,
+        "buyoutPeriodOnly": 0,
         "partialExpenses": 0,
     }
-    assert payload["unitRows"]["rows"] == [
-        {
-            "rowType": "realization_item",
-            "periodStart": None,
-            "periodEnd": None,
-            "rowNumber": 1,
-            "sourceRowId": "realization-1",
-            "productName": ozon_product_name,
-            "offerId": "OZ-1",
-            "productId": "product-1",
-            "sku": "12345",
-            "barcode": "12345",
-            "quantity": 2.0,
-            "realizationAmount": 1000.0,
-            "onecRevenue": 900.0,
-            "revenueAmount": 900.0,
-            "revenueBasis": "onec_commissioner_sku",
-            "onecItemId": "ITEM-1",
-            "onecName": "Товар Ozon 1C",
-            "unitCost": 300.0,
-            "cogs": 600.0,
-            "cogsAmount": 600.0,
-            "ozonCommission": 50.0,
-            "ozonServices": 10.0,
-            "ozonPartnerServices": None,
-            "ozonLogistics": 20.0,
-            "ozonStorage": 5.0,
-            "ozonOtherExpenses": 15.0,
-            "ozonExpenses": 100.0,
-            "profit": 200.0,
-            "profitAmount": 200.0,
-            "margin": 200 / 900,
-            "mappingStatus": "matched",
-            "qualityStatus": "ready",
-            "expenseStatus": "loaded",
-            "expenseBasis": "ozon_realization_sku_fields",
-            "expenseAllocationBasis": "",
-            "expenseAllocationShare": None,
-            "problemReason": "Можно читать прибыль Ozon по товару.",
-            "statusReason": "Можно читать прибыль Ozon по товару.",
-            "actionText": "Действие не требуется.",
-        }
-    ]
-    assert payload["ozonMart"]["basis"] == "staff_only_ozon_unit_economics_mart_v1"
+    unit_row = payload["unitRows"]["rows"][0]
+    assert unit_row["rowType"] == "realization_item"
+    assert unit_row["periodStart"] == "2026-05-01"
+    assert unit_row["periodEnd"] == "2026-05-31"
+    assert unit_row["onecRevenue"] == 900.0
+    assert unit_row["cogs"] == 600.0
+    assert unit_row["ozonExpenses"] == 100.0
+    assert unit_row["profit"] == 200.0
+    assert unit_row["profitBeforeTax"] == 200.0
+    assert unit_row["profitAfterTax"] is None
+    assert unit_row["taxProfileSource"] == "missing"
+    assert unit_row["taxCompleteness"] == "missing_tax_profile"
+    assert unit_row["profitAliasDeprecated"] is True
+    assert unit_row["qualityStatus"] == "ready"
+    assert unit_row["costQualityStatus"] == "warning"
+    assert unit_row["costQualityReason"] == "insufficient_history"
+    assert payload["ozonMart"]["basis"] == (
+        "staff_only_ozon_unit_economics_mart_v2_monthly"
+    )
     assert payload["ozonMart"]["summary"]["ready"] == 1
-    assert payload["ozonMart"]["summary"]["buyoutPeriodOnly"] == 1
+    assert payload["ozonMart"]["summary"]["buyoutPeriodOnly"] == 0
+    assert payload["ozonMart"]["expenseAttribution"]["status"] == "not_applicable"
+    assert payload["ozonMart"]["articleDrilldown"][0]["kind"] == "sku_direct"
     assert payload["ozonMart"]["articleDrilldown"][0]["includedInSkuProfit"] is True
-    assert payload["ozonMart"]["totals"] == {
-        "quantity": 2.0,
-        "onecRevenue": 900.0,
-        "cogs": 600.0,
-        "ozonExpenses": 100.0,
-        "profit": 200.0,
-        "margin": 200 / 900,
-        "expenseBasis": "ozon_cash_flow_statement",
-    }
+    assert payload["ozonMart"]["totals"]["quantity"] == 2.0
+    assert payload["ozonMart"]["totals"]["onecRevenue"] == 900.0
+    assert payload["ozonMart"]["totals"]["cogs"] == 600.0
+    assert payload["ozonMart"]["totals"]["ozonExpenses"] == 100.0
+    assert payload["ozonMart"]["totals"]["profitBeforeTax"] == 200.0
+    assert payload["ozonMart"]["totals"]["profitAfterTax"] is None
+    assert payload["ozonMart"]["costQuality"]["status"] == "warning"
+    assert payload["ozonMart"]["costQuality"]["quantityCoveragePct"] == 1.0
+    assert payload["ozonMart"]["excludedIncompletePeriods"] == []
+    assert payload["ozonMart"]["profitAliasDeprecated"] is True
+    assert payload["pnl"]["deprecated"] is True
+    assert payload["pnl"]["replacement"] == "ozonMart"
     assert payload["expenseReconciliation"]["status"] == "review"
     assert payload["expenseReconciliation"]["ozonExpenseAmount"] == 100.0
     assert payload["expenseReconciliation"]["onecExpenseAmount"] is None
@@ -2769,15 +3535,13 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
             "Методика",
         ]
         unit_headers = [cell.value for cell in workbook["Юнит экономика Ozon"][1]]
-        reconciliation_headers = [
-            cell.value for cell in workbook["Сверка Ozon 1C"][1]
-        ]
-        reconciliation_values = [
-            cell.value for cell in workbook["Сверка Ozon 1C"][2]
-        ]
+        reconciliation_headers = [cell.value for cell in workbook["Сверка Ozon 1C"][1]]
+        reconciliation_values = [cell.value for cell in workbook["Сверка Ozon 1C"][2]]
     finally:
         workbook.close()
     assert "Услуги партнеров / перевыставление" in unit_headers
+    assert "Качество себестоимости" in unit_headers
+    assert "Референсная стоимость единицы" in unit_headers
     assert "Ozon API" in reconciliation_headers
     assert reconciliation_values
 
@@ -2796,31 +3560,18 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
     assert filtered_payload["pnl"]["totals"]["profitBeforeCogs"] == 0.0
     assert filtered_payload["pnl"]["onecOzon"]["status"] == "missing"
     assert filtered_payload["pnl"]["status"] == "partial_source"
-    assert filtered_payload["unitRows"]["rows"][0]["qualityStatus"] == (
-        "missing_1c_commissioner"
-    )
-    assert filtered_payload["unitRows"]["rows"][0]["expenseStatus"] == "loaded"
-    assert filtered_payload["ozonMart"]["status"] == "partial_source"
-    assert filtered_payload["unitRows"]["rows"][0]["revenueAmount"] is None
-    assert filtered_payload["unitRows"]["rows"][0]["profitAmount"] is None
-    assert "ozon_onec_commissioner_missing" in [
-        item["code"] for item in filtered_payload["issues"]["items"]
-    ]
+    assert filtered_payload["unitRows"]["rows"] == []
+    assert filtered_payload["ozonMart"]["status"] == "not_started"
+    assert filtered_payload["ozonMart"]["totals"]["profitBeforeTax"] == 0.0
     assert filtered_payload["pnl"]["periods"] == []
     assert payload["issues"]["blockingCount"] == 0
-    assert payload["issues"]["reviewCount"] == 1
-    assert payload["issues"]["items"] == [
-        {
-            "code": "ozon_buyout_matched_without_report_number",
-            "title": "Выкупы Ozon",
-            "value": "2 отчетов",
-            "detail": (
-                "Сумма и количество сходятся с Ozon buyout за период, "
-                "но Ozon API не вернул номер выкупного отчета."
-            ),
-            "tone": "review",
-        }
-    ]
+    assert payload["issues"]["reviewCount"] == 2
+    issue_codes = {item["code"] for item in payload["issues"]["items"]}
+    assert issue_codes == {
+        "ozon_buyout_matched_without_report_number",
+        "ozon_mart_cost_quality_warning",
+        "ozon_mart_ready",
+    }
     assert "must-not-leak" not in str(payload)
     assert "raw_payload_hash" not in str(payload)
 
@@ -3064,8 +3815,7 @@ def test_client_ozon_diagnostics_filters_ozon_rows_by_cabinet(
         db.commit()
 
     response = client.get(
-        "/api/clients/shumeyko/ozon-diagnostics"
-        "?limit=10&wb_cabinet_id=ozon-cabinet-1"
+        "/api/clients/shumeyko/ozon-diagnostics?limit=10&wb_cabinet_id=ozon-cabinet-1"
     )
 
     assert response.status_code == 200
@@ -3129,6 +3879,215 @@ def test_onec_sales_cost_index_accepts_split_quantity_and_cost_rows() -> None:
     ]
 
     assert repository._onec_sales_cost_index(rows)["ITEM-1"] == 25
+
+
+def test_onec_sales_cost_index_nets_returns_within_period() -> None:
+    rows = [
+        SimpleNamespace(
+            row_payload={
+                "RecordSet": [
+                    {
+                        "Period": "2026-04-10",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "10",
+                        "Себестоимость": "1000",
+                    },
+                    {
+                        "Period": "2026-04-20",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "-2",
+                        "Себестоимость": "-400",
+                    },
+                    {
+                        "Period": "2026-05-10",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "5",
+                        "Себестоимость": "2500",
+                    },
+                ]
+            }
+        )
+    ]
+
+    april = repository._onec_sales_cost_index(
+        rows,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        organization_id="ORG-1",
+    )
+
+    assert april == {"ITEM-1": 75}
+
+
+def test_onec_sales_cost_index_does_not_hide_negative_cost_with_abs() -> None:
+    rows = [
+        SimpleNamespace(
+            row_payload={
+                "RecordSet": [
+                    {
+                        "Period": "2026-04-20",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "2",
+                        "Себестоимость": "-400",
+                    }
+                ]
+            }
+        )
+    ]
+
+    april = repository._onec_sales_cost_index(
+        rows,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        organization_id="ORG-1",
+    )
+
+    assert april == {"ITEM-1": Decimal("-200")}
+
+
+def test_onec_previous_closed_month_costs_use_three_recent_closed_months() -> None:
+    cost_rows = [
+        SimpleNamespace(
+            row_payload={
+                "RecordSet": [
+                    {
+                        "Period": "2026-03-10",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "10",
+                        "Себестоимость": "1000",
+                    },
+                    {
+                        "Period": "2026-04-10",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "10",
+                        "Себестоимость": "1000",
+                    },
+                    {
+                        "Period": "2026-04-20",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "-2",
+                        "Себестоимость": "-400",
+                    },
+                    {
+                        "Period": "2026-05-10",
+                        "Организация_Key": "ORG-1",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "10",
+                        "Себестоимость": "3000",
+                    },
+                ]
+            }
+        )
+    ]
+    commissioner_rows = [
+        SimpleNamespace(
+            row_payload={
+                "Date": f"2026-{month:02d}-28",
+                "Комментарий": "ОЗОН Отчет комиссионера",
+                "Запасы": [
+                    {
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "1",
+                        "Всего": "1",
+                    }
+                ],
+            }
+        )
+        for month in (3, 4, 5)
+    ]
+
+    history = repository._onec_previous_closed_month_costs(
+        cost_rows,
+        commissioner_rows=commissioner_rows,
+        before_month=date(2026, 6, 1),
+        organization_id="ORG-1",
+    )
+
+    assert history == {"ITEM-1": (Decimal("300"), Decimal("75"), Decimal("100"))}
+
+
+def test_onec_direct_cost_control_preserves_signed_returns_and_scope() -> None:
+    rows = [
+        SimpleNamespace(
+            row_payload={
+                "RecordSet": [
+                    {
+                        "Period": "2026-04-10",
+                        "Организация_Key": "ORG-1",
+                        "Контрагент_Key": "OZON-CP",
+                        "Количество": "10",
+                        "Себестоимость": "1000",
+                    },
+                    {
+                        "Period": "2026-04-20",
+                        "Организация_Key": "ORG-1",
+                        "Контрагент_Key": "OZON-CP",
+                        "Количество": "-2",
+                        "Себестоимость": "-400",
+                    },
+                    {
+                        "Period": "2026-04-21",
+                        "Организация_Key": "ORG-1",
+                        "Контрагент_Key": "OTHER-CP",
+                        "Количество": "100",
+                        "Себестоимость": "100000",
+                    },
+                ]
+            }
+        )
+    ]
+
+    control = repository._onec_direct_cost_control(
+        rows,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        organization_id="ORG-1",
+        counterparty_ids=("OZON-CP",),
+    )
+
+    assert control == {"quantity": Decimal("8"), "cogs": Decimal("600")}
+
+
+def test_ozon_mart_mapping_resolver_prefers_project_current_mapping() -> None:
+    project_mapping = {
+        "status": "matched",
+        "matchMethod": "mapping_service:imported_mapping_file",
+        "offerId": "OZ-1",
+        "onecItemId": "ITEM-CONFIRMED",
+        "onecName": "Подтвержденный товар",
+        "onecArticle": "OZ-1",
+    }
+    resolver = repository._ozon_mart_mapping_resolver(
+        onec_indexes={
+            "byArticle": {
+                repository._mapping_lookup_key("OZ-1"): [
+                    {"id": "ITEM-A", "name": "A", "article": "OZ-1"},
+                    {"id": "ITEM-B", "name": "B", "article": "OZ-1"},
+                ]
+            }
+        },
+        ozon_mapping={
+            "rows": [
+                {
+                    "offerId": "OZ-1",
+                    "status": "ambiguous",
+                    "onecItemId": "ITEM-A",
+                }
+            ]
+        },
+        project_mapping_preview_index={
+            ("offerId", repository._mapping_lookup_key("OZ-1")): project_mapping
+        },
+    )
+
+    assert resolver({"offerId": "OZ-1"}) == project_mapping
 
 
 def test_ozon_realization_items_include_nested_item_and_quantity() -> None:
@@ -3196,6 +4155,58 @@ def test_client_source_refresh_controls_are_staff_only(tmp_path: Path) -> None:
     assert not mapping_dir.exists()
 
 
+def test_tax_profile_review_is_not_counted_as_missing_cost(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        row = (
+            db.query(repository.ReportUnitRow)
+            .filter_by(report_run_id="report-1", status="Нет себестоимости 1С")
+            .one()
+        )
+        row.status = "Себестоимость 1С требует сверки"
+        row.status_reason = (
+            "Для организации 1С не найден налоговый профиль на период строки"
+        )
+        row.loss_driver = "Себестоимость 1С требует сверки"
+        row.tax_method = "Налоговый профиль не найден"
+        row.tax_profile_source = "missing"
+        row.tax_completeness = "missing_tax_profile"
+        db.commit()
+    login(client)
+
+    summary = client.get("/api/reports/report-1/summary").json()
+
+    assert summary["quality"]["missingCostRows"] == 0
+    assert "missing_cost" not in {
+        reason["code"] for reason in summary["readiness"]["reviewReasons"]
+    }
+
+
+def test_informational_payout_status_does_not_fail_document_reconciliation(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        rows = db.query(repository.ReportDocumentReconciliationRow).all()
+        assert rows
+        for row in rows:
+            row.status = "OK"
+            row.payout_status = "Нужен источник выплаты 1С"
+            row.period_status = "полный период"
+            row.onec_documents = "Документ 1С № 1"
+            for field in repository.DOCUMENT_RECONCILIATION_DELTA_FIELDS:
+                setattr(row, field, Decimal("0"))
+        db.commit()
+    login(client)
+
+    summary = client.get("/api/reports/report-1/summary").json()
+
+    assert summary["quality"]["documentReconciliationIssues"] == 0
+    assert "onec_reconciliation_review" not in {
+        reason["code"] for reason in summary["readiness"]["reviewReasons"]
+    }
+
+
 def test_login_report_filters_and_export(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     login(client)
@@ -3212,13 +4223,28 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert "unitRows" not in summary
     assert summary["kpis"]["rowCount"] == 2
     assert summary["kpis"]["revenue"] == 119000
-    assert summary["kpis"]["profit"] == -56
+    assert summary["kpis"]["profit"] is None
+    assert summary["kpis"]["profitManagement"] == 7000
+    assert summary["kpis"]["profitBeforeTax"] == 7000
     assert summary["kpis"]["lossRows"] == 1
-    assert summary["kpis"]["lostSalesRevenue"] == 25000
-    assert summary["kpis"]["lostSalesProfit"] == 3000
-    assert summary["kpis"]["lostSalesUnits"] == 5
+    assert summary["kpis"]["lostSalesRevenue"] is None
+    assert summary["kpis"]["lostSalesProfit"] is None
+    assert summary["kpis"]["lostSalesUnits"] is None
+    assert summary["taxContext"]["status"] == "missing"
+    assert summary["taxContext"]["calculated"] is False
+    assert summary["lostSalesCoverage"]["calculated"] is False
     assert summary["monthly"]
+    assert [item["monthStart"] for item in summary["monthly"]] == [
+        "2026-04-01",
+        "2026-06-01",
+    ]
+    assert summary["monthly"][-1]["isPartial"] is True
+    assert summary["monthly"][-1]["daysElapsed"] == 17
+    assert summary["monthly"][-1]["daysInMonth"] == 30
     assert summary["expenses"]
+    assert {item["expense"] for item in summary["expenses"]}.isdisjoint(
+        {"НДС к уплате", "Налог с выручки/НДФЛ"}
+    )
     assert summary["lostSales"]
     assert summary["liquidityRows"]
     assert "md1Markup" in summary["liquidityRows"][0]
@@ -3226,16 +4252,14 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert summary["quality"]["okRows"] == 1
     assert summary["quality"]["missingCostRows"] == 1
     assert summary["quality"]["documentReconciliationRows"] == 1
-    assert summary["quality"]["documentReconciliationIssues"] == 1
+    assert summary["quality"]["documentReconciliationIssues"] == 0
     assert summary["readiness"]["status"] == "partial_period"
     assert summary["readiness"]["label"] == "Неполный период"
-    assert summary["readiness"]["score"] == 60
+    assert summary["readiness"]["score"] == 70
     assert summary["options"]["periodStart"] == "2026-04-06"
     assert summary["options"]["periodEnd"] == "2026-06-02"
     assert len(summary["liquidityRows"]) == 2
-    assert {
-        row["liquidityStatus"] for row in summary["liquidityRows"]
-    } == {
+    assert {row["liquidityStatus"] for row in summary["liquidityRows"]} == {
         "Убыточный: логистика и приемка WB",
         "Нужна проверка данных",
     }
@@ -3246,7 +4270,6 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert {reason["code"] for reason in summary["readiness"]["reviewReasons"]} == {
         "partial_period",
         "missing_cost",
-        "onec_reconciliation_review",
         "client_draft_missing",
     }
 
@@ -3257,11 +4280,17 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert rows["total"] == 1
     assert rows["kpis"]["rowCount"] == 1
     assert rows["kpis"]["revenue"] == 99000
-    assert rows["kpis"]["profit"] == -14704
+    assert rows["kpis"]["profit"] is None
+    assert rows["kpis"]["profitBeforeTax"] == -9000
+    assert rows["kpis"]["profitManagement"] == -9000
     assert rows["kpis"]["lossRows"] == 1
-    assert rows["kpis"]["lostSalesRevenue"] == 25000
+    assert rows["kpis"]["lostSalesRevenue"] is None
     assert rows["items"][0]["product"] == "Убыточный товар"
     assert rows["analytics"]["kpis"]["revenue"] == 99000
+    assert rows["analytics"]["kpis"]["profitManagement"] == -9000
+    assert {item["expense"] for item in rows["analytics"]["expenses"]}.isdisjoint(
+        {"НДС к уплате", "Налог с выручки/НДФЛ"}
+    )
     assert rows["analytics"]["monthly"][0]["month"] == "Апрель 2026"
     assert rows["analytics"]["liquidityRows"][0]["product"] == "Убыточный товар"
     assert rows["analytics"]["lostSales"][0]["cabinet"] == "Кабинет A"
@@ -3273,7 +4302,7 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert filtered_rows["total"] == 1
     assert filtered_rows["kpis"]["rowCount"] == 1
     assert filtered_rows["kpis"]["revenue"] == 20000
-    assert filtered_rows["kpis"]["profit"] == 14648
+    assert filtered_rows["kpis"]["profit"] is None
     assert filtered_rows["kpis"]["lossRows"] == 0
     assert filtered_rows["items"][0]["barcode"] == "BAR-NOCOST"
 
@@ -3305,7 +4334,7 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert period_rows["total"] == 1
     assert period_rows["kpis"]["rowCount"] == 1
     assert period_rows["kpis"]["revenue"] == 20000
-    assert period_rows["kpis"]["profit"] == 14648
+    assert period_rows["kpis"]["profit"] is None
     assert period_rows["items"][0]["barcode"] == "BAR-NOCOST"
 
     sku = client.get("/api/reports/report-1/sku/BAR-NOCOST").json()
@@ -3326,6 +4355,165 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert "Убыточных строк" in management.json()["markdown"]
 
 
+def test_osno_summary_pnl_uses_without_vat_revenue_and_expenses(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    payload = deepcopy(sample_payload())
+    osno_row = deepcopy(payload["unitRows"][0])
+    osno_row.update(
+        {
+            "id": "unit-osno",
+            "revenue": 1220,
+            "revenueWithoutVat": 1000,
+            "vatOutput": 220,
+            "vatInput": 22,
+            "vatPayable": 198,
+            "cost": 500,
+            "commission": 122,
+            "logistics": 0,
+            "storage": 0,
+            "acceptance": 0,
+            "promotion": 0,
+            "penalties": 50,
+            "acquiring": 0,
+            "usn": 0,
+            "profitBeforeTax": 350,
+            "profit": 350,
+            "pnlVatMode": "without_vat_for_osno",
+        }
+    )
+    payload["unitRows"] = [osno_row]
+    payload["lostSales"] = []
+    payload["documentReconciliation"] = []
+
+    with session_factory() as db:
+        import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-osno",
+            publication_status="draft",
+            publish=False,
+        )
+        db.commit()
+        report = db.get(repository.ReportRun, "report-osno")
+        assert report is not None
+        summary = repository.report_summary_payload(db, report)
+
+    assert summary["kpis"]["revenue"] == 1000
+    assert summary["kpis"]["revenueWithoutVat"] == 1000
+    assert summary["kpis"]["revenueWithVat"] == 1220
+    assert summary["kpis"]["pnlWithoutVat"] is True
+    assert summary["kpis"]["profit"] is None
+    assert summary["kpis"]["margin"] is None
+    assert summary["kpis"]["profitBeforeTax"] == 350
+    expenses = {item["expense"]: item for item in summary["expenses"]}
+    assert expenses["Себестоимость 1С"]["amount"] == 500
+    assert expenses["Комиссия WB"]["amount"] == 100
+    assert expenses["Комиссия WB"]["share"] == 0.1
+    assert expenses["Штрафы/доплаты WB"]["amount"] == 50
+    assert expenses["Штрафы/доплаты WB"]["share"] == 0.05
+    assert summary["monthly"][0]["revenue"] == 1000
+    assert summary["monthly"][0]["profit"] == 350
+
+
+def test_osno_legacy_draft_pnl_fallback_uses_tax_method_without_vat(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    payload = deepcopy(sample_payload())
+    osno_row = deepcopy(payload["unitRows"][0])
+    osno_row.update(
+        {
+            "id": "unit-osno-legacy-draft",
+            "revenue": 1220,
+            "revenueWithoutVat": 1000,
+            "vatOutput": 220,
+            "vatInput": 22,
+            "vatPayable": 198,
+            "cost": 500,
+            "commission": 122,
+            "logistics": 0,
+            "storage": 0,
+            "acceptance": 0,
+            "promotion": 0,
+            "penalties": 0,
+            "acquiring": 0,
+            "usn": 0,
+            "profitBeforeTax": 598,
+            "profit": 400,
+            "taxMethod": "ОСНО; НДС 22% внутри цены",
+            "pnlVatMode": "",
+        }
+    )
+    payload["unitRows"] = [osno_row]
+    payload["lostSales"] = []
+    payload["documentReconciliation"] = []
+
+    with session_factory() as db:
+        import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-osno-legacy-draft",
+            publication_status="draft",
+            publish=False,
+        )
+        db.commit()
+        report = db.get(repository.ReportRun, "report-osno-legacy-draft")
+        assert report is not None
+        summary = repository.report_summary_payload(db, report)
+
+    assert summary["kpis"]["revenue"] == 1000
+    assert summary["kpis"]["revenueWithoutVat"] == 1000
+    assert summary["kpis"]["revenueWithVat"] == 1220
+    assert summary["kpis"]["pnlWithoutVat"] is True
+    assert summary["kpis"]["profit"] is None
+    assert summary["kpis"]["profitBeforeTax"] == 598
+    expenses = {item["expense"]: item for item in summary["expenses"]}
+    assert expenses["Себестоимость 1С"]["amount"] == 500
+    assert expenses["Комиссия WB"]["amount"] == 100
+    assert summary["monthly"][0]["revenue"] == 1000
+    assert summary["monthly"][0]["profit"] == 400
+
+
+def test_report_export_uses_current_published_report_for_stale_link(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    current_export = tmp_path / "reports" / "current.xlsx"
+    current_export.write_bytes(b"current-xlsx")
+    with client.app.state.session_factory() as db:
+        payload = deepcopy(sample_payload())
+        payload["meta"] = {
+            **payload["meta"],
+            "period": "01.03.2026 - 08.07.2026",
+            "reportPeriod": "01.03.2026 - 08.07.2026",
+            "sourceCoverage": "01.03.2026 - 08.07.2026",
+            "sourceCoverageEnd": "2026-07-08",
+        }
+        import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-current",
+            source_workbook_path=str(current_export),
+        )
+        db.commit()
+
+    export = client.get("/api/reports/report-1/export.xlsx")
+
+    assert export.status_code == 200
+    assert export.content == b"current-xlsx"
+
+
 def test_report_rows_period_filter_uses_month_when_week_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -3342,7 +4530,8 @@ def test_report_rows_period_filter_uses_month_when_week_is_missing(
     assert april_may_rows["total"] == 1
     assert april_may_rows["kpis"]["rowCount"] == 1
     assert april_may_rows["kpis"]["revenue"] == 99000
-    assert april_may_rows["kpis"]["profit"] == -14704
+    assert april_may_rows["kpis"]["profit"] is None
+    assert april_may_rows["kpis"]["profitBeforeTax"] == -9000
     assert april_may_rows["items"][0]["barcode"] == "BAR-LOSS"
 
     may_rows = client.get(
@@ -3352,6 +4541,59 @@ def test_report_rows_period_filter_uses_month_when_week_is_missing(
     assert may_rows["total"] == 0
     assert may_rows["kpis"]["rowCount"] == 0
     assert may_rows["kpis"]["revenue"] == 0
+
+
+def test_report_rows_assign_cross_month_week_by_closing_date(tmp_path: Path) -> None:
+    payload = deepcopy(sample_payload())
+    march_week = {
+        **payload["unitRows"][0],
+        "id": "unit-closes-april",
+        "week": "2026-03-30",
+        "month": "Март 2026",
+        "documentReport": (
+            "Отчет комиссионера · 30.03.2026-05.04.2026 · закрытие 31.03.2026"
+        ),
+        "revenue": 100,
+        "penalties": 10,
+    }
+    april_week = {
+        **payload["unitRows"][0],
+        "id": "unit-closes-may",
+        "week": "2026-04-27",
+        "month": "Апрель 2026",
+        "documentReport": (
+            "Отчет комиссионера · 27.04.2026-03.05.2026 · закрытие 30.04.2026"
+        ),
+        "revenue": 200,
+        "penalties": 20,
+    }
+    payload["unitRows"] = [march_week, april_week]
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+
+    april = client.get(
+        "/api/reports/report-1/rows",
+        params={"period_start": "2026-04-01", "period_end": "2026-04-30"},
+    ).json()
+    assert april["total"] == 1
+    assert april["kpis"]["revenueWithVat"] == 100.0
+    assert april["items"][0]["month"] == "Апрель 2026"
+    assert "закрытие 05.04.2026" in april["items"][0]["documentReport"]
+
+    may = client.get(
+        "/api/reports/report-1/rows",
+        params={"month": "Май 2026"},
+    ).json()
+    assert may["total"] == 1
+    assert may["kpis"]["revenueWithVat"] == 200.0
+    assert may["items"][0]["month"] == "Май 2026"
+    assert "закрытие 03.05.2026" in may["items"][0]["documentReport"]
+
+    summary = client.get("/api/reports/report-1/summary").json()
+    monthly = {row["month"]: row for row in summary["monthly"]}
+    assert monthly["Апрель 2026"]["revenue"] == 100.0
+    assert monthly["Май 2026"]["revenue"] == 200.0
+    assert summary["options"]["months"] == ["Апрель 2026", "Май 2026"]
 
 
 def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None:
@@ -3528,8 +4770,7 @@ def test_multi_client_report_access_requires_explicit_client(
     assert {item["clientId"] for item in own_clients.json()["items"]} == {"shumeyko"}
     assert client.get("/api/clients/other/reports").status_code == 404
     assert (
-        client.get("/api/reports/report-1/document-reconciliation").status_code
-        == 200
+        client.get("/api/reports/report-1/document-reconciliation").status_code == 200
     )
     assert (
         client.get("/api/reports/other-report/document-reconciliation").status_code
@@ -3624,6 +4865,319 @@ def test_consultant_can_create_client_workspace(tmp_path: Path) -> None:
     assert forbidden_cabinet.status_code == 403
 
 
+def test_staff_can_link_onec_organization_and_manage_tax_override(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .order_by(repository.ClientCompany.id)
+            .first()
+        )
+        assert company is not None
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="tax-profile-test",
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 7, 10),
+            reason="tax profile API test",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            run,
+            source_type="onec_organizations",
+            source_label="Catalog_Организации",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            collection,
+            row_number=1,
+            raw_payload_hash="org-tax-profile-hash",
+            source_row_id="ORG-1",
+            row_payload={
+                "Ref_Key": "ORG-1",
+                "Description": company.display_name,
+                "СистемаНалогообложения": "УСН Доходы",
+                "СтавкаНДС": "0",
+                "РежимНДС": "none",
+                "РежимВычетаНДС": "not_applicable",
+                "СтавкаНалогаСВыручки": "0.06",
+                "ДатаНачала": "2026-01-01",
+            },
+        )
+        repository.update_source_refresh_run(db, run, status="source_loaded")
+        company_id = company.id
+        db.commit()
+
+    login(client)
+    organizations = client.get("/api/clients/shumeyko/onec-organizations")
+    assert organizations.status_code == 200
+    assert organizations.json()["items"] == [{"id": "ORG-1", "name": "Организация A"}]
+    linked = client.patch(
+        f"/api/clients/shumeyko/companies/{company_id}/onec-organization",
+        json={"onec_organization_id": "ORG-1"},
+    )
+    assert linked.status_code == 200
+    linked_company = next(
+        item
+        for item in linked.json()["client"]["companies"]
+        if item["id"] == company_id
+    )
+    assert linked_company["onecOrganizationId"] == "ORG-1"
+    assert linked_company["taxProfileStatus"] == "missing"
+
+    override = client.post(
+        f"/api/clients/shumeyko/companies/{company_id}/tax-profile-overrides",
+        json={
+            "tax_system": "ОСНО",
+            "vat_rate": "22",
+            "vat_mode": "included",
+            "vat_deduction_mode": "allowed",
+            "revenue_tax_rate": "0",
+            "income_tax_kind": "ip_ndfl_progressive",
+            "valid_from": "2026-01-01",
+            "valid_to": "2026-12-31",
+            "reason": "Временное подтверждение бухгалтера",
+        },
+    )
+    assert override.status_code == 200
+    override_id = override.json()["overrideId"]
+    override_company = next(
+        item
+        for item in override.json()["client"]["companies"]
+        if item["id"] == company_id
+    )
+    assert override_company["taxProfileStatus"] == "override"
+    assert override_company["taxProfileSource"] == "manual_override"
+
+    overlapping = client.post(
+        f"/api/clients/shumeyko/companies/{company_id}/tax-profile-overrides",
+        json={
+            "tax_system": "УСН Доходы",
+            "vat_rate": "0",
+            "vat_mode": "none",
+            "vat_deduction_mode": "not_applicable",
+            "revenue_tax_rate": "0.06",
+            "valid_from": "2026-06-01",
+            "reason": "Конфликтующий период",
+        },
+    )
+    assert overlapping.status_code == 400
+
+    with client.app.state.session_factory() as db:
+        run = db.get(SourceRefreshRun, run.id)
+        assert run is not None
+        tax_collection = repository.sync_organization_tax_profiles(db, run)
+        assert tax_collection.payload["message"] == (
+            "Справочник организаций загружен из 1С, но для части организаций "
+            "OData не опубликовала полный налоговый профиль."
+        )
+        company_diagnostic = next(
+            item
+            for item in tax_collection.payload["companyDiagnostics"]
+            if item["clientCompanyId"] == company_id
+        )
+        assert company_diagnostic["status"] == "ready"
+        db.commit()
+
+    clients_payload = client.get("/api/clients").json()["items"]
+    current_company = next(
+        company
+        for item in clients_payload
+        if item["clientId"] == "shumeyko"
+        for company in item["companies"]
+        if company["id"] == company_id
+    )
+    assert current_company["taxProfileStatus"] == "ready"
+    assert current_company["taxProfileSource"] == "Catalog_Организации"
+    assert current_company["taxSystem"] == "УСН Доходы"
+
+    disabled = client.patch(
+        f"/api/clients/shumeyko/companies/{company_id}/"
+        f"tax-profile-overrides/{override_id}/disable"
+    )
+    assert disabled.status_code == 200
+
+    with client.app.state.session_factory() as db:
+        upsert_user(
+            db,
+            email="tax-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "tax-client@example.com", "secret")
+    forbidden = client.patch(
+        f"/api/clients/shumeyko/companies/{company_id}/onec-organization",
+        json={"onec_organization_id": "ORG-1"},
+    )
+    assert forbidden.status_code == 403
+    assert client.get("/api/clients/shumeyko/onec-organizations").status_code == 403
+
+
+def test_tax_profile_resolution_detects_conflict_and_keeps_organizations_separate(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        companies = list(
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .order_by(repository.ClientCompany.id)
+        )
+        company_a = companies[0]
+        company_b = repository.ensure_client_company(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            display_name="Организация B",
+        )
+        assert company_b is not None
+        company_a.onec_organization_id = "ORG-A"
+        company_b.onec_organization_id = "ORG-B"
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="tax-profile-conflict",
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 12, 31),
+            reason="tax conflict test",
+        )
+        common = {
+            "tenant_id": "shumeyko",
+            "client_id": "shumeyko",
+            "source_refresh_run_id": run.id,
+            "source_snapshot_hash": "hash",
+            "methodology_version": "ozon-tax-profile-v2",
+            "status": "active",
+            "created_at": repository.security.utcnow(),
+        }
+        db.add_all(
+            [
+                OrganizationTaxProfile(
+                    id="profile-a-1",
+                    client_company_id=company_a.id,
+                    organization_id="ORG-A",
+                    tax_system="УСН Доходы",
+                    vat_rate=Decimal("0"),
+                    vat_mode="none",
+                    vat_deduction_mode="not_applicable",
+                    revenue_tax_rate=Decimal("0.06"),
+                    income_tax_kind="",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    source="Catalog_Организации",
+                    **common,
+                ),
+                OrganizationTaxProfile(
+                    id="profile-a-2",
+                    client_company_id=company_a.id,
+                    organization_id="ORG-A",
+                    tax_system="ОСНО",
+                    vat_rate=Decimal("22"),
+                    vat_mode="included",
+                    vat_deduction_mode="allowed",
+                    revenue_tax_rate=Decimal("0"),
+                    income_tax_kind="ip_ndfl_progressive",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    source="Document_УведомлениеОСпецрежимахНалогообложения",
+                    **common,
+                ),
+                OrganizationTaxProfile(
+                    id="profile-b-1",
+                    client_company_id=company_b.id,
+                    organization_id="ORG-B",
+                    tax_system="УСН Доходы",
+                    vat_rate=Decimal("0"),
+                    vat_mode="none",
+                    vat_deduction_mode="not_applicable",
+                    revenue_tax_rate=Decimal("0.06"),
+                    income_tax_kind="",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=date(2026, 12, 31),
+                    source="Catalog_Организации",
+                    **common,
+                ),
+            ]
+        )
+        db.flush()
+
+        profile_a, status_a = repository.resolve_company_tax_profile(
+            db,
+            company=company_a,
+            calculation_date=date(2026, 7, 10),
+            refresh_run=run,
+        )
+        profile_b, status_b = repository.resolve_company_tax_profile(
+            db,
+            company=company_b,
+            calculation_date=date(2026, 7, 10),
+            refresh_run=run,
+        )
+        expired_b, expired_status_b = repository.resolve_company_tax_profile(
+            db,
+            company=company_b,
+            calculation_date=date(2027, 1, 1),
+            refresh_run=run,
+        )
+
+    assert profile_a is None
+    assert status_a["status"] == "conflict"
+    assert profile_b is not None
+    assert profile_b.organization_id == "ORG-B"
+    assert status_b["status"] == "ready"
+    assert expired_b is None
+    assert expired_status_b["status"] == "missing"
+
+
+def test_wb_cabinet_save_reuses_existing_provider_key_cabinet(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+
+    saved_integration = client.post(
+        "/api/integrations",
+        json={
+            "provider": "wb_api",
+            "label": "WB дополнительный",
+            "cabinet_name": "WB без дубля",
+            "secret": "wb-token-no-duplicate",
+        },
+    )
+    assert saved_integration.status_code == 200
+    wb_cabinet_id = saved_integration.json()["wbCabinetId"]
+
+    saved_cabinet = client.post(
+        "/api/clients/shumeyko/cabinets",
+        json={"label": "WB без дубля"},
+    )
+    assert saved_cabinet.status_code == 200
+    cabinets = [
+        item
+        for item in saved_cabinet.json()["client"]["cabinets"]
+        if item["label"] == "WB без дубля"
+    ]
+    assert len(cabinets) == 1
+    assert cabinets[0]["id"] == wb_cabinet_id
+
+
 def test_report_readiness_ready_after_clean_data_and_final_draft(
     tmp_path: Path,
 ) -> None:
@@ -3660,13 +5214,488 @@ def test_report_readiness_ready_after_clean_data_and_final_draft(
 def test_report_readiness_blocks_empty_report(tmp_path: Path) -> None:
     payload = ready_payload()
     payload["unitRows"] = []
-    client = make_client(tmp_path, payload=payload)
+    client = make_client(tmp_path, payload=payload, publish_report=False)
     login(client)
 
     summary = client.get("/api/reports/report-1/summary").json()
     assert summary["readiness"]["status"] == "failed"
     assert summary["readiness"]["score"] == 0
     assert summary["readiness"]["blockingReasons"][0]["code"] == "no_rows"
+
+
+def test_financial_publication_gate_keeps_current_report_on_blocker(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    flawed = deepcopy(ready_payload())
+    flawed_row = {
+        **flawed["unitRows"][0],
+        "id": "flawed-osno",
+        "taxMethod": "ОСНО; НДС 22% внутри цены",
+        "pnlVatMode": "",
+        "vatInputCompleteness": "partial",
+        "profit": 400,
+        "profitBeforeTax": 598,
+    }
+    flawed["unitRows"] = [flawed_row]
+
+    with session_factory() as db:
+        current = import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="current-report",
+        )
+        draft = import_dashboard_payload(
+            db,
+            flawed,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="blocked-draft",
+            publication_status="draft",
+            publish=False,
+        )
+
+        with pytest.raises(repository.ReportPublicationBlocked) as error:
+            repository.publish_report(db, draft)
+
+        assert {item["code"] for item in error.value.blockers} >= {
+            "pnl_method_mismatch",
+            "profit_semantics_mismatch",
+            "vat_input_unconfirmed",
+        }
+        assert current.is_current is True
+        assert current.publication_status == "published"
+        assert draft.is_current is False
+    assert draft.publication_status == "draft"
+
+
+def test_wb_finance_lineage_must_cover_first_closing_week() -> None:
+    report = SimpleNamespace(
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+    )
+    load = SimpleNamespace(
+        source_refresh_run_id="refresh-1",
+        source_type="wb_finance_detail",
+    )
+    incomplete_run = SimpleNamespace(
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+    )
+    complete_run = SimpleNamespace(
+        period_start=date(2026, 3, 30),
+        period_end=date(2026, 4, 30),
+    )
+
+    assert not repository._source_load_covers_report(
+        SimpleNamespace(get=lambda _model, _id: incomplete_run),
+        load,
+        report,
+    )
+    assert repository._source_load_covers_report(
+        SimpleNamespace(get=lambda _model, _id: complete_run),
+        load,
+        report,
+    )
+
+
+def test_missing_tax_profile_blocks_without_inheriting_current_osno(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        current = import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="osno-current",
+        )
+        current_row = db.scalar(
+            select(repository.ReportUnitRow).where(
+                repository.ReportUnitRow.report_run_id == current.id
+            )
+        )
+        assert current_row is not None
+        current_row.tax_method = "ОСНО; НДС 22% внутри цены"
+        current_row.pnl_vat_mode = "without_vat_for_osno"
+        current_row.vat_input_completeness = "confirmed"
+
+        draft_payload = ready_payload()
+        draft_payload["unitRows"] = [
+            {
+                **draft_payload["unitRows"][0],
+                "id": "missing-tax-profile-row",
+                "taxMethod": "Налоговый профиль не найден",
+                "pnlVatMode": "",
+                "vatInputCompleteness": "missing",
+            }
+        ]
+        draft = import_dashboard_payload(
+            db,
+            draft_payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="missing-tax-profile-draft",
+            publication_status="draft",
+            publish=False,
+            source_snapshot_set_id="missing-tax-profile-snapshot",
+        )
+        db.flush()
+
+        codes = {
+            item["code"] for item in repository.report_publication_blockers(db, draft)
+        }
+        with pytest.raises(repository.ReportPublicationBlocked):
+            repository.publish_report(db, draft)
+        assert current.is_current is True
+        assert current.publication_status == "published"
+        assert draft.is_current is False
+
+    assert "tax_profile_unconfirmed" in codes
+    assert "pnl_method_mismatch" not in codes
+    assert "vat_input_unconfirmed" not in codes
+
+
+def test_confirmed_usn_draft_does_not_inherit_current_osno_requirements(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        current = import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="osno-current",
+        )
+        for row in db.scalars(
+            select(repository.ReportUnitRow).where(
+                repository.ReportUnitRow.report_run_id == current.id
+            )
+        ):
+            row.tax_method = "ОСНО; НДС 22% внутри цены"
+            row.pnl_vat_mode = "without_vat_for_osno"
+            row.vat_input_completeness = "confirmed"
+
+        draft_payload = ready_payload()
+        draft_payload["unitRows"] = [
+            {
+                **row,
+                "taxMethod": "УСН Доходы; без НДС; налог с выручки 6%",
+                "taxProfileSource": "manual_override",
+                "taxCompleteness": "profile_complete",
+                "pnlVatMode": "legacy_tax_layer",
+                "vatInputCompleteness": "missing",
+            }
+            for row in draft_payload["unitRows"]
+        ]
+        draft = import_dashboard_payload(
+            db,
+            draft_payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="confirmed-usn-draft",
+            publication_status="draft",
+            publish=False,
+            source_snapshot_set_id="confirmed-usn-snapshot",
+        )
+        db.flush()
+        company_ids = set(
+            db.scalars(
+                select(repository.ReportUnitRow.client_company_id)
+                .where(repository.ReportUnitRow.report_run_id == draft.id)
+                .distinct()
+            )
+        )
+        for index, company_id in enumerate(sorted(company_ids), start=1):
+            company = db.get(repository.ClientCompany, company_id)
+            assert company is not None
+            company.onec_organization_id = f"ORG-USN-{index}"
+            db.add(
+                OrganizationTaxProfileOverride(
+                    id=f"usn-override-{index}",
+                    tenant_id=draft.tenant_id,
+                    client_id=draft.client_id,
+                    client_company_id=company.id,
+                    organization_id=company.onec_organization_id,
+                    tax_system="УСН Доходы",
+                    vat_rate=Decimal("0"),
+                    vat_mode="none",
+                    vat_deduction_mode="not_applicable",
+                    revenue_tax_rate=Decimal("0.06"),
+                    income_tax_kind="",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    status="active",
+                    reason="Подтверждено для теста",
+                    created_by_user_id=None,
+                    created_at=repository.security.utcnow(),
+                    updated_at=repository.security.utcnow(),
+                )
+            )
+        db.flush()
+
+        codes = {
+            item["code"] for item in repository.report_publication_blockers(db, draft)
+        }
+
+    assert "tax_profile_unconfirmed" not in codes
+    assert "pnl_method_mismatch" not in codes
+    assert "vat_input_unconfirmed" not in codes
+
+
+def test_unknown_vat_deduction_keeps_tax_context_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        payload = ready_payload()
+        payload["unitRows"] = [
+            {
+                **row,
+                "taxMethod": "УСН Доходы; без НДС; налог с выручки 6%",
+                "taxProfileSource": "manual_override",
+                "taxCompleteness": "profile_complete",
+            }
+            for row in payload["unitRows"]
+        ]
+        draft = import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="unknown-deduction-draft",
+            publication_status="draft",
+            publish=False,
+            source_snapshot_set_id="unknown-deduction-snapshot",
+        )
+        db.flush()
+        rows = list(
+            db.scalars(
+                select(repository.ReportUnitRow).where(
+                    repository.ReportUnitRow.report_run_id == draft.id
+                )
+            )
+        )
+        for index, company_id in enumerate(
+            sorted({row.client_company_id for row in rows}),
+            start=1,
+        ):
+            company = db.get(repository.ClientCompany, company_id)
+            assert company is not None
+            company.onec_organization_id = f"ORG-UNKNOWN-{index}"
+            db.add(
+                OrganizationTaxProfileOverride(
+                    id=f"unknown-override-{index}",
+                    tenant_id=draft.tenant_id,
+                    client_id=draft.client_id,
+                    client_company_id=company.id,
+                    organization_id=company.onec_organization_id,
+                    tax_system="УСН Доходы",
+                    vat_rate=Decimal("0"),
+                    vat_mode="none",
+                    vat_deduction_mode="unknown",
+                    revenue_tax_rate=Decimal("0.06"),
+                    income_tax_kind="",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    status="active",
+                    reason="Неполное подтверждение для теста",
+                    created_by_user_id=None,
+                    created_at=repository.security.utcnow(),
+                    updated_at=repository.security.utcnow(),
+                )
+            )
+        db.flush()
+
+        tax_context = repository._tax_context_payload(db, draft, rows)
+        codes = {
+            item["code"] for item in repository.report_publication_blockers(db, draft)
+        }
+
+    assert tax_context["status"] == "missing"
+    assert tax_context["calculated"] is False
+    assert tax_context["vatDeductionMode"] == "unknown"
+    assert "tax_profile_unconfirmed" in codes
+
+
+def test_mixed_organizations_apply_osno_checks_only_to_osno_rows(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        payload = ready_payload()
+        osno_row = {
+            **payload["unitRows"][0],
+            "profit": payload["unitRows"][0]["profitBeforeTax"],
+            "taxMethod": "ОСНО; НДС 22% внутри цены",
+            "taxProfileSource": "manual_override",
+            "taxCompleteness": "vat_confirmed_ndfl_not_allocated",
+            "pnlVatMode": "without_vat_for_osno",
+            "vatInputCompleteness": "confirmed",
+        }
+        usn_row = {
+            **payload["unitRows"][1],
+            "taxMethod": "УСН Доходы; без НДС; налог с выручки 6%",
+            "taxProfileSource": "manual_override",
+            "taxCompleteness": "profile_complete",
+            "pnlVatMode": "legacy_tax_layer",
+            "vatInputCompleteness": "missing",
+        }
+        payload["unitRows"] = [osno_row, usn_row]
+        draft = import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="mixed-tax-draft",
+            publication_status="draft",
+            publish=False,
+            source_snapshot_set_id="mixed-tax-snapshot",
+        )
+        db.flush()
+        rows = list(
+            db.scalars(
+                select(repository.ReportUnitRow)
+                .where(repository.ReportUnitRow.report_run_id == draft.id)
+                .order_by(repository.ReportUnitRow.row_uid)
+            )
+        )
+        assert len(rows) == 2
+        for index, row in enumerate(rows, start=1):
+            company = db.get(repository.ClientCompany, row.client_company_id)
+            assert company is not None
+            company.onec_organization_id = f"ORG-MIXED-{index}"
+            is_osno = row.row_uid == osno_row["id"]
+            db.add(
+                OrganizationTaxProfileOverride(
+                    id=f"mixed-override-{index}",
+                    tenant_id=draft.tenant_id,
+                    client_id=draft.client_id,
+                    client_company_id=company.id,
+                    organization_id=company.onec_organization_id,
+                    tax_system="ОСНО" if is_osno else "УСН Доходы",
+                    vat_rate=Decimal("22" if is_osno else "0"),
+                    vat_mode="included" if is_osno else "none",
+                    vat_deduction_mode="allowed" if is_osno else "not_applicable",
+                    revenue_tax_rate=Decimal("0" if is_osno else "0.06"),
+                    income_tax_kind="ip_ndfl_progressive" if is_osno else "",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    status="active",
+                    reason="Смешанный профиль для теста",
+                    created_by_user_id=None,
+                    created_at=repository.security.utcnow(),
+                    updated_at=repository.security.utcnow(),
+                )
+            )
+        db.flush()
+
+        codes = {
+            item["code"] for item in repository.report_publication_blockers(db, draft)
+        }
+        tax_context = repository._tax_context_payload(db, draft, rows)
+
+    assert tax_context["status"] == "mixed"
+    assert tax_context["calculated"] is True
+    assert "tax_profile_unconfirmed" not in codes
+    assert "vat_input_unconfirmed" not in codes
+
+
+def test_publication_required_partial_source_blocks_publish(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        draft = import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="commissioner-partial-draft",
+            publication_status="draft",
+            publish=False,
+        )
+        db.add(
+            SourceLoad(
+                tenant_id="shumeyko",
+                client_id=draft.client_id,
+                wb_cabinet_id="",
+                report_run_id=draft.id,
+                source_refresh_run_id=None,
+                required=False,
+                publication_required=True,
+                source_type="onec_commissioner_reports",
+                source_label="Document_ОтчетКомиссионера",
+                status="partial_source",
+                snapshot_hash="partial-hash",
+                row_count=500,
+                loaded_at=datetime(2026, 7, 10, 12, 0),
+            )
+        )
+        db.flush()
+
+        codes = {
+            item["code"] for item in repository.report_publication_blockers(db, draft)
+        }
+
+    assert "source_load_failed" in codes
+
+
+def test_optional_stock_movement_failure_is_review_only(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        draft = import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="optional-stock-failed-draft",
+            publication_status="draft",
+            publish=False,
+        )
+        db.add(
+            SourceLoad(
+                tenant_id="shumeyko",
+                client_id=draft.client_id,
+                wb_cabinet_id="",
+                report_run_id=draft.id,
+                source_refresh_run_id=None,
+                required=False,
+                publication_required=False,
+                source_type="onec_stock_movements",
+                source_label="AccumulationRegister_Запасы",
+                status="failed",
+                snapshot_hash="failed-manifest-hash",
+                row_count=0,
+                loaded_at=datetime(2026, 7, 10, 12, 0),
+            )
+        )
+        db.flush()
+
+        codes = {
+            item["code"] for item in repository.report_publication_blockers(db, draft)
+        }
+
+    assert "source_load_failed" not in codes
+    assert "source_lineage_failed" not in codes
 
 
 def test_report_readiness_hides_staff_draft_state_from_client_role(
@@ -3826,6 +5855,51 @@ def test_client_draft_is_staff_only(tmp_path: Path) -> None:
     )
 
     assert client.get("/api/reports/report-1/client-draft").status_code == 403
+
+
+def test_client_cannot_open_staff_draft_or_financial_recommendations(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, payload=ready_payload())
+    login(client)
+    created = client.post(
+        "/api/admin/users",
+        json={"email": "financial-gate-client@example.com", "role": "client"},
+    ).json()
+    with client.app.state.session_factory() as db:
+        import_dashboard_payload(
+            db,
+            ready_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="staff-only-draft",
+            publication_status="draft",
+            publish=False,
+        )
+        current_row = db.scalar(
+            select(repository.ReportUnitRow).where(
+                repository.ReportUnitRow.report_run_id == "report-1"
+            )
+        )
+        assert current_row is not None
+        current_row.tax_method = "ОСНО; НДС 22% внутри цены"
+        current_row.pnl_vat_mode = ""
+        current_row.vat_input_completeness = "partial"
+        db.commit()
+
+    client.post("/api/auth/logout")
+    login_as(
+        client,
+        "financial-gate-client@example.com",
+        created["temporaryPassword"],
+    )
+
+    reports = client.get("/api/clients/shumeyko/reports")
+    assert [item["id"] for item in reports.json()["items"]] == ["report-1"]
+    assert client.get("/api/reports/staff-only-draft/summary").status_code == 404
+    blocked = client.get("/api/reports/report-1/management-report")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"].startswith("Финансовая проверка не пройдена")
 
 
 def test_client_draft_revisions_finalize_and_audit(

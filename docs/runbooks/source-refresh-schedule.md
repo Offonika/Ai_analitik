@@ -4,8 +4,9 @@ doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
+source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-06-24"
+updated_at: "2026-07-10"
 ---
 
 # Назначение
@@ -157,6 +158,18 @@ Raw paths, raw payload и секреты не выводятся.
 refresh. Если сборка артефактов прошла, но позже возникла ошибка, новый report
 остается draft, а предыдущий published report остается рабочим.
 
+Перед тяжелыми чтениями WB/Ozon scheduler проверяет 1С через read-only
+`$metadata`. При `404`, сетевой ошибке или невалидном EDMX run завершается
+`failed` до выгрузки WB/Ozon. В карточке интеграции ручная проверка и
+автоматическая runtime-проверка показываются отдельно; более новый runtime-сбой
+не должен скрываться старым `check_ok`.
+
+После failed run сервис автоматически сохраняет только последние
+`SHUMEYKO_SOURCE_REFRESH_FAILED_SNAPSHOT_KEEP` failed snapshots, default `2`.
+Автоочистка не затрагивает successful/active runs, snapshots опубликованных
+отчетов, symlinks и пути вне `source_refresh_root`. Штатный prune CLI ниже
+остается отдельным способом общей retention-очистки.
+
 Для безопасной очистки старых локальных raw snapshots сначала запускать dry-run:
 
 ```bash
@@ -210,6 +223,15 @@ refresh. Если сборка артефактов прошла, но позж�
 - Production scheduler и health helper не читают локальный `.env`; runtime config
   приходит из systemd environment, а WB/1C доступы — из encrypted tenant
   integrations.
-- Для загруженных WB/1C/mapping collections raw rows пишутся в
-  `source_snapshot_rows`. Эти строки нужны для воспроизводимости и не
+- Для загруженных 1C/mapping и небольших WB collections raw rows пишутся в
+  `source_snapshot_rows`. Для WB finance выше
+  `SHUMEYKO_SOURCE_REFRESH_WB_PERSIST_ROW_LIMIT` повторная запись миллионов
+  строк в PostgreSQL пропускается: immutable JSON в `source_refresh_root`
+  остается авторитетным raw snapshot, а collection сохраняет row count, hash,
+  raw path и `rowPersistence.status=skipped_large_snapshot`. Эти данные не
   публикуются в клиентский UI.
+- Интервал WB Finance задается
+  `SHUMEYKO_SOURCE_REFRESH_WB_REQUEST_DELAY_SECONDS`, а отдельный интервал
+  Content API для карточек —
+  `SHUMEYKO_SOURCE_REFRESH_WB_CONTENT_REQUEST_DELAY_SECONDS`. Их нельзя
+  объединять: у endpoint-ов разные лимиты запросов.

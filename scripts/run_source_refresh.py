@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,10 @@ def main() -> int:
                 dry_run=args.dry_run,
                 source_report=source_report,
                 reason=args.reason,
+                period_start=args.period_start,
+                period_end=args.period_end,
+                resume_mode=args.resume_mode,
+                resume_from_run_id=args.resume_from_run_id or None,
             )
         except (
             SourceRefreshDisabledError,
@@ -125,6 +130,19 @@ def _parse_args() -> argparse.Namespace:
         "--reason",
         default="scheduled source refresh",
         help="Short safe audit reason.",
+    )
+    parser.add_argument("--period-start", type=date.fromisoformat, default=None)
+    parser.add_argument("--period-end", type=date.fromisoformat, default=None)
+    parser.add_argument(
+        "--resume-mode",
+        choices=("auto", "never"),
+        default="auto",
+        help="Continue a compatible immutable 1C checkpoint when available.",
+    )
+    parser.add_argument(
+        "--resume-from-run-id",
+        default="",
+        help="Explicit compatible source refresh run to continue from.",
     )
     parser.add_argument(
         "--dry-run",

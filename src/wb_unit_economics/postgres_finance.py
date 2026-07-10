@@ -314,6 +314,7 @@ def load_wb_finance_snapshots_from_postgres(
             acquiring,
             currency,
             raw_payload_hash,
+            row_payload,
             sale_dt,
             is_partial_source
         FROM {DETAIL_TABLE}
@@ -495,6 +496,16 @@ def wb_finance_db_row_to_snapshot(row: Mapping[str, object]) -> WbApiSnapshot:
     row_date = _required_date(row.get("row_date"))
     sale_dt = _parse_datetime(row.get("sale_dt"))
     nm_id = _int_or_none(row.get("nm_id"))
+    raw_payload = _row_payload(row.get("row_payload"))
+    is_return = _text(row.get("operation_type")).strip().lower() in {
+        "return",
+        "возврат",
+    }
+    vat_input_from_wb = _signed_decimal(
+        _decimal(_first(raw_payload, "vwNds", "vw_nds"))
+        + _decimal(_first(raw_payload, "agencyVat", "agency_vat")),
+        is_return=is_return,
+    )
     return WbApiSnapshot(
         client_id=_required_text(row.get("client_id")),
         seller_account_id=_required_text(row.get("seller_account_id")),
@@ -521,6 +532,7 @@ def wb_finance_db_row_to_snapshot(row: Mapping[str, object]) -> WbApiSnapshot:
             _decimal(row.get("penalty")) - _decimal(row.get("additional_payment"))
         ),
         acquiring=_decimal(row.get("acquiring")),
+        vat_input_from_wb=vat_input_from_wb,
         currency=_text(row.get("currency")) or "RUB",
         raw_payload_hash=_required_text(row.get("raw_payload_hash")),
         original_sale_date=sale_dt.date() if sale_dt else None,
@@ -949,6 +961,25 @@ def _decimal(value: object) -> Decimal:
     if value is None or value == "":
         return Decimal("0")
     return Decimal(str(value).replace(" ", "").replace(",", "."))
+
+
+def _signed_decimal(value: object, *, is_return: bool) -> Decimal:
+    result = _decimal(value)
+    if is_return and result > 0:
+        return -result
+    return result
+
+
+def _row_payload(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value in (None, ""):
+        return {}
+    try:
+        data = json.loads(str(value))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _required_text(value: object) -> str:

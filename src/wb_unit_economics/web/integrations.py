@@ -10,7 +10,10 @@ from urllib.parse import urlparse
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from wb_unit_economics.onec_odata import OnecODataSettings
+from wb_unit_economics.onec_odata import (
+    OnecODataSettings,
+    check_onec_odata_metadata,
+)
 from wb_unit_economics.ozon import OzonConfigError, ozon_settings_from_secret
 from wb_unit_economics.web import providers, security
 from wb_unit_economics.web.settings import WebSettings
@@ -167,37 +170,27 @@ def _check_onec_readonly(
 ) -> IntegrationCheckResult:
     checked_at = security.utcnow().isoformat()
     config = _parse_onec_secret(secret)
-    metadata_url = config["base_url"].rstrip("/") + "/$metadata"
-    try:
-        with httpx.Client(
-            auth=(config["username"], config["password"]),
-            headers={"Accept": "application/xml, application/json"},
-            timeout=settings.integration_check_timeout_seconds,
-            verify=config["verify_ssl"],
-            follow_redirects=True,
-        ) as client:
-            response = client.get(metadata_url)
-    except httpx.HTTPError as exc:
-        return IntegrationCheckResult(
-            status="check_failed",
-            message="1С OData не ответила на read-only metadata check.",
-            payload={
-                "provider": "onec_readonly",
-                "checkedAt": checked_at,
-                "checkMode": "live_read_only",
-                "endpointCategory": "odata_metadata",
-                "errorType": exc.__class__.__name__,
-            },
+    result = check_onec_odata_metadata(
+        OnecODataSettings(
+            base_url=config["base_url"],
+            username=config["username"],
+            password=config["password"],
+            timeout_seconds=settings.integration_check_timeout_seconds,
+            verify_ssl=config["verify_ssl"],
         )
+    )
     payload = {
         "provider": "onec_readonly",
         "checkedAt": checked_at,
         "checkMode": "live_read_only",
         "endpointCategory": "odata_metadata",
-        "httpStatus": response.status_code,
+        "httpStatus": result.status_code,
+        "metadataValid": result.ok,
         "verifySsl": config["verify_ssl"],
     }
-    if response.status_code == 200:
+    if result.error:
+        payload["errorType"] = result.error
+    if result.ok:
         return IntegrationCheckResult(
             status="check_ok",
             message="1С OData metadata доступна в read-only режиме.",

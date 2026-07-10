@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from wb_unit_economics.calculation import build_unit_economics_report
+from wb_unit_economics.config import tax_profiles_from_account_org_mapping
 from wb_unit_economics.contracts import AccountOrgMapping
 from wb_unit_economics.excel import build_excel_report
 from wb_unit_economics.mapping import (
@@ -112,11 +113,16 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
     )
     output_path = args.output or _default_output_path()
     report_period_start = args.report_period_start or _manifest_period_date(
-        wb_finance_dir, "period_start", date(2026, 3, 1)
+        wb_finance_dir, "period_start", None
     )
     report_period_end = args.report_period_end or _manifest_period_date(
-        wb_finance_dir, "period_end", date(2026, 6, 17)
+        wb_finance_dir, "period_end", None
     )
+    if report_period_start is None or report_period_end is None:
+        raise SystemExit(
+            "Report period is missing; pass --report-period-start and "
+            "--report-period-end or provide both dates in the WB manifest."
+        )
 
     account_mapping = _account_org_mapping(args.client_id, wb_finance_dir, onec_dir)
     account_labels = {
@@ -234,6 +240,14 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         reference_dir=onec_dir,
         sales_register_dir=sales_register_dir,
     )
+    tax_profiles = tax_profiles_from_account_org_mapping(
+        args.client_id,
+        account_mapping,
+        onec_organization_rows=_organizations_from_sample(onec_dir),
+        special_tax_mode_rows=_optional_onec_rows(
+            onec_dir, "tax_special_regime_notifications"
+        ),
+    )
     expense_allocation_bases = load_wb_expense_allocation_bases(
         client_id=args.client_id,
         paid_storage_dir=args.wb_paid_storage_dir,
@@ -247,6 +261,8 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         account_org_mapping=account_mapping,
         wb_sales_report_summary_rows=wb_summary_rows,
         expense_allocation_bases=expense_allocation_bases,
+        onec_marketplace_service_rows=marketplace_service_rows,
+        tax_profiles=tax_profiles,
         generated_at=datetime.now(tz=MOSCOW_TZ),
         report_period_start=report_period_start,
         report_period_end=report_period_end,
@@ -257,8 +273,8 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         cost_note,
         f"Маппинг: {mapping_source}.",
         (
-            "Основной расчет использует Себестоимость; СебестоимостьБезНДС "
-            "доступна только для сверки."
+            "Основной расчет использует поле 1С Себестоимость; для ОСНО база "
+            "без НДС должна быть подтверждена отдельной сверкой."
         ),
         (
             "Сверка с валовой прибылью 1С требует, чтобы в sales_register "
@@ -276,9 +292,9 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
             "финансового отчета WB."
         ),
         (
-            "НДС 5% выделяется из выручки товара по ставке 5/105; УСН 1% "
-            "распределяется по выручке. Строки ОПиУ/1С используются для "
-            "сверки контрольных сумм."
+            "Налоговый слой выбирается из профиля организации: для legacy "
+            "отчетов сохраняется прежний расчет, для ОСНО P&L считается без "
+            "НДС, а налоговый мост выводится отдельно."
         ),
         (
             "СПП берется из WB sales-reports/list cashbackDiscountSum; "
@@ -603,6 +619,13 @@ def _organizations_from_sample(path: Path) -> list[dict[str, Any]]:
         return []
 
 
+def _optional_onec_rows(path: Path, sample_id: str) -> list[dict[str, Any]]:
+    try:
+        return load_onec_rows(path, sample_id)
+    except FileNotFoundError:
+        return []
+
+
 def _latest_dir(base: Path) -> Path:
     candidates = [item for item in base.iterdir() if item.is_dir()]
     if not candidates:
@@ -697,7 +720,7 @@ def _default_output_path() -> Path:
     return Path("reports") / "shumeyko_wb_excel_mvp.xlsx"
 
 
-def _manifest_period_date(path: Path, key: str, fallback: date) -> date:
+def _manifest_period_date(path: Path, key: str, fallback: date | None) -> date | None:
     manifest_path = path / "manifest.json"
     if not manifest_path.exists():
         return fallback

@@ -51,9 +51,18 @@ Nginx должен проксировать в FastAPI:
 Установка/обновление unit:
 
 ```bash
+sudo install -d /etc/systemd/system/postgresql@16-main.service.d
+sudo cp deploy/systemd/postgresql-16-main-data.conf \
+  /etc/systemd/system/postgresql@16-main.service.d/shumeiko-data.conf
 sudo cp deploy/systemd/shumeiko-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
+
+PostgreSQL хранит data directory на `/data`. Drop-in
+`postgresql-16-main-data.conf` заставляет cluster ждать mount `/data` при
+перезагрузке сервера. Без этой зависимости PostgreSQL может один раз упасть до
+монтирования диска, а web-сервис останется в restart-loop до ручного запуска
+cluster.
 
 Установка/обновление nginx-маршрута:
 

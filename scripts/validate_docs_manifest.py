@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
+from typing import Any
+
+from docs_metadata import (
+    date_text,
+    has_superseded_banner,
+    load_frontmatter,
+    load_yaml,
+    string_list,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs" / "manifest.yml"
@@ -14,59 +24,110 @@ REQUIRED_KEYS = {
     "source_of_truth",
     "summary",
 }
+FRONTMATTER_PARITY_KEYS = {
+    "title",
+    "doc_type",
+    "status",
+    "audience",
+    "source_of_truth",
+}
 VALID_STATUSES = {"active", "draft", "accepted", "implemented", "superseded"}
+RECONCILED_RE = re.compile(r"^(?P<path>.+?)\s+@\s+(?P<date>\d{4}-\d{2}-\d{2})$")
 
 
-def parse_manifest() -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    for raw_line in MANIFEST.read_text(encoding="utf-8").splitlines():
-        line = raw_line.rstrip()
-        if line.startswith("  - path:"):
-            if current is not None:
-                records.append(current)
-            current = {"path": clean_value(line.split(":", 1)[1])}
-            continue
-        if current is None or not line.startswith("    "):
-            continue
-        key, sep, value = line.strip().partition(":")
-        if sep:
-            current[key] = clean_value(value)
-    if current is not None:
-        records.append(current)
-    return records
-
-
-def clean_value(value: str) -> str:
-    value = value.strip()
-    if value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
-    return value
-
-
-def frontmatter(path: Path) -> dict[str, str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "---":
-        return {}
-    result: dict[str, str] = {}
-    for line in lines[1:]:
-        if line == "---":
-            return result
-        key, sep, value = line.partition(":")
-        if sep:
-            result[key.strip()] = clean_value(value)
-    return result
+def parse_manifest() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    payload = load_yaml(MANIFEST)
+    if not isinstance(payload, dict):
+        raise ValueError("manifest root must be a mapping")
+    documents = payload.get("documents")
+    if not isinstance(documents, list) or not all(
+        isinstance(record, dict) for record in documents
+    ):
+        raise ValueError("documents must be a list of mappings")
+    return payload, documents
 
 
 def discover_expected_docs() -> set[str]:
     docs = {str(path.relative_to(ROOT)) for path in (ROOT / "docs").rglob("*.md")}
-    docs.add("README.md")
-    docs.add("AGENTS.md")
-    docs.add("config/README.md")
+    docs.update({"README.md", "AGENTS.md", "config/README.md"})
     docx = ROOT / "docs" / "shumeyko-partners-wb-unit-economics-client-tz.docx"
     if docx.exists():
         docs.add(str(docx.relative_to(ROOT)))
     return docs
+
+
+def _validate_reference(
+    failures: list[str], rel_path: str, key: str, reference: str
+) -> None:
+    if not (ROOT / reference).exists():
+        failures.append(f"{rel_path}: {key} path does not exist: {reference}")
+
+
+def validate_markdown_metadata(
+    rel_path: str, record: dict[str, Any], failures: list[str]
+) -> None:
+    path = ROOT / rel_path
+    metadata, body = load_frontmatter(path)
+    if not metadata:
+        failures.append(f"{rel_path}: missing YAML frontmatter")
+        return
+
+    required = FRONTMATTER_PARITY_KEYS | {"updated_at"}
+    for key in sorted(required - metadata.keys()):
+        failures.append(f"{rel_path}: frontmatter missing {key}")
+
+    for key in sorted(FRONTMATTER_PARITY_KEYS):
+        if key in metadata and metadata[key] != record[key]:
+            failures.append(f"{rel_path}: {key} differs from manifest")
+
+    if date_text(metadata.get("updated_at")) is None:
+        failures.append(f"{rel_path}: updated_at must be an ISO date")
+
+    source_spec = metadata.get("source_spec")
+    if source_spec is not None:
+        if not isinstance(source_spec, str):
+            failures.append(f"{rel_path}: source_spec must be a path string")
+        else:
+            _validate_reference(failures, rel_path, "source_spec", source_spec)
+
+    reconciled = metadata.get("last_reconciled_with")
+    if reconciled is not None:
+        match = RECONCILED_RE.fullmatch(str(reconciled))
+        if not match:
+            failures.append(
+                f"{rel_path}: last_reconciled_with must be '<path> @ YYYY-MM-DD'"
+            )
+        else:
+            source_path = ROOT / match.group("path")
+            if not source_path.exists():
+                failures.append(
+                    f"{rel_path}: reconciled source does not exist: "
+                    f"{match.group('path')}"
+                )
+            else:
+                source_metadata, _ = load_frontmatter(source_path)
+                source_date = date_text(source_metadata.get("updated_at"))
+                if source_date != match.group("date"):
+                    failures.append(
+                        f"{rel_path}: last_reconciled_with date "
+                        f"{match.group('date')} != source updated_at {source_date}"
+                    )
+
+    if metadata.get("status") == "draft" and metadata.get("source_of_truth") is True:
+        failures.append(f"{rel_path}: draft document cannot be source_of_truth")
+
+    if metadata.get("status") == "superseded":
+        replacements = string_list(metadata.get("superseded_by"))
+        if not replacements:
+            failures.append(f"{rel_path}: superseded document needs superseded_by")
+        for replacement in replacements:
+            _validate_reference(failures, rel_path, "superseded_by", replacement)
+        if metadata.get("source_of_truth") is not False:
+            failures.append(
+                f"{rel_path}: superseded document cannot be source_of_truth"
+            )
+        if not has_superseded_banner(body):
+            failures.append(f"{rel_path}: superseded document needs a visible banner")
 
 
 def main() -> int:
@@ -75,46 +136,43 @@ def main() -> int:
         print("Missing docs/manifest.yml")
         return 1
 
-    records = parse_manifest()
+    try:
+        manifest, records = parse_manifest()
+    except (ValueError, OSError) as exc:
+        print(f"Docs manifest validation failed: {exc}")
+        return 1
+
+    if date_text(manifest.get("updated_at")) is None:
+        failures.append("docs/manifest.yml: updated_at must be an ISO date")
+
     paths = [record.get("path", "") for record in records]
     if len(paths) != len(set(paths)):
         failures.append("manifest contains duplicate path entries")
 
     for record in records:
-        missing = sorted(REQUIRED_KEYS - set(record))
-        path_value = record.get("path", "<missing>")
+        rel_path = str(record.get("path", "<missing>"))
+        missing = sorted(REQUIRED_KEYS - record.keys())
         if missing:
-            failures.append(f"{path_value}: missing keys {', '.join(missing)}")
+            failures.append(f"{rel_path}: missing keys {', '.join(missing)}")
             continue
-
-        rel_path = record["path"]
         path = ROOT / rel_path
         if not path.exists():
             failures.append(f"{rel_path}: listed file does not exist")
             continue
-
         if record["status"] not in VALID_STATUSES:
             failures.append(f"{rel_path}: invalid status {record['status']!r}")
-
-        if record["source_of_truth"] not in {"true", "false"}:
-            failures.append(f"{rel_path}: source_of_truth must be true or false")
-
-        if path.suffix == ".md" and rel_path.startswith(("docs/", "config/")):
-            fm = frontmatter(path)
-            if not fm:
-                failures.append(f"{rel_path}: missing frontmatter")
-                continue
-            for key in ("title", "doc_type", "status", "updated_at"):
-                if key not in fm:
-                    failures.append(f"{rel_path}: frontmatter missing {key}")
-            if fm.get("doc_type") != record["doc_type"]:
-                failures.append(f"{rel_path}: doc_type differs from manifest")
-            if fm.get("status") != record["status"]:
-                failures.append(f"{rel_path}: status differs from manifest")
+        if not isinstance(record["audience"], list) or not record["audience"]:
+            failures.append(f"{rel_path}: audience must be a non-empty list")
+        if not isinstance(record["source_of_truth"], bool):
+            failures.append(f"{rel_path}: source_of_truth must be boolean")
+        if (
+            path.suffix == ".md"
+            and rel_path.startswith(("docs/", "config/"))
+        ):
+            validate_markdown_metadata(rel_path, record, failures)
 
     listed = set(paths)
-    missing_from_manifest = sorted(discover_expected_docs() - listed)
-    for rel_path in missing_from_manifest:
+    for rel_path in sorted(discover_expected_docs() - listed):
         failures.append(f"{rel_path}: document is not listed in docs/manifest.yml")
 
     if failures:

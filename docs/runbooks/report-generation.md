@@ -4,7 +4,8 @@ doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
-updated_at: "2026-06-24"
+source_of_truth: false
+updated_at: "2026-07-10"
 source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 ---
 
@@ -17,7 +18,7 @@ source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 Штатный источник готового отчета:
 
 ```text
-published/current report marts в БД
+published report marts в БД по явному report_id
 ```
 
 Excel, DOCX/PDF, HTML и CSV являются экспортами из опубликованного `report_id`.
@@ -54,7 +55,9 @@ reports/shumeyko_wb_excel_mvp.xlsx
 ```bash
 .venv/bin/python scripts/rebuild_report_from_sources.py \
   --tenant-id shumeyko \
-  --report-id excel_mvp_2026_03_01_2026_06_17 \
+  --report-id <report_id> \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD> \
   --export-all
 ```
 
@@ -62,41 +65,43 @@ reports/shumeyko_wb_excel_mvp.xlsx
 
 ```bash
 .venv/bin/python scripts/export_report_artifacts.py \
-  --report-id excel_mvp_2026_03_01_2026_06_17 \
+  --report-id <report_id> \
   --excel --docx --pdf --html --csv
 ```
 
 # Проверка опубликованной витрины
 
 После публикации проверить, что БД, Excel и CSV смотрят на один и тот же
-DB-first baseline:
+DB-first ревизию:
 
 ```bash
 .venv/bin/python scripts/check_db_first_publication.py \
+  --report-id <report_id> \
   --require-postgres \
   --require-files
 ```
 
-Ожидаемое состояние текущего опубликованного baseline:
+Ожидаемые количества при необходимости передаются явно через
+`--expected-unit-rows`, `--expected-lost-sales-rows` и
+`--expected-artifacts`. Исторические числа на 23.06.2026 зафиксированы только в
+`docs/decisions/2026-06-23-db-first-publication-baseline.md` и не являются
+дефолтами проверки.
 
-- current report: `excel_mvp_2026_03_01_2026_06_17`;
-- lineage: `db_first_report_marts`;
-- `unitRows`: 18179;
-- `lostSales`: 776;
-- artifact registry: 9 ready records.
+Для клиентской приемки конкретной готовой ревизии:
 
-Если всплывает старый ориентир `18820` строк, не считать это автоматическим
-регрессом. Текущий DB-first baseline зафиксирован в
-`docs/decisions/2026-06-23-db-first-publication-baseline.md`: Postgres, Excel,
-CSV и текущий Power BI mart сходятся на 18179 data rows. Число `18820` нужно
-разбирать только при наличии старого воспроизводимого эталона.
+```bash
+.venv/bin/python scripts/build_client_acceptance_package.py \
+  --report-id <report_id>
+```
 
 # Legacy Excel сборка
 
 Собрать Excel MVP из последних локальных snapshots:
 
 ```bash
-.venv/bin/python scripts/build_excel_mvp_from_snapshots.py
+.venv/bin/python scripts/build_excel_mvp_from_snapshots.py \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD>
 ```
 
 Этот путь нужен для ручной сверки и rollback, но не является штатным источником
@@ -131,6 +136,7 @@ SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true
 
 ```bash
 .venv/bin/python scripts/check_db_first_publication.py \
+  --report-id <report_id> \
   --require-postgres \
   --require-files \
   --require-integrations
@@ -142,15 +148,16 @@ Manifest WB/1С snapshots подтверждает только покрытие
 `report_period`, отчет должен показывать `partial_period`, `partial_source` или
 `needs_review`, а не подставлять нули за недостающие даты.
 
-Текущий опубликованный baseline: `01.03.2026 - 17.06.2026`. В этой ревизии
-период формулируется как `март, апрель, май, июнь; июнь неполный, по
-17.06.2026`.
+Runbook не определяет текущий период. Его нужно читать из выбранного
+`report_run` и сверять с `source_coverage` той же ревизии.
 
 Если weekly WB report list уже загружен, его нужно передавать явно, чтобы в
 витрине появились подтвержденные показатели СПП:
 
 ```bash
 .venv/bin/python scripts/build_excel_mvp_from_snapshots.py \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD> \
   --wb-report-list-dir data/wb_sales_report_list/<timestamp>
 ```
 
@@ -158,6 +165,8 @@ Manifest WB/1С snapshots подтверждает только покрытие
 
 ```bash
 .venv/bin/python scripts/build_excel_mvp_from_snapshots.py \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD> \
   --onec-dir data/onec_samples/<timestamp>
 ```
 
@@ -165,6 +174,8 @@ Manifest WB/1С snapshots подтверждает только покрытие
 
 ```bash
 .venv/bin/python scripts/build_excel_mvp_from_snapshots.py \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD> \
   --onec-dir data/onec_samples/<timestamp> \
   --sales-register-dir data/onec_gross_profit_samples/<timestamp> \
   --sales-cost-amount-field Себестоимость

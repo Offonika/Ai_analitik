@@ -33,6 +33,8 @@ class DataQualityStatus(StrEnum):
     EXPENSE_WITHOUT_SKU = "expense_without_sku"
     ACCOUNT_ORG_MISMATCH = "account_org_mismatch"
     EXCLUDED = "excluded"
+    TAX_PROFILE_MISSING = "tax_profile_missing"
+    TAX_REVIEW = "tax_review"
     NEEDS_REVIEW = "needs_review"
     WB_DOCUMENT_MISSING = "wb_document_missing"
     WB_DOCUMENT_DOWNLOADED = "wb_document_downloaded"
@@ -81,13 +83,22 @@ class VatMode(StrEnum):
     NONE = "none"
 
 
+class VatDeductionMode(StrEnum):
+    ALLOWED = "allowed"
+    NOT_ALLOWED = "not_allowed"
+    NOT_APPLICABLE = "not_applicable"
+    UNKNOWN = "unknown"
+
+
 class TaxProfile(ProjectModel):
     client_id: str
     organization_id: str
     tax_system: str
     vat_rate: Decimal = Decimal("0")
     vat_mode: VatMode = VatMode.NONE
+    vat_deduction_mode: VatDeductionMode = VatDeductionMode.UNKNOWN
     revenue_tax_rate: Decimal = Decimal("0")
+    income_tax_kind: str = ""
     valid_from: date | None = None
     valid_to: date | None = None
     source: str = "config"
@@ -132,6 +143,7 @@ class WbApiSnapshot(ProjectModel):
     wb_promotion: Decimal = Decimal("0")
     penalties_and_holdbacks: Decimal = Decimal("0")
     acquiring: Decimal = Decimal("0")
+    vat_input_from_wb: Decimal = Decimal("0")
     advertising: Decimal = Decimal("0")
     currency: str = "RUB"
     raw_payload_hash: str
@@ -148,6 +160,7 @@ class WbApiSnapshot(ProjectModel):
         "wb_promotion",
         "penalties_and_holdbacks",
         "acquiring",
+        "vat_input_from_wb",
         "advertising",
         mode="before",
     )
@@ -372,6 +385,8 @@ class OnecUnfCostSnapshot(ProjectModel):
     characteristic: str = ""
     cost_value: Decimal
     extra_costs_value: Decimal = Decimal("0")
+    input_vat_value: Decimal | None = None
+    input_vat_source: str = ""
     cost_currency: str = "RUB"
     cost_method: str
     effective_from: date
@@ -379,9 +394,16 @@ class OnecUnfCostSnapshot(ProjectModel):
     source_document: str
     raw_payload_hash: str
 
-    @field_validator("cost_value", "extra_costs_value", mode="before")
+    @field_validator(
+        "cost_value",
+        "extra_costs_value",
+        "input_vat_value",
+        mode="before",
+    )
     @classmethod
-    def decimal_from_value(cls, value: object) -> Decimal:
+    def decimal_from_value(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
         return Decimal(str(value))
 
     @property
@@ -456,7 +478,19 @@ class UnitEconomicsRow(ProjectModel):
     revenue_without_vat: Decimal = Decimal("0")
     gross_profit: Decimal
     vat_5_from_revenue: Decimal = Decimal("0")
+    vat_output: Decimal = Decimal("0")
+    vat_input: Decimal = Decimal("0")
+    vat_input_from_wb: Decimal = Decimal("0")
+    vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_difference: Decimal = Decimal("0")
+    vat_input_completeness: str = ""
+    vat_payable: Decimal = Decimal("0")
     usn_1_from_revenue: Decimal = Decimal("0")
+    income_tax_kind: str = ""
+    income_tax_base: Decimal = Decimal("0")
+    income_tax: Decimal = Decimal("0")
+    income_tax_included: bool = False
+    tax_completeness: str = ""
     profit_after_taxes: Decimal = Decimal("0")
     margin: Decimal | None
     margin_after_taxes: Decimal | None = None
@@ -464,6 +498,7 @@ class UnitEconomicsRow(ProjectModel):
     profit_after_taxes_per_unit: Decimal | None = None
     tax_method: str = ""
     tax_profile_source: str = ""
+    pnl_vat_mode: str = ""
     advertising_scope: AdvertisingScope = AdvertisingScope.EXCLUDED_FROM_MVP
     data_quality_status: DataQualityStatus
     methodology_version: str
@@ -497,12 +532,25 @@ class ReportReconciliationRow(ProjectModel):
     revenue_without_vat: Decimal = Decimal("0")
     gross_profit: Decimal
     vat_5_from_revenue: Decimal = Decimal("0")
+    vat_output: Decimal = Decimal("0")
+    vat_input: Decimal = Decimal("0")
+    vat_input_from_wb: Decimal = Decimal("0")
+    vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_difference: Decimal = Decimal("0")
+    vat_input_completeness: str = ""
+    vat_payable: Decimal = Decimal("0")
     usn_1_from_revenue: Decimal = Decimal("0")
+    income_tax_kind: str = ""
+    income_tax_base: Decimal = Decimal("0")
+    income_tax: Decimal = Decimal("0")
+    income_tax_included: bool = False
+    tax_completeness: str = ""
     profit_after_taxes: Decimal = Decimal("0")
     margin: Decimal | None
     margin_after_taxes: Decimal | None = None
     tax_method: str = ""
     tax_profile_source: str = ""
+    pnl_vat_mode: str = ""
     data_quality_status: DataQualityStatus
     source_row_count: int
 
@@ -539,12 +587,25 @@ class OnecReportReconciliationRow(ProjectModel):
     revenue_without_vat: Decimal = Decimal("0")
     gross_profit: Decimal
     vat_5_from_revenue: Decimal = Decimal("0")
+    vat_output: Decimal = Decimal("0")
+    vat_input: Decimal = Decimal("0")
+    vat_input_from_wb: Decimal = Decimal("0")
+    vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_difference: Decimal = Decimal("0")
+    vat_input_completeness: str = ""
+    vat_payable: Decimal = Decimal("0")
     usn_1_from_revenue: Decimal = Decimal("0")
+    income_tax_kind: str = ""
+    income_tax_base: Decimal = Decimal("0")
+    income_tax: Decimal = Decimal("0")
+    income_tax_included: bool = False
+    tax_completeness: str = ""
     profit_after_taxes: Decimal = Decimal("0")
     margin: Decimal | None
     margin_after_taxes: Decimal | None = None
     tax_method: str = ""
     tax_profile_source: str = ""
+    pnl_vat_mode: str = ""
     data_quality_status: DataQualityStatus
     source_row_count: int
 
@@ -586,7 +647,19 @@ class OnecReportProductRow(ProjectModel):
     revenue_without_vat: Decimal = Decimal("0")
     gross_profit: Decimal
     vat_5_from_revenue: Decimal = Decimal("0")
+    vat_output: Decimal = Decimal("0")
+    vat_input: Decimal = Decimal("0")
+    vat_input_from_wb: Decimal = Decimal("0")
+    vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_difference: Decimal = Decimal("0")
+    vat_input_completeness: str = ""
+    vat_payable: Decimal = Decimal("0")
     usn_1_from_revenue: Decimal = Decimal("0")
+    income_tax_kind: str = ""
+    income_tax_base: Decimal = Decimal("0")
+    income_tax: Decimal = Decimal("0")
+    income_tax_included: bool = False
+    tax_completeness: str = ""
     profit_after_taxes: Decimal = Decimal("0")
     margin: Decimal | None
     margin_after_taxes: Decimal | None = None
@@ -594,6 +667,7 @@ class OnecReportProductRow(ProjectModel):
     profit_after_taxes_per_unit: Decimal | None = None
     tax_method: str = ""
     tax_profile_source: str = ""
+    pnl_vat_mode: str = ""
     data_quality_status: DataQualityStatus
     source_row_count: int
     source_snapshot_hashes: tuple[str, ...]
@@ -676,6 +750,7 @@ class OnecGrossProfitDocumentRow(ProjectModel):
     vat: Decimal
     cogs: Decimal
     gross_profit: Decimal
+    cogs_without_vat: Decimal = Decimal("0")
     external_report_id: str = ""
     settlement_total: Decimal | None = None
     source_row_count: int
@@ -763,6 +838,29 @@ class OnecMarketplaceServiceRow(ProjectModel):
         return Decimal(str(value))
 
 
+class TaxInputReconciliationRow(ProjectModel):
+    client_id: str
+    seller_account_id: str
+    organization_id: str
+    week_start: date
+    week_end: date
+    vat_input_from_wb: Decimal = Decimal("0")
+    vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_difference: Decimal = Decimal("0")
+    vat_input_completeness: str = ""
+    source_row_count: int = 0
+
+    @field_validator(
+        "vat_input_from_wb",
+        "vat_input_from_1c",
+        "vat_input_difference",
+        mode="before",
+    )
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
+
+
 class UnitEconomicsReport(ProjectModel):
     client_id: str
     report_period_start: date
@@ -777,6 +875,7 @@ class UnitEconomicsReport(ProjectModel):
     onec_report_reconciliation_rows: list[OnecReportReconciliationRow] = []
     onec_report_product_rows: list[OnecReportProductRow] = []
     expense_allocation_rows: list[ExpenseAllocationRow] = []
+    tax_input_reconciliation_rows: list[TaxInputReconciliationRow] = []
     wb_sales_report_summary_rows: list[WbSalesReportSummaryRow] = []
 
     @property

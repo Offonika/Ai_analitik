@@ -3,17 +3,29 @@ spec_id: "onec-marketplace-mapping-client-extension"
 title: "1C client extension for marketplace/1C mapping export"
 doc_type: spec
 domain: "marketplace-analytics"
-status: accepted
+status: superseded
 owner: "engineering"
-source_of_truth: true
+audience: ["engineering", "client_admin"]
+source_of_truth: false
 related_code: [src/wb_unit_economics/mapping.py, src/wb_unit_economics/contracts.py]
 related_tests: [tests/test_mapping.py]
 contracts: [sku_mapping]
 depends_on: [docs/specs/onec-marketplace-mapping-http-service.md, docs/specs/wb-unit-economics-excel-mvp-implementation.md]
 supersedes: []
+superseded_by: [docs/specs/marketplace-1c-mapping-service.md]
 rollout_required: true
-updated_at: "2026-07-07"
+updated_at: "2026-07-08"
 ---
+
+# Superseded
+
+С 2026-07-08 этот spec больше не является предпочтительным способом вести
+сопоставление 1С и маркетплейсов. Новый источник правды -
+`docs/specs/marketplace-1c-mapping-service.md`.
+
+Клиентское `.cfe` расширение можно использовать только как read-only источник
+кандидатов или аварийный fallback. Ручные решения, статусы и audit должны
+храниться в сервисе проекта.
 
 # Goal
 

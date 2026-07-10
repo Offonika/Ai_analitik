@@ -129,31 +129,39 @@ ONEC_ODATA_TIMEOUT_SECONDS=30
 `nm_id + vendor_code -> Артикул 1С`; `barcode`/`sku` используется как
 размерная детализация и контроль, а не как главный ключ.
 
-# Выгрузка сопоставления товаров из 1С
+# Сопоставление товаров маркетплейса и 1С
 
-Если в 1С-модуле маркетплейсов уже заполнена форма `Сопоставление товаров`,
-выгрузите ее в TXT/табличный текст и положите файлы сюда:
+Текущий основной путь — собственный сервис сопоставления проекта:
+`docs/specs/marketplace-1c-mapping-service.md`. Он хранит кандидатов,
+подтвержденные связи, статусы и журнал решений, а расчетный `sku_mapping`
+строится из этих подтвержденных связей.
+
+Если сервис еще не развернут или нужен аварийный импорт кандидатов, можно
+загрузить TXT/табличный текст из 1С-модуля маркетплейсов сюда:
 
 ```text
 data/onec_marketplace_mapping/
 ```
 
-При сборке Excel MVP эти файлы используются как основной источник
-`sku_mapping`. Автоматическое сопоставление по артикулу 1С остается fallback,
-если TXT-выгрузки нет.
+При новом подходе эти файлы не являются финальной правдой: они используются как
+candidate import/fallback. Автоматическое сопоставление по артикулу 1С тоже
+остается fallback и должно давать явный статус `needs_review`, пока связь не
+подтверждена в сервисе.
 
 Если OData не отдает объекты расширения `ИС_Маркетплейс`, предпочтительный
-автоматический путь - установить наше read-only расширение 1С
-`offonika` из
-`docs/runbooks/onec-marketplace-mapping-client-extension.md`; TXT остается
-ручным fallback.
+путь больше не в том, чтобы переносить источник правды в 1С-расширение. Старое
+read-only расширение 1С `offonika` из
+`docs/runbooks/onec-marketplace-mapping-client-extension.md` можно использовать
+только как временный импорт кандидатов.
 
 # Быстрая выгрузка финансового факта WB
 
 Для первого реального Excel MVP используется новый WB Finance endpoint:
 
 ```bash
-.venv/bin/python scripts/export_wb_finance.py --period-start 2026-03-01 --period-end 2026-06-17
+.venv/bin/python scripts/export_wb_finance.py \
+  --period-start <YYYY-MM-DD> \
+  --period-end <YYYY-MM-DD>
 ```
 
 Скрипт использует read-only `POST /api/finance/v1/sales-reports/detailed`,
@@ -166,7 +174,9 @@ data/onec_marketplace_mapping/
 Когда уже есть локальные выгрузки WB Finance, WB cards и 1С OData:
 
 ```bash
-.venv/bin/python scripts/build_excel_mvp_from_snapshots.py
+.venv/bin/python scripts/build_excel_mvp_from_snapshots.py \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD>
 ```
 
 Excel сохраняется в `reports/`. В первом отчете себестоимость из регистра

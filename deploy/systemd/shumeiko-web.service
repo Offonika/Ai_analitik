@@ -2,6 +2,7 @@
 Description=Shumeyko WB Unit Economics Web API
 After=network-online.target postgresql@16-main.service
 Wants=network-online.target
+Requires=postgresql@16-main.service
 
 [Service]
 Type=simple

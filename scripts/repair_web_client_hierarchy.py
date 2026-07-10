@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tenant-id", default="shumeyko")
     parser.add_argument("--tenant-name", default="")
     parser.add_argument("--client-id", default="")
-    parser.add_argument("--client-name", required=True)
+    parser.add_argument("--client-name", default="")
     parser.add_argument(
         "--company",
         action="append",
@@ -67,6 +67,14 @@ def parse_args() -> argparse.Namespace:
             "automatic only for the tenant default client id."
         ),
     )
+    parser.add_argument(
+        "--dedupe-wb-cabinets",
+        action="store_true",
+        help=(
+            "Merge duplicate WB cabinet rows with the same client and display "
+            "name, retargeting report rows and tenant integration metadata."
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -76,9 +84,33 @@ def main() -> int:
     args = parse_args()
     if args.apply and args.dry_run:
         raise SystemExit("--apply and --dry-run are mutually exclusive")
+    if not args.client_name and not args.dedupe_wb_cabinets:
+        raise SystemExit(
+            "--client-name is required unless --dedupe-wb-cabinets is used"
+        )
     engine = make_engine(args.database_url)
     session_factory = make_session_factory(engine)
     with session_factory() as db:
+        counts: dict[str, int] = {}
+        client_id = args.client_id
+        if not args.client_name:
+            if args.dedupe_wb_cabinets:
+                counts.update(
+                    repository.dedupe_wb_cabinets(
+                        db,
+                        tenant_id=args.tenant_id,
+                        client_id=args.client_id,
+                    )
+                )
+            if args.apply:
+                db.commit()
+                action = "APPLIED"
+            else:
+                db.rollback()
+                action = "DRY RUN"
+            _print_result(action, args.tenant_id, client_id or "(tenant)", counts)
+            return 0
+
         tenant = repository.ensure_tenant(
             db,
             args.tenant_id,
@@ -105,7 +137,6 @@ def main() -> int:
             )
         )
 
-        counts: dict[str, int] = {}
         counts["client"] = 1
         company_ids_by_label = _ensure_requested_companies(
             db,
@@ -180,9 +211,7 @@ def main() -> int:
                         wb_cabinet_id=cabinet_id,
                     ),
                 )
-                counts["document_rows"] = counts.get(
-                    "document_rows", 0
-                ) + _bulk_update(
+                counts["document_rows"] = counts.get("document_rows", 0) + _bulk_update(
                     db,
                     update(ReportDocumentReconciliationRow)
                     .where(
@@ -263,6 +292,14 @@ def main() -> int:
         elif report_ids:
             counts["skipped_existing_reports"] = len(report_ids)
 
+        if args.dedupe_wb_cabinets:
+            for key, value in repository.dedupe_wb_cabinets(
+                db,
+                tenant_id=tenant.id,
+                client_id=client_id,
+            ).items():
+                counts[f"dedupe_{key}"] = value
+
         if args.apply:
             db.commit()
             action = "APPLIED"
@@ -270,13 +307,22 @@ def main() -> int:
             db.rollback()
             action = "DRY RUN"
 
-    print(
-        f"{action}: tenant={args.tenant_id} "
-        f"client={client_id} name={args.client_name}"
-    )
+    _print_result(action, args.tenant_id, client_id, counts, name=args.client_name)
+    return 0
+
+
+def _print_result(
+    action: str,
+    tenant_id: str,
+    client_id: str,
+    counts: dict[str, int],
+    *,
+    name: str = "",
+) -> None:
+    suffix = f" name={name}" if name else ""
+    print(f"{action}: tenant={tenant_id} client={client_id}{suffix}")
     for key in sorted(counts):
         print(f"{key}: {counts[key]}")
-    return 0
 
 
 def _ensure_requested_companies(

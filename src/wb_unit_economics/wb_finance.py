@@ -415,6 +415,94 @@ def export_wb_finance(
     return results
 
 
+def resume_wb_finance_export(
+    settings: WbFinanceSettings,
+    export_dir: Path,
+    *,
+    max_pages: int = 50,
+    request_delay_seconds: float = 61.0,
+    fields: Iterable[str] | None = None,
+) -> list[WbFinancePageResult]:
+    manifest_path = export_dir / "manifest.json"
+    manifest = _read_json_object(manifest_path)
+    period_start = _parse_date(manifest.get("period_start"))
+    period_end = _parse_date(manifest.get("period_end"))
+    if period_start is None or period_end is None:
+        raise ValueError("WB finance manifest has no valid period_start/period_end")
+    limit = _int_or_none(manifest.get("limit")) or 100000
+    period = _text(manifest.get("period")) or "daily"
+    manifest_fields = manifest.get("fields")
+    resolved_fields = (
+        list(fields)
+        if fields is not None
+        else list(manifest_fields)
+        if isinstance(manifest_fields, list)
+        else list(DEFAULT_FINANCE_FIELDS)
+    )
+    previous_results = _finance_page_results_from_manifest(manifest, export_dir)
+    new_results: list[WbFinancePageResult] = []
+    for account in settings.accounts:
+        resume_point = _finance_resume_point(manifest, account.seller_account_id)
+        if resume_point is None:
+            continue
+        rrd_id, page_index = resume_point
+        with WbFinanceClient(
+            account,
+            timeout_seconds=settings.timeout_seconds,
+        ) as client:
+            for _ in range(max_pages):
+                result = _retry_transient_page(
+                    lambda account=account,
+                    rrd_id=rrd_id,
+                    page_index=page_index: (
+                        export_wb_finance_page(
+                            client,
+                            account,
+                            export_dir,
+                            period_start=period_start,
+                            period_end=period_end,
+                            rrd_id=rrd_id,
+                            limit=limit,
+                            page_index=page_index,
+                            period=period,
+                            fields=resolved_fields,
+                        )
+                    ),
+                    rate_limit_backoff_seconds=request_delay_seconds,
+                )
+                new_results.append(result)
+                if not result.ok or result.status == "no_data":
+                    break
+                if result.rrd_id_next is None or result.rrd_id_next == rrd_id:
+                    break
+                rrd_id = result.rrd_id_next
+                page_index += 1
+                time.sleep(request_delay_seconds)
+    if not new_results:
+        return []
+    _backup_manifest(manifest_path)
+    _write_manifest(
+        manifest_path,
+        [*previous_results, *new_results],
+        period_start=period_start,
+        period_end=period_end,
+        limit=limit,
+        max_pages=max_pages,
+        period=period,
+        request_delay_seconds=request_delay_seconds,
+        fields=resolved_fields,
+        extra={
+            "resume": {
+                "previous_generated_at": manifest.get("generated_at"),
+                "previous_result_count": len(previous_results),
+                "new_result_count": len(new_results),
+                "resumed_at": datetime.now(tz=MOSCOW_TZ).isoformat(),
+            }
+        },
+    )
+    return new_results
+
+
 def export_wb_finance_by_report_ids(
     settings: WbFinanceSettings,
     output_dir: Path,
@@ -866,6 +954,11 @@ def normalize_finance_row(
     additional = decimal_from_value(
         _first(row, "additionalPayment", "additional_payment")
     )
+    vat_input_from_wb = signed_decimal(
+        decimal_from_value(_first(row, "vwNds", "vw_nds"))
+        + decimal_from_value(_first(row, "agencyVat", "agency_vat")),
+        is_return=is_return,
+    )
     return WbApiSnapshot(
         client_id=client_id,
         seller_account_id=seller_account_id,
@@ -899,6 +992,7 @@ def normalize_finance_row(
             _first(row, "acquiringFee", "acquiring_fee"),
             is_return=is_return,
         ),
+        vat_input_from_wb=vat_input_from_wb,
         currency=_text(_first(row, "currency")) or "RUB",
         raw_payload_hash=row_hash,
         original_sale_date=_parse_date(_first(row, "saleDt", "sale_dt")),
@@ -1070,6 +1164,69 @@ def raw_payload_hash(payload: object) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _finance_page_results_from_manifest(
+    manifest: Mapping[str, Any],
+    export_dir: Path,
+) -> list[WbFinancePageResult]:
+    results: list[WbFinancePageResult] = []
+    for item in manifest.get("results", []):
+        if not isinstance(item, dict):
+            continue
+        output_file = _text(item.get("output_file"))
+        results.append(
+            WbFinancePageResult(
+                seller_account_id=_text(item.get("seller_account_id")),
+                account_name=_text(item.get("account_name")),
+                page_index=_int_or_none(item.get("page_index")) or 0,
+                ok=item.get("ok") is True,
+                status=_text(item.get("status")),
+                row_count=_int_or_none(item.get("row_count")) or 0,
+                rrd_id_start=_int_or_none(item.get("rrd_id_start")) or 0,
+                rrd_id_next=_int_or_none(item.get("rrd_id_next")),
+                raw_payload_hash=_text(item.get("raw_payload_hash")),
+                output_path=export_dir / output_file if output_file else None,
+                status_code=_int_or_none(item.get("status_code")),
+                error=_text(item.get("error")),
+                wb_report_id=_text(item.get("wb_report_id")),
+            )
+        )
+    return results
+
+
+def _finance_resume_point(
+    manifest: Mapping[str, Any],
+    seller_account_id: str,
+) -> tuple[int, int] | None:
+    results = [
+        item
+        for item in manifest.get("results", [])
+        if isinstance(item, dict)
+        and _text(item.get("seller_account_id")) == seller_account_id
+    ]
+    if not results:
+        return 0, 1
+    last = results[-1]
+    status = _text(last.get("status"))
+    page_index = _int_or_none(last.get("page_index")) or len(results)
+    rrd_id_start = _int_or_none(last.get("rrd_id_start")) or 0
+    rrd_id_next = _int_or_none(last.get("rrd_id_next"))
+    if status == "no_data":
+        return None
+    if status == "ok" and rrd_id_next is not None and rrd_id_next != rrd_id_start:
+        return rrd_id_next, page_index + 1
+    if status in {"rate_limited", "transport_or_schema_error"}:
+        return rrd_id_start, max(1, page_index)
+    return None
+
+
+def _backup_manifest(path: Path) -> None:
+    if not path.exists():
+        return
+    stamp = datetime.now(tz=MOSCOW_TZ).strftime("%Y%m%d-%H%M%S")
+    backup_path = path.with_name(f"{path.stem}.before-resume-{stamp}{path.suffix}")
+    backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def _write_manifest(
     path: Path,
     results: list[WbFinancePageResult],
@@ -1081,6 +1238,7 @@ def _write_manifest(
     period: str,
     request_delay_seconds: float,
     fields: Iterable[str],
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
     manifest = {
         "generated_at": datetime.now(tz=MOSCOW_TZ).isoformat(),
@@ -1113,6 +1271,8 @@ def _write_manifest(
             for item in results
         ],
     }
+    if extra:
+        manifest.update(extra)
     _write_json(path, manifest)
 
 

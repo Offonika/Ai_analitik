@@ -3,8 +3,9 @@ spec_id: "workspace-shumeyko-partners-wb-unit-economics-client-web-cabinet"
 title: "Клиентский web-кабинет WB/1C юнит-экономики"
 doc_type: spec
 domain: "marketplace-analytics"
-status: draft
+status: superseded
 owner: "engineering"
+audience: ["engineering", "consultant"]
 source_of_truth: false
 related_code:
   - scripts/build_client_demo_dashboard.py
@@ -19,9 +20,15 @@ depends_on:
   - docs/specs/wb-unit-economics-excel-mvp-implementation.md
   - docs/specs/wb-unit-economics-mvp.md
 supersedes: []
+superseded_by:
+  - docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
 rollout_required: true
-updated_at: "2026-06-20"
+updated_at: "2026-07-10"
 ---
+
+> **Устаревший draft.** Реализуемые бизнес-правила, роли и права закреплены в
+> `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`. Документ
+> сохранен по прежнему пути для истории и совместимости ссылок.
 
 # Goal
 

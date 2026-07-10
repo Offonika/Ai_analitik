@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from wb_unit_economics.web import repository
+from wb_unit_economics.web import mapping_service, repository
 from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshRun, Tenant, TenantIntegration
 from wb_unit_economics.web.settings import WebSettings
@@ -58,6 +58,7 @@ def main() -> int:
             )
             _check_integrations(args.mode, integrations, blockers, warnings)
             _print_latest_refresh(db, tenant_id=args.tenant, mode=args.mode)
+            _check_mapping(db, args.tenant, settings, blockers, warnings)
     except SQLAlchemyError as exc:
         print(f"Source refresh preflight failed: {exc.__class__.__name__}")
         return 2
@@ -68,7 +69,6 @@ def main() -> int:
             blockers.append(message)
         else:
             warnings.append(message)
-    _check_mapping(settings, blockers, warnings)
     _check_disk(settings, blockers)
 
     if warnings:
@@ -101,9 +101,21 @@ def _check_integrations(
             f"{item.provider}: status={item.status}, "
             f"storage={storage}, role={role or 'default'}"
         )
-    if mode != "onec-only":
+    if mode == "ozon-only":
+        _check_ozon_integrations(
+            integrations,
+            blockers=blockers,
+            warnings=warnings,
+            required=True,
+        )
+    elif mode != "onec-only":
         _check_wb_integrations(integrations, blockers, warnings)
-        _check_ozon_integrations(integrations, warnings)
+        _check_ozon_integrations(
+            integrations,
+            blockers=blockers,
+            warnings=warnings,
+            required=False,
+        )
     _check_onec_integration(integrations, blockers)
 
 
@@ -159,7 +171,10 @@ def _check_onec_integration(
 
 def _check_ozon_integrations(
     integrations: list[TenantIntegration],
+    *,
+    blockers: list[str],
     warnings: list[str],
+    required: bool,
 ) -> None:
     ozon_items = [
         item
@@ -167,7 +182,10 @@ def _check_ozon_integrations(
         if repository.integration_provider_base(item.provider) == "ozon_api"
     ]
     if not ozon_items:
-        print("Ozon API integrations: not configured (optional)")
+        if required:
+            blockers.append("ozon_api tenant integration is not configured")
+        else:
+            print("Ozon API integrations: not configured (optional)")
         return
     ready = []
     skipped_roles = []
@@ -181,6 +199,8 @@ def _check_ozon_integrations(
             ready.append(item.provider)
     if ready:
         print(f"Ozon API ready integrations: {len(ready)}")
+    elif required:
+        blockers.append("ozon_api integrations are not runtime-ready")
     else:
         warnings.append("ozon_api integrations are configured but not runtime-ready")
     if skipped_roles:
@@ -205,6 +225,7 @@ def _print_latest_refresh(db: Any, *, tenant_id: str, mode: str) -> None:
         .where(
             SourceRefreshRun.tenant_id == tenant_id,
             SourceRefreshRun.mode == mode,
+            SourceRefreshRun.dry_run.is_(False),
         )
         .order_by(SourceRefreshRun.created_at.desc())
     )
@@ -218,10 +239,35 @@ def _print_latest_refresh(db: Any, *, tenant_id: str, mode: str) -> None:
 
 
 def _check_mapping(
+    db: Any,
+    tenant_id: str,
     settings: WebSettings,
     blockers: list[str],
     warnings: list[str],
 ) -> None:
+    client_id = repository.client_id_for_tenant(tenant_id)
+    (
+        service_status,
+        _service_hash,
+        item_count,
+        service_error,
+        service_payload,
+    ) = mapping_service.inspect_mapping_service(
+        db,
+        tenant_id=tenant_id,
+        client_id=client_id,
+        stale_after_days=max(1, int(settings.source_refresh_mapping_stale_days)),
+    )
+    print(
+        "Mapping service: "
+        f"{service_status}, items={item_count}, "
+        f"reviewRows={service_payload.get('reviewCount', 0)}"
+    )
+    if service_status == "failed":
+        blockers.append(f"mapping service is not ready: {service_error}")
+    elif service_status in {"needs_review", "stale"}:
+        warnings.append(f"mapping service needs review: {service_status}")
+
     status, _snapshot_hash, file_count, error_message, payload = inspect_mapping_source(
         settings.source_refresh_mapping_path,
         stale_after_days=max(1, int(settings.source_refresh_mapping_stale_days)),
@@ -229,9 +275,9 @@ def _check_mapping(
     age_days = payload.get("ageDays", "")
     print(f"Mapping source: {status}, files={file_count}, ageDays={age_days}")
     if status == "failed":
-        blockers.append(f"mapping source is not ready: {error_message}")
+        warnings.append(f"legacy mapping source is not ready: {error_message}")
     elif status == "stale":
-        warnings.append("mapping source is stale")
+        warnings.append("legacy mapping source is stale")
 
 
 def _check_disk(settings: WebSettings, blockers: list[str]) -> None:

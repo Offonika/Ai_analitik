@@ -14,44 +14,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from docx import Document
-from docx.enum.section import WD_ORIENT
-from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
 from openpyxl import load_workbook
+
+from wb_unit_economics.document_exports import render_markdown_docx
 
 DEFAULT_WORKBOOK = Path("reports/shumeyko_wb_excel_mvp.xlsx")
 DEFAULT_LOGO = Path("reports/assets/shumeiko-logo.png")
-DEFAULT_BASENAME = (
-    "Аналитический отчет по юнит-экономике WB "
-    "за период 01.03.2026-17.06.2026"
-)
+DEFAULT_BASENAME = "Аналитический отчет по юнит-экономике WB"
 DEFAULT_BRANDED_BASENAME = (
-    "Фирменный аналитический отчет Шумейко и Партнеры "
-    "по юнит-экономике WB за период 01.03.2026-17.06.2026"
+    "Фирменный аналитический отчет Шумейко и Партнеры по юнит-экономике WB"
 )
-OPIU_MONTH_LABELS = {
-    "Март 2026",
-    "Апрель 2026",
-    "Май 2026",
-    "Июнь 2026 (неполный месяц)",
-    "Итого",
-}
-
-NAVY = "003153"
-BLUE = "2F75B5"
-PALE_BLUE = "EDF4FB"
-LIGHT_BLUE = "D9EAF7"
-GREEN = "548235"
-LIGHT_GREEN = "E2F0D9"
-ORANGE = "B87922"
-LIGHT_ORANGE = "FCE4D6"
-GRAY = "595959"
-WHITE = "FFFFFF"
-BLACK = "262626"
 
 
 @dataclass(frozen=True)
@@ -112,11 +84,12 @@ def build_client_analytical_report(
     markdown = _build_markdown(data)
     markdown_path.write_text(markdown, encoding="utf-8")
     resolved_logo_path = logo_path if logo_path.exists() else None
-    _build_docx(
+    render_markdown_docx(
         markdown,
         docx_path,
         logo_path=resolved_logo_path,
         branded=branded,
+        cover_subtitle=str(data["readme"].get("Период отчета") or ""),
     )
     pdf_path, pdf_status, pdf_message = _build_pdf_from_docx(docx_path)
     return ClientAnalyticalReportArtifacts(
@@ -315,7 +288,7 @@ def _read_onec_opiu_reconciliation(
             first = ws.cell(row_number, 1).value
             if not first:
                 break
-            if first not in OPIU_MONTH_LABELS:
+            if first != "Итого" and not _is_report_month_label(first):
                 break
             monthly_rows.append(
                 {
@@ -715,7 +688,13 @@ def _loss_class(row: dict[str, Any]) -> str:
             + abs(_num(row.get("Продвижение WB")))
             + abs(_num(row.get("Штрафы/доплаты WB")))
             + abs(_num(row.get("Эквайринг WB")))
-            + abs(_num(row.get("УСН 1%")))
+            + abs(
+                _num(
+                    row.get("Налог с выручки/НДФЛ")
+                    or row.get("Налог с выручки")
+                    or row.get("УСН 1%")
+                )
+            )
         ),
     }
     return max(candidates.items(), key=lambda item: item[1])[0]
@@ -757,9 +736,9 @@ def _build_markdown(data: dict[str, Any]) -> str:
         ),
         "",
         (
-            "Маржинальный доход WB после налогов за период составляет "
+            "Управленческая прибыль WB за период составляет "
             f"{_money(metrics['profit'])} при выручке после СПП "
-            f"{_money(metrics['revenue'])}; маржинальность WB после налогов "
+            f"{_money(metrics['revenue'])}; маржа WB без НДС "
             f"составляет {_percent(margin)}."
         ),
         "",
@@ -783,8 +762,8 @@ def _build_markdown(data: dict[str, Any]) -> str:
                 ["Чистое количество", f"{_qty(metrics['net_qty'])} шт."],
                 ["Доля возвратов", _percent(return_rate)],
                 ["Маржинальный доход WB до налогов", _money(metrics["profit_before"])],
-                ["Маржинальный доход WB после налогов", _money(metrics["profit"])],
-                ["Маржа WB после налогов", _percent(margin)],
+                ["Управленческая прибыль WB", _money(metrics["profit"])],
+                ["Маржа WB без НДС", _percent(margin)],
             ],
         ),
         "",
@@ -894,13 +873,17 @@ def _build_markdown(data: dict[str, Any]) -> str:
                     _money(_num(row.get("Расходы WB"))),
                     _money(
                         _num(
-                            row.get("Маржинальный доход WB после налогов")
+                            row.get("Управленческая прибыль WB")
+                            or row.get("Маржинальный доход WB после налогов")
+                            or row.get("Управленческая прибыль")
                             or row.get("Прибыль после налогов")
                         )
                     ),
                     _percent(
                         _num_or_none(
-                            row.get("Маржа WB после налогов")
+                            row.get("Маржа WB без НДС")
+                            or row.get("Маржа WB после налогов")
+                            or row.get("Маржа без НДС")
                             or row.get("Маржа после налогов")
                         )
                     ),
@@ -1193,271 +1176,6 @@ def _markdown_table(headers: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(output)
 
 
-def _build_docx(
-    markdown: str,
-    path: Path,
-    *,
-    logo_path: Path | None = None,
-    branded: bool = False,
-) -> None:
-    doc = Document()
-    _setup_doc(doc, logo_path=None if branded else logo_path)
-    if branded:
-        _add_brand_cover(doc, logo_path=logo_path)
-    lines = markdown.splitlines()
-    i = 0
-    skipped_cover_title = False
-    while i < len(lines):
-        line = lines[i].strip()
-        if not line:
-            i += 1
-            continue
-        if line.startswith("|"):
-            table_rows, i = _parse_markdown_table(lines, i)
-            _add_docx_table(doc, table_rows)
-            continue
-        if line.startswith("# "):
-            if branded and not skipped_cover_title:
-                skipped_cover_title = True
-                i += 1
-                continue
-            _add_paragraph(doc, line[2:], "Title", align=WD_ALIGN_PARAGRAPH.CENTER)
-        elif line.startswith("## "):
-            paragraph = _add_paragraph(doc, line[3:], "Heading 1")
-            _set_paragraph_border(paragraph)
-        elif line.startswith("### "):
-            _add_paragraph(doc, line[4:], "Heading 2")
-        elif re.match(r"^\d+\.\s+", line):
-            _add_paragraph(doc, line, "List Number")
-        else:
-            _add_paragraph(doc, line)
-        i += 1
-    doc.save(path)
-
-
-def _setup_doc(doc: Document, *, logo_path: Path | None = None) -> None:
-    section = doc.sections[0]
-    section.orientation = WD_ORIENT.LANDSCAPE
-    section.page_width = Cm(29.7)
-    section.page_height = Cm(21.0)
-    section.top_margin = Cm(1.2)
-    section.bottom_margin = Cm(1.1)
-    section.left_margin = Cm(1.2)
-    section.right_margin = Cm(1.2)
-    normal = doc.styles["Normal"]
-    normal.font.name = "Geologica"
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "Geologica")
-    normal.font.size = Pt(9.5)
-    normal.font.color.rgb = RGBColor.from_string(BLACK)
-    for name, size, color in [
-        ("Title", 22, NAVY),
-        ("Heading 1", 14, NAVY),
-        ("Heading 2", 12, ORANGE),
-    ]:
-        style = doc.styles[name]
-        style.font.name = "Geologica"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Geologica")
-        style.font.size = Pt(size)
-        style.font.bold = True
-        style.font.color.rgb = RGBColor.from_string(color)
-    footer = section.footer.paragraphs[0]
-    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = footer.add_run(
-        "Шумейко и Партнеры · AI-аналитик отчетов · юнит-экономика WB"
-    )
-    _set_run_font(run, size=8, color=GRAY)
-    _set_paragraph_border(footer, color=BLUE)
-    header = section.header.paragraphs[0]
-    if logo_path is not None and logo_path.exists():
-        header.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        header.add_run().add_picture(str(logo_path), width=Cm(3.6))
-    else:
-        header.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        run = header.add_run("Шумейко и Партнеры")
-        _set_run_font(run, size=10, bold=True, color=NAVY)
-    _set_paragraph_border(header, color=BLUE)
-
-
-def _add_brand_cover(doc: Document, *, logo_path: Path | None = None) -> None:
-    if logo_path is not None and logo_path.exists():
-        paragraph = doc.add_paragraph()
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        paragraph.add_run().add_picture(str(logo_path), width=Cm(4.6))
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Аналитический отчет по юнит-экономике WB")
-    _set_run_font(run, size=22, bold=True, color=NAVY)
-    subtitle = doc.add_paragraph()
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = subtitle.add_run(
-        "Апрель, май и неполный июнь 2026 · подготовлено в фирменном стиле партнера"
-    )
-    _set_run_font(run, size=11, color=GRAY)
-    _add_brand_badges(doc)
-    doc.add_paragraph()
-
-
-def _add_brand_badges(doc: Document) -> None:
-    table = doc.add_table(rows=1, cols=3)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    labels = [
-        "Юнит-экономика WB",
-        "Возвраты и убыточность",
-        "Упущенные продажи",
-    ]
-    for index, label in enumerate(labels):
-        cell = table.cell(0, index)
-        _set_cell_shading(cell, PALE_BLUE)
-        _set_cell_border(cell, BLUE)
-        _set_cell_margins(cell, top=120, bottom=120)
-        paragraph = cell.paragraphs[0]
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = paragraph.add_run(label)
-        _set_run_font(run, size=9, bold=True, color=NAVY)
-
-
-def _add_paragraph(
-    doc: Document,
-    value: str,
-    style: str | None = None,
-    *,
-    align: WD_ALIGN_PARAGRAPH | None = None,
-) -> Any:
-    paragraph = doc.add_paragraph(style=style)
-    if align is not None:
-        paragraph.alignment = align
-    run = paragraph.add_run(str(value))
-    _set_run_font(run)
-    return paragraph
-
-
-def _parse_markdown_table(lines: list[str], start: int) -> tuple[list[list[str]], int]:
-    rows: list[list[str]] = []
-    i = start
-    while i < len(lines) and lines[i].strip().startswith("|"):
-        cells = [cell.strip() for cell in lines[i].strip().strip("|").split("|")]
-        if not all(re.fullmatch(r"[:\-\s]+", cell) for cell in cells):
-            rows.append(cells)
-        i += 1
-    return rows, i
-
-
-def _add_docx_table(doc: Document, rows: list[list[str]]) -> None:
-    if not rows:
-        return
-    col_count = max(len(row) for row in rows)
-    table = doc.add_table(rows=len(rows), cols=col_count)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.style = "Table Grid"
-    for row_index, row in enumerate(rows):
-        for col_index in range(col_count):
-            value = row[col_index] if col_index < len(row) else ""
-            cell = table.cell(row_index, col_index)
-            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-            _set_cell_border(cell)
-            _set_cell_margins(cell)
-            if row_index == 0:
-                _set_cell_shading(cell, NAVY)
-            elif row_index % 2 == 0:
-                _set_cell_shading(cell, PALE_BLUE)
-            paragraph = cell.paragraphs[0]
-            if col_index > 0 and row_index > 0:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            run = paragraph.add_run(value)
-            _set_run_font(
-                run,
-                size=7 if col_count >= 8 else 8,
-                bold=row_index == 0,
-                color=WHITE if row_index == 0 else BLACK,
-            )
-    doc.add_paragraph()
-
-
-def _set_run_font(
-    run: Any,
-    *,
-    size: int | None = None,
-    bold: bool | None = None,
-    color: str | None = None,
-) -> None:
-    run.font.name = "Geologica"
-    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Geologica")
-    if size is not None:
-        run.font.size = Pt(size)
-    if bold is not None:
-        run.bold = bold
-    if color is not None:
-        run.font.color.rgb = RGBColor.from_string(color)
-
-
-def _set_cell_shading(cell: Any, fill: str) -> None:
-    tc_pr = cell._tc.get_or_add_tcPr()
-    shd = tc_pr.find(qn("w:shd"))
-    if shd is None:
-        shd = OxmlElement("w:shd")
-        tc_pr.append(shd)
-    shd.set(qn("w:fill"), fill)
-
-
-def _set_cell_border(cell: Any, color: str = "D9E2F3") -> None:
-    tc_pr = cell._tc.get_or_add_tcPr()
-    borders = tc_pr.first_child_found_in("w:tcBorders")
-    if borders is None:
-        borders = OxmlElement("w:tcBorders")
-        tc_pr.append(borders)
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        element = borders.find(qn(f"w:{edge}"))
-        if element is None:
-            element = OxmlElement(f"w:{edge}")
-            borders.append(element)
-        element.set(qn("w:val"), "single")
-        element.set(qn("w:sz"), "4")
-        element.set(qn("w:space"), "0")
-        element.set(qn("w:color"), color)
-
-
-def _set_cell_margins(
-    cell: Any,
-    top: int = 80,
-    start: int = 90,
-    bottom: int = 80,
-    end: int = 90,
-) -> None:
-    tc_pr = cell._tc.get_or_add_tcPr()
-    tc_mar = tc_pr.first_child_found_in("w:tcMar")
-    if tc_mar is None:
-        tc_mar = OxmlElement("w:tcMar")
-        tc_pr.append(tc_mar)
-    for key, value in {
-        "top": top,
-        "start": start,
-        "bottom": bottom,
-        "end": end,
-    }.items():
-        node = tc_mar.find(qn(f"w:{key}"))
-        if node is None:
-            node = OxmlElement(f"w:{key}")
-            tc_mar.append(node)
-        node.set(qn("w:w"), str(value))
-        node.set(qn("w:type"), "dxa")
-
-
-def _set_paragraph_border(paragraph: Any, color: str = BLUE) -> None:
-    p_pr = paragraph._p.get_or_add_pPr()
-    p_bdr = p_pr.find(qn("w:pBdr"))
-    if p_bdr is None:
-        p_bdr = OxmlElement("w:pBdr")
-        p_pr.append(p_bdr)
-    bottom = p_bdr.find(qn("w:bottom"))
-    if bottom is None:
-        bottom = OxmlElement("w:bottom")
-        p_bdr.append(bottom)
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), "10")
-    bottom.set(qn("w:space"), "4")
-    bottom.set(qn("w:color"), color)
-
-
 def _num(value: Any) -> Decimal:
     if value in (None, ""):
         return Decimal("0")
@@ -1470,7 +1188,9 @@ def _row_revenue(row: dict[str, Any]) -> Decimal:
 
 def _row_profit(row: dict[str, Any]) -> Decimal:
     return _num(
-        row.get("Маржинальный доход WB после налогов")
+        row.get("Управленческая прибыль WB")
+        or row.get("Маржинальный доход WB после налогов")
+        or row.get("Управленческая прибыль")
         or row.get("Прибыль после налогов")
     )
 

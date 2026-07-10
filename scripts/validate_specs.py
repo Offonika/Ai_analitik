@@ -3,6 +3,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from docs_metadata import (
+    date_text,
+    has_superseded_banner,
+    load_frontmatter,
+    string_list,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 VALID_STATUSES = {"draft", "accepted", "implemented", "superseded"}
 REQUIRED_KEYS = {
@@ -12,65 +19,72 @@ REQUIRED_KEYS = {
     "domain",
     "status",
     "owner",
+    "audience",
     "source_of_truth",
     "updated_at",
 }
 
 
-def clean_value(value: str) -> str:
-    value = value.strip()
-    if value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
-    return value
+def _reference_exists(reference: str, spec_ids: set[str]) -> bool:
+    return reference in spec_ids or (ROOT / reference).exists()
 
 
-def frontmatter(path: Path) -> dict[str, str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "---":
-        return {}
-    result: dict[str, str] = {}
-    for line in lines[1:]:
-        if line == "---":
-            return result
-        key, sep, value = line.partition(":")
-        if sep:
-            result[key.strip()] = clean_value(value)
-    return result
-
-
-def inline_list(value: str) -> list[str]:
-    value = value.strip()
-    if not (value.startswith("[") and value.endswith("]")):
-        return []
-    inner = value[1:-1].strip()
-    if not inner:
-        return []
-    return [item.strip().strip('"').strip("'") for item in inner.split(",")]
-
-
-def validate_spec(path: Path) -> list[str]:
+def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
     failures: list[str] = []
     rel_path = path.relative_to(ROOT)
-    fm = frontmatter(path)
-    if not fm:
+    metadata, body = load_frontmatter(path)
+    if not metadata:
         return [f"{rel_path}: missing YAML frontmatter"]
 
-    missing = sorted(REQUIRED_KEYS - set(fm))
+    missing = sorted(REQUIRED_KEYS - metadata.keys())
     if missing:
         failures.append(f"{rel_path}: missing keys {', '.join(missing)}")
-
-    if fm.get("doc_type") != "spec":
+    if metadata.get("doc_type") != "spec":
         failures.append(f"{rel_path}: doc_type must be spec")
-    if fm.get("status") not in VALID_STATUSES:
-        failures.append(f"{rel_path}: invalid status {fm.get('status')!r}")
-    if fm.get("source_of_truth") not in {"true", "false"}:
-        failures.append(f"{rel_path}: source_of_truth must be true or false")
+    if metadata.get("status") not in VALID_STATUSES:
+        failures.append(f"{rel_path}: invalid status {metadata.get('status')!r}")
+    if not isinstance(metadata.get("audience"), list) or not metadata.get("audience"):
+        failures.append(f"{rel_path}: audience must be a non-empty list")
+    if not isinstance(metadata.get("source_of_truth"), bool):
+        failures.append(f"{rel_path}: source_of_truth must be boolean")
+    if date_text(metadata.get("updated_at")) is None:
+        failures.append(f"{rel_path}: updated_at must be an ISO date")
+    if metadata.get("status") == "draft" and metadata.get("source_of_truth") is True:
+        failures.append(f"{rel_path}: draft spec cannot be source_of_truth")
 
     for key in ("related_code", "related_tests"):
-        for listed in inline_list(fm.get(key, "")):
-            target = ROOT / listed
-            if not target.exists():
-                failures.append(f"{rel_path}: {key} path does not exist: {listed}")
+        value = metadata.get(key, [])
+        listed = string_list(value)
+        if value is not None and not isinstance(value, (str, list)):
+            failures.append(f"{rel_path}: {key} must be a string or list")
+        elif isinstance(value, list) and len(listed) != len(value):
+            failures.append(f"{rel_path}: {key} entries must be strings")
+        for target_path in listed:
+            if not (ROOT / target_path).exists():
+                failures.append(
+                    f"{rel_path}: {key} path does not exist: {target_path}"
+                )
+
+    known_ids = spec_ids or set()
+    for key in ("depends_on", "superseded_by"):
+        for reference in string_list(metadata.get(key)):
+            if not _reference_exists(reference, known_ids):
+                failures.append(f"{rel_path}: unknown {key} reference: {reference}")
+
+    for reference in string_list(metadata.get("supersedes")):
+        if reference.startswith("legacy_"):
+            continue
+        if not _reference_exists(reference, known_ids):
+            failures.append(f"{rel_path}: unknown supersedes reference: {reference}")
+
+    if metadata.get("status") == "superseded":
+        replacements = string_list(metadata.get("superseded_by"))
+        if not replacements:
+            failures.append(f"{rel_path}: superseded spec needs superseded_by")
+        if metadata.get("source_of_truth") is not False:
+            failures.append(f"{rel_path}: superseded spec cannot be source_of_truth")
+        if not has_superseded_banner(body):
+            failures.append(f"{rel_path}: superseded spec needs a visible banner")
 
     return failures
 
@@ -82,11 +96,48 @@ def main() -> int:
         spec_paths = sorted((ROOT / "docs" / "specs").glob("*.md"))
 
     failures: list[str] = []
+    all_specs = sorted((ROOT / "docs" / "specs").glob("*.md"))
+    spec_ids: dict[str, Path] = {}
+    metadata_by_path: dict[Path, dict] = {}
+    for path in all_specs:
+        metadata, _ = load_frontmatter(path)
+        metadata_by_path[path] = metadata
+        spec_id = metadata.get("spec_id")
+        if not isinstance(spec_id, str) or not spec_id:
+            continue
+        if spec_id in spec_ids:
+            failures.append(
+                f"{path.relative_to(ROOT)}: duplicate spec_id also used by "
+                f"{spec_ids[spec_id].relative_to(ROOT)}"
+            )
+        spec_ids[spec_id] = path
+
+    for path, metadata in metadata_by_path.items():
+        rel_path = str(path.relative_to(ROOT))
+        spec_id = str(metadata.get("spec_id") or "")
+        for reference in string_list(metadata.get("supersedes")):
+            if reference.startswith("legacy_"):
+                continue
+            target = spec_ids.get(reference) or (ROOT / reference)
+            target_metadata = metadata_by_path.get(target)
+            if target_metadata is None:
+                continue
+            if target_metadata.get("status") != "superseded":
+                failures.append(
+                    f"{rel_path}: supersedes target is not superseded: {reference}"
+                )
+            reverse = string_list(target_metadata.get("superseded_by"))
+            if rel_path not in reverse and spec_id not in reverse:
+                failures.append(
+                    f"{rel_path}: supersedes target lacks reciprocal "
+                    f"superseded_by: {reference}"
+                )
+
     for path in spec_paths:
         if not path.exists():
             failures.append(f"{path.relative_to(ROOT)}: file does not exist")
             continue
-        failures.extend(validate_spec(path))
+        failures.extend(validate_spec(path, set(spec_ids)))
 
     if failures:
         print("Spec validation failed:")

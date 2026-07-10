@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <title>Shumeyko WB Unit Economics</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260708-ozon-expense-detail-v3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260710-tax-source-diagnostics-v1" />
   </head>
   <body>
     <main class="app-shell">
@@ -139,8 +139,8 @@
         >
           <div class="detail-panel-header">
             <div>
-              <p class="eyebrow">Диагностика источников</p>
-              <h2 id="ozon-preview-title">Ozon + 1C</h2>
+              <p class="eyebrow">Служебная витрина</p>
+              <h2 id="ozon-preview-title">Ozon: расчет экономики</h2>
               <p id="ozon-preview-summary" class="muted">
                 Загружаем статус Ozon-источников.
               </p>
@@ -180,26 +180,6 @@
             id="ozon-diagnostic-message"
             class="ozon-diagnostic-message"
           ></div>
-          <section
-            id="ozon-pnl-section"
-            class="ozon-table-section"
-            aria-labelledby="ozon-pnl-title"
-          >
-            <div class="table-heading">
-              <div>
-                <p class="eyebrow">Расчетная витрина</p>
-                <h3 id="ozon-pnl-title">Ozon v1</h3>
-              </div>
-              <p class="muted">
-                Выручка по регистру продаж 1C для контрагента Ozon.
-              </p>
-            </div>
-            <div id="ozon-pnl-message" class="ozon-diagnostic-message"></div>
-            <div id="ozon-pnl-grid" class="metric-grid ozon-pnl-grid"></div>
-            <div id="ozon-pnl-empty" class="analytics-empty" hidden>
-              Нет 1C-выручки Ozon для расчетной витрины.
-            </div>
-          </section>
           <section class="ozon-table-section" aria-labelledby="ozon-unit-title">
             <div class="table-heading">
               <div>
@@ -266,52 +246,58 @@
           <div id="ozon-preview-empty" class="analytics-empty" hidden>
             Ozon-источники еще не загружались для выбранного клиента.
           </div>
-          <section class="ozon-table-section" aria-labelledby="ozon-sources-title">
-            <div class="table-heading">
-              <h3 id="ozon-sources-title">Источники Ozon + 1C</h3>
-              <p class="muted">Статус последней загрузки по каждому источнику.</p>
-            </div>
-            <div class="table-wrap">
-              <table class="products-table data-table ozon-preview-table">
-                <thead>
-                  <tr>
-                    <th>Источник</th>
-                    <th>Статус</th>
-                    <th>Строки</th>
-                    <th>API / файл</th>
-                    <th>Код отчета</th>
-                    <th>Комментарий</th>
-                  </tr>
-                </thead>
-                <tbody id="ozon-preview-rows"></tbody>
-              </table>
-            </div>
-          </section>
-          <section class="ozon-table-section" aria-labelledby="ozon-mapping-title">
-            <div class="table-heading">
-              <h3 id="ozon-mapping-title">Сопоставление Ozon → 1C</h3>
-              <p class="muted">Проверка товаров Ozon против загруженного сопоставления и 1C.</p>
-            </div>
-            <div id="ozon-mapping-empty" class="analytics-empty" hidden>
-              Нужен Ozon catalog: товары, offer_id, SKU и штрихкоды.
-            </div>
-            <div class="table-wrap ozon-mapping-wrap">
-              <table class="products-table data-table ozon-mapping-table">
-                <thead>
-                  <tr>
-                    <th>Offer / артикул</th>
-                    <th>Товар / SKU</th>
-                    <th>Штрихкод</th>
-                    <th>Статус</th>
-                    <th>Метод</th>
-                    <th>Номенклатура 1С</th>
-                    <th>Что сделать</th>
-                  </tr>
-                </thead>
-                <tbody id="ozon-mapping-rows"></tbody>
-              </table>
-            </div>
-          </section>
+          <details class="ozon-technical-details">
+            <summary>
+              <span>Источники и сопоставление</span>
+              <small>Техническая сверка загрузки Ozon, mapping и обязательных 1C-источников.</small>
+            </summary>
+            <section class="ozon-table-section" aria-labelledby="ozon-sources-title">
+              <div class="table-heading">
+                <h3 id="ozon-sources-title">Источники Ozon + 1C</h3>
+                <p class="muted">Статус последней загрузки по каждому источнику.</p>
+              </div>
+              <div class="table-wrap">
+                <table class="products-table data-table ozon-preview-table">
+                  <thead>
+                    <tr>
+                      <th>Источник</th>
+                      <th>Статус</th>
+                      <th>Строки</th>
+                      <th>API / файл</th>
+                      <th>Код отчета</th>
+                      <th>Комментарий</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ozon-preview-rows"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="ozon-table-section" aria-labelledby="ozon-mapping-title">
+              <div class="table-heading">
+                <h3 id="ozon-mapping-title">Сопоставление Ozon → 1C</h3>
+                <p class="muted">Проверка товаров Ozon против загруженного сопоставления и 1C.</p>
+              </div>
+              <div id="ozon-mapping-empty" class="analytics-empty" hidden>
+                Нужен Ozon catalog: товары, offer_id, SKU и штрихкоды.
+              </div>
+              <div class="table-wrap ozon-mapping-wrap">
+                <table class="products-table data-table ozon-mapping-table">
+                  <thead>
+                    <tr>
+                      <th>Offer / артикул</th>
+                      <th>Товар / SKU</th>
+                      <th>Штрихкод</th>
+                      <th>Статус</th>
+                      <th>Метод</th>
+                      <th>Номенклатура 1С</th>
+                      <th>Что сделать</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ozon-mapping-rows"></tbody>
+                </table>
+              </div>
+            </section>
+          </details>
         </section>
 
         <section
@@ -336,6 +322,16 @@
             </div>
             <div id="action-insights-list" class="action-insights-list"></div>
           </div>
+          <div id="data-trust-strip" class="decision-strip data-trust-strip readiness-neutral">
+            <div class="data-trust-heading">
+              <div>
+                <p class="eyebrow">Доверие к расчёту</p>
+                <h3>Статус исходных данных</h3>
+              </div>
+              <span id="data-trust-badge" class="decision-badge">Проверяем</span>
+            </div>
+            <div id="data-trust-grid" class="metric-grid data-trust-grid"></div>
+          </div>
           <div class="analytics-grid" aria-label="Аналитические визуализации">
             <article class="analytics-chart" aria-labelledby="money-trend-title">
               <div class="analytics-chart-header">
@@ -347,16 +343,23 @@
             <article class="analytics-chart" aria-labelledby="unit-pl-title">
               <div class="analytics-chart-header">
                 <h3 id="unit-pl-title">P&amp;L юнит-экономики</h3>
-                <p>Выручка, расходы и прибыль в управленческом виде.</p>
+                <p>Для ОСНО выручка и расходы показываются без НДС.</p>
               </div>
               <div id="unit-pl-table" class="analytics-chart-body"></div>
             </article>
             <article class="analytics-chart" aria-labelledby="loss-drivers-title">
               <div class="analytics-chart-header">
-                <h3 id="loss-drivers-title">Топ потерь</h3>
-                <p>Где больше всего отрицательной или упущенной прибыли.</p>
+                <h3 id="loss-drivers-title">Фактические убытки</h3>
+                <p>Товары и строки с уже полученным отрицательным результатом.</p>
               </div>
               <div id="loss-drivers-chart" class="analytics-chart-body"></div>
+            </article>
+            <article class="analytics-chart" aria-labelledby="lost-margin-title">
+              <div class="analytics-chart-header">
+                <h3 id="lost-margin-title">Недополученный маржинальный доход</h3>
+                <p>Предварительная оценка до налогов при полном покрытии остатков.</p>
+              </div>
+              <div id="lost-margin-chart" class="analytics-chart-body"></div>
             </article>
             <article class="analytics-chart" aria-labelledby="returns-chart-title">
               <div class="analytics-chart-header">
@@ -364,6 +367,13 @@
                 <p>Возвратность и объем возвратов по месяцам.</p>
               </div>
               <div id="returns-chart" class="analytics-chart-body"></div>
+            </article>
+            <article class="analytics-chart tax-input-chart-card" aria-labelledby="tax-input-title">
+              <div class="analytics-chart-header">
+                <h3 id="tax-input-title">Сверка входящего НДС</h3>
+                <p>Начисления, сторно, нетто, подтверждение 1С и право на вычет.</p>
+              </div>
+              <div id="tax-input-chart" class="analytics-chart-body"></div>
             </article>
           </div>
         </section>
@@ -548,6 +558,16 @@
               Юнит-экономика
             </button>
             <button
+              id="detail-tab-onec-reconciliation"
+              type="button"
+              data-detail-tab="onecReconciliation"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-onec-reconciliation"
+            >
+              Сверка документов
+            </button>
+            <button
               id="detail-tab-liquidity"
               type="button"
               data-detail-tab="liquidity"
@@ -565,17 +585,7 @@
               aria-selected="false"
               aria-controls="detail-panel-lost-sales"
             >
-              Упущенные продажи
-            </button>
-            <button
-              id="detail-tab-onec-reconciliation"
-              type="button"
-              data-detail-tab="onecReconciliation"
-              role="tab"
-              aria-selected="false"
-              aria-controls="detail-panel-onec-reconciliation"
-            >
-              Сверка WB ↔ 1С
+              Недополученный доход
             </button>
           </div>
           <section
@@ -616,7 +626,7 @@
                     <th>МД4 после логистики</th>
                     <th>МД5 после продвижения</th>
                     <th>МД6 до налогов</th>
-                    <th>МД после налогов</th>
+                    <th>МД до налогов</th>
                     <th>Маржа</th>
                     <th>На шт</th>
                     <th>Статус данных</th>
@@ -637,7 +647,7 @@
             <div class="detail-panel-header">
               <div>
                 <p class="eyebrow">Пополнение WB</p>
-                <h3 id="lost-sales-title">Упущенные продажи</h3>
+                <h3 id="lost-sales-title">Недополученный маржинальный доход</h3>
               </div>
               <span id="lost-sales-count" class="muted"></span>
             </div>
@@ -653,7 +663,7 @@
                     <th>Остаток 1С</th>
                     <th>Склады 1С</th>
                     <th>Упущено, шт</th>
-                    <th>Упущенная прибыль</th>
+                    <th>МД до налогов</th>
                     <th>Вывод</th>
                   </tr>
                 </thead>
@@ -672,11 +682,17 @@
             <div class="detail-panel-header">
               <div>
                 <p class="eyebrow">Сверка источников</p>
-                <h3 id="onec-reconciliation-title">Сверка WB ↔ 1С</h3>
+                <h3 id="onec-reconciliation-title">Сверка документов</h3>
+                <p class="muted">
+                  Выручка с НДС и штрафы: сумма кабинета против фактических
+                  документов 1С за выбранные даты.
+                </p>
               </div>
               <span id="onec-reconciliation-count" class="muted"></span>
             </div>
-            <div id="onec-reconciliation-grid" class="metric-grid"></div>
+            <h4>Выручка с НДС и штрафы</h4>
+            <div id="financial-reconciliation-grid" class="metric-grid"></div>
+            <p id="financial-reconciliation-source" class="muted"></p>
             <form id="onec-reconciliation-filter-form" class="filters-bar">
               <label class="filter-search">
                 Поиск
@@ -691,6 +707,14 @@
               <label>
                 Статус
                 <select id="onec-filter-status" name="status"></select>
+              </label>
+              <label>
+                Статья
+                <select id="onec-filter-control-type" name="control_type">
+                  <option value="">Все статьи</option>
+                  <option value="revenue_with_vat">Выручка с НДС</option>
+                  <option value="penalties">Штрафы</option>
+                </select>
               </label>
               <label>
                 Начало
@@ -726,6 +750,34 @@
                 </button>
               </div>
             </form>
+            <div class="table-wrap">
+              <table class="products-table data-table financial-reconciliation-table">
+                <thead>
+                  <tr>
+                    <th>Статья</th>
+                    <th>Период WB</th>
+                    <th>Документ WB</th>
+                    <th>Документ 1С</th>
+                    <th>WB сумма</th>
+                    <th>1С сумма</th>
+                    <th>Дельта 1С − WB</th>
+                    <th>Статус</th>
+                    <th>Что проверить</th>
+                  </tr>
+                </thead>
+                <tbody id="financial-reconciliation-rows"></tbody>
+              </table>
+            </div>
+            <div class="detail-panel-header">
+              <div>
+                <h4>Техническая сверка документов WB ↔ 1С</h4>
+                <p class="muted">
+                  Количество, выплаты и полнота загрузки документов.
+                </p>
+              </div>
+              <span id="onec-reconciliation-technical-count" class="muted"></span>
+            </div>
+            <div id="onec-reconciliation-grid" class="metric-grid"></div>
             <div class="table-wrap">
               <table class="products-table data-table onec-reconciliation-table">
                 <thead>
@@ -770,7 +822,10 @@
                 Все
               </button>
               <button type="button" data-row-preset="losses" aria-pressed="false">
-                Убыточные
+                Убыточные продажи
+              </button>
+              <button type="button" data-row-preset="penaltyOnly" aria-pressed="false">
+                Штрафы без продаж
               </button>
               <button type="button" data-row-preset="missingCost" aria-pressed="false">
                 Без себестоимости
@@ -912,6 +967,7 @@
                   id="ai-input"
                   name="message"
                   type="text"
+                  aria-label="Вопрос AI-аналитику"
                   placeholder="Спросите по отчету, SKU, себестоимости или readiness"
                   autocomplete="off"
                 />
@@ -1022,10 +1078,10 @@
             <div class="source-refresh-summary">
               <div>
                 <p class="eyebrow">Обновление данных</p>
-                <h3 id="source-refresh-title">Сопоставление и полное обновление</h3>
+                <h3 id="source-refresh-title">Обновление данных маркетплейса</h3>
                 <p class="muted">
-                  Сначала загрузите сопоставление WB ↔ 1C, затем проверьте готовность и
-                  запустите обновление.
+                  Для WB запускается отчет. Для Ozon запускается служебная
+                  диагностика без публикации клиентского отчета.
                 </p>
               </div>
               <div id="source-refresh-status" class="source-refresh-status">
@@ -1074,7 +1130,7 @@
                 id="source-refresh-ozon-run"
                 type="button"
                 class="secondary-button"
-                data-tooltip="Загрузить Ozon + 1C без обязательного WB. Отчет не публикуется."
+                data-tooltip="Загрузить служебную витрину Ozon + 1C без обязательного WB. Отчет не публикуется."
               >
                 Ozon + 1C
               </button>
@@ -1088,6 +1144,113 @@
               </button>
             </div>
             <div id="source-refresh-collections" class="source-refresh-collections"></div>
+          </section>
+          <section
+            id="mapping-service-panel"
+            class="mapping-service-panel"
+            aria-labelledby="mapping-service-title"
+            hidden
+          >
+            <div class="mapping-service-header">
+              <div>
+                <p class="eyebrow">Очередь аналитика</p>
+                <h3 id="mapping-service-title">Сопоставление маркетплейсов ↔ 1C</h3>
+                <p id="mapping-service-status" class="muted">
+                  Сервис сопоставления еще не загружен.
+                </p>
+                <p class="mapping-service-note">
+                  Нерешенные позиции остаются в очереди. Система показывает
+                  кандидатов, но не выбирает номенклатуру 1C автоматически.
+                </p>
+              </div>
+              <div class="mapping-service-actions">
+                <button
+                  id="mapping-rebuild-button"
+                  type="button"
+                  class="secondary-button"
+                  data-tooltip="Перестроить кандидатов по последним снимкам WB, Ozon и 1C."
+                >
+                  Перестроить
+                </button>
+                <button
+                  id="mapping-export-button"
+                  type="button"
+                  class="secondary-button"
+                  data-tooltip="Проверить экспорт в контракт sku_mapping."
+                >
+                  Экспорт
+                </button>
+              </div>
+            </div>
+            <form id="mapping-filter-form" class="mapping-filter-form">
+              <label>
+                <span>МП</span>
+                <select id="mapping-marketplace-filter">
+                  <option value="">Все</option>
+                  <option value="wb">WB</option>
+                  <option value="ozon">Ozon</option>
+                </select>
+              </label>
+              <label>
+                <span>Статус</span>
+                <select id="mapping-status-filter">
+                  <option value="review" selected>Очередь аналитика</option>
+                  <option value="">Все</option>
+                  <option value="matched">Сопоставлено</option>
+                  <option value="needs_review">Нужна проверка</option>
+                  <option value="ambiguous">Несколько вариантов 1С</option>
+                  <option value="missing">Нет связи</option>
+                  <option value="excluded">Исключено</option>
+                </select>
+              </label>
+              <label class="mapping-search-field">
+                <span>Поиск</span>
+                <input
+                  id="mapping-search"
+                  type="search"
+                  placeholder="Артикул, штрихкод, название"
+                />
+              </label>
+              <button type="submit" class="secondary-button">Найти</button>
+            </form>
+            <div class="mapping-layout">
+              <div class="mapping-list">
+                <div class="table-wrap">
+                  <table class="products-table data-table mapping-table">
+                    <thead>
+                      <tr>
+                        <th>МП</th>
+                        <th>Товар</th>
+                        <th>Ключ</th>
+                        <th>Статус</th>
+                        <th>Кандидаты</th>
+                      </tr>
+                    </thead>
+                    <tbody id="mapping-item-rows"></tbody>
+                  </table>
+                </div>
+              </div>
+              <aside class="mapping-detail" aria-live="polite">
+                <div id="mapping-selected-card" class="mapping-selected-card">
+                  Выберите строку товара.
+                </div>
+                <div class="mapping-manual-search">
+                  <label>
+                    <span>Поиск в 1C</span>
+                    <input
+                      id="mapping-onec-search"
+                      type="search"
+                      placeholder="Артикул или наименование 1C"
+                    />
+                  </label>
+                  <div id="mapping-onec-results" class="mapping-onec-results"></div>
+                </div>
+                <h4>Кандидаты</h4>
+                <div id="mapping-candidate-list" class="mapping-candidate-list"></div>
+                <h4>История</h4>
+                <div id="mapping-history-list" class="mapping-history-list"></div>
+              </aside>
+            </div>
           </section>
           <div id="integration-list" class="integration-list"></div>
         </section>
@@ -1205,13 +1368,39 @@
             </div>
           </div>
           <div class="drilldown-tabs" role="tablist" aria-label="Тип расшифровки">
-            <button type="button" data-drilldown-preset="review">К проверке</button>
-            <button type="button" data-drilldown-preset="sources">Источники</button>
-            <button type="button" data-drilldown-preset="missingCost">
+            <button type="button" data-drilldown-preset="review" role="tab" aria-selected="true">
+              К проверке
+            </button>
+            <button type="button" data-drilldown-preset="sources" role="tab" aria-selected="false">
+              Источники
+            </button>
+            <button
+              type="button"
+              data-drilldown-preset="missingCost"
+              role="tab"
+              aria-selected="false"
+            >
               Без себестоимости
             </button>
-            <button type="button" data-drilldown-preset="missingMapping">Сопоставление</button>
-            <button type="button" data-drilldown-preset="losses">Убыточные</button>
+            <button
+              type="button"
+              data-drilldown-preset="missingMapping"
+              role="tab"
+              aria-selected="false"
+            >
+              Сопоставление
+            </button>
+            <button type="button" data-drilldown-preset="losses" role="tab" aria-selected="false">
+              Убыточные продажи
+            </button>
+            <button
+              type="button"
+              data-drilldown-preset="penaltyOnly"
+              role="tab"
+              aria-selected="false"
+            >
+              Штрафы без продаж
+            </button>
           </div>
           <div id="drilldown-sources" class="drilldown-sources" hidden></div>
           <div id="drilldown-table-wrap" class="table-wrap drilldown-table-wrap">
@@ -1243,6 +1432,6 @@
         </section>
       </div>
     </main>
-    <script src="/static/app.js?v=20260708-tax-profile-v27" defer></script>
+    <script src="/static/app.js?v=20260710-tax-source-diagnostics-v1" defer></script>
   </body>
 </html>

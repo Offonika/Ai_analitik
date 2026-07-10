@@ -26,7 +26,6 @@ from wb_unit_economics.web.database import init_db, make_engine, make_session_fa
 from wb_unit_economics.web.models import ReportRun
 from wb_unit_economics.web.settings import WebSettings
 
-DEFAULT_REPORT_ID = "excel_mvp_2026_03_01_2026_06_17"
 DEFAULT_EXCEL = ROOT / "reports" / "shumeyko_wb_excel_mvp.xlsx"
 
 
@@ -111,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--database-url", default=os.getenv("SHUMEYKO_DATABASE_URL", "")
     )
-    parser.add_argument("--report-id", default=DEFAULT_REPORT_ID)
+    parser.add_argument("--report-id", required=True)
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "reports" / "db_first"
     )

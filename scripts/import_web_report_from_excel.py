@@ -30,9 +30,6 @@ from wb_unit_economics.web.repository import (
 )
 
 DEFAULT_WORKBOOK = ROOT / "reports" / "shumeyko_wb_excel_mvp.xlsx"
-DEFAULT_REPORT_ID = "excel_mvp_2026_03_01_2026_06_17"
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -41,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workbook", type=Path, default=DEFAULT_WORKBOOK)
     parser.add_argument("--tenant-id", default="shumeyko")
     parser.add_argument("--tenant-name", default="Шумейко и Партнеры")
-    parser.add_argument("--report-id", default=DEFAULT_REPORT_ID)
+    parser.add_argument("--report-id", required=True)
     parser.add_argument("--admin-email", default="")
     parser.add_argument("--admin-password-env", default="SHUMEYKO_BOOTSTRAP_PASSWORD")
     return parser.parse_args()

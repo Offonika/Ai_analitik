@@ -71,6 +71,8 @@ DATA_QUALITY_LABELS = {
         "Кабинет WB не совпадает с организацией 1С"
     ),
     DataQualityStatus.EXCLUDED: "Исключено",
+    DataQualityStatus.TAX_PROFILE_MISSING: "Налоговый профиль не подтвержден",
+    DataQualityStatus.TAX_REVIEW: "Налоговый расчет требует сверки",
     DataQualityStatus.NEEDS_REVIEW: "Себестоимость 1С требует сверки",
     DataQualityStatus.WB_DOCUMENT_MISSING: "Документ WB не найден",
     DataQualityStatus.WB_DOCUMENT_DOWNLOADED: "Документ WB загружен",
@@ -176,7 +178,10 @@ def _display_week_start(week_start: date, report_period_start: date) -> date:
 
 
 def _row_month_start(row: object, report_period_start: date) -> date:
-    return _month_start(_display_week_start(row.week_start, report_period_start))
+    closing_date = getattr(row, "week_end", None) or _display_week_start(
+        row.week_start, report_period_start
+    )
+    return _month_start(closing_date)
 
 
 def _month_label(value: date, report: UnitEconomicsReport) -> str:
@@ -345,9 +350,13 @@ def _status_reason(
     status = row.data_quality_status
     if status is DataQualityStatus.RELIABLE:
         return "Данные достаточны для расчета"
+    if status is DataQualityStatus.TAX_PROFILE_MISSING:
+        return "Для организации 1С не найден налоговый профиль на период строки"
+    if status is DataQualityStatus.TAX_REVIEW:
+        if getattr(row, "tax_completeness", "") == "input_vat_missing":
+            return "Нет подтвержденных данных по входящему НДС"
+        return "Входящий НДС или другой налоговый источник требует сверки"
     if status is DataQualityStatus.NEEDS_REVIEW:
-        if getattr(row, "tax_method", "") == "Налоговый профиль не найден":
-            return "Для организации 1С не найден налоговый профиль на период строки"
         onec_item_id = getattr(row, "onec_item_id", None)
         method = (
             cost_methods.get((row.organization_id, onec_item_id), "")
@@ -555,6 +564,13 @@ def build_excel_report(
             account_labels=labels,
             organization_labels=org_labels,
         )
+        _write_tax_input_reconciliation(
+            workbook,
+            formats,
+            report,
+            account_labels=labels,
+            organization_labels=org_labels,
+        )
         _write_onec_service_breakdown(
             workbook,
             formats,
@@ -691,9 +707,8 @@ def _write_readme(
             "детализации и приводятся к недельному финансовому отчету WB."
         ),
         (
-            "Налоги рассчитываются по налоговому профилю организации 1С; "
-            "фактические налоговые регистры 1С используются как сверка, "
-            "а не распределяются по товарам."
+            "Для ОСНО управленческий P&L считается без НДС; НДС показывается "
+            "отдельной сверкой исходящего, входящего и НДС к уплате."
         ),
         "Отдельные рекламные API исключены из первого MVP.",
     ]
@@ -774,8 +789,8 @@ def _write_dashboard(
         ("Возвраты, шт", totals["return_quantity"]),
         ("Чистое кол-во, шт", totals["quantity"]),
         ("Доля возвратов", return_rate),
-        ("Маржинальный доход WB после налогов", totals["profit_after_taxes"]),
-        ("Маржа WB после налогов", margin_after_taxes),
+        ("Управленческая прибыль WB", totals["profit_after_taxes"]),
+        ("Маржа WB без НДС", margin_after_taxes),
         ("Прибыльных SKU", profitable_sku_count),
         ("Убыточных SKU", loss_sku_count),
         ("Доля строк ОК", data_ok_share),
@@ -843,8 +858,8 @@ def _write_dashboard(
             "Выручка после СПП",
             "Логистика",
             "Расходы WB",
-            "Маржинальный доход WB после налогов",
-            "Маржа WB после налогов",
+            "Управленческая прибыль WB",
+            "Маржа WB без НДС",
         ],
         rows=monthly_rows,
         money_columns={5, 6, 8, 9, 10, 11},
@@ -862,8 +877,8 @@ def _write_dashboard(
                 "Период",
                 "Выручка после СПП, Δ",
                 "Выручка после СПП, %",
-                "Маржинальный доход, Δ",
-                "Маржинальный доход, %",
+                "Управленческая прибыль, Δ",
+                "Управленческая прибыль, %",
                 "Расходы WB, Δ",
                 "Расходы WB, %",
             ],
@@ -889,8 +904,8 @@ def _write_dashboard(
         headers=[
             "Неделя",
             "Выручка после СПП",
-            "Маржинальный доход WB после налогов",
-            "Маржа WB после налогов",
+            "Управленческая прибыль WB",
+            "Маржа WB без НДС",
         ],
         rows=dashboard_weekly_rows,
         money_columns={1, 2},
@@ -900,7 +915,7 @@ def _write_dashboard(
         chart = workbook.add_chart({"type": "line"})
         chart.add_series(
             {
-                "name": "Маржинальный доход WB после налогов",
+                "name": "Управленческая прибыль WB",
                 "categories": [
                     "Дашборд",
                     weekly_start + 1,
@@ -957,9 +972,9 @@ def _write_dashboard(
             "Артикул 1С",
             "Чистое кол-во",
             "Выручка после СПП",
-            "Маржинальный доход WB после налогов",
-            "Маржинальный доход/шт",
-            "Маржа WB после налогов",
+            "Управленческая прибыль WB",
+            "Управленческая прибыль/шт",
+            "Маржа WB без НДС",
             "Статус данных",
         ],
         rows=[
@@ -999,8 +1014,8 @@ def _write_dashboard(
             "Возвраты, шт",
             "% возвратов",
             "Выручка после СПП",
-            "Маржинальный доход WB после налогов",
-            "Маржинальный доход/шт",
+            "Управленческая прибыль WB",
+            "Управленческая прибыль/шт",
             "Класс убытка",
             "Главная причина",
             "Статус данных",
@@ -1210,7 +1225,7 @@ def _write_pivot_summaries(
             "Строк",
             "Выручка",
             "Себестоимость 1С",
-            "Прибыль после налогов",
+            "Управленческая прибыль",
             "Хранение",
             "Продвижение",
         ],
@@ -1229,8 +1244,8 @@ def _write_pivot_summaries(
             "Неделя",
             "Выручка",
             "Себестоимость 1С",
-            "Прибыль после налогов",
-            "Маржа после налогов",
+            "Управленческая прибыль",
+            "Маржа без НДС",
             "Хранение",
             "Продвижение",
         ],
@@ -1255,8 +1270,8 @@ def _write_pivot_summaries(
             "Кабинет WB",
             "Выручка",
             "Себестоимость 1С",
-            "Прибыль после налогов",
-            "Маржа после налогов",
+            "Управленческая прибыль",
+            "Маржа без НДС",
         ],
         rows=account_rows,
         money_columns={2, 3, 4},
@@ -1278,9 +1293,9 @@ def _write_pivot_summaries(
             "Возвраты, шт",
             "% возвратов",
             "Выручка",
-            "Прибыль после налогов",
-            "Прибыль/шт",
-            "Маржа после налогов",
+            "Управленческая прибыль",
+            "Упр. прибыль/шт",
+            "Маржа без НДС",
             "Статус данных",
         ],
         rows=[
@@ -1327,9 +1342,9 @@ def _write_summary(
         ("Эквайринг", totals["acquiring"]),
         ("Себестоимость 1С, включая распределенные допрасходы", totals["cogs"]),
         ("Маржинальный доход WB до налогов", totals["gross_profit"]),
-        ("НДС", totals["vat_5"]),
-        ("Налог с выручки", totals["usn_1"]),
-        ("Маржинальный доход WB после налогов", totals["profit_after_taxes"]),
+        ("НДС к уплате", totals["vat_5"]),
+        ("Налог с выручки/НДФЛ", totals["usn_1"]),
+        ("Управленческая прибыль WB", totals["profit_after_taxes"]),
     ]
     sheet.write_row(0, 0, ["Показатель", "Значение"], formats["header"])
     for row_idx, (label, value) in enumerate(rows, start=1):
@@ -1367,9 +1382,9 @@ def _write_group_summary(
             "Выручка после СПП",
             "Себестоимость",
             "Маржинальный доход WB до налогов",
-            "НДС",
-            "Налог с выручки",
-            "Маржинальный доход WB после налогов",
+            "НДС к уплате",
+            "Налог с выручки/НДФЛ",
+            "Управленческая прибыль WB",
         ],
         formats["header"],
     )
@@ -1402,9 +1417,9 @@ def _write_group_summary(
             "Выручка после СПП",
             "Себестоимость",
             "Маржинальный доход WB до налогов",
-            "НДС",
-            "Налог с выручки",
-            "Маржинальный доход WB после налогов",
+            "НДС к уплате",
+            "Налог с выручки/НДФЛ",
+            "Управленческая прибыль WB",
         ],
         len(grouped),
     )
@@ -1445,7 +1460,9 @@ def _write_unit_economics(
         "СПП",
         "% СПП",
         "Выручка после СПП",
-        "НДС",
+        "НДС к уплате",
+        "Исходящий НДС",
+        "Входящий НДС",
         "Выручка без НДС",
         "Себестоимость 1С",
         "Комиссия WB",
@@ -1455,17 +1472,26 @@ def _write_unit_economics(
         "Продвижение WB",
         "Штрафы/доплаты WB",
         "Эквайринг WB",
-        "Налог с выручки",
+        "Налог с выручки/НДФЛ",
+        "База НДФЛ",
+        "НДФЛ",
+        "НДФЛ включен",
         "Маржинальный доход WB до налогов",
         "Маржа WB до налогов",
-        "Маржинальный доход WB после налогов",
-        "Маржа WB после налогов",
-        "Маржинальный доход WB после налогов на шт",
+        "Управленческая прибыль WB",
+        "Маржа WB без НДС",
+        "Управленческая прибыль WB на шт",
         "Статус данных",
         "Причина статуса",
         "Статус СПП",
-        "Налоговый режим/ставка",
+        "Налоговый метод",
         "Источник налогового профиля",
+        "Полнота налогового расчета",
+        "Режим P&L НДС",
+        "НДС входящий WB",
+        "НДС входящий 1С",
+        "Расхождение НДС",
+        "Полнота НДС",
     ]
     sheet.write_row(0, 0, headers, formats["header"])
     source_rows = report.rows
@@ -1512,43 +1538,54 @@ def _write_unit_economics(
             )
         sheet.write_number(idx, 19, float(row.revenue_after_spp), formats["money"])
         sheet.write_number(idx, 20, float(row.vat_5_from_revenue), formats["money"])
-        sheet.write_number(idx, 21, float(row.revenue_without_vat), formats["money"])
+        sheet.write_number(idx, 21, float(row.vat_output), formats["money"])
+        sheet.write_number(idx, 22, float(row.vat_input), formats["money"])
+        sheet.write_number(idx, 23, float(row.revenue_without_vat), formats["money"])
         sheet.write_number(
-            idx, 22, float(row.cogs_from_1c_with_extra_costs), formats["money"]
+            idx, 24, float(row.cogs_from_1c_with_extra_costs), formats["money"]
         )
-        sheet.write_number(idx, 23, float(row.wb_commission), formats["money"])
-        sheet.write_number(idx, 24, float(row.logistics), formats["money"])
-        sheet.write_number(idx, 25, float(row.storage), formats["money"])
-        sheet.write_number(idx, 26, float(row.acceptance), formats["money"])
-        sheet.write_number(idx, 27, float(row.wb_promotion), formats["money"])
+        sheet.write_number(idx, 25, float(row.wb_commission), formats["money"])
+        sheet.write_number(idx, 26, float(row.logistics), formats["money"])
+        sheet.write_number(idx, 27, float(row.storage), formats["money"])
+        sheet.write_number(idx, 28, float(row.acceptance), formats["money"])
+        sheet.write_number(idx, 29, float(row.wb_promotion), formats["money"])
         sheet.write_number(
-            idx, 28, float(row.penalties_and_holdbacks), formats["money"]
+            idx, 30, float(row.penalties_and_holdbacks), formats["money"]
         )
-        sheet.write_number(idx, 29, float(row.acquiring), formats["money"])
-        sheet.write_number(idx, 30, float(row.usn_1_from_revenue), formats["money"])
-        sheet.write_number(idx, 31, float(row.gross_profit), formats["money"])
+        sheet.write_number(idx, 31, float(row.acquiring), formats["money"])
+        sheet.write_number(idx, 32, float(row.usn_1_from_revenue), formats["money"])
+        sheet.write_number(idx, 33, float(row.income_tax_base), formats["money"])
+        sheet.write_number(idx, 34, float(row.income_tax), formats["money"])
+        sheet.write(idx, 35, "Да" if row.income_tax_included else "Нет")
+        sheet.write_number(idx, 36, float(row.gross_profit), formats["money"])
         if row.margin is None:
-            sheet.write(idx, 32, "")
+            sheet.write(idx, 37, "")
         else:
-            sheet.write_number(idx, 32, float(row.margin), formats["percent"])
-        sheet.write_number(idx, 33, float(row.profit_after_taxes), formats["money"])
+            sheet.write_number(idx, 37, float(row.margin), formats["percent"])
+        sheet.write_number(idx, 38, float(row.profit_after_taxes), formats["money"])
         if row.margin_after_taxes is None:
-            sheet.write(idx, 34, "")
+            sheet.write(idx, 39, "")
         else:
             sheet.write_number(
-                idx, 34, float(row.margin_after_taxes), formats["percent"]
+                idx, 39, float(row.margin_after_taxes), formats["percent"]
             )
         if row.profit_after_taxes_per_unit is None:
-            sheet.write(idx, 35, "")
+            sheet.write(idx, 40, "")
         else:
             sheet.write_number(
-                idx, 35, float(row.profit_after_taxes_per_unit), formats["money"]
+                idx, 40, float(row.profit_after_taxes_per_unit), formats["money"]
             )
-        sheet.write(idx, 36, _data_quality_label(row.data_quality_status))
-        sheet.write(idx, 37, _status_reason(row, cost_methods))
-        sheet.write(idx, 38, row.spp_source_status)
-        sheet.write(idx, 39, row.tax_method)
-        sheet.write(idx, 40, row.tax_profile_source)
+        sheet.write(idx, 41, _data_quality_label(row.data_quality_status))
+        sheet.write(idx, 42, _status_reason(row, cost_methods))
+        sheet.write(idx, 43, row.spp_source_status)
+        sheet.write(idx, 44, row.tax_method)
+        sheet.write(idx, 45, row.tax_profile_source)
+        sheet.write(idx, 46, row.tax_completeness)
+        sheet.write(idx, 47, row.pnl_vat_mode)
+        sheet.write_number(idx, 48, float(row.vat_input_from_wb), formats["money"])
+        sheet.write_number(idx, 49, float(row.vat_input_from_1c), formats["money"])
+        sheet.write_number(idx, 50, float(row.vat_input_difference), formats["money"])
+        sheet.write(idx, 51, row.vat_input_completeness)
     row_count = len(report_rows)
     _add_table(sheet, headers, row_count)
     sheet.freeze_panes(1, 8)
@@ -1557,7 +1594,8 @@ def _write_unit_economics(
     sheet.set_column(2, 5, 18)
     sheet.set_column(6, 6, 34)
     sheet.set_column(7, 11, 16)
-    sheet.set_column(12, 35, 15)
+    sheet.set_column(12, 40, 15)
+    sheet.set_column(44, 51, 24)
     sheet.set_column(36, 36, 28)
     sheet.set_column(37, 40, 60)
     _apply_unit_economics_conditional_formatting(
@@ -1607,12 +1645,12 @@ def _write_liquidity_md(
         "МД5 после продвижения",
         "Штрафы/доплаты WB",
         "Эквайринг WB",
-        "МД6 до налогов",
-        "НДС",
-        "Налог с выручки",
-        "МД после налогов",
-        "Маржа после налогов",
-        "МД после налогов на шт",
+        "МД6 до НДФЛ",
+        "НДС к уплате",
+        "Налог с выручки/НДФЛ",
+        "Упр. прибыль",
+        "Маржа без НДС",
+        "Упр. прибыль на шт",
         "Статус ликвидности",
         "Драйвер ликвидности",
         "Статус данных",
@@ -1714,7 +1752,7 @@ def _write_liquidity_md(
     sheet.set_column(33, 35, 28)
     sheet.set_column(36, 37, 52)
     if row_count:
-        profit_col = headers.index("МД после налогов")
+        profit_col = headers.index("Упр. прибыль")
         status_col = headers.index("Статус ликвидности")
         data_status_col = headers.index("Статус данных")
         sheet.conditional_format(
@@ -1814,9 +1852,19 @@ def _liquidity_source_rows(
                 "penalties": row.penalties_and_holdbacks,
                 "acquiring": row.acquiring,
                 "vat": row.vat_5_from_revenue,
+                "vatOutput": row.vat_output,
+                "vatInput": row.vat_input,
+                "vatPayable": row.vat_payable,
                 "usn": row.usn_1_from_revenue,
+                "incomeTaxKind": row.income_tax_kind,
+                "incomeTaxBase": row.income_tax_base,
+                "incomeTax": row.income_tax,
+                "incomeTaxIncluded": row.income_tax_included,
                 "profitBeforeTax": row.gross_profit,
                 "profit": row.profit_after_taxes,
+                "taxMethod": row.tax_method,
+                "taxProfileSource": row.tax_profile_source,
+                "taxCompleteness": row.tax_completeness,
                 "status": _data_quality_label(row.data_quality_status),
                 "statusReason": _status_reason(row, cost_methods),
                 "sppStatus": row.spp_source_status,
@@ -1837,9 +1885,9 @@ def _apply_unit_economics_conditional_formatting(
     col = {header: index for index, header in enumerate(headers)}
     first_row = 1
     last_row = row_count
-    profit_col = col["Маржинальный доход WB после налогов"]
-    unit_profit_col = col["Маржинальный доход WB после налогов на шт"]
-    margin_col = col["Маржа WB после налогов"]
+    profit_col = col["Управленческая прибыль WB"]
+    unit_profit_col = col["Управленческая прибыль WB на шт"]
+    margin_col = col["Маржа WB без НДС"]
     status_col = col["Статус данных"]
     reason_col = col["Причина статуса"]
     revenue_letter = xl_col_to_name(col["Выручка после СПП"])
@@ -1951,12 +1999,12 @@ def _write_products(
         "Выручка после СПП",
         "Выручка без НДС",
         "Себестоимость",
-        "НДС",
-        "Налог с выручки",
+        "НДС к уплате",
+        "Налог с выручки/НДФЛ",
         "Маржинальный доход WB до налогов",
-        "Маржинальный доход WB после налогов",
-        "Маржа WB после налогов",
-        "Маржинальный доход WB после налогов на шт",
+        "Управленческая прибыль WB",
+        "Маржа WB без НДС",
+        "Управленческая прибыль WB на шт",
         "Статус данных",
     ]
     sheet.write_row(0, 0, headers, formats["header"])
@@ -2024,8 +2072,8 @@ def _write_dynamics(
             "Выручка после СПП",
             "Логистика",
             "Расходы WB",
-            "Маржинальный доход WB после налогов",
-            "Маржа WB после налогов",
+            "Управленческая прибыль WB",
+            "Маржа WB без НДС",
         ],
         rows=monthly_rows,
         money_columns={5, 6, 8, 9, 10, 11},
@@ -2044,8 +2092,8 @@ def _write_dynamics(
                 "Период",
                 "Выручка после СПП, Δ",
                 "Выручка после СПП, %",
-                "Маржинальный доход, Δ",
-                "Маржинальный доход, %",
+                "Управленческая прибыль, Δ",
+                "Управленческая прибыль, %",
                 "Расходы WB, Δ",
                 "Расходы WB, %",
             ],
@@ -2065,7 +2113,7 @@ def _write_dynamics(
             "Неделя",
             "Выручка после СПП",
             "Маржинальный доход WB до налогов",
-            "Маржинальный доход WB после налогов",
+            "Управленческая прибыль WB",
             "Неполная неделя",
         ],
         formats["header"],
@@ -2087,7 +2135,7 @@ def _write_dynamics(
             "Неделя",
             "Выручка после СПП",
             "Маржинальный доход WB до налогов",
-            "Маржинальный доход WB после налогов",
+            "Управленческая прибыль WB",
             "Неполная неделя",
         ],
         len(weekly_rows),
@@ -2277,12 +2325,12 @@ def _write_report_reconciliation(
         "Удержания/штрафы/доплаты",
         "Эквайринг",
         "Себестоимость 1С",
-        "НДС",
-        "Налог с выручки",
+        "НДС к уплате",
+        "Налог с выручки/НДФЛ",
         "Маржинальный доход WB до налогов",
         "Маржа WB до налогов",
-        "Маржинальный доход WB после налогов",
-        "Маржа WB после налогов",
+        "Управленческая прибыль WB",
+        "Маржа WB без НДС",
         "Статус СПП",
         "Статус данных",
         "Строк витрины",
@@ -2394,10 +2442,10 @@ def _write_onec_report_reconciliation(
         "Валовая прибыль 1С",
         "Прибыль после расходов WB",
         "Маржа после расходов WB",
-        "НДС",
-        "Налог с выручки",
-        "Маржинальный доход WB после налогов",
-        "Маржа WB после налогов",
+        "НДС к уплате",
+        "Налог с выручки/НДФЛ",
+        "Управленческая прибыль WB",
+        "Маржа WB без НДС",
         "Статус СПП",
         "Статус данных",
         "Строк витрины",
@@ -3300,11 +3348,11 @@ def _write_onec_opiu_reconciliation(
             "Контроль до расходов маркетплейса, налогов и управленческого ОПиУ.",
         ),
         (
-            "НДС",
+            "НДС к уплате",
             totals["vat_5"],
             None,
             None,
-            "WB-оценка НДС; ОПиУ НДС не сравниваем без фильтра только по WB.",
+            "WB-оценка НДС к уплате; ОПиУ НДС не сравниваем без фильтра только по WB.",
         ),
         (
             "Выручка без НДС",
@@ -3406,13 +3454,13 @@ def _write_onec_opiu_reconciliation(
             rwb_breakdown_comment,
         ),
         (
-            "Маржинальный доход WB после налогов",
+            "Управленческая прибыль WB",
             totals["profit_after_taxes"],
             None,
             None,
             (
                 "Это не полная чистая прибыль бизнеса, а товарная экономика WB "
-                "после НДС/УСН."
+                "без НДС. НДС к уплате вынесен в отдельную сверку."
             ),
         ),
     ]
@@ -3702,6 +3750,11 @@ def _write_onec_opiu_monthly_reconciliation(
     grouped: dict[date, list[object]] = defaultdict(list)
     for row in report.rows:
         grouped[_row_month_start(row, report.report_period_start)].append(row)
+    for month_key in set(wb_by_month) | set(onec_by_month):
+        try:
+            grouped.setdefault(date.fromisoformat(f"{month_key}-01"), [])
+        except ValueError:
+            continue
     for month, month_rows in sorted(grouped.items()):
         totals = _totals(month_rows)
         month_key = month.strftime("%Y-%m")
@@ -3846,11 +3899,11 @@ def _write_onec_report_products(
         "Прибыль после расходов WB",
         "Маржа после расходов WB",
         "Прибыль после расходов WB на шт",
-        "НДС",
-        "Налог с выручки",
-        "Прибыль после налогов",
-        "Маржа после налогов",
-        "Прибыль после налогов на шт",
+        "НДС к уплате",
+        "Налог с выручки/НДФЛ",
+        "Управленческая прибыль",
+        "Маржа без НДС",
+        "Упр. прибыль на шт",
         "Статус данных",
         "Строк витрины",
     ]
@@ -4118,6 +4171,45 @@ def _write_marketplace_service_reconciliation(
     sheet.set_column(0, len(headers) - 1, 22)
 
 
+def _write_tax_input_reconciliation(
+    workbook: xlsxwriter.Workbook,
+    formats: dict[str, object],
+    report: UnitEconomicsReport,
+    *,
+    account_labels: Mapping[str, str] | None = None,
+    organization_labels: Mapping[str, str] | None = None,
+) -> None:
+    sheet = workbook.add_worksheet("Сверка входящего НДС")
+    headers = [
+        "Неделя",
+        "Кабинет WB",
+        "Организация 1С",
+        "НДС входящий WB",
+        "НДС входящий 1С",
+        "Расхождение НДС",
+        "Полнота НДС",
+        "Строк источника",
+    ]
+    sheet.write_row(0, 0, headers, formats["header"])
+    for idx, row in enumerate(report.tax_input_reconciliation_rows, start=1):
+        sheet.write(idx, 0, str(row.week_start))
+        sheet.write(idx, 1, _account_label(row.seller_account_id, account_labels))
+        sheet.write(
+            idx,
+            2,
+            _organization_label(row.organization_id, organization_labels),
+        )
+        sheet.write_number(idx, 3, float(row.vat_input_from_wb), formats["money"])
+        sheet.write_number(idx, 4, float(row.vat_input_from_1c), formats["money"])
+        sheet.write_number(idx, 5, float(row.vat_input_difference), formats["money"])
+        sheet.write(idx, 6, row.vat_input_completeness)
+        sheet.write_number(idx, 7, row.source_row_count)
+    _add_table(sheet, headers, len(report.tax_input_reconciliation_rows))
+    sheet.set_column(0, 2, 24)
+    sheet.set_column(3, 5, 18)
+    sheet.set_column(6, 7, 18)
+
+
 def _write_onec_service_breakdown(
     workbook: xlsxwriter.Workbook,
     formats: dict[str, object],
@@ -4368,8 +4460,8 @@ def _write_returns(
         "Возвраты, шт",
         "% возвратов",
         "Сумма возвратов",
-        "Маржинальный доход WB после налогов",
-        "Маржинальный доход WB после налогов на шт",
+        "Управленческая прибыль WB",
+        "Управленческая прибыль WB на шт",
         "Статус данных",
         "Главная причина",
         "Причина возврата",
@@ -4468,7 +4560,12 @@ def _write_lost_sales(
         account_labels=account_labels,
     )
 
-    sheet.write(0, 0, "Упущенные продажи: предварительная оценка", formats["title"])
+    sheet.write(
+        0,
+        0,
+        "Оценка недополученного маржинального дохода до налогов",
+        formats["title"],
+    )
     sheet.set_row(1, 18)
     sheet.set_row(2, 18)
     sheet.write(
@@ -4476,11 +4573,12 @@ def _write_lost_sales(
         0,
         (
             "Методика: дни с нулевым остатком WB * среднедневные продажи "
-            "в дни наличия * средняя выручка/прибыль на проданную единицу. "
+            "в дни наличия * маржинальный доход до налогов на продажу. "
             "Остаток 1С по складам показывает, есть ли товар у продавца для "
             "перемещения на WB. "
             "Это управленческий рейтинг для проверки пополнения, а не "
-            "финальный прогноз спроса."
+            "финальный прогноз спроса. Предварительная оценка не учитывает "
+            "сезонность, изменение спроса и замещение товара."
         ),
     )
     sheet.write(
@@ -4504,6 +4602,13 @@ def _write_lost_sales(
         ),
         ("Строк CSV", stock_history.get("csv_rows", 0)),
         ("Дневных колонок", stock_history.get("date_columns", 0)),
+        (
+            "Покрытие истории остатков",
+            (
+                f"{stock_history.get('covered_days', 0)} из "
+                f"{stock_history.get('total_days', 0)} дней"
+            ),
+        ),
         ("Источник 1С остатков", onec_stock.get("source_label", "")),
         ("Строк 1С остатков", onec_stock.get("row_count", 0)),
         ("Товаров с днями без остатка", sum(1 for row in rows if row[7] > 0)),
@@ -4526,8 +4631,8 @@ def _write_lost_sales(
         "Среднедневные продажи в дни наличия",
         "Потенциально упущено, шт",
         "Потенциально упущенная выручка",
-        "Потенциально упущенная прибыль",
-        "Прибыль/продажа после налогов",
+        "Оценка недополученного маржинального дохода до налогов",
+        "Маржинальный доход/продажа до налогов",
         "Вывод",
         "Статус источника",
     ]
@@ -4545,7 +4650,10 @@ def _write_lost_sales(
         sheet.write(
             table_start + 1,
             0,
-            "Нет данных для предварительной оценки: stock-history WB не найден.",
+            str(
+                stock_history.get("message")
+                or "Не рассчитано: полная история остатков WB не получена."
+            ),
             formats["warn"],
         )
     if rows:
@@ -4589,6 +4697,13 @@ def _load_stock_history(
         return {
             "status": "not_loaded",
             "source_label": "WB stock-history не передан в сборку Excel",
+            "calculated": False,
+            "covered_days": 0,
+            "total_days": (
+                report.report_period_end - report.report_period_start
+            ).days
+            + 1,
+            "accounts": [],
             "products": {},
         }
     manifest_path = stock_history_dir / "manifest.json"
@@ -4596,16 +4711,39 @@ def _load_stock_history(
         return {
             "status": "not_loaded",
             "source_label": f"manifest.json не найден: {stock_history_dir}",
+            "calculated": False,
+            "covered_days": 0,
+            "total_days": (
+                report.report_period_end - report.report_period_start
+            ).days
+            + 1,
+            "accounts": [],
             "products": {},
         }
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     products: dict[tuple[str, int | None, str], dict[str, object]] = {}
     csv_rows = 0
     date_columns_count = 0
+    expected_dates = {
+        date.fromordinal(day)
+        for day in range(
+            report.report_period_start.toordinal(),
+            report.report_period_end.toordinal() + 1,
+        )
+    }
+    expected_accounts = {
+        row.seller_account_id for row in report.rows if row.seller_account_id
+    }
+    dates_by_account: dict[str, set[date]] = defaultdict(set)
+    result_by_account: dict[str, Mapping[str, object]] = {}
     for item in manifest.get("results", []):
-        if not isinstance(item, dict) or item.get("status") != "ok":
+        if not isinstance(item, dict):
             continue
         seller_account_id = str(item.get("seller_account_id") or "")
+        if seller_account_id:
+            result_by_account[seller_account_id] = item
+        if item.get("status") != "ok":
+            continue
         output_file = str(item.get("output_file") or "")
         if not seller_account_id or not output_file:
             continue
@@ -4623,6 +4761,12 @@ def _load_stock_history(
                     for header in reader.fieldnames
                     if _parse_stock_history_date(header) is not None
                 ]
+                dates_by_account[seller_account_id].update(
+                    parsed
+                    for header in date_headers
+                    if (parsed := _parse_stock_history_date(header)) is not None
+                    and parsed in expected_dates
+                )
                 date_columns_count = max(date_columns_count, len(date_headers))
                 for csv_row in reader:
                     csv_rows += 1
@@ -4655,14 +4799,67 @@ def _load_stock_history(
                         stock_by_date[current_date] += _decimal_from_stock_cell(
                             csv_row.get(header)
                         )
+    manifest_period_matches = (
+        str(manifest.get("period_start") or "")
+        == report.report_period_start.isoformat()
+        and str(manifest.get("period_end") or "")
+        == report.report_period_end.isoformat()
+        and str(manifest.get("stock_type") or "").casefold() == "wb"
+    )
+    accounts: list[dict[str, object]] = []
+    for seller_account_id in sorted(expected_accounts):
+        source_result = result_by_account.get(seller_account_id, {})
+        covered_dates = dates_by_account.get(seller_account_id, set())
+        source_status = str(source_result.get("status") or "not_loaded")
+        if source_status == "access_error":
+            source_status = "missing_scope"
+        complete = (
+            manifest_period_matches
+            and source_status == "ok"
+            and covered_dates == expected_dates
+        )
+        accounts.append(
+            {
+                "seller_account_id": seller_account_id,
+                "status": "complete" if complete else source_status,
+                "covered_days": len(covered_dates),
+                "total_days": len(expected_dates),
+                "calculated": complete,
+            }
+        )
+    calculated = bool(accounts) and all(
+        bool(item["calculated"]) for item in accounts
+    )
+    covered_days = min(
+        (int(item["covered_days"]) for item in accounts),
+        default=0,
+    )
+    status = "complete" if calculated else "incomplete"
+    if not products and not any(
+        str(item.get("status") or "") in {"access_error", "missing_scope"}
+        for item in result_by_account.values()
+    ):
+        status = "empty"
     return {
-        "status": "ok" if products else "empty",
+        "status": status,
+        "calculated": calculated,
         "source_label": f"WB STOCK_HISTORY_DAILY_CSV: {stock_history_dir.name}",
         "path": str(stock_history_dir),
         "period_start": manifest.get("period_start"),
         "period_end": manifest.get("period_end"),
         "csv_rows": csv_rows,
         "date_columns": date_columns_count,
+        "covered_days": covered_days,
+        "total_days": len(expected_dates),
+        "accounts": accounts,
+        "message": (
+            "Покрытие истории остатков полное."
+            if calculated
+            else (
+                "Не рассчитано: история остатков покрывает "
+                f"{covered_days} из {len(expected_dates)} дней."
+            )
+        ),
         "products": products,
     }
 
@@ -5002,6 +5199,8 @@ def _lost_sales_rows(
     onec_stock: Mapping[str, object],
     account_labels: Mapping[str, str] | None,
 ) -> list[tuple[object, ...]]:
+    if stock_history.get("calculated") is not True:
+        return []
     products = stock_history.get("products")
     if not isinstance(products, dict) or not products:
         return []
@@ -5030,12 +5229,14 @@ def _lost_sales_rows(
                 report.report_period_end.toordinal() + 1,
             )
         ]
-        stock_values = [stock_by_date.get(item, Decimal("0")) for item in stock_dates]
+        if any(item not in stock_by_date for item in stock_dates):
+            continue
+        stock_values = [stock_by_date[item] for item in stock_dates]
         zero_stock_days = sum(1 for value in stock_values if value <= 0)
         totals = _totals(unit_rows)
         sales_quantity = totals["sales_quantity"]
         net_revenue = totals["net_revenue"]
-        profit_after_taxes = totals["profit_after_taxes"]
+        contribution_margin_before_tax = totals["gross_profit"]
         in_stock_days = max(0, len(stock_values) - zero_stock_days)
         avg_daily_sales_in_stock = (
             sales_quantity / Decimal(in_stock_days)
@@ -5058,11 +5259,12 @@ def _lost_sales_rows(
             else Decimal("0")
         )
         revenue_per_sale = _safe_margin(net_revenue, sales_quantity) or Decimal("0")
-        profit_per_sale = _safe_margin(profit_after_taxes, sales_quantity) or Decimal(
-            "0"
-        )
+        profit_per_sale = _safe_margin(
+            contribution_margin_before_tax, sales_quantity
+        ) or Decimal("0")
         lost_revenue = lost_units * revenue_per_sale
-        lost_profit = lost_units * profit_per_sale
+        theoretical_lost_contribution = lost_units * profit_per_sale
+        lost_profit = max(theoretical_lost_contribution, Decimal("0"))
         first = unit_rows[0]
         own_stock = _find_onec_stock_product(
             onec_stock_products,
@@ -5103,7 +5305,7 @@ def _lost_sales_rows(
                 _lost_sales_conclusion(
                     zero_stock_days=zero_stock_days,
                     sales_quantity=sales_quantity,
-                    lost_profit=lost_profit,
+                    lost_profit=theoretical_lost_contribution,
                     onec_stock_quantity=onec_stock_quantity,
                 ),
                 _lost_sales_source_status(onec_stock_quantity),
@@ -5372,14 +5574,14 @@ def _write_methodology(
             "Текущий расчет не называется чистой прибылью бизнеса: это "
             "маржинальный доход WB после налогов по товарной юнит-экономике.",
         ),
-        ("НДС", "НДС считается по налоговому профилю организации 1С."),
+        ("НДС к уплате", "НДС считается по налоговому профилю организации 1С."),
         (
-            "Налог с выручки",
-            "Налог с выручки считается по налоговому профилю организации 1С.",
+            "Налог с выручки/НДФЛ",
+            "Налог с выручки/НДФЛ считается по налоговому профилю организации 1С.",
         ),
         (
             "Сверка налогов",
-            "Строки 1С/ОПиУ НДС с продаж и УСН используются как контрольные "
+            "Строки 1С/ОПиУ НДС с продаж и налоги используются как контрольные "
             "суммы; товарное распределение идет по выручке.",
         ),
         (
@@ -5457,7 +5659,12 @@ def _totals(rows: Iterable[object]) -> dict[str, Decimal]:
         "cogs": Decimal("0"),
         "gross_profit": Decimal("0"),
         "vat_5": Decimal("0"),
+        "vat_output": Decimal("0"),
+        "vat_input": Decimal("0"),
+        "vat_payable": Decimal("0"),
         "usn_1": Decimal("0"),
+        "income_tax_base": Decimal("0"),
+        "income_tax": Decimal("0"),
         "profit_after_taxes": Decimal("0"),
     }
     for row in rows:
@@ -5487,7 +5694,12 @@ def _totals(rows: Iterable[object]) -> dict[str, Decimal]:
         totals["cogs"] += row.cogs_from_1c_with_extra_costs
         totals["gross_profit"] += row.gross_profit
         totals["vat_5"] += getattr(row, "vat_5_from_revenue", Decimal("0"))
+        totals["vat_output"] += getattr(row, "vat_output", Decimal("0"))
+        totals["vat_input"] += getattr(row, "vat_input", Decimal("0"))
+        totals["vat_payable"] += getattr(row, "vat_payable", Decimal("0"))
         totals["usn_1"] += getattr(row, "usn_1_from_revenue", Decimal("0"))
+        totals["income_tax_base"] += getattr(row, "income_tax_base", Decimal("0"))
+        totals["income_tax"] += getattr(row, "income_tax", Decimal("0"))
         totals["profit_after_taxes"] += getattr(row, "profit_after_taxes", Decimal("0"))
     return totals
 
@@ -5778,7 +5990,7 @@ def _expense_structure_rows(
         ("WB Продвижение", "wb_promotion"),
         ("Штрафы/удержания WB", "penalties_and_holdbacks"),
         ("Эквайринг WB", "acquiring"),
-        ("Налог с выручки", "usn_1"),
+        ("Налог с выручки/НДФЛ", "usn_1"),
     ]
     result: list[tuple[object, ...]] = []
     for label, key in articles:

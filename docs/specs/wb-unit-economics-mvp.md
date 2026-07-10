@@ -3,8 +3,9 @@ spec_id: "workspace-shumeyko-partners-wb-unit-economics-mvp"
 title: "AI-аналитик отчетов: пилот Шумейко WB/1C MVP"
 doc_type: spec
 domain: "marketplace-analytics"
-status: draft
+status: accepted
 owner: "engineering"
+audience: ["engineering", "consultant"]
 source_of_truth: true
 related_code: []
 related_tests: [scripts/validate_specs.py, scripts/validate_docs_manifest.py, scripts/validate_llm_docs.py]
@@ -12,12 +13,12 @@ contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics
 depends_on: []
 supersedes: []
 rollout_required: false
-updated_at: "2026-06-24"
+updated_at: "2026-07-10"
 ---
 
 # Назначение
 
-Зафиксировать draft-ТЗ для пилота продукта `AI-аналитик отчетов`.
+Зафиксировать accepted product brief пилота продукта `AI-аналитик отчетов`.
 
 Продуктовая рамка описана в
 `docs/product-concept-ai-report-analyst.md`: консалтинговая компания получает
@@ -25,7 +26,7 @@ AI-аналитика, который ускоряет подготовку кл
 проверять качество данных, формирует черновик анализа и мониторит изменения
 между периодами.
 
-Текущий пилот `Шумейко WB/1C` проверяет эту рамку на вертикали marketplace
+Пилот `Шумейко WB/1C` проверяет эту рамку на вертикали marketplace
 analytics: read-only сервис для консалтинговой компании, которая ведет учет
 клиентов-продавцов на маркетплейсах и хочет рассчитывать юнит-экономику
 Wildberries по данным WB API и себестоимости из `1С:УНФ`.
@@ -42,8 +43,9 @@ Wildberries по данным WB API и себестоимости из `1С:У�
 отчета и расписанием обновлений. BI, таблицы и Excel остаются форматами
 выгрузки, но не основным клиентским продуктом.
 
-Этот spec не запускает разработку, не подключает реальных клиентов, не хранит
-токены и не выполняет записи в WB, 1С, банк, CRM или внешние системы.
+Точные технические гарантии закреплены в accepted implementation specs. Этот
+product brief не хранит токены и не разрешает записи в WB, 1С, банк, CRM или
+другие внешние системы.
 
 # Scope / Out of Scope
 
@@ -51,8 +53,8 @@ Wildberries по данным WB API и себестоимости из `1С:У�
 
 - сбор данных Wildberries через read-only API-доступы клиента;
 - получение себестоимости и справочника товаров из `1С:УНФ` в read-only режиме;
-- сопоставление номенклатуры 1С и WB по артикулам, баркодам, SKU и ручным
-  корректировкам;
+- сопоставление номенклатуры 1С и WB в собственном сервисе проекта, который
+  принимает read-only кандидатов и хранит подтвержденные решения;
 - расчет юнит-экономики по товарам, периодам и клиентам;
 - Excel-отчет первого этапа;
 - предложение целевого интерфейса после MVP;
@@ -76,8 +78,10 @@ Wildberries по данным WB API и себестоимости из `1С:У�
 
 # Source of Truth
 
-Продуктовая рамка будет зафиксирована в implementation spec после согласования
-методики, доступов и состава первого отчета.
+Принятая реализация Excel описана в
+`docs/specs/wb-unit-economics-excel-mvp-implementation.md`, web-кабинет — в
+`docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`, а DB-first
+публикация — в `docs/specs/wb-unit-economics-db-first-report-marts.md`.
 
 Внешние технические источники, которые нужно использовать при финальном
 implementation spec:
@@ -139,10 +143,10 @@ implementation spec:
 Первый пилот фиксируется в узком scope:
 
 - клиент: 1 клиент консалтинговой компании;
-- WB seller accounts: согласованное количество кабинетов Wildberries; текущий
-  пилотный baseline использует 2 кабинета;
-- период первого отчета согласуется отдельно как `report_period`; текущий
-  опубликованный baseline использует `2026-03-01` — `2026-06-17`;
+- WB seller accounts: согласованное количество кабинетов Wildberries; пилотная
+  конфигурация поддерживает 2 кабинета;
+- период отчета согласуется отдельно как `report_period`; live-ревизия всегда
+  выбирается из БД по явному `report_id`, а не из статического документа;
 - 1С: прямое read-only чтение базы 1С или согласованных представлений без прав
   записи;
 - результат: Excel-отчет, базовая витрина данных, AI-черновик клиентского
@@ -589,7 +593,7 @@ Excel MVP можно считать принятым, если:
 
 # Tests
 
-Для текущего draft spec:
+Для accepted product brief:
 
 - `.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-mvp.md`;
 - `.venv/bin/python scripts/validate_docs_manifest.py`;

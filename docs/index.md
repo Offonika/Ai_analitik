@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-04"
+updated_at: "2026-07-10"
 ---
 
 # Индекс документации проекта
@@ -23,12 +23,15 @@ implementation spec, затем общий MVP spec, затем клиентск
   названием всего продукта.
 - `docs/specs/wb-unit-economics-excel-mvp-implementation.md` — accepted spec
   текущего Excel MVP.
-- `docs/specs/onec-marketplace-mapping-http-service.md` — accepted spec узкого
-  read-only HTTP-сервиса 1С для сопоставления WB и 1С из расширения
-  `ИС_Маркетплейс`.
-- `docs/specs/onec-marketplace-mapping-client-extension.md` — accepted spec
-  клиентского `.cfe` расширения, которое пакует read-only HTTP-сервис для
-  установки в базы клиентов.
+- `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — accepted ADR по
+  налоговым профилям, ОСНО, НДС к уплате и прибыли до НДФЛ.
+- `docs/specs/marketplace-1c-mapping-service.md` — implemented spec собственного
+  сервиса сопоставления WB/Ozon и 1С; это текущий источник правды для
+  `sku_mapping`.
+- `docs/specs/onec-marketplace-mapping-http-service.md` — superseded spec
+  узкого read-only HTTP-сервиса 1С; теперь только candidate import/fallback.
+- `docs/specs/onec-marketplace-mapping-client-extension.md` — superseded spec
+  клиентского `.cfe` расширения; теперь только candidate import/fallback.
 - `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` — accepted
   spec авторизованного web-кабинета, PostgreSQL-витрины и AI-аналитика.
 - `docs/specs/wb-unit-economics-db-first-report-marts.md` — accepted spec
@@ -42,8 +45,10 @@ implementation spec, затем общий MVP spec, затем клиентск
   безопасного Git workflow для разработки с ИИ, локальных hooks и публикации.
 - `docs/specs/wb-unit-economics-mvp.md` — продуктовая рамка пилота и будущих
   этапов.
-- `docs/specs/wb-unit-economics-client-web-cabinet.md` — draft spec первого
-  клиентского web-кабинета поверх принятой Excel-методики.
+- `docs/specs/wb-unit-economics-client-web-cabinet.md` — superseded draft,
+  сохраненный как исторический предшественник accepted web-spec.
+- `docs/generated/web-api.md` — route inventory, автоматически собранный из
+  текущего FastAPI OpenAPI.
 - `README.md` — локальная структура проекта, секреты, базовые команды.
 - `config/README.md` — что можно хранить в non-secret конфигурации.
 
@@ -53,18 +58,20 @@ implementation spec, затем общий MVP spec, затем клиентск
 | --- | --- | --- | --- |
 | Product frame | `docs/product-concept-ai-report-analyst.md` | accepted | Уточнить, что Шумейко WB/1C является пилотом продукта `AI-аналитик отчетов`. |
 | Excel MVP | `docs/specs/wb-unit-economics-excel-mvp-implementation.md` | accepted | Меняется методика, состав workbook, формулы, источники WB/1С или критерии приемки Excel. |
-| 1C marketplace mapping | `docs/specs/onec-marketplace-mapping-client-extension.md` | accepted | Нужно подключить сопоставление WB и 1С из расширения `ИС_Маркетплейс` через устанавливаемое read-only `.cfe` расширение. |
+| Marketplace/1C mapping | `docs/specs/marketplace-1c-mapping-service.md` | implemented | Меняется сервис сопоставления WB/Ozon и 1С, статусы, решения оператора, candidate import или экспорт `sku_mapping`. |
+| 1C marketplace mapping fallback | `docs/specs/onec-marketplace-mapping-client-extension.md` | superseded | Нужно понять старый путь импорта кандидатов из расширения `ИС_Маркетплейс`; не использовать как основной источник правды. |
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
 | Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
+| Month close pilot | `docs/specs/month-close-control-pilot.md` | draft | Нужно понять пилотный read-only контур закрытия месяца: онлайн-ОСВ, налоги, ЕНС, НДС, скрины и процессные подтверждения до CRM. |
 | AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, hooks, Git checks или commit/push workflow. |
-| Client handoff | `docs/client-acceptance-package.md` | draft | Нужно объяснить клиенту текущий опубликованный baseline, ограничения и что именно принимается. |
+| Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
 
 # Клиентский пакет
 
-- `docs/client-acceptance-package.md` — короткий пакет приемки текущего
-  опубликованного baseline как клиентской ревизии `report_run`.
+- `docs/client-acceptance-package.md` — шаблон и процедура сборки пакета
+  приемки конкретного опубликованного `report_id`.
 - `docs/client-value-proposition-ai-assistant.md` — выгода AI-ассистента,
   экономия времени, подписочная логика и design-partner скидка для клиента.
 - `docs/client-scope.md` — короткий scope для согласования с заказчиком.
@@ -84,10 +91,10 @@ implementation spec, затем общий MVP spec, затем клиентск
 # Доступы и операционные инструкции
 
 - `docs/onec-access-instruction.md` — инструкция по read-only доступу к 1С.
-- `docs/runbooks/onec-marketplace-mapping-client-extension.md` — установка и
-  проверка клиентского `.cfe` расширения 1С для экспорта сопоставления WB и 1С.
-- `docs/runbooks/onec-marketplace-mapping-http-service.md` — настройка
-  HTTP-сервиса 1С и BSL-модуля, который входит в клиентское расширение.
+- `docs/runbooks/onec-marketplace-mapping-client-extension.md` — исторический
+  fallback: установка `.cfe` расширения 1С для импорта кандидатов.
+- `docs/runbooks/onec-marketplace-mapping-http-service.md` — исторический
+  fallback: настройка HTTP-сервиса 1С и BSL-модуля.
 - `docs/runbooks/report-generation.md` — сборка и проверка Excel MVP.
 - `docs/runbooks/reconciliation-artifacts.md` — локальные артефакты для сверки
   WB и 1С.
@@ -102,11 +109,12 @@ implementation spec, затем общий MVP spec, затем клиентск
 
 # Решения
 
-- `docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md` — ключевые
-  решения текущего Excel MVP, вынесенные из длинного implementation spec.
-- `docs/decisions/2026-06-23-db-first-publication-baseline.md` — текущий
-  DB-first publication baseline, parity-решение `18179 vs 18820` и source
-  refresh readiness blocker.
+- `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — действующее решение
+  по налоговым профилям и клиентской семантике прибыли.
+- `docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md` — superseded
+  решение с legacy-формулой `НДС 5/105 + УСН 1%`.
+- `docs/decisions/2026-06-23-db-first-publication-baseline.md` — исторический
+  снимок DB-first на 23.06.2026 и parity-решение `18179 vs 18820`.
 - `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md` —
   решение по provider registry, blocked statuses и dry-run-first retention.
 - `docs/changelogs/excel-mvp.md` — полная история изменений accepted Excel MVP,
@@ -119,15 +127,18 @@ implementation spec, затем общий MVP spec, затем клиентск
 ```bash
 .venv/bin/python scripts/validate_docs_manifest.py
 .venv/bin/python scripts/validate_llm_docs.py
-.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-mvp.md
-.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-excel-mvp-implementation.md
-.venv/bin/python scripts/validate_specs.py docs/specs/onec-marketplace-mapping-client-extension.md
-.venv/bin/python scripts/validate_specs.py docs/specs/onec-marketplace-mapping-http-service.md
-.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
-.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-db-first-report-marts.md
-.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
-.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-ai-git-workflow.md
+.venv/bin/python scripts/validate_specs.py
+.venv/bin/python scripts/validate_documentation_contracts.py
+.venv/bin/python scripts/build_client_tz_docx.py --check
+.venv/bin/python scripts/generate_web_api_reference.py --check
 .venv/bin/python scripts/validate_no_secrets.py
+```
+
+Внешние URL проверяются отдельно и не входят в блокирующий набор локальных
+проверок:
+
+```bash
+.venv/bin/python scripts/check_external_docs_links.py
 ```
 
 Если менялись формулы, коннекторы или Excel builder, дополнительно запускать

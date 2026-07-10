@@ -2,9 +2,10 @@
 title: "Power BI и Power Query для WB/1C юнит-экономики"
 doc_type: runbook
 domain: "marketplace-analytics"
+audience: ["engineering", "consultant"]
 status: draft
 owner: "engineering"
-updated_at: "2026-06-19"
+updated_at: "2026-07-10"
 source_of_truth: false
 ---
 

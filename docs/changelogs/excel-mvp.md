@@ -6,7 +6,7 @@ audience: ["engineering", "consultant"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-06-24"
+updated_at: "2026-07-08"
 ---
 
 # Excel MVP changelog
@@ -15,6 +15,9 @@ updated_at: "2026-06-24"
 в `docs/specs/wb-unit-economics-excel-mvp-implementation.md`; этот файл нужен,
 чтобы не перегружать implementation spec длинной хроникой.
 
+- 2026-07-08 — changed `sku_mapping` source of truth from 1C marketplace
+  extension/export to the project-owned marketplace/1C mapping service; old
+  1C extension/TXT sources are candidate import or emergency fallback only.
 - 2026-06-24 — clarified period semantics: `report_period` is selected by the
   generator/report_run, while WB/1C manifests describe `source_coverage`; old
   April-June and March-June dates are report revisions, not permanent product

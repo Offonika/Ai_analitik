@@ -5,6 +5,7 @@ doc_type: spec
 domain: "marketplace-analytics"
 status: accepted
 owner: "engineering"
+audience: ["engineering", "operations"]
 source_of_truth: true
 related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
 related_tests: [tests/test_report_marts.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
@@ -12,7 +13,7 @@ contracts: [unit_economics_report, report_marts, report_artifacts]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-06-23"
+updated_at: "2026-07-10"
 ---
 
 # Goal
@@ -47,6 +48,9 @@ Excel, сайт, DOCX/PDF, HTML, CSV и Power Query являются экспо�
 - экспорт Excel/DOCX/PDF/HTML/CSV из `report_id`;
 - обновленный `SourceRefreshService`: `daily` не публикует клиентский отчет,
   `weekly/full` в DB-first режиме публикуют только после validation и export;
+- единый effective tax-profile input для DB-first calculation и readiness:
+  профиль текущего read-only снимка 1С, затем действующее аудируемое ручное
+  исключение, затем явный `missing`, без наследования опубликованного отчета;
 - production health без секретов: тип БД, schema version, latest published
   report, latest source refresh.
 
@@ -99,7 +103,9 @@ compatibility и Excel download fallback.
 ```bash
 .venv/bin/python scripts/rebuild_report_from_sources.py \
   --tenant-id shumeyko \
-  --report-id excel_mvp_2026_03_01_2026_06_17 \
+  --report-id <report_id> \
+  --report-period-start <YYYY-MM-DD> \
+  --report-period-end <YYYY-MM-DD> \
   --export-all
 ```
 
@@ -107,7 +113,7 @@ compatibility и Excel download fallback.
 
 ```bash
 .venv/bin/python scripts/export_report_artifacts.py \
-  --report-id excel_mvp_2026_03_01_2026_06_17 \
+  --report-id <report_id> \
   --excel --docx --pdf --html --csv
 ```
 
@@ -189,11 +195,11 @@ Regression:
 7. Обновить runbooks: источник правды - опубликованная расчетная БД, Excel -
    экспорт.
 
-# Current Rollout State
+# Historical Rollout Snapshot
 
-На 2026-06-23 опубликован рабочий DB-first baseline:
+На 2026-06-23 был зафиксирован рабочий DB-first baseline:
 
-- current report: `excel_mvp_2026_03_01_2026_06_17`;
+- report snapshot: `excel_mvp_2026_03_01_2026_06_17`;
 - `unitRows`: 18179;
 - `lostSales`: 776;
 - artifact registry: 9 ready records.
@@ -210,7 +216,7 @@ Parity-решение и источник старого ориентира `188
   API-вызовов;
 - systemd timers должны быть активны после rollout.
 
-Эти blockers не отменяют опубликованный DB-first baseline и не блокируют ручную
+Эти blockers не отменяли снимок DB-first baseline и не блокировали ручную
 публикацию из уже проверенных локальных snapshots, но должны быть закрыты перед
 масштабированием регулярных интеграций.
 

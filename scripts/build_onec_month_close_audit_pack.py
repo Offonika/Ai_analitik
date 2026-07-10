@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict
+from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
@@ -18,8 +21,19 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.month_close_cabinet_settings import (  # noqa: E402
+    CabinetOnecLookup,
+    CabinetOnecSettingsError,
+    load_onec_settings_from_cabinet,
+)
 from wb_unit_economics.onec_odata import (  # noqa: E402
+    BASE_URL_KEYS,
+    PASSWORD_KEYS,
+    TIMEOUT_KEYS,
+    USERNAME_KEYS,
+    VERIFY_SSL_KEYS,
     OnecODataClient,
     OnecODataConfigError,
     OnecODataSettings,
@@ -71,6 +85,28 @@ class VirtualProbe:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class OsvSourceInfo:
+    source_id: str
+    summary: str
+    balance_sheet_name: str
+    sample_sheet_name: str
+
+
+BALANCE_AND_TURNOVERS_SOURCE = OsvSourceInfo(
+    source_id="balance_and_turnovers",
+    summary="Построена по AccountingRegister_Управленческий/BalanceAndTurnovers.",
+    balance_sheet_name="ОСВ виртуальная",
+    sample_sheet_name="ОСВ источник sample",
+)
+RECORDTYPE_SOURCE = OsvSourceInfo(
+    source_id="recordtype",
+    summary="Построена реконструкция по AccountingRegister_Управленческий_RecordType.",
+    balance_sheet_name="ОСВ реконструкция",
+    sample_sheet_name="Проводки май sample",
+)
+
+
 def main() -> int:
     args = _parse_args()
     period_start = args.period_start
@@ -79,8 +115,8 @@ def main() -> int:
     report_path = args.report_path or _default_report_path(period_start)
 
     try:
-        settings = OnecODataSettings.from_env_file(args.env_file)
-    except OnecODataConfigError as exc:
+        settings = _load_settings_from_args(args)
+    except (CabinetOnecSettingsError, OnecODataConfigError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
@@ -138,29 +174,37 @@ def main() -> int:
         account_lookup = _lookup_by_key(chart_result.period_rows)
         org_lookup = _lookup_by_key(org_result.period_rows)
         tax_lookup = _lookup_by_key(tax_type_result.period_rows)
-        accounting_result, account_balances, accounting_period_records = (
-            _fetch_accounting_records(
-                client=client,
-                output_dir=output_dir,
-                period_start=period_start_dt,
-                period_end=period_end_dt,
-                account_lookup=account_lookup,
-                page_size=args.accounting_page_size,
-                max_pages=args.accounting_max_pages,
-                start_skip=args.accounting_start_skip,
-            )
-        )
         virtual_probes = _probe_virtual_accounting_functions(
             settings=settings,
             period_start=period_start_dt,
             period_end=period_end_dt,
+        )
+        (
+            osv_source,
+            osv_collection_results,
+            account_balances,
+            accounting_period_records,
+        ) = _fetch_osv_source(
+            client=client,
+            settings=settings,
+            output_dir=output_dir,
+            period_start=period_start_dt,
+            period_end=period_end_dt,
+            account_lookup=account_lookup,
+            virtual_probes=virtual_probes,
+            virtual_page_size=args.osv_page_size,
+            virtual_max_pages=args.osv_max_pages,
+            record_page_size=args.accounting_page_size,
+            record_max_pages=args.accounting_max_pages,
+            record_tail_max_pages=args.accounting_tail_max_pages,
+            record_start_skip=args.accounting_start_skip,
         )
 
         collection_results = [
             chart_result,
             org_result,
             tax_type_result,
-            accounting_result,
+            *osv_collection_results,
         ]
         for spec in _period_collection_specs():
             collection_results.append(
@@ -185,6 +229,7 @@ def main() -> int:
         rows_by_id=rows_by_id,
         service_names=service_names,
         virtual_probes=virtual_probes,
+        osv_source=osv_source,
     )
     requests = _build_accountant_requests(risks)
 
@@ -204,6 +249,7 @@ def main() -> int:
         bank_rows=bank_rows,
         rows_by_id=rows_by_id,
         virtual_probes=virtual_probes,
+        osv_source=osv_source,
         risks=risks,
         requests=requests,
     )
@@ -214,6 +260,7 @@ def main() -> int:
         "period_end_exclusive": period_end.isoformat(),
         "read_boundary": "GET only",
         "report_path": str(report_path),
+        "osv_source": osv_source.__dict__,
         "collections": [_collection_manifest(item) for item in collection_results],
         "virtual_probes": [probe.__dict__ for probe in virtual_probes],
         "service_coverage": {
@@ -227,11 +274,12 @@ def main() -> int:
         "risk_count": len(risks),
     }
     _write_json(output_dir / "manifest.json", manifest)
-    print(f"1C month-close audit data: {output_dir}")
-    print(f"1C month-close audit workbook: {report_path}")
-    print(f"Coverage rows: {len(coverage_rows)}")
-    print(f"OSV reconstructed rows: {len(account_balances)}")
-    print(f"Risks: {len(risks)}")
+    _safe_print(f"1C month-close audit data: {output_dir}")
+    _safe_print(f"1C month-close audit workbook: {report_path}")
+    _safe_print(f"Coverage rows: {len(coverage_rows)}")
+    _safe_print(f"OSV source: {osv_source.source_id}")
+    _safe_print(f"OSV rows: {len(account_balances)}")
+    _safe_print(f"Risks: {len(risks)}")
     return 0
 
 
@@ -239,15 +287,43 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a read-only 1C OData month-close audit pack."
     )
-    parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Optional env file. By default only exported ONEC_ODATA_* variables are used.",
+    )
     parser.add_argument(
         "--period-start", type=_parse_date, default=DEFAULT_PERIOD_START
     )
     parser.add_argument("--period-end", type=_parse_date, default=DEFAULT_PERIOD_END)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--report-path", type=Path, default=None)
+    parser.add_argument(
+        "--cabinet-client-name",
+        default="",
+        help="Load encrypted 1C OData settings from web cabinet by client name.",
+    )
+    parser.add_argument(
+        "--tenant-id",
+        default="",
+        help="Load encrypted 1C OData settings from web cabinet by tenant id.",
+    )
+    parser.add_argument(
+        "--integration-provider",
+        default="onec_readonly",
+        help="Tenant integration provider id for 1C settings.",
+    )
+    parser.add_argument(
+        "--web-database-url",
+        default="",
+        help="Optional web cabinet database URL. Defaults to SHUMEYKO_DATABASE_URL or local web settings.",
+    )
     parser.add_argument("--accounting-page-size", type=int, default=2000)
     parser.add_argument("--accounting-max-pages", type=int, default=80)
+    parser.add_argument("--accounting-tail-max-pages", type=int, default=40)
+    parser.add_argument("--osv-page-size", type=int, default=1000)
+    parser.add_argument("--osv-max-pages", type=int, default=50)
     parser.add_argument(
         "--accounting-start-skip",
         type=int,
@@ -255,6 +331,71 @@ def _parse_args() -> argparse.Namespace:
         help="Start reading accounting register from this OData skip offset.",
     )
     return parser.parse_args()
+
+
+def _safe_print(message: str) -> None:
+    try:
+        print(message)
+    except BrokenPipeError:
+        with suppress(OSError):
+            sys.stdout.close()
+
+
+def _load_settings_from_args(args: argparse.Namespace) -> OnecODataSettings:
+    if args.cabinet_client_name or args.tenant_id:
+        return load_onec_settings_from_cabinet(
+            CabinetOnecLookup(
+                client_name=args.cabinet_client_name,
+                tenant_id=args.tenant_id,
+                provider=args.integration_provider,
+                database_url=args.web_database_url,
+            )
+        )
+    return _load_settings(args.env_file)
+
+
+def _load_settings(env_file: Path | None) -> OnecODataSettings:
+    if env_file is not None:
+        return OnecODataSettings.from_env_file(env_file)
+    values = os.environ
+    base_url = _first_present(values, BASE_URL_KEYS)
+    username = _first_present(values, USERNAME_KEYS)
+    password = _first_present(values, PASSWORD_KEYS)
+    missing: list[str] = []
+    if not base_url:
+        missing.append(BASE_URL_KEYS[0])
+    if not username:
+        missing.append(USERNAME_KEYS[0])
+    if not password:
+        missing.append(PASSWORD_KEYS[0])
+    if missing:
+        names = ", ".join(missing)
+        raise OnecODataConfigError(
+            f"Missing required 1C OData environment variables: {names}"
+        )
+    timeout_value = _first_present(values, TIMEOUT_KEYS)
+    verify_value = _first_present(values, VERIFY_SSL_KEYS)
+    return OnecODataSettings(
+        base_url=base_url.rstrip("/"),
+        username=username,
+        password=password,
+        timeout_seconds=float(timeout_value) if timeout_value else 30.0,
+        verify_ssl=_parse_bool(verify_value, default=True),
+    )
+
+
+def _first_present(values: Mapping[str, str], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = values.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _parse_bool(value: str, *, default: bool) -> bool:
+    if not value:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _period_collection_specs() -> list[CollectionSpec]:
@@ -530,6 +671,242 @@ def _fetch_collection(
     )
 
 
+def _fetch_osv_source(
+    *,
+    client: OnecODataClient,
+    settings: OnecODataSettings,
+    output_dir: Path,
+    period_start: datetime,
+    period_end: datetime,
+    account_lookup: dict[str, dict[str, Any]],
+    virtual_probes: list[VirtualProbe],
+    virtual_page_size: int,
+    virtual_max_pages: int,
+    record_page_size: int,
+    record_max_pages: int,
+    record_tail_max_pages: int,
+    record_start_skip: int,
+) -> tuple[OsvSourceInfo, list[CollectionResult], list[dict[str, Any]], list[dict[str, Any]]]:
+    collection_results: list[CollectionResult] = []
+    if _choose_osv_source(virtual_probes) == BALANCE_AND_TURNOVERS_SOURCE.source_id:
+        virtual_result, virtual_balances, virtual_rows = _fetch_balance_and_turnovers(
+            settings=settings,
+            output_dir=output_dir,
+            period_start=period_start,
+            period_end=period_end,
+            account_lookup=account_lookup,
+            page_size=virtual_page_size,
+            max_pages=virtual_max_pages,
+        )
+        collection_results.append(virtual_result)
+        if virtual_result.ok and (virtual_balances or not virtual_rows):
+            return (
+                BALANCE_AND_TURNOVERS_SOURCE,
+                collection_results,
+                virtual_balances,
+                virtual_rows,
+            )
+
+    record_result, record_balances, record_rows = _fetch_accounting_records(
+        client=client,
+        output_dir=output_dir,
+        period_start=period_start,
+        period_end=period_end,
+        account_lookup=account_lookup,
+        page_size=record_page_size,
+        max_pages=record_max_pages,
+        tail_max_pages=record_tail_max_pages,
+        start_skip=record_start_skip,
+    )
+    collection_results.append(record_result)
+    return RECORDTYPE_SOURCE, collection_results, record_balances, record_rows
+
+
+def _choose_osv_source(virtual_probes: list[VirtualProbe]) -> str:
+    if any(
+        probe.name == "BalanceAndTurnovers" and probe.ok for probe in virtual_probes
+    ):
+        return BALANCE_AND_TURNOVERS_SOURCE.source_id
+    return RECORDTYPE_SOURCE.source_id
+
+
+def _fetch_balance_and_turnovers(
+    *,
+    settings: OnecODataSettings,
+    output_dir: Path,
+    period_start: datetime,
+    period_end: datetime,
+    account_lookup: dict[str, dict[str, Any]],
+    page_size: int,
+    max_pages: int,
+) -> tuple[CollectionResult, list[dict[str, Any]], list[dict[str, Any]]]:
+    collection_name = "AccountingRegister_Управленческий/BalanceAndTurnovers"
+    rows: list[dict[str, Any]] = []
+    page_count = 0
+    last_status: int | None = None
+    base = settings.base_url.rstrip("/")
+    register = quote("AccountingRegister_Управленческий", safe="")
+    function_call = (
+        "BalanceAndTurnovers("
+        f"StartPeriod=datetime'{period_start:%Y-%m-%dT%H:%M:%S}',"
+        f"EndPeriod=datetime'{period_end:%Y-%m-%dT%H:%M:%S}',"
+        "AccountCondition='',Condition='',Dimensions='Организация')"
+    )
+    try:
+        with httpx.Client(
+            auth=(settings.username, settings.password),
+            headers={"Accept": "application/json"},
+            timeout=settings.timeout_seconds,
+            verify=settings.verify_ssl,
+            follow_redirects=True,
+        ) as http_client:
+            for page_index in range(max_pages):
+                response = http_client.get(
+                    f"{base}/{register}/{function_call}",
+                    params={
+                        "$format": "json",
+                        "$top": str(page_size),
+                        "$skip": str(page_index * page_size),
+                    },
+                )
+                last_status = response.status_code
+                response.raise_for_status()
+                page_rows = [
+                    row
+                    for row in extract_odata_rows(response.json())
+                    if isinstance(row, dict)
+                ]
+                rows.extend(page_rows)
+                page_count += 1
+                if len(page_rows) < page_size:
+                    break
+    except httpx.HTTPStatusError as exc:
+        result = CollectionResult(
+            sample_id="accounting_balance_and_turnovers",
+            collection_name=collection_name,
+            purpose="Виртуальная таблица остатков и оборотов управленческого регистра.",
+            ok=False,
+            scanned_rows=len(rows),
+            page_count=page_count,
+            status_code=exc.response.status_code,
+            error=f"HTTP {exc.response.status_code}: {_odata_error_message(exc.response.text)}",
+        )
+        return result, [], []
+    except (httpx.HTTPError, ValueError) as exc:
+        result = CollectionResult(
+            sample_id="accounting_balance_and_turnovers",
+            collection_name=collection_name,
+            purpose="Виртуальная таблица остатков и оборотов управленческого регистра.",
+            ok=False,
+            scanned_rows=len(rows),
+            page_count=page_count,
+            status_code=last_status,
+            error=exc.__class__.__name__,
+        )
+        return result, [], []
+
+    balance_rows = _balance_rows_from_balance_and_turnovers(rows, account_lookup)
+    payload_to_write = {
+        "value": rows,
+        "_source": {
+            "collection_name": collection_name,
+            "period_start": period_start.isoformat(),
+            "period_end_exclusive": period_end.isoformat(),
+            "scanned_rows": len(rows),
+            "page_count": page_count,
+            "page_size": page_size,
+            "max_pages": max_pages,
+            "source_kind": BALANCE_AND_TURNOVERS_SOURCE.source_id,
+        },
+    }
+    output_path = output_dir / "accounting_balance_and_turnovers.raw.json"
+    _write_json(output_path, payload_to_write)
+    result = CollectionResult(
+        sample_id="accounting_balance_and_turnovers",
+        collection_name=collection_name,
+        purpose="Виртуальная таблица остатков и оборотов управленческого регистра.",
+        ok=True,
+        period_rows=rows,
+        scanned_rows=len(rows),
+        page_count=page_count,
+        output_file=output_path.name,
+        raw_payload_hash=raw_payload_hash(payload_to_write),
+        status_code=last_status,
+        has_period_rows=bool(rows),
+        error=(
+            ""
+            if balance_rows or not rows
+            else "BalanceAndTurnovers вернул строки, но поля ОСВ не удалось нормализовать; используется fallback RecordType."
+        ),
+    )
+    return result, balance_rows, rows
+
+
+def _balance_rows_from_balance_and_turnovers(
+    rows: list[dict[str, Any]],
+    account_lookup: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result = []
+    for row in rows:
+        account_key = _first_text(
+            row,
+            (
+                "Account_Key",
+                "Счет_Key",
+                "Account",
+                "Счет",
+                "AccountDr_Key",
+                "AccountCt_Key",
+            ),
+        )
+        account = account_lookup.get(account_key, {})
+        account_code = _first_text(
+            row,
+            ("Account_Code", "Счет_Code", "Code", "КодСчета", "НомерСчета"),
+        ) or str(account.get("Code") or "")
+        account_name = _first_text(
+            row,
+            (
+                "Account_Description",
+                "Счет_Description",
+                "Account_Name",
+                "Счет_Наименование",
+                "НаименованиеСчета",
+            ),
+        ) or str(account.get("Description") or "")
+        item = {
+            "account_key": account_key,
+            "account_code": account_code,
+            "account_name": account_name,
+            "opening_debit": _first_amount_by_kind(row, "opening", "debit"),
+            "opening_credit": _first_amount_by_kind(row, "opening", "credit"),
+            "debit_turnover": _first_amount_by_kind(row, "turnover", "debit"),
+            "credit_turnover": _first_amount_by_kind(row, "turnover", "credit"),
+            "closing_debit": _first_amount_by_kind(row, "closing", "debit"),
+            "closing_credit": _first_amount_by_kind(row, "closing", "credit"),
+            "period_row_count": 1,
+            "pre_period_row_count": "",
+        }
+        if not any(
+            item[key]
+            for key in (
+                "opening_debit",
+                "opening_credit",
+                "debit_turnover",
+                "credit_turnover",
+                "closing_debit",
+                "closing_credit",
+            )
+        ):
+            continue
+        item["opening_net"] = item["opening_debit"] - item["opening_credit"]
+        item["closing_net"] = item["closing_debit"] - item["closing_credit"]
+        item["required_regulation_account"] = _is_required_account(account_code)
+        result.append(item)
+    result.sort(key=lambda item: _account_sort_key(str(item["account_code"])))
+    return result
+
+
 def _fetch_accounting_records(
     *,
     client: OnecODataClient,
@@ -539,6 +916,7 @@ def _fetch_accounting_records(
     account_lookup: dict[str, dict[str, Any]],
     page_size: int,
     max_pages: int,
+    tail_max_pages: int,
     start_skip: int,
 ) -> tuple[CollectionResult, list[dict[str, Any]], list[dict[str, Any]]]:
     collection_name = "AccountingRegister_Управленческий_RecordType"
@@ -550,6 +928,13 @@ def _fetch_accounting_records(
     max_date: datetime | None = None
     found_period = False
     last_status: int | None = None
+    capped_by_max_pages = True
+    tail_scan_error = ""
+    tail_page_count = 0
+    tail_completed = False
+    tail_filter_start: datetime | None = None
+    tail_filter_error = ""
+    tail_method = ""
 
     def bucket(account_key: str) -> dict[str, Any]:
         account = account_lookup.get(account_key, {})
@@ -566,6 +951,42 @@ def _fetch_accounting_records(
                 "pre_period_row_count": 0,
             }
         return aggregates[account_key]
+
+    def process_accounting_rows(rows: list[dict[str, Any]]) -> None:
+        nonlocal found_period
+        for row in rows:
+            row_date = _parse_datetime(row.get("Period"))
+            if (
+                row_date is None
+                or row_date >= period_end
+                or not _is_active(row.get("Active"))
+            ):
+                continue
+            amount = _as_float(row.get("Сумма"))
+            debit_key = str(row.get("AccountDr_Key") or "")
+            credit_key = str(row.get("AccountCr_Key") or "")
+            in_period = period_start <= row_date < period_end
+            if in_period:
+                period_rows.append(_with_account_labels(row, account_lookup))
+                found_period = True
+            if debit_key:
+                item = bucket(debit_key)
+                item["closing_net"] += amount
+                if in_period:
+                    item["debit_turnover"] += amount
+                    item["period_row_count"] += 1
+                else:
+                    item["opening_net"] += amount
+                    item["pre_period_row_count"] += 1
+            if credit_key:
+                item = bucket(credit_key)
+                item["closing_net"] -= amount
+                if in_period:
+                    item["credit_turnover"] += amount
+                    item["period_row_count"] += 1
+                else:
+                    item["opening_net"] -= amount
+                    item["pre_period_row_count"] += 1
 
     try:
         for page_index in range(max_pages):
@@ -589,42 +1010,12 @@ def _fetch_accounting_records(
                 page_max = max(page_dates)
                 min_date = page_min if min_date is None else min(min_date, page_min)
                 max_date = page_max if max_date is None else max(max_date, page_max)
-            for row in rows:
-                row_date = _parse_datetime(row.get("Period"))
-                if (
-                    row_date is None
-                    or row_date >= period_end
-                    or not _is_active(row.get("Active"))
-                ):
-                    continue
-                amount = _as_float(row.get("Сумма"))
-                debit_key = str(row.get("AccountDr_Key") or "")
-                credit_key = str(row.get("AccountCr_Key") or "")
-                in_period = period_start <= row_date < period_end
-                if in_period:
-                    period_rows.append(_with_account_labels(row, account_lookup))
-                    found_period = True
-                if debit_key:
-                    item = bucket(debit_key)
-                    item["closing_net"] += amount
-                    if in_period:
-                        item["debit_turnover"] += amount
-                        item["period_row_count"] += 1
-                    else:
-                        item["opening_net"] += amount
-                        item["pre_period_row_count"] += 1
-                if credit_key:
-                    item = bucket(credit_key)
-                    item["closing_net"] -= amount
-                    if in_period:
-                        item["credit_turnover"] += amount
-                        item["period_row_count"] += 1
-                    else:
-                        item["opening_net"] -= amount
-                        item["pre_period_row_count"] += 1
+            process_accounting_rows(rows)
             if len(rows) < page_size:
+                capped_by_max_pages = False
                 break
             if found_period and page_dates and min(page_dates) >= period_end:
+                capped_by_max_pages = False
                 break
     except httpx.HTTPStatusError as exc:
         result = CollectionResult(
@@ -638,6 +1029,111 @@ def _fetch_accounting_records(
             error=f"HTTP {exc.response.status_code}: {_odata_error_message(exc.response.text)}",
         )
         return result, [], []
+
+    def update_page_dates(rows: list[dict[str, Any]]) -> list[datetime]:
+        nonlocal min_date, max_date
+        page_dates = [
+            item
+            for item in (_parse_datetime(row.get("Period")) for row in rows)
+            if item is not None
+        ]
+        if page_dates:
+            page_min = min(page_dates)
+            page_max = max(page_dates)
+            min_date = page_min if min_date is None else min(min_date, page_min)
+            max_date = page_max if max_date is None else max(max_date, page_max)
+        return page_dates
+
+    def fetch_tail_page(
+        *,
+        skip: int,
+        params: dict[str, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[datetime]]:
+        nonlocal last_status, scanned_rows, tail_page_count
+        payload, status = client.fetch_collection(
+            collection_name,
+            top=page_size,
+            skip=skip,
+            params=params,
+        )
+        last_status = status
+        rows = [row for row in extract_odata_rows(payload) if isinstance(row, dict)]
+        tail_page_count += 1
+        scanned_rows += len(rows)
+        page_dates = update_page_dates(rows)
+        process_accounting_rows(rows)
+        return rows, page_dates
+
+    if capped_by_max_pages and max_date is not None and max_date < period_end:
+        tail_filter_start = max_date
+        tail_filter = (
+            f"Period gt {_odata_datetime_literal(tail_filter_start)} "
+            f"and Period lt {_odata_datetime_literal(period_end)}"
+        )
+        tail_method = "period_filter"
+        try:
+            for tail_page_index in range(tail_max_pages):
+                rows, _page_dates = fetch_tail_page(
+                    skip=tail_page_index * page_size,
+                    params={"$filter": tail_filter},
+                )
+                if len(rows) < page_size:
+                    tail_completed = True
+                    capped_by_max_pages = False
+                    break
+        except httpx.HTTPStatusError as exc:
+            tail_filter_error = (
+                "Хвостовая догрузка регистра по Period не выполнена: "
+                f"HTTP {exc.response.status_code}: {_odata_error_message(exc.response.text)}"
+            )
+            tail_method = "period_filter_failed"
+
+        if not tail_completed and tail_filter_error:
+            tail_method = (
+                "period_filter_then_skip_continuation"
+                if tail_filter_error
+                else "skip_continuation"
+            )
+            continuation_start_skip = start_skip + max_pages * page_size
+            try:
+                for tail_page_index in range(tail_max_pages):
+                    rows, page_dates = fetch_tail_page(
+                        skip=continuation_start_skip + tail_page_index * page_size,
+                    )
+                    if len(rows) < page_size:
+                        tail_completed = True
+                        capped_by_max_pages = False
+                        break
+                    if page_dates and min(page_dates) >= period_end:
+                        tail_completed = True
+                        capped_by_max_pages = False
+                        break
+            except httpx.HTTPStatusError as exc:
+                continuation_error = (
+                    "Хвостовая догрузка регистра продолжением pagination не выполнена: "
+                    f"HTTP {exc.response.status_code}: {_odata_error_message(exc.response.text)}"
+                )
+                tail_scan_error = (
+                    f"{tail_filter_error} {continuation_error}"
+                    if tail_filter_error
+                    else continuation_error
+                )
+
+            if not tail_completed and not tail_scan_error:
+                continuation_error = (
+                    "Хвостовая догрузка регистра продолжением pagination достигла "
+                    f"лимита tail_max_pages={tail_max_pages}."
+                )
+                tail_scan_error = (
+                    f"{tail_filter_error} {continuation_error}"
+                    if tail_filter_error
+                    else continuation_error
+                )
+        elif not tail_completed:
+            tail_scan_error = (
+                "Хвостовая догрузка регистра по Period достигла "
+                f"лимита tail_max_pages={tail_max_pages}."
+            )
 
     balance_rows = []
     for item in aggregates.values():
@@ -664,10 +1160,25 @@ def _fetch_accounting_records(
             "page_size": page_size,
             "max_pages": max_pages,
             "start_skip": start_skip,
+            "tail_max_pages": tail_max_pages,
+            "tail_page_count": tail_page_count,
+            "tail_method": tail_method,
+            "tail_filter_start": (
+                tail_filter_start.isoformat() if tail_filter_start else None
+            ),
+            "tail_filter_end": period_end.isoformat() if tail_filter_start else None,
+            "tail_completed": tail_completed,
+            "tail_filter_error": tail_filter_error,
+            "tail_scan_error": tail_scan_error,
             "opening_balance_source": (
                 "Computed from earlier rows read by pagination."
                 if start_skip == 0
                 else "Partial: earlier rows before start_skip were not scanned."
+            ),
+            "pagination_status": _accounting_pagination_status(
+                capped_by_max_pages=capped_by_max_pages,
+                tail_completed=tail_completed,
+                tail_scan_error=tail_scan_error,
             ),
         },
     }
@@ -685,9 +1196,15 @@ def _fetch_accounting_records(
         raw_payload_hash=raw_payload_hash(payload_to_write),
         status_code=last_status,
         error=(
-            ""
-            if start_skip == 0
-            else f"Быстрый режим: строки до skip={start_skip} не сканировались, начальное сальдо частичное."
+            _accounting_records_error(
+                start_skip=start_skip,
+                capped_by_max_pages=capped_by_max_pages,
+                max_pages=max_pages,
+                max_date=max_date,
+                period_start=period_start,
+                period_end=period_end,
+                tail_scan_error=tail_scan_error,
+            )
         ),
         min_date=min_date.isoformat() if min_date else None,
         max_date=max_date.isoformat() if max_date else None,
@@ -867,7 +1384,11 @@ def _build_coverage_rows(
 
 
 def _coverage_block(sample_id: str) -> str:
-    if sample_id in {"accounting_register_records", "chart_of_accounts"}:
+    if sample_id in {
+        "accounting_register_records",
+        "accounting_balance_and_turnovers",
+        "chart_of_accounts",
+    }:
         return "ОСВ"
     if sample_id in {"taxes", "tax_types", "taxes_on_ens", "ens_sanctions"}:
         return "Налоги"
@@ -1007,6 +1528,7 @@ def _build_risks(
     rows_by_id: dict[str, list[dict[str, Any]]],
     service_names: set[str],
     virtual_probes: list[VirtualProbe],
+    osv_source: OsvSourceInfo,
 ) -> list[dict[str, Any]]:
     risks: list[dict[str, Any]] = []
     if "AccountingRegister_Хозрасчет" not in service_names:
@@ -1015,10 +1537,10 @@ def _build_risks(
                 "Высокий",
                 "БУ/НУ ОСВ",
                 "В OData не найден AccountingRegister_Хозрасчет.",
-                "Текущий отчет строит управленческую ОСВ-реконструкцию; для регламента нужна бухгалтерская ОСВ БУ/НУ или подтверждение неприменимости.",
+                f"Текущий отчет использует управленческий источник: {osv_source.summary} Для регламента нужна бухгалтерская ОСВ БУ/НУ или подтверждение неприменимости.",
             )
         )
-    if not any(probe.ok for probe in virtual_probes):
+    if osv_source.source_id == RECORDTYPE_SOURCE.source_id:
         risks.append(
             _risk(
                 "Средний",
@@ -1027,13 +1549,17 @@ def _build_risks(
                 "ОСВ построена из проводок RecordType; это слабее штатного отчета 1С.",
             )
         )
-    if any("Быстрый режим" in str(row.get("Комментарий", "")) for row in coverage_rows):
+    if any(
+        "Быстрый режим" in str(row.get("Комментарий", ""))
+        or "Лимит страниц" in str(row.get("Комментарий", ""))
+        for row in coverage_rows
+    ):
         risks.append(
             _risk(
                 "Высокий",
                 "ОСВ",
-                "Начальное сальдо реконструкции частичное из-за ускоренного чтения регистра.",
-                "Для финального регламентного закрытия нужна штатная ОСВ 1С или полный проход регистра от начала учета.",
+                "Реконструкция ОСВ частичная из-за неполного чтения регистра.",
+                "Для финального регламентного закрытия нужна штатная ОСВ 1С или полный проход регистра до периода закрытия.",
             )
         )
     for prefix in ("26", "44"):
@@ -1119,7 +1645,7 @@ def _build_accountant_requests(risks: list[dict[str, Any]]) -> list[dict[str, st
     requests = [
         {
             "Что запросить": "Стандартная ОСВ БУ/НУ за май с субсчетами.",
-            "Зачем": "Подтвердить регламентный пункт по ОСВ, если OData дает только управленческий регистр.",
+            "Зачем": "Разово сверить онлайн-ОСВ с отчетом 1С; не использовать как регулярный источник.",
         },
         {
             "Что запросить": "Карточка/ОСВ 68.90 и скрин ЕНС на дату закрытия.",
@@ -1161,6 +1687,7 @@ def _write_workbook(
     bank_rows: list[dict[str, Any]],
     rows_by_id: dict[str, list[dict[str, Any]]],
     virtual_probes: list[VirtualProbe],
+    osv_source: OsvSourceInfo,
     risks: list[dict[str, Any]],
     requests: list[dict[str, str]],
 ) -> None:
@@ -1181,10 +1708,8 @@ def _write_workbook(
             ),
             ("Сформировано", generated_at),
             ("Итог", verdict),
-            (
-                "ОСВ",
-                "Построена реконструкция по AccountingRegister_Управленческий_RecordType.",
-            ),
+            ("ОСВ", osv_source.summary),
+            ("Источник ОСВ", osv_source.source_id),
             (
                 "Виртуальная ОСВ",
                 "Доступна"
@@ -1197,7 +1722,8 @@ def _write_workbook(
     )
     _write_table(wb.create_sheet("Покрытие OData"), coverage_rows)
     _write_table(
-        wb.create_sheet("ОСВ реконструкция"), _balance_report_rows(account_balances)
+        wb.create_sheet(osv_source.balance_sheet_name),
+        _balance_report_rows(account_balances),
     )
     _write_table(
         wb.create_sheet("Счет 68"),
@@ -1245,7 +1771,8 @@ def _write_workbook(
         _tax_load_rows(rows_by_id, tax_summary_rows, ens_rows, bank_rows),
     )
     _write_table(
-        wb.create_sheet("Проводки май sample"), accounting_period_records[:5000]
+        wb.create_sheet(osv_source.sample_sheet_name),
+        accounting_period_records[:5000],
     )
     _write_table(wb.create_sheet("Риски"), risks)
     _write_table(wb.create_sheet("Что запросить"), requests)
@@ -1401,6 +1928,53 @@ def _with_account_labels(
     return item
 
 
+def _accounting_records_error(
+    *,
+    start_skip: int,
+    capped_by_max_pages: bool,
+    max_pages: int,
+    max_date: datetime | None,
+    period_start: datetime,
+    period_end: datetime,
+    tail_scan_error: str = "",
+) -> str:
+    messages = []
+    if start_skip:
+        messages.append(
+            f"Быстрый режим: строки до skip={start_skip} не сканировались, начальное сальдо частичное."
+        )
+    if tail_scan_error:
+        messages.append(tail_scan_error)
+    if capped_by_max_pages:
+        max_date_text = max_date.isoformat() if max_date else "не определена"
+        messages.append(
+            "Лимит страниц регистра достигнут "
+            f"(max_pages={max_pages}, max_date={max_date_text}) "
+            "до/без полного покрытия периода "
+            f"{period_start.date().isoformat()} - {period_end.date().isoformat()}."
+        )
+    return " ".join(messages)
+
+
+def _accounting_pagination_status(
+    *,
+    capped_by_max_pages: bool,
+    tail_completed: bool,
+    tail_scan_error: str,
+) -> str:
+    if tail_scan_error:
+        return "main_capped_tail_failed"
+    if tail_completed:
+        return "main_capped_tail_completed"
+    if capped_by_max_pages:
+        return "capped_by_max_pages"
+    return "complete_or_period_scanned"
+
+
+def _odata_datetime_literal(value: datetime) -> str:
+    return f"datetime'{value:%Y-%m-%dT%H:%M:%S}'"
+
+
 def _lookup_by_key(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(row.get("Ref_Key")): row for row in rows if row.get("Ref_Key")}
 
@@ -1409,6 +1983,119 @@ def _display_name(row: dict[str, Any] | None, fallback: str) -> str:
     if not row:
         return fallback
     return str(row.get("Description") or row.get("Наименование") or fallback)
+
+
+def _first_text(row: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
+def _first_amount_by_kind(
+    row: Mapping[str, Any],
+    balance_kind: str,
+    side: str,
+) -> float:
+    exact_aliases = {
+        ("opening", "debit"): (
+            "СуммаOpeningBalanceDt",
+            "СуммаOpeningBalanceDr",
+            "AmountOpeningBalanceDt",
+            "AmountOpeningBalanceDr",
+            "OpeningBalanceDt",
+            "OpeningBalanceDr",
+            "OpeningDebit",
+            "НачальныйОстатокДт",
+            "НачальноеСальдоДт",
+            "СальдоНачальноеДт",
+        ),
+        ("opening", "credit"): (
+            "СуммаOpeningBalanceCt",
+            "СуммаOpeningBalanceCr",
+            "AmountOpeningBalanceCt",
+            "AmountOpeningBalanceCr",
+            "OpeningBalanceCt",
+            "OpeningBalanceCr",
+            "OpeningCredit",
+            "НачальныйОстатокКт",
+            "НачальноеСальдоКт",
+            "СальдоНачальноеКт",
+        ),
+        ("turnover", "debit"): (
+            "СуммаTurnoverDt",
+            "СуммаTurnoverDr",
+            "AmountTurnoverDt",
+            "AmountTurnoverDr",
+            "TurnoverDt",
+            "TurnoverDr",
+            "DebitTurnover",
+            "ОборотДт",
+            "ДебетовыйОборот",
+        ),
+        ("turnover", "credit"): (
+            "СуммаTurnoverCt",
+            "СуммаTurnoverCr",
+            "AmountTurnoverCt",
+            "AmountTurnoverCr",
+            "TurnoverCt",
+            "TurnoverCr",
+            "CreditTurnover",
+            "ОборотКт",
+            "КредитовыйОборот",
+        ),
+        ("closing", "debit"): (
+            "СуммаClosingBalanceDt",
+            "СуммаClosingBalanceDr",
+            "AmountClosingBalanceDt",
+            "AmountClosingBalanceDr",
+            "ClosingBalanceDt",
+            "ClosingBalanceDr",
+            "ClosingDebit",
+            "КонечныйОстатокДт",
+            "КонечноеСальдоДт",
+            "СальдоКонечноеДт",
+        ),
+        ("closing", "credit"): (
+            "СуммаClosingBalanceCt",
+            "СуммаClosingBalanceCr",
+            "AmountClosingBalanceCt",
+            "AmountClosingBalanceCr",
+            "ClosingBalanceCt",
+            "ClosingBalanceCr",
+            "ClosingCredit",
+            "КонечныйОстатокКт",
+            "КонечноеСальдоКт",
+            "СальдоКонечноеКт",
+        ),
+    }
+    for alias in exact_aliases.get((balance_kind, side), ()):
+        if alias in row:
+            return _as_float(row.get(alias))
+
+    kind_tokens = {
+        "opening": ("opening", "initial", "begin", "нач", "вход"),
+        "turnover": ("turnover", "оборот"),
+        "closing": ("closing", "ending", "end", "кон", "исход"),
+    }[balance_kind]
+    side_tokens = {
+        "debit": ("debit", "debet", "dt", "dr", "дт", "дебет"),
+        "credit": ("credit", "kredit", "ct", "cr", "кт", "кредит"),
+    }[side]
+    for key, value in row.items():
+        name = _normalized_field_name(key)
+        if any(token in name for token in kind_tokens) and any(
+            token in name for token in side_tokens
+        ):
+            return _as_float(value)
+    return 0.0
+
+
+def _normalized_field_name(value: Any) -> str:
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
 
 
 def _numeric_totals(

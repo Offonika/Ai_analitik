@@ -20,6 +20,20 @@ REPORT_PERIOD_LABEL = "01.03.2026 - 17.06.2026"
 REPORT_PERIOD_TEXT = "март, апрель, май, июнь; июнь неполный, по 17.06.2026"
 RETURN_REASON_LIMITATION = "Причина возврата не передается текущими источниками"
 DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}")
+RU_MONTH_NUMBERS = {
+    "январь": 1,
+    "февраль": 2,
+    "март": 3,
+    "апрель": 4,
+    "май": 5,
+    "июнь": 6,
+    "июль": 7,
+    "август": 8,
+    "сентябрь": 9,
+    "октябрь": 10,
+    "ноябрь": 11,
+    "декабрь": 12,
+}
 
 
 def date_text(value: Any) -> str:
@@ -80,6 +94,90 @@ def period_boundaries_from_label(value: str) -> tuple[str, str]:
     return "", ""
 
 
+def _month_start_from_label(value: str) -> date | None:
+    match = re.match(r"^([А-Яа-яЁё]+)\s+(\d{4})", demo._text(value))
+    if match is None:
+        return None
+    month = RU_MONTH_NUMBERS.get(match.group(1).casefold())
+    if month is None:
+        return None
+    return date(int(match.group(2)), month, 1)
+
+
+def _month_label_sort_key(value: str) -> tuple[date, str]:
+    return (_month_start_from_label(value) or date.max, value)
+
+
+def monthly_rows_with_dates(
+    rows: list[dict[str, Any]], report_period: str
+) -> list[dict[str, Any]]:
+    start_text, end_text = period_boundaries_from_label(report_period)
+    period_start = parse_date_value(start_text)
+    period_end = parse_date_value(end_text)
+    result = []
+    for source in rows:
+        row = dict(source)
+        month_start = _month_start_from_label(demo._text(row.get("month")))
+        if month_start is None:
+            result.append(row)
+            continue
+        next_month = (
+            date(month_start.year + 1, 1, 1)
+            if month_start.month == 12
+            else date(month_start.year, month_start.month + 1, 1)
+        )
+        month_end = next_month - timedelta(days=1)
+        days_in_month = (next_month - month_start).days
+        covered_start = max(month_start, period_start or month_start)
+        covered_end = min(month_end, period_end or month_end)
+        days_elapsed = max(0, (covered_end - covered_start).days + 1)
+        row.update(
+            {
+                "monthStart": month_start.isoformat(),
+                "isPartial": days_elapsed < days_in_month,
+                "daysElapsed": days_elapsed,
+                "daysInMonth": days_in_month,
+            }
+        )
+        result.append(row)
+    return sorted(result, key=lambda item: item.get("monthStart") or "9999")
+
+
+def lost_sales_coverage(workbook: Any, report_period: str) -> dict[str, Any]:
+    _, end_text = period_boundaries_from_label(report_period)
+    start_text, _ = period_boundaries_from_label(report_period)
+    start = parse_date_value(start_text)
+    end = parse_date_value(end_text)
+    total_days = (end - start).days + 1 if start and end else 0
+    covered_days = 0
+    if "Упущенные продажи" in workbook.sheetnames:
+        sheet = workbook["Упущенные продажи"]
+        for row in sheet.iter_rows(min_row=1, max_row=20, values_only=True):
+            if demo._text(row[0]) != "Покрытие истории остатков":
+                continue
+            match = re.search(r"(\d+)\s+из\s+(\d+)", demo._text(row[1]))
+            if match:
+                covered_days = int(match.group(1))
+                total_days = int(match.group(2))
+            break
+    calculated = bool(total_days and covered_days == total_days)
+    return {
+        "status": "complete" if calculated else "incomplete",
+        "calculated": calculated,
+        "coveredDays": covered_days,
+        "totalDays": total_days,
+        "message": (
+            "Покрытие истории остатков полное."
+            if calculated
+            else (
+                "Не рассчитано: история остатков покрывает "
+                f"{covered_days} из {total_days} дней."
+            )
+        ),
+        "accounts": [],
+    }
+
+
 def analysis_period_text(value: Any, fallback: str) -> str:
     text = demo._text(value)
     if text.startswith("Период анализа:"):
@@ -112,17 +210,10 @@ def document_report_label(
 ) -> str:
     if not document_type or not sales_period_start or not sales_period_end:
         return ""
-    anchor_date = sales_period_start + timedelta(days=3)
-    next_month = date(
-        anchor_date.year + (anchor_date.month // 12),
-        anchor_date.month % 12 + 1,
-        1,
-    )
-    closing_date = min(sales_period_end, next_month - timedelta(days=1))
     return (
         f"{document_type} · "
         f"{format_ru_date(sales_period_start)}-{format_ru_date(sales_period_end)} · "
-        f"закрытие {format_ru_date(closing_date)}"
+        f"закрытие {format_ru_date(sales_period_end)}"
     )
 
 
@@ -136,6 +227,21 @@ def loss_details(row: dict[str, Any]) -> tuple[str, str]:
     sales = demo._num(row.get("Продажи, шт"))
     returns = demo._num(row.get("Возвраты, шт"))
     return_rate = demo._safe_div(returns, sales) or 0.0
+    tax_method = demo._text(
+        row.get("Налоговый метод") or row.get("Налоговый режим/ставка")
+    )
+    pnl_vat_mode = demo._text(row.get("Режим P&L НДС"))
+    if not pnl_vat_mode and "ОСНО" in tax_method:
+        pnl_vat_mode = "without_vat_for_osno"
+    tax_factor = demo._num(
+        row.get("Налог с выручки/НДФЛ")
+        or row.get("Налог с выручки")
+        or row.get("УСН 1%")
+    )
+    if pnl_vat_mode != "without_vat_for_osno":
+        tax_factor += demo._num(
+            row.get("НДС к уплате") or row.get("НДС") or row.get("НДС 5%")
+        )
     factors = {
         "Высокая себестоимость": demo._num(row.get("Себестоимость 1С")),
         "Высокая логистика WB": demo._num(row.get("Логистика WB")),
@@ -144,8 +250,7 @@ def loss_details(row: dict[str, Any]) -> tuple[str, str]:
         "WB Продвижение": demo._num(row.get("Продвижение WB")),
         "Штрафы/удержания WB": demo._num(row.get("Штрафы/доплаты WB")),
         "Эквайринг WB": demo._num(row.get("Эквайринг WB")),
-        "Налоги": demo._num(row.get("НДС") or row.get("НДС 5%"))
-        + demo._num(row.get("Налог с выручки") or row.get("УСН 1%")),
+        "Налоги": tax_factor,
     }
     if return_rate >= 0.18:
         factors["Возвраты + логистика"] = demo._num(
@@ -194,7 +299,16 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "spp": demo._round(row.get("СПП")),
                 "sppRate": demo._round(row.get("% СПП"), 4),
                 "revenue": round(revenue, 2),
-                "vat": demo._round(row.get("НДС") or row.get("НДС 5%")),
+                "vat": demo._round(
+                    row.get("НДС к уплате") or row.get("НДС") or row.get("НДС 5%")
+                ),
+                "vatOutput": demo._round(row.get("Исходящий НДС")),
+                "vatInput": demo._round(row.get("Входящий НДС")),
+                "vatInputFromWb": demo._round(row.get("НДС входящий WB")),
+                "vatInputFrom1c": demo._round(row.get("НДС входящий 1С")),
+                "vatInputDifference": demo._round(row.get("Расхождение НДС")),
+                "vatInputCompleteness": demo._text(row.get("Полнота НДС")),
+                "vatPayable": demo._round(row.get("НДС к уплате")),
                 "revenueWithoutVat": demo._round(row.get("Выручка без НДС")),
                 "cost": demo._round(row.get("Себестоимость 1С")),
                 "commission": demo._round(row.get("Комиссия WB")),
@@ -204,18 +318,48 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "promotion": demo._round(row.get("Продвижение WB")),
                 "penalties": demo._round(row.get("Штрафы/доплаты WB")),
                 "acquiring": demo._round(row.get("Эквайринг WB")),
-                "usn": demo._round(row.get("Налог с выручки") or row.get("УСН 1%")),
+                "usn": demo._round(
+                    row.get("Налог с выручки/НДФЛ")
+                    or row.get("Налог с выручки")
+                    or row.get("УСН 1%")
+                ),
+                "incomeTaxBase": demo._round(row.get("База НДФЛ")),
+                "incomeTax": demo._round(row.get("НДФЛ")),
+                "incomeTaxIncluded": bool(row.get("НДФЛ включен") or False),
                 "profitBeforeTax": demo._round(
                     row.get("Маржинальный доход WB до налогов")
                 ),
                 "profit": round(profit, 2),
-                "margin": demo._round(row.get("Маржа WB после налогов"), 4),
-                "unitProfit": demo._round(
-                    row.get("Маржинальный доход WB после налогов на шт")
+                "margin": demo._round(
+                    first_present(
+                        row,
+                        "Маржа WB без НДС",
+                        "Маржа WB после налогов",
+                    ),
+                    4,
                 ),
-                "taxMethod": demo._text(row.get("Налоговый режим/ставка")),
+                "unitProfit": demo._round(
+                    first_present(
+                        row,
+                        "Управленческая прибыль WB на шт",
+                        "Маржинальный доход WB после налогов на шт",
+                    )
+                ),
+                "taxMethod": demo._text(
+                    row.get("Налоговый метод") or row.get("Налоговый режим/ставка")
+                ),
                 "taxProfileSource": demo._text(
                     row.get("Источник налогового профиля")
+                ),
+                "taxCompleteness": demo._text(row.get("Полнота налогового расчета")),
+                "pnlVatMode": demo._text(row.get("Режим P&L НДС"))
+                or (
+                    "without_vat_for_osno"
+                    if "ОСНО"
+                    in demo._text(
+                        row.get("Налоговый метод") or row.get("Налоговый режим/ставка")
+                    )
+                    else ""
                 ),
                 "status": demo._text(row.get("Статус данных")) or "Не указан",
                 "statusReason": demo._text(row.get("Причина статуса")),
@@ -243,6 +387,7 @@ def lost_sales_rows(workbook: Any) -> list[dict[str, Any]]:
                 "sales": row["sales"],
                 "lostUnits": row["lost_units"],
                 "lostRevenue": row["lost_revenue"],
+                "lostContributionMargin": row["lost_profit"],
                 "lostProfit": row["lost_profit"],
                 "note": row["note"],
             }
@@ -355,16 +500,10 @@ def options(
         return sorted({demo._text(row.get(key)) for row in rows if row.get(key)})
 
     document_reconciliation = document_reconciliation or []
-    months_order = [
-        "Март 2026",
-        "Апрель 2026",
-        "Май 2026",
-        "Июнь 2026 (неполный месяц)",
-    ]
     row_months = {row["month"] for row in rows}
     weeks = sorted(demo._text(row.get("week")) for row in rows if row.get("week"))
     return {
-        "months": [month for month in months_order if month in row_months],
+        "months": sorted(row_months, key=_month_label_sort_key),
         "periodStart": weeks[0] if weeks else "",
         "periodEnd": weeks[-1] if weeks else "",
         "cabinets": unique("cabinet"),
@@ -438,12 +577,98 @@ def build_dashboard_payload(workbook_path: Path) -> dict[str, Any]:
             "returnReasonLimitation": RETURN_REASON_LIMITATION,
         },
         "options": options(rows, document_reconciliation=document_reconciliation),
-        "monthly": demo._read_monthly_from_sheet(workbook),
+        "monthly": monthly_rows_with_dates(
+            demo._read_monthly_from_sheet(workbook),
+            report_period,
+        ),
         "expenses": demo._read_expenses_from_sheet(workbook),
         "unitRows": rows,
         "returns": [],
         "lostSales": lost_sales_rows(workbook),
+        "lostSalesCoverage": lost_sales_coverage(workbook, report_period),
         "reconciliation": reconciliation,
         "reconciliationMonthly": reconciliation_monthly,
         "documentReconciliation": document_reconciliation,
+        "taxInputReconciliation": tax_input_reconciliation_rows(rows),
     }
+
+
+def tax_input_reconciliation_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (
+            demo._text(row.get("week")),
+            demo._text(row.get("cabinet")),
+            demo._text(row.get("organization")),
+        )
+        bucket = buckets.setdefault(
+            key,
+            {
+                "week": key[0],
+                "weekEnd": "",
+                "cabinet": key[1],
+                "organization": key[2],
+                "vatInputFromWb": 0.0,
+                "vatInputFromWbCharges": 0.0,
+                "vatInputFromWbReversals": 0.0,
+                "vatInputFrom1c": 0.0,
+                "vatInputFrom1cCharges": 0.0,
+                "vatInputFrom1cReversals": 0.0,
+                "sourceRowCount": 0,
+                "statuses": set(),
+            },
+        )
+        wb_value = float(row.get("vatInputFromWb") or 0)
+        onec_value = float(row.get("vatInputFrom1c") or 0)
+        bucket["vatInputFromWb"] += wb_value
+        bucket["vatInputFrom1c"] += onec_value
+        bucket["sourceRowCount"] += 1
+        status = demo._text(row.get("vatInputCompleteness"))
+        if status:
+            bucket["statuses"].add(status)
+    result = []
+    for bucket in buckets.values():
+        statuses = bucket.pop("statuses")
+        bucket["vatInputFromWbCharges"] = max(bucket["vatInputFromWb"], 0)
+        bucket["vatInputFromWbReversals"] = min(bucket["vatInputFromWb"], 0)
+        bucket["vatInputFrom1cCharges"] = max(bucket["vatInputFrom1c"], 0)
+        bucket["vatInputFrom1cReversals"] = min(bucket["vatInputFrom1c"], 0)
+        bucket["vatInputDifference"] = round(
+            bucket["vatInputFrom1c"] - bucket["vatInputFromWb"],
+            2,
+        )
+        onec_has_documents = bool(
+            bucket["vatInputFrom1cCharges"] or bucket["vatInputFrom1cReversals"]
+        )
+        bucket["vatInputCompleteness"] = (
+            _worse_tax_input_status(statuses) if onec_has_documents else "missing"
+        )
+        bucket["wbEvidenceStatus"] = (
+            "confirmed" if bucket["vatInputFromWb"] else "missing"
+        )
+        bucket["onecEvidenceStatus"] = (
+            "confirmed" if onec_has_documents else "missing"
+        )
+        bucket["vatDeductionMode"] = "unknown"
+        bucket["wbSource"] = "WB weekly realization report"
+        bucket["onecSource"] = (
+            "1C confirming documents" if onec_has_documents else "missing"
+        )
+        result.append(bucket)
+    result.sort(
+        key=lambda item: (
+            abs(float(item["vatInputDifference"])),
+            item["week"],
+        ),
+        reverse=True,
+    )
+    for index, bucket in enumerate(result, start=1):
+        bucket["id"] = f"tax-input-reconciliation-{index}"
+    return result
+
+
+def _worse_tax_input_status(statuses: set[str]) -> str:
+    priority = {"mismatch": 30, "partial": 20, "missing": 10, "confirmed": 0}
+    if not statuses:
+        return "missing"
+    return max(statuses, key=lambda status: priority.get(status, 0))

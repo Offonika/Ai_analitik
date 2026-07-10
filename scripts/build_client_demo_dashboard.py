@@ -107,7 +107,9 @@ def _row_revenue_before_spp(row: dict[str, Any]) -> float:
 
 def _row_profit(row: dict[str, Any]) -> float:
     return _num(
-        row.get("Маржинальный доход WB после налогов")
+        row.get("Управленческая прибыль WB")
+        or row.get("Маржинальный доход WB после налогов")
+        or row.get("Управленческая прибыль")
         or row.get("Прибыль после налогов")
     )
 
@@ -222,11 +224,15 @@ def _read_monthly_from_sheet(workbook: Any) -> list[dict[str, Any]]:
                 "logistics": _round(item.get("Логистика")),
                 "wb_expenses": _round(item.get("Расходы WB")),
                 "profit": _round(
-                    item.get("Маржинальный доход WB после налогов")
+                    item.get("Управленческая прибыль WB")
+                    or item.get("Маржинальный доход WB после налогов")
+                    or item.get("Управленческая прибыль")
                     or item.get("Прибыль после налогов")
                 ),
                 "margin": _round(
-                    item.get("Маржа WB после налогов")
+                    item.get("Маржа WB без НДС")
+                    or item.get("Маржа WB после налогов")
+                    or item.get("Маржа без НДС")
                     or item.get("Маржа после налогов"),
                     4,
                 ),
@@ -320,7 +326,9 @@ def _read_returns(workbook: Any) -> list[dict[str, Any]]:
                 "return_rate": _round(row.get("% возвратов"), 4),
                 "return_amount": _round(row.get("Сумма возвратов")),
                 "profit": _round(
-                    row.get("Маржинальный доход WB после налогов")
+                    row.get("Управленческая прибыль WB")
+                    or row.get("Маржинальный доход WB после налогов")
+                    or row.get("Управленческая прибыль")
                     or row.get("Прибыль после налогов")
                 ),
                 "status": _text(row.get("Статус данных")),
@@ -506,15 +514,18 @@ def _monthly_from_unit_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _expenses_from_unit_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     labels = [
-        ("Себестоимость 1С", "Себестоимость 1С"),
-        ("Комиссия WB", "Комиссия WB"),
-        ("Логистика WB", "Логистика WB"),
-        ("Хранение WB", "Хранение WB"),
-        ("Приемка WB", "Приемка WB"),
-        ("WB Продвижение", "Продвижение WB"),
-        ("Штрафы/доплаты WB", "Штрафы/доплаты WB"),
-        ("Эквайринг WB", "Эквайринг WB"),
-        ("УСН 1%", "УСН 1%"),
+        ("Себестоимость 1С", ("Себестоимость 1С",)),
+        ("Комиссия WB", ("Комиссия WB",)),
+        ("Логистика WB", ("Логистика WB",)),
+        ("Хранение WB", ("Хранение WB",)),
+        ("Приемка WB", ("Приемка WB",)),
+        ("WB Продвижение", ("Продвижение WB",)),
+        ("Штрафы/доплаты WB", ("Штрафы/доплаты WB",)),
+        ("Эквайринг WB", ("Эквайринг WB",)),
+        (
+            "Налог с выручки/НДФЛ",
+            ("Налог с выручки/НДФЛ", "Налог с выручки", "УСН 1%"),
+        ),
     ]
     revenue = sum(_row_revenue(row) for row in rows)
     by_month = defaultdict(lambda: defaultdict(float))
@@ -523,8 +534,8 @@ def _expenses_from_unit_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
         month = _row_month(row.get("Неделя"))
         if month is None:
             continue
-        for label, column in labels:
-            value = _num(row.get(column))
+        for label, columns in labels:
+            value = _num(next((row.get(column) for column in columns if row.get(column)), 0))
             totals[label] += value
             by_month[label][month] += value
     result = []
@@ -591,7 +602,19 @@ def _top_losses(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         values["promotion"] += _num(row.get("Продвижение WB"))
         values["penalties"] += _num(row.get("Штрафы/доплаты WB"))
         values["acquiring"] += _num(row.get("Эквайринг WB"))
-        values["tax"] += _num(row.get("НДС 5%")) + _num(row.get("УСН 1%"))
+        tax_method = _text(row.get("Налоговый метод") or row.get("Налоговый режим/ставка"))
+        pnl_vat_mode = _text(row.get("Режим P&L НДС"))
+        if not pnl_vat_mode and "ОСНО" in tax_method:
+            pnl_vat_mode = "without_vat_for_osno"
+        if pnl_vat_mode != "without_vat_for_osno":
+            values["tax"] += _num(
+                row.get("НДС к уплате") or row.get("НДС") or row.get("НДС 5%")
+            )
+        values["tax"] += _num(
+            row.get("Налог с выручки/НДФЛ")
+            or row.get("Налог с выручки")
+            or row.get("УСН 1%")
+        )
     result = []
     for values in groups.values():
         if values["profit"] >= 0:
@@ -647,8 +670,14 @@ def _aggregate_kpis(
         sales = dashboard_kpis.get("Продажи, шт", sales)
         returns = dashboard_kpis.get("Возвраты, шт", returns)
         profit = dashboard_kpis.get(
-            "Маржинальный доход WB после налогов",
-            dashboard_kpis.get("Прибыль после налогов", profit),
+            "Управленческая прибыль WB",
+            dashboard_kpis.get(
+                "Маржинальный доход WB после налогов",
+                dashboard_kpis.get(
+                    "Управленческая прибыль",
+                    dashboard_kpis.get("Прибыль после налогов", profit),
+                ),
+            ),
         )
     lost_profit_rows = [
         row for row in lost_sales if _num(row.get("lost_profit")) > 0

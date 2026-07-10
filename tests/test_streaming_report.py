@@ -131,8 +131,8 @@ def test_streamed_report_matches_list_builder_with_weekly_allocations(
         stream_cache_dir=tmp_path / "stream-cache",
     )
 
-    assert streamed.wb_rows == len(wb_snapshots)
-    assert streamed.bucket_count == 2
+    assert streamed.wb_rows == 2
+    assert streamed.bucket_count == 1
     assert streamed.report.model_dump(mode="json") == expected.model_dump(mode="json")
 
 
@@ -142,14 +142,71 @@ def test_rebuild_report_cli_accepts_files_stream(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["rebuild_report_from_sources.py", "--wb-finance-source", "files-stream"],
+        [
+            "rebuild_report_from_sources.py",
+            "--report-id",
+            "files-stream-cli-test",
+            "--wb-finance-source",
+            "files-stream",
+            "--onec-services-dir",
+            "data/onec_marketplace_service_samples/example",
+            "--draft-only",
+        ],
     )
 
     args = rebuild_report_from_sources.parse_args()
 
     assert args.wb_finance_source == "files-stream"
+    assert args.onec_services_dir == Path(
+        "data/onec_marketplace_service_samples/example"
+    )
     assert args.stream_cache_dir == Path("data/.cache/wb_stream_rebuild")
     assert args.keep_stream_cache is False
+    assert args.draft_only is True
+
+
+def test_rebuild_report_cli_builds_audited_explicit_osno_profile(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rebuild_report_from_sources.py",
+            "--report-id",
+            "explicit-osno-profile-test",
+            "--tax-system",
+            "ОСНО",
+            "--vat-rate",
+            "22",
+            "--vat-deduction-mode",
+            "allowed",
+            "--tax-profile-source",
+            "accepted-plan:galustov-osno-2026",
+        ],
+    )
+    args = rebuild_report_from_sources.parse_args()
+    mapping = [
+        AccountOrgMapping(
+            client_id="galustov",
+            seller_account_id="wb-1",
+            organization_id="onec-1",
+            seller_account_name="ИП Галустов",
+            organization_name="Галустов Рафаэль Рудольфович",
+        )
+    ]
+
+    profiles = rebuild_report_from_sources._tax_profiles_for_rebuild(
+        args,
+        mapping,
+        source_profiles=[],
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].tax_system == "ОСНО"
+    assert profiles[0].vat_rate == Decimal("22")
+    assert profiles[0].vat_deduction_mode.value == "allowed"
+    assert profiles[0].source == "accepted-plan:galustov-osno-2026"
 
 
 def _write_wb_export(tmp_path: Path, *, rows: list[dict[str, object]]) -> Path:

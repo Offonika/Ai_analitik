@@ -3,17 +3,29 @@ spec_id: "onec-marketplace-mapping-http-service"
 title: "1C marketplace mapping read-only HTTP service"
 doc_type: spec
 domain: "marketplace-analytics"
-status: accepted
+status: superseded
 owner: "engineering"
-source_of_truth: true
+audience: ["engineering", "client_admin"]
+source_of_truth: false
 related_code: [src/wb_unit_economics/mapping.py, src/wb_unit_economics/contracts.py]
 related_tests: [tests/test_mapping.py]
 contracts: [sku_mapping]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md]
 supersedes: []
+superseded_by: [docs/specs/marketplace-1c-mapping-service.md]
 rollout_required: true
-updated_at: "2026-07-07"
+updated_at: "2026-07-08"
 ---
+
+# Superseded
+
+С 2026-07-08 этот spec больше не является основным путем получения
+`sku_mapping`. Новый источник правды - собственный сервис сопоставления
+`docs/specs/marketplace-1c-mapping-service.md`.
+
+HTTP-сервис 1С из этого документа можно использовать только как временный
+read-only импорт кандидатов или аварийный fallback. Подтвержденные связи должны
+храниться и аудироваться в сервисе проекта.
 
 # Goal
 

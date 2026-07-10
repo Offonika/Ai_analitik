@@ -4,8 +4,9 @@ doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "consultant"]
 status: draft
+source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-06-17"
+updated_at: "2026-07-10"
 ---
 
 # Назначение

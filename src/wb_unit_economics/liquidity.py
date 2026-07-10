@@ -11,6 +11,8 @@ QUALITY_SEVERITY = {
     "ОК": 0,
     "Документ WB загружен": 5,
     "Себестоимость 1С требует сверки": 20,
+    "Налоговый профиль не подтвержден": 21,
+    "Налоговый расчет требует сверки": 21,
     "Тип отчета WB определен эвристикой": 22,
     "Нужен источник выплаты 1С": 25,
     "ОПиУ: пилотные GUID-настройки": 25,
@@ -162,7 +164,9 @@ def aggregate_liquidity_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str
                 "usn": bucket["usn"],
                 "profit": profit,
                 "margin": _ratio(profit, bucket["revenue"]),
-                "unitProfit": _ratio(profit, bucket["netQty"]),
+                "unitProfit": (
+                    _ratio(profit, bucket["netQty"]) if bucket["netQty"] > 0 else None
+                ),
                 "liquidityStatus": liquidity_status,
                 "liquidityDriver": liquidity_driver,
                 "status": data_status,
@@ -214,20 +218,25 @@ def _liquidity_status(
     profit: Decimal,
     data_status: str,
 ) -> tuple[str, str]:
+    if _is_penalty_only_bucket(bucket):
+        return (
+            "Штрафной инцидент без продаж",
+            "Штраф WB при отсутствии продаж и товарных расходов",
+        )
     if data_status != "ОК":
         return "Нужна проверка данных", data_status
     if bucket["sales"] == 0 and bucket["revenue"] == 0 and _has_expenses(bucket):
         return "Только затраты - нет продаж", "Нет продаж при наличии затрат"
     if abs(profit) <= ZERO_BAND:
-        return "Нулевая маржинальность", "Итог после налогов около нуля"
+        return "Нулевая маржинальность", "Управленческая прибыль около нуля"
     if profit > 0:
         if profit <= Decimal("500"):
-            return "Прибыльный до 500 руб. в месяц", "МД после налогов > 0"
+            return "Прибыльный до 500 руб. в месяц", "Управленческая прибыль > 0"
         if profit <= Decimal("1000"):
-            return "Прибыльный 500-1000 руб. в месяц", "МД после налогов > 500"
+            return "Прибыльный 500-1000 руб. в месяц", "Управленческая прибыль > 500"
         if profit <= Decimal("30000"):
-            return "Прибыльный 1000-30000 руб. в месяц", "МД после налогов > 1000"
-        return "Прибыльный более 30000 руб. в месяц", "МД после налогов > 30000"
+            return "Прибыльный 1000-30000 руб. в месяц", "Управленческая прибыль > 1000"
+        return "Прибыльный более 30000 руб. в месяц", "Управленческая прибыль > 30000"
     checks = [
         (md1, "Убыточный: отрицательная наценка", "Выручка ниже себестоимости"),
         (md2, "Убыточный: комиссия WB", "Комиссия WB выводит МД ниже нуля"),
@@ -289,6 +298,23 @@ def _has_expenses(bucket: Mapping[str, Any]) -> bool:
             "vat",
             "usn",
         )
+    )
+
+
+def _is_penalty_only_bucket(bucket: Mapping[str, Any]) -> bool:
+    return (
+        bucket["sales"] == 0
+        and bucket["returns"] == 0
+        and bucket["netQty"] == 0
+        and bucket["revenue"] == 0
+        and bucket["cost"] == 0
+        and bucket["commission"] == 0
+        and bucket["storage"] == 0
+        and bucket["logistics"] == 0
+        and bucket["acceptance"] == 0
+        and bucket["promotion"] == 0
+        and bucket["acquiring"] == 0
+        and bucket["penalties"] != 0
     )
 
 

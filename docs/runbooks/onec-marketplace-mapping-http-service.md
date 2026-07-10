@@ -3,10 +3,16 @@ title: "HTTP-сервис 1С для сопоставления маркетпл
 doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "client_admin"]
-status: draft
+status: superseded
+source_of_truth: false
 source_spec: "docs/specs/onec-marketplace-mapping-http-service.md"
-updated_at: "2026-07-07"
+superseded_by: "docs/specs/marketplace-1c-mapping-service.md"
+updated_at: "2026-07-10"
 ---
+
+> **Устаревший документ.** Рабочий процесс заменен собственным сервисом
+> сопоставления: `docs/specs/marketplace-1c-mapping-service.md`. Этот runbook
+> сохранен только как история варианта импорта кандидатов из 1С.
 
 # Назначение
 

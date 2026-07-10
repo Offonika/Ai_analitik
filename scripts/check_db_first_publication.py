@@ -33,7 +33,6 @@ from wb_unit_economics.web.models import (
 )
 from wb_unit_economics.web.settings import WebSettings
 
-DEFAULT_REPORT_ID = "excel_mvp_2026_03_01_2026_06_17"
 DEFAULT_EXCEL = ROOT / "reports" / "shumeyko_wb_excel_mvp.xlsx"
 DEFAULT_UNIT_CSV = ROOT / "reports" / "db_first" / "csv" / "unitRows.csv"
 DEFAULT_LOST_SALES_CSV = ROOT / "reports" / "db_first" / "csv" / "lostSales.csv"
@@ -343,10 +342,10 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default="")
     parser.add_argument("--tenant", default="shumeyko")
-    parser.add_argument("--report-id", default=DEFAULT_REPORT_ID)
-    parser.add_argument("--expected-unit-rows", type=int, default=18179)
-    parser.add_argument("--expected-lost-sales-rows", type=int, default=776)
-    parser.add_argument("--expected-artifacts", type=int, default=9)
+    parser.add_argument("--report-id", required=True)
+    parser.add_argument("--expected-unit-rows", type=int, default=None)
+    parser.add_argument("--expected-lost-sales-rows", type=int, default=None)
+    parser.add_argument("--expected-artifacts", type=int, default=None)
     parser.add_argument("--excel-path", type=Path, default=DEFAULT_EXCEL)
     parser.add_argument("--unit-csv-path", type=Path, default=DEFAULT_UNIT_CSV)
     parser.add_argument(

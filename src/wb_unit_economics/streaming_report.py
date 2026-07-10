@@ -15,9 +15,11 @@ from wb_unit_economics.calculation import (
 )
 from wb_unit_economics.contracts import (
     AccountOrgMapping,
+    OnecMarketplaceServiceRow,
     OnecUnfCostSnapshot,
     ReportStatus,
     SkuMapping,
+    TaxProfile,
     UnitEconomicsReport,
     WbApiSnapshot,
     WbExpenseAllocationBase,
@@ -43,6 +45,8 @@ def build_streamed_unit_economics_report(
     account_org_mapping: list[AccountOrgMapping],
     wb_sales_report_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     expense_allocation_bases: list[WbExpenseAllocationBase] | None = None,
+    onec_marketplace_service_rows: list[OnecMarketplaceServiceRow] | None = None,
+    tax_profiles: list[TaxProfile] | None = None,
     generated_at: datetime,
     report_period_start: date,
     report_period_end: date,
@@ -71,6 +75,8 @@ def build_streamed_unit_economics_report(
             account_org_mapping=account_org_mapping,
             wb_sales_report_summary_rows=wb_sales_report_summary_rows or [],
             expense_allocation_bases=expense_allocation_bases or [],
+            onec_marketplace_service_rows=onec_marketplace_service_rows or [],
+            tax_profiles=tax_profiles,
             generated_at=generated_at,
             as_of_date=as_of_date,
             report_period_start=report_period_start,
@@ -139,15 +145,10 @@ def _spool_wb_snapshots(
                 if source_coverage_end is None
                 else max(source_coverage_end, snapshot.period_end)
             )
-            if not overlaps_period(
-                snapshot.period_start,
-                snapshot.period_end,
-                report_period_start,
-                report_period_end,
-            ):
+            week_start, week_end = week_bounds(snapshot.period_start)
+            if not report_period_start <= week_end <= report_period_end:
                 continue
             rows_in_report_period += 1
-            week_start, week_end = week_bounds(snapshot.period_start)
             key = (snapshot.seller_account_id, week_start)
             handle = handles.get(key)
             if handle is None:
@@ -194,6 +195,8 @@ def _build_report_from_spool(
     account_org_mapping: list[AccountOrgMapping],
     wb_sales_report_summary_rows: list[WbSalesReportSummaryRow],
     expense_allocation_bases: list[WbExpenseAllocationBase],
+    onec_marketplace_service_rows: list[OnecMarketplaceServiceRow],
+    tax_profiles: list[TaxProfile] | None,
     generated_at: datetime,
     as_of_date: date | None,
     report_period_start: date,
@@ -205,6 +208,7 @@ def _build_report_from_spool(
     onec_report_reconciliation_rows = []
     onec_report_product_rows = []
     expense_allocation_rows = []
+    tax_input_reconciliation_rows = []
     for bucket in spool.buckets:
         snapshots = _read_bucket(bucket.path)
         partial = build_unit_economics_report(
@@ -221,6 +225,11 @@ def _build_report_from_spool(
                 expense_allocation_bases,
                 bucket,
             ),
+            onec_marketplace_service_rows=_service_rows_for_bucket(
+                onec_marketplace_service_rows,
+                bucket,
+            ),
+            tax_profiles=tax_profiles,
             generated_at=generated_at,
             as_of_date=as_of_date,
             report_period_start=report_period_start,
@@ -232,6 +241,7 @@ def _build_report_from_spool(
         onec_report_reconciliation_rows.extend(partial.onec_report_reconciliation_rows)
         onec_report_product_rows.extend(partial.onec_report_product_rows)
         expense_allocation_rows.extend(partial.expense_allocation_rows)
+        tax_input_reconciliation_rows.extend(partial.tax_input_reconciliation_rows)
 
     effective_as_of = as_of_date or generated_at.date()
     return UnitEconomicsReport(
@@ -297,6 +307,14 @@ def _build_report_from_spool(
                 row.vendor_code,
             ),
         ),
+        tax_input_reconciliation_rows=sorted(
+            tax_input_reconciliation_rows,
+            key=lambda row: (
+                row.week_start,
+                row.seller_account_id,
+                row.organization_id,
+            ),
+        ),
         wb_sales_report_summary_rows=sorted(
             _summary_rows_in_report_period(
                 wb_sales_report_summary_rows,
@@ -352,12 +370,7 @@ def _summary_rows_in_report_period(
         row
         for row in rows
         if row.date_from == date.min
-        or overlaps_period(
-            row.date_from,
-            row.date_to,
-            report_period_start,
-            report_period_end,
-        )
+        or report_period_start <= row.date_to <= report_period_end
     ]
 
 
@@ -372,6 +385,22 @@ def _expense_bases_for_bucket(
         and overlaps_period(
             base.week_start,
             base.week_end,
+            bucket.week_start,
+            bucket.week_end,
+        )
+    ]
+
+
+def _service_rows_for_bucket(
+    rows: list[OnecMarketplaceServiceRow],
+    bucket: _Bucket,
+) -> list[OnecMarketplaceServiceRow]:
+    return [
+        row
+        for row in rows
+        if overlaps_period(
+            row.week_start,
+            row.week_end,
             bucket.week_start,
             bucket.week_end,
         )

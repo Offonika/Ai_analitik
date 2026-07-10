@@ -26,7 +26,7 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_06_30_multi_client_hierarchy"
+DB_FIRST_SCHEMA_VERSION = "2026_07_10_tax_and_stock_trust_contract"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
 
@@ -94,6 +94,9 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_report_lost_sales_columns(engine)
     _ensure_report_reconciliation_monthly_columns(engine)
     _ensure_report_document_reconciliation_columns(engine)
+    _ensure_source_load_columns(engine)
+    _ensure_source_refresh_resume_columns(engine)
+    _ensure_tax_profile_columns(engine)
     _ensure_multi_client_columns(engine)
     _ensure_multi_client_indexes(engine)
     if run_backfill and schema_version(engine) != DB_FIRST_SCHEMA_VERSION:
@@ -189,8 +192,21 @@ def _ensure_report_unit_row_columns(engine: Engine) -> None:
         "document_report": "VARCHAR NOT NULL DEFAULT ''",
         "wb_report_id": "VARCHAR NOT NULL DEFAULT ''",
         "wb_report_date": "VARCHAR NOT NULL DEFAULT ''",
-        "tax_method": "VARCHAR NOT NULL DEFAULT ''",
-        "tax_profile_source": "VARCHAR NOT NULL DEFAULT ''",
+        "vat_output": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input_from_wb": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input_from_1c": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input_difference": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input_completeness": "VARCHAR NOT NULL DEFAULT ''",
+        "vat_payable": "NUMERIC NOT NULL DEFAULT 0",
+        "income_tax_kind": "VARCHAR NOT NULL DEFAULT ''",
+        "income_tax_base": "NUMERIC NOT NULL DEFAULT 0",
+        "income_tax": "NUMERIC NOT NULL DEFAULT 0",
+        "income_tax_included": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "tax_method": "VARCHAR",
+        "tax_profile_source": "VARCHAR",
+        "tax_completeness": "VARCHAR NOT NULL DEFAULT ''",
+        "pnl_vat_mode": "VARCHAR NOT NULL DEFAULT ''",
     }
     missing = [
         (column, definition)
@@ -203,10 +219,7 @@ def _ensure_report_unit_row_columns(engine: Engine) -> None:
     with engine.begin() as connection:
         for column, definition in missing:
             connection.execute(
-                text(
-                    f"ALTER TABLE {table_name} "
-                    f"ADD COLUMN {column} {definition}"
-                )
+                text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
             )
 
 
@@ -247,8 +260,51 @@ def _ensure_report_reconciliation_monthly_columns(engine: Engine) -> None:
     }
     column_specs = {
         "wb_quantity": "NUMERIC NOT NULL DEFAULT 0",
-        "onec_quantity": "NUMERIC NOT NULL DEFAULT 0",
-        "quantity_delta": "NUMERIC NOT NULL DEFAULT 0",
+        "onec_quantity": "NUMERIC",
+        "quantity_delta": "NUMERIC",
+        "status": "VARCHAR NOT NULL DEFAULT ''",
+        "wb_basis": "TEXT NOT NULL DEFAULT ''",
+        "onec_basis": "TEXT NOT NULL DEFAULT ''",
+        "source_run_id": "VARCHAR NOT NULL DEFAULT ''",
+    }
+    missing = [
+        (column, definition)
+        for column, definition in column_specs.items()
+        if column not in existing
+    ]
+    table_name = _table_name(engine, "report_reconciliation_monthly")
+    with engine.begin() as connection:
+        for column, definition in missing:
+            connection.execute(
+                text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+            )
+        if schema is not None:
+            for column in (
+                "onec_quantity",
+                "quantity_delta",
+                "onec_cogs",
+                "cogs_delta",
+                "onec_mp_expenses",
+                "mp_expenses_delta",
+            ):
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {table_name} ALTER COLUMN {column} DROP NOT NULL"
+                    )
+                )
+
+
+def _ensure_source_load_columns(engine: Engine) -> None:
+    schema = _schema(engine)
+    existing = {
+        column["name"]
+        for column in inspect(engine).get_columns("source_loads", schema=schema)
+    }
+    bool_default = "0" if schema is None else "FALSE"
+    column_specs = {
+        "source_refresh_run_id": "VARCHAR",
+        "required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
+        "publication_required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
     }
     missing = [
         (column, definition)
@@ -257,12 +313,43 @@ def _ensure_report_reconciliation_monthly_columns(engine: Engine) -> None:
     ]
     if not missing:
         return
-    table_name = _table_name(engine, "report_reconciliation_monthly")
+    table_name = _table_name(engine, "source_loads")
     with engine.begin() as connection:
         for column, definition in missing:
             connection.execute(
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
             )
+
+
+def _ensure_source_refresh_resume_columns(engine: Engine) -> None:
+    schema = _schema(engine)
+    bool_default = "0" if schema is None else "FALSE"
+    specs = {
+        "source_refresh_runs": {
+            "resumed_from_run_id": "VARCHAR",
+        },
+        "source_refresh_collections": {
+            "publication_required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
+        },
+    }
+    inspector = inspect(engine)
+    for table, column_specs in specs.items():
+        existing = {
+            column["name"] for column in inspector.get_columns(table, schema=schema)
+        }
+        missing = [
+            (column, definition)
+            for column, definition in column_specs.items()
+            if column not in existing
+        ]
+        if not missing:
+            continue
+        table_name = _table_name(engine, table)
+        with engine.begin() as connection:
+            for column, definition in missing:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+                )
 
 
 def _ensure_report_document_reconciliation_columns(engine: Engine) -> None:
@@ -312,6 +399,9 @@ def _ensure_report_document_reconciliation_columns(engine: Engine) -> None:
 
 def _ensure_multi_client_columns(engine: Engine) -> None:
     specs = {
+        "client_companies": {
+            "onec_organization_id": "VARCHAR NOT NULL DEFAULT ''",
+        },
         "report_runs": {
             "client_id": "VARCHAR NOT NULL DEFAULT ''",
         },
@@ -349,8 +439,7 @@ def _ensure_multi_client_columns(engine: Engine) -> None:
     inspector = inspect(engine)
     for table, column_specs in specs.items():
         existing = {
-            column["name"]
-            for column in inspector.get_columns(table, schema=schema)
+            column["name"] for column in inspector.get_columns(table, schema=schema)
         }
         missing = [
             (column, definition)
@@ -365,6 +454,28 @@ def _ensure_multi_client_columns(engine: Engine) -> None:
                 connection.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
                 )
+
+
+def _ensure_tax_profile_columns(engine: Engine) -> None:
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    for table in (
+        "organization_tax_profiles",
+        "organization_tax_profile_overrides",
+    ):
+        existing = {
+            column["name"] for column in inspector.get_columns(table, schema=schema)
+        }
+        if "vat_deduction_mode" in existing:
+            continue
+        table_name = _table_name(engine, table)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {table_name} ADD COLUMN vat_deduction_mode "
+                    "VARCHAR NOT NULL DEFAULT 'unknown'"
+                )
+            )
 
 
 def _ensure_multi_client_indexes(engine: Engine) -> None:
@@ -419,8 +530,10 @@ def _backfill_multi_client_hierarchy(engine: Engine) -> None:
             report = session.get(ReportRun, row.report_run_id)
             if report is None:
                 continue
-            client_id = row.client_id or report.client_id or _client_id_for_tenant(
-                report.tenant_id
+            client_id = (
+                row.client_id
+                or report.client_id
+                or _client_id_for_tenant(report.tenant_id)
             )
             row.client_id = client_id
             company = _ensure_client_company(
@@ -447,8 +560,10 @@ def _backfill_multi_client_hierarchy(engine: Engine) -> None:
             report = session.get(ReportRun, row.report_run_id)
             if report is None:
                 continue
-            client_id = row.client_id or report.client_id or _client_id_for_tenant(
-                report.tenant_id
+            client_id = (
+                row.client_id
+                or report.client_id
+                or _client_id_for_tenant(report.tenant_id)
             )
             row.client_id = client_id
             cabinet = _ensure_wb_cabinet(
@@ -467,8 +582,10 @@ def _backfill_multi_client_hierarchy(engine: Engine) -> None:
             report = session.get(ReportRun, row.report_run_id)
             if report is None:
                 continue
-            client_id = row.client_id or report.client_id or _client_id_for_tenant(
-                report.tenant_id
+            client_id = (
+                row.client_id
+                or report.client_id
+                or _client_id_for_tenant(report.tenant_id)
             )
             row.client_id = client_id
             company = _ensure_client_company(
@@ -531,9 +648,7 @@ def _backfill_multi_client_hierarchy(engine: Engine) -> None:
             tenant.id: _client_id_for_tenant(tenant.id) for tenant in tenants
         }
         session.commit()
-        _bulk_backfill_source_client_ids(
-            session, SourceRefreshRun, tenant_client_ids
-        )
+        _bulk_backfill_source_client_ids(session, SourceRefreshRun, tenant_client_ids)
         _bulk_backfill_source_client_ids(
             session, SourceRefreshCollection, tenant_client_ids
         )
@@ -671,6 +786,14 @@ def _ensure_wb_cabinet(
     cabinet_id = _stable_id("wb", client_id, key)
     cabinet = session.get(WbCabinet, cabinet_id)
     if cabinet is None:
+        cabinet = _matching_wb_cabinet(
+            session,
+            client_id=client_id,
+            label=label,
+            cabinet_key=key,
+            provider=provider,
+        )
+    if cabinet is None:
         cabinet = WbCabinet(
             id=cabinet_id,
             tenant_id=tenant_id,
@@ -691,6 +814,41 @@ def _ensure_wb_cabinet(
             cabinet.client_company_id = client_company_id
         cabinet.updated_at = now
     return cabinet
+
+
+def _matching_wb_cabinet(
+    session: Session,
+    *,
+    client_id: str,
+    label: str,
+    cabinet_key: str,
+    provider: str,
+) -> WbCabinet | None:
+    label_key = _stable_key(label)
+    candidates = [
+        item
+        for item in session.query(WbCabinet)
+        .filter(WbCabinet.client_id == client_id)
+        .all()
+        if (label and item.display_name == label)
+        or (label_key and item.cabinet_key == label_key)
+        or (provider and item.provider == provider)
+        or (cabinet_key and item.cabinet_key == cabinet_key)
+    ]
+    if not candidates:
+        return None
+
+    def sort_key(item: WbCabinet) -> tuple[int, int, int, int, datetime, str]:
+        return (
+            int(not label or item.display_name != label),
+            int(not label_key or item.cabinet_key != label_key),
+            int(not provider or item.provider != provider),
+            int(item.status != "active"),
+            item.created_at,
+            item.id,
+        )
+
+    return sorted(candidates, key=sort_key)[0]
 
 
 def _client_id_for_tenant(tenant_id: str) -> str:

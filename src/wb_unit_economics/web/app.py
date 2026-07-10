@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -28,7 +29,13 @@ from scripts.build_client_analytical_report import (
     build_client_analytical_report,
 )
 from wb_unit_economics.report_exports import write_ozon_diagnostics_excel
-from wb_unit_economics.web import integrations, providers, repository, security
+from wb_unit_economics.web import (
+    integrations,
+    mapping_service,
+    providers,
+    repository,
+    security,
+)
 from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
 from wb_unit_economics.web.database import (
@@ -111,6 +118,25 @@ class WbCabinetSaveRequest(BaseModel):
     status: str = Field(default="active", pattern="^(active|disabled)$")
 
 
+class OnecOrganizationLinkRequest(BaseModel):
+    onec_organization_id: str = Field(default="", max_length=120)
+
+
+class TaxProfileOverrideCreateRequest(BaseModel):
+    tax_system: str = Field(min_length=1, max_length=120)
+    vat_rate: Decimal = Field(ge=0, le=100)
+    vat_mode: str = Field(pattern="^(included|excluded|none)$")
+    vat_deduction_mode: str = Field(
+        default="unknown",
+        pattern="^(allowed|not_allowed|not_applicable|unknown)$",
+    )
+    revenue_tax_rate: Decimal = Field(ge=0, le=1)
+    income_tax_kind: str = Field(default="", max_length=120)
+    valid_from: date
+    valid_to: date | None = None
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class AdminUserPatchRequest(BaseModel):
     name: str | None = None
     role: str | None = Field(default=None, pattern="^(client|consultant|admin)$")
@@ -171,6 +197,29 @@ class SourceRefreshRequest(BaseModel):
     )
     dry_run: bool = False
     reason: str = Field(default="", max_length=4000)
+    period_start: date | None = None
+    period_end: date | None = None
+    resume_mode: str = Field(default="auto", pattern="^(auto|never)$")
+    resume_from_run_id: str | None = Field(default=None, max_length=160)
+
+
+class MappingRebuildRequest(BaseModel):
+    refresh_run_id: str | None = None
+
+
+class MappingAcceptRequest(BaseModel):
+    candidate_id: str = Field(default="", max_length=160)
+    onec_mapping_item_id: str = Field(default="", max_length=160)
+    reason: str = Field(default="", max_length=2000)
+
+
+class MappingRejectRequest(BaseModel):
+    candidate_id: str = Field(min_length=1, max_length=160)
+    reason: str = Field(default="", max_length=2000)
+
+
+class MappingReasonRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 def create_app(
@@ -218,21 +267,56 @@ def create_app(
     @app.get("/api/health")
     def health(db: DbSession) -> dict[str, Any]:
         bind = db.get_bind()
+        health_tenant_id = runtime_settings.source_refresh_tenant.strip()
+        report_conditions = [
+            ReportRun.publication_status == "published",
+            ReportRun.is_current.is_(True),
+        ]
+        if health_tenant_id:
+            report_conditions.append(ReportRun.tenant_id == health_tenant_id)
         latest_report = db.scalar(
             select(ReportRun)
-            .where(
-                ReportRun.publication_status == "published",
-                ReportRun.is_current.is_(True),
-            )
+            .where(*report_conditions)
             .order_by(ReportRun.generated_at.desc())
         )
+        if not health_tenant_id and latest_report is not None:
+            health_tenant_id = latest_report.tenant_id
+        refresh_conditions = []
+        if health_tenant_id:
+            refresh_conditions.append(SourceRefreshRun.tenant_id == health_tenant_id)
         latest_refresh = db.scalar(
-            select(SourceRefreshRun).order_by(SourceRefreshRun.created_at.desc())
+            select(SourceRefreshRun)
+            .where(*refresh_conditions)
+            .order_by(SourceRefreshRun.created_at.desc())
+        )
+        latest_completed_refresh = db.scalar(
+            select(SourceRefreshRun)
+            .where(
+                *refresh_conditions,
+                SourceRefreshRun.finished_at.is_not(None),
+            )
+            .order_by(
+                SourceRefreshRun.finished_at.desc(),
+                SourceRefreshRun.created_at.desc(),
+            )
+        )
+        health_refresh = latest_completed_refresh or latest_refresh
+        degraded_statuses = {
+            "failed",
+            "needs_configuration",
+            "blocked_active_refresh",
+            "blocked_low_disk",
+        }
+        health_status = (
+            "degraded"
+            if health_refresh is not None and health_refresh.status in degraded_statuses
+            else "ok"
         )
         return {
-            "status": "ok",
+            "status": health_status,
             "databaseType": bind.dialect.name,
             "schemaVersion": schema_version(bind),
+            "sourceRefreshTenantId": health_tenant_id,
             "latestPublishedReportId": latest_report.id if latest_report else "",
             "latestSourceRefreshStatus": latest_refresh.status
             if latest_refresh
@@ -248,6 +332,12 @@ def create_app(
             )
             if latest_refresh
             else False,
+            "latestCompletedSourceRefreshStatus": (
+                latest_completed_refresh.status if latest_completed_refresh else ""
+            ),
+            "sourceRefreshHealthStatus": (
+                health_refresh.status if health_refresh else ""
+            ),
         }
 
     @app.post("/api/auth/login")
@@ -499,6 +589,13 @@ def create_app(
             runtime_settings,
             file,
         )
+        import_payload = mapping_service.import_mapping_file(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+            path=runtime_settings.source_refresh_mapping_path / target_name,
+            user=current,
+        )
         repository.audit(
             db,
             action="mapping_file_uploaded",
@@ -509,6 +606,7 @@ def create_app(
             payload={
                 "fileName": target_name,
                 "sizeBytes": size_bytes,
+                "candidateImport": import_payload,
             },
         )
         db.commit()
@@ -516,6 +614,7 @@ def create_app(
             "status": "uploaded",
             "fileName": target_name,
             "sizeBytes": size_bytes,
+            "candidateImport": import_payload,
             "latestSourceRefresh": repository.latest_source_refresh_payload(
                 db,
                 tenant_id=tenant_id,
@@ -523,6 +622,261 @@ def create_app(
                 include_sensitive=False,
             ),
         }
+
+    @app.get("/api/clients/{client_id}/mapping/items")
+    def client_mapping_items(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        marketplace: str = "",
+        status: str = "",
+        search: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        return mapping_service.list_mapping_items(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+            marketplace=marketplace,
+            status=status,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get("/api/clients/{client_id}/mapping/items/{item_id}/candidates")
+    def client_mapping_candidates(
+        client_id: str,
+        item_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            return mapping_service.mapping_candidates_payload(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                item_id=item_id,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+
+    @app.get("/api/clients/{client_id}/mapping/onec-search")
+    def client_mapping_onec_search(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        query: str = "",
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        return mapping_service.search_onec_items(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+            query=query,
+            limit=limit,
+        )
+
+    @app.post("/api/clients/{client_id}/mapping/items/{item_id}/accept")
+    def client_mapping_accept(
+        client_id: str,
+        item_id: str,
+        payload: MappingAcceptRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            result = mapping_service.accept_mapping(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                item_id=item_id,
+                user=current,
+                candidate_id=payload.candidate_id,
+                onec_mapping_item_id=payload.onec_mapping_item_id,
+                reason=payload.reason,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+        db.commit()
+        return result
+
+    @app.post("/api/clients/{client_id}/mapping/items/{item_id}/reject")
+    def client_mapping_reject(
+        client_id: str,
+        item_id: str,
+        payload: MappingRejectRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            result = mapping_service.reject_candidate(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                item_id=item_id,
+                user=current,
+                candidate_id=payload.candidate_id,
+                reason=payload.reason,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+        db.commit()
+        return result
+
+    @app.post("/api/clients/{client_id}/mapping/items/{item_id}/revoke")
+    def client_mapping_revoke(
+        client_id: str,
+        item_id: str,
+        payload: MappingReasonRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            result = mapping_service.revoke_mapping(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                item_id=item_id,
+                user=current,
+                reason=payload.reason,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+        db.commit()
+        return result
+
+    @app.post("/api/clients/{client_id}/mapping/items/{item_id}/exclude")
+    def client_mapping_exclude(
+        client_id: str,
+        item_id: str,
+        payload: MappingReasonRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            result = mapping_service.exclude_item(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                item_id=item_id,
+                user=current,
+                reason=payload.reason,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+        db.commit()
+        return result
+
+    @app.get("/api/clients/{client_id}/mapping/items/{item_id}/history")
+    def client_mapping_history(
+        client_id: str,
+        item_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            return mapping_service.mapping_history_payload(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                item_id=item_id,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+
+    @app.post("/api/clients/{client_id}/mapping/rebuild-candidates")
+    def client_mapping_rebuild_candidates(
+        client_id: str,
+        payload: MappingRebuildRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        try:
+            result = mapping_service.rebuild_candidates(
+                db,
+                tenant_id=tenant_id,
+                client_id=resolved_client_id,
+                user=current,
+                refresh_run_id=payload.refresh_run_id,
+            )
+        except mapping_service.MappingServiceError as exc:
+            _raise_mapping_error(exc)
+        db.commit()
+        return result
+
+    @app.get("/api/clients/{client_id}/mapping/export/sku-mapping")
+    def client_mapping_export_sku_mapping(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
+            db,
+            current,
+            client_id=client_id,
+        )
+        _require_staff_or_403(current, tenant_id)
+        return mapping_service.export_sku_mapping(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+        )
 
     @app.post("/api/clients/{client_id}/source-refresh")
     def run_client_source_refresh(
@@ -554,6 +908,10 @@ def create_app(
                     dry_run=True,
                     user=current,
                     reason=reason,
+                    period_start=payload.period_start,
+                    period_end=payload.period_end,
+                    resume_mode=payload.resume_mode,
+                    resume_from_run_id=payload.resume_from_run_id,
                 )
             else:
                 refresh_payload = app.state.source_refresh_service.enqueue(
@@ -564,6 +922,10 @@ def create_app(
                     credential_source="tenant",
                     user=current,
                     reason=reason,
+                    period_start=payload.period_start,
+                    period_end=payload.period_end,
+                    resume_mode=payload.resume_mode,
+                    resume_from_run_id=payload.resume_from_run_id,
                 )
         except SourceRefreshDisabledError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -615,6 +977,119 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         db.commit()
         return {"client": repository.client_payload(db, current, client)}
+
+    @app.patch("/api/clients/{client_id}/companies/{company_id}/onec-organization")
+    def update_client_company_onec_organization(
+        client_id: str,
+        company_id: str,
+        payload: OnecOrganizationLinkRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            company = repository.set_client_company_onec_organization(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+                onec_organization_id=payload.onec_organization_id,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        client = repository.require_client_access(db, current, client_id)
+        return {
+            "companyId": company.id,
+            "client": repository.client_payload(db, current, client),
+        }
+
+    @app.get("/api/clients/{client_id}/onec-organizations")
+    def list_client_onec_organizations(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            return repository.onec_organizations_payload(
+                db,
+                user=current,
+                client_id=client_id,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+
+    @app.post("/api/clients/{client_id}/companies/{company_id}/tax-profile-overrides")
+    def create_client_company_tax_profile_override(
+        client_id: str,
+        company_id: str,
+        payload: TaxProfileOverrideCreateRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            override = repository.create_tax_profile_override(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+                tax_system=payload.tax_system,
+                vat_rate=payload.vat_rate,
+                vat_mode=payload.vat_mode,
+                vat_deduction_mode=payload.vat_deduction_mode,
+                revenue_tax_rate=payload.revenue_tax_rate,
+                income_tax_kind=payload.income_tax_kind,
+                valid_from=payload.valid_from,
+                valid_to=payload.valid_to,
+                reason=payload.reason,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        client = repository.require_client_access(db, current, client_id)
+        return {
+            "overrideId": override.id,
+            "client": repository.client_payload(db, current, client),
+        }
+
+    @app.patch(
+        "/api/clients/{client_id}/companies/{company_id}/tax-profile-overrides/"
+        "{override_id}/disable"
+    )
+    def disable_client_company_tax_profile_override(
+        client_id: str,
+        company_id: str,
+        override_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            override = repository.disable_tax_profile_override(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+                override_id=override_id,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        db.commit()
+        client = repository.require_client_access(db, current, client_id)
+        return {
+            "overrideId": override.id,
+            "client": repository.client_payload(db, current, client),
+        }
 
     @app.get("/api/admin/users")
     def admin_users(current: CurrentUser, db: DbSession) -> dict[str, Any]:
@@ -1086,6 +1561,7 @@ def create_app(
         report_id: str, current: CurrentUser, db: DbSession
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
+        _reject_client_report_recommendations(db, current, report)
         summary = repository.report_full_payload(db, report)
         repository.audit(
             db,
@@ -1235,6 +1711,7 @@ def create_app(
         db: DbSession,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
+        _reject_client_report_recommendations(db, current, report)
         workbook_path = repository.report_file_path(
             report, runtime_settings.export_root_path
         )
@@ -1266,6 +1743,7 @@ def create_app(
         db: DbSession,
     ) -> FileResponse:
         report = _require_report_or_404(db, current, report_id)
+        _reject_client_report_recommendations(db, current, report)
         path = _latest_analytical_report_path(
             runtime_settings,
             report.id,
@@ -1364,6 +1842,28 @@ def create_app(
             offset=max(offset, 0),
         )
 
+    @app.get("/api/reports/{report_id}/financial-document-reconciliation")
+    def report_financial_document_reconciliation(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        query: str = "",
+        period_start: date | None = None,
+        period_end: date | None = None,
+        control_type: str = "",
+        delta_only: bool = False,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        return repository.query_financial_document_reconciliation(
+            db,
+            report,
+            query=query,
+            period_start=period_start,
+            period_end=period_end,
+            control_type=control_type,
+            delta_only=delta_only,
+        )
+
     @app.get("/api/reports/{report_id}/sku/{sku}")
     def sku_card(
         report_id: str, sku: str, current: CurrentUser, db: DbSession
@@ -1379,24 +1879,43 @@ def create_app(
         report_id: str, current: CurrentUser, db: DbSession
     ) -> FileResponse:
         report = _require_report_or_404(db, current, report_id)
-        path = repository.report_artifact_path(
-            db, report, "excel", runtime_settings.export_root_path
-        ) or repository.report_file_path(report, runtime_settings.export_root_path)
+        export_report = report
+        path = _report_excel_export_path(db, export_report, runtime_settings)
+        if not report.is_current:
+            latest_report = repository.latest_report_for_client(
+                db,
+                current,
+                report.client_id,
+            )
+            if latest_report is not None and latest_report.id != report.id:
+                latest_path = _report_excel_export_path(
+                    db,
+                    latest_report,
+                    runtime_settings,
+                )
+                if latest_path is not None and latest_path.exists():
+                    export_report = latest_report
+                    path = latest_path
         if path is None or not path.exists():
             raise HTTPException(status_code=404, detail="export not found")
         repository.audit(
             db,
             action="report_exported",
             user=current,
-            tenant_id=report.tenant_id,
+            tenant_id=export_report.tenant_id,
             entity_type="report_run",
-            entity_id=report.id,
+            entity_id=export_report.id,
+            payload=(
+                {"requestedReportId": report.id}
+                if export_report.id != report.id
+                else None
+            ),
         )
         db.commit()
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=report.source_workbook or "shumeyko_wb_excel_mvp.xlsx",
+            filename=export_report.source_workbook or "shumeyko_wb_excel_mvp.xlsx",
         )
 
     @app.post("/api/admin/reports/import")
@@ -1569,9 +2088,7 @@ def create_app(
         if report_id:
             report = _require_report_or_404(db, current, report_id)
         elif payload.client_id:
-            client_id = _resolve_latest_client_id_or_400(
-                db, current, payload.client_id
-            )
+            client_id = _resolve_latest_client_id_or_400(db, current, payload.client_id)
             report = repository.latest_report_for_client(db, current, client_id)
         else:
             client_id = _resolve_latest_client_id_or_400(db, current, None)
@@ -1615,6 +2132,7 @@ def create_app(
         db: DbSession,
     ) -> dict[str, Any]:
         thread = _require_thread_or_404(db, current, thread_id)
+        _reject_client_financial_recommendations(db, current, thread)
         repository.add_ai_message(
             db, thread=thread, role="user", content=payload.content
         )
@@ -1672,6 +2190,7 @@ def create_app(
         db: DbSession,
     ) -> StreamingResponse:
         thread = _require_thread_or_404(db, current, thread_id)
+        _reject_client_financial_recommendations(db, current, thread)
 
         def generate():
             sent_ids: set[int] = set()
@@ -2031,6 +2550,19 @@ def _report_list_item(report: ReportRun) -> dict[str, Any]:
     }
 
 
+def _report_excel_export_path(
+    db: Session,
+    report: ReportRun,
+    settings: WebSettings,
+) -> Path | None:
+    return repository.report_artifact_path(
+        db,
+        report,
+        "excel",
+        settings.export_root_path,
+    ) or repository.report_file_path(report, settings.export_root_path)
+
+
 def _require_report_or_404(db: Session, user: User, report_id: str):
     try:
         return repository.require_report(db, user, report_id)
@@ -2052,6 +2584,38 @@ def _require_staff_or_403(user: User, tenant_id: str) -> None:
         raise HTTPException(status_code=403, detail="staff role required") from exc
 
 
+def _reject_client_financial_recommendations(db: Session, user: User, thread) -> None:
+    if repository.has_role(user, repository.STAFF_ROLES, thread.tenant_id):
+        return
+    if not thread.report_run_id:
+        return
+    report = db.get(ReportRun, thread.report_run_id)
+    if report is None:
+        return
+    _reject_client_report_recommendations(db, user, report)
+
+
+def _reject_client_report_recommendations(
+    db: Session,
+    user: User,
+    report: ReportRun,
+) -> None:
+    if repository.has_role(user, repository.STAFF_ROLES, report.tenant_id):
+        return
+    if repository.report_publication_blockers(db, report):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Финансовая проверка не пройдена. Клиентские рекомендации "
+                "заблокированы до подтверждения P&L."
+            ),
+        )
+
+
+def _raise_mapping_error(exc: mapping_service.MappingServiceError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
 def _run_mapping_upload_refresh(
     app: FastAPI,
     db: Session,
@@ -2060,10 +2624,7 @@ def _run_mapping_upload_refresh(
     report: ReportRun,
     file_name: str,
 ) -> dict[str, Any]:
-    reason = (
-        "Автоматическая пересборка после загрузки mapping WB ↔ 1C: "
-        f"{file_name}"
-    )
+    reason = f"Автоматическая пересборка после загрузки mapping WB ↔ 1C: {file_name}"
     try:
         payload = app.state.auto_refresh_service.run(
             db,

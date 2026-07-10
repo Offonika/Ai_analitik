@@ -66,6 +66,17 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
                 {"documentReport": "Отчет комиссионера", "status": "OK"}
             ],
             "reconciliationMonthly": [{"month": "Март 2026", "wb_cogs": 300.0}],
+            "taxInputReconciliation": [
+                {
+                    "week": "2026-03-02",
+                    "cabinet": "Кабинет A",
+                    "organization": "Организация A",
+                    "vatInputFromWb": 10.0,
+                    "vatInputFrom1c": 12.0,
+                    "vatInputDifference": 2.0,
+                    "vatInputCompleteness": "partial",
+                }
+            ],
         },
         output,
     )
@@ -86,6 +97,7 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
         lost_sales_headers = [cell.value for cell in workbook["Упущенные продажи"][1]]
         lost_sales_values = [cell.value for cell in workbook["Упущенные продажи"][2]]
         document_values = [cell.value for cell in workbook["Сверка документов 1С"][2]]
+        tax_input_headers = [cell.value for cell in workbook["Сверка входящего НДС"][1]]
     finally:
         workbook.close()
 
@@ -95,10 +107,12 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
     )
     assert readme_rows["Происхождение данных"] == "DB-first витрины отчета"
     assert "Товар" in unit_headers
+    assert "НДС входящий WB" in unit_headers
     assert "product" not in unit_headers
+    assert "НДС входящий 1С" in tax_input_headers
     assert "Статус ликвидности" in liquidity_headers
     assert "Драйвер ликвидности" in liquidity_headers
-    assert "МД после налогов" in liquidity_headers
+    assert "Упр. прибыль" in liquidity_headers
     assert "liquidityStatus" not in liquidity_headers
     assert "product" not in liquidity_headers
     assert liquidity_values[liquidity_headers.index("Товар")] == "Товар"
@@ -142,7 +156,26 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
                 ],
             },
             "ozonMart": {
-                "totals": {"onecRevenue": 1000.0},
+                "totals": {
+                    "onecRevenue": 1000.0,
+                    "profitBeforeTax": 900.0,
+                    "profitAfterTax": 846.0,
+                    "revenueTax": 54.0,
+                    "taxSystem": "УСН Доходы",
+                    "taxProfileSource": "Catalog_Организации",
+                    "taxCompleteness": "profile_complete",
+                },
+                "expenseAttribution": {
+                    "status": "sku_direct",
+                    "basis": "ozon_mutual_settlement_expense_documents",
+                    "periodExpenseAmount": 100.0,
+                    "skuAttributedExpenseAmount": 100.0,
+                    "unattributedExpenseAmount": 0.0,
+                    "allocatedUnattributedExpenseAmount": 0.0,
+                    "overAttributedExpenseAmount": 0.0,
+                    "periodExpenseDeltaAmount": 0.0,
+                    "roundingDeltaAmount": 0.0,
+                },
                 "articleRows": [
                     {
                         "articleId": "revenue",
@@ -168,12 +201,20 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
                         "ozonServices": 100.0,
                         "ozonPartnerServices": 0.0,
                         "profit": 900.0,
+                        "profitBeforeTax": 900.0,
+                        "marginBeforeTax": 0.9,
+                        "revenueTax": 54.0,
+                        "profitAfterTax": 846.0,
+                        "marginAfterTax": 0.846,
+                        "taxSystem": "УСН Доходы",
+                        "taxProfileSource": "Catalog_Организации",
+                        "taxCompleteness": "profile_complete",
                         "qualityStatus": "ready",
                     }
                 ],
                 "articleDrilldown": [
                     {
-                        "kind": "sku_allocation",
+                        "kind": "sku_direct",
                         "articleId": "services",
                         "label": "Услуги Ozon",
                         "offerId": "OZ-1",
@@ -183,6 +224,8 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
                         "effectAmount": -100.0,
                         "includedInSkuProfit": True,
                         "basis": "ozon_mutual_settlement_expense_documents",
+                        "expenseBasis": "ozon_realization_sku_fields",
+                        "attributionType": "sku_direct",
                         "status": "ready",
                     }
                 ],
@@ -204,15 +247,28 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
         sku_values = [
             cell.value for row in workbook["Статьи по SKU"].iter_rows() for cell in row
         ]
+        sku_headers = [cell.value for cell in workbook["Статьи по SKU"][1]]
         reconciliation_values = [
             cell.value
             for row in workbook["Сверка Ozon 1C"].iter_rows()
             for cell in row
         ]
         unit_headers = [cell.value for cell in workbook["Юнит экономика Ozon"][1]]
+        summary_headers = [cell.value for cell in workbook["Сводная Ozon"][1]]
     finally:
         workbook.close()
 
     assert "Услуги партнеров / перевыставление" in unit_headers
+    assert "База расхода" in unit_headers
+    assert "Тип атрибуции" in unit_headers
+    assert "Остаток периода" in unit_headers
+    assert "Управленческая прибыль до НДФЛ" in unit_headers
+    assert "Прибыль после налогов" in unit_headers
+    assert "Налоговый режим" in unit_headers
+    assert "Источник налогового профиля" in unit_headers
+    assert "База расхода" in sku_headers
+    assert "Тип атрибуции" in sku_headers
+    assert "Остаток периода" in sku_headers
+    assert "Расходы из Ozon detail" in summary_headers
     assert "550" not in {str(value) for value in sku_values}
     assert "1C без пары в Ozon: приходная 175" in reconciliation_values

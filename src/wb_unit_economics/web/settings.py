@@ -33,6 +33,7 @@ class WebSettings(BaseSettings):
     auto_refresh_root: str = "data/onec_auto_refresh"
     auto_refresh_row_limit: int = 5000
     source_refresh_enabled: bool = False
+    source_refresh_tenant: str = "shumeyko"
     source_refresh_root: str = "data/source_refresh"
     source_refresh_period_start: str = "2026-03-01"
     source_refresh_period_end: str = ""
@@ -42,6 +43,8 @@ class WebSettings(BaseSettings):
     source_refresh_wb_limit: int = 100000
     source_refresh_wb_max_pages: int = 50
     source_refresh_wb_request_delay_seconds: float = 61.0
+    source_refresh_wb_content_request_delay_seconds: float = 0.65
+    source_refresh_wb_persist_row_limit: int = 250000
     source_refresh_ozon_page_size: int = 1000
     source_refresh_ozon_max_pages: int = 50
     source_refresh_ozon_request_delay_seconds: float = 1.0
@@ -50,6 +53,7 @@ class WebSettings(BaseSettings):
     source_refresh_min_free_gb: float = 8.0
     source_refresh_retention_daily_runs: int = 3
     source_refresh_retention_full_runs: int = 2
+    source_refresh_failed_snapshot_keep: int = 2
     db_first_reports_enabled: bool = False
     postgres_statement_timeout_ms: int = 15000
     cors_allow_origins: list[str] = Field(default_factory=list)

@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-07-06"
+updated_at: "2026-07-10"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -29,6 +29,13 @@ documents:
     audience: ["engineering", "consultant", "client"]
     source_of_truth: false
     summary: "Навигация по документации и проверкам."
+  - path: "docs/generated/web-api.md"
+    title: "FastAPI route inventory"
+    doc_type: "generated_reference"
+    status: "active"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Автоматически сгенерированный inventory фактических FastAPI-маршрутов из OpenAPI."
   - path: "docs/product-concept-ai-report-analyst.md"
     title: "AI-аналитик отчетов"
     doc_type: "product_concept"
@@ -39,7 +46,7 @@ documents:
   - path: "docs/specs/wb-unit-economics-mvp.md"
     title: "AI-аналитик отчетов: пилот Шумейко WB/1C MVP"
     doc_type: "spec"
-    status: "draft"
+    status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: true
     summary: "Продуктовая рамка пилота AI-аналитика отчетов на WB/1C юнит-экономике."
@@ -50,20 +57,27 @@ documents:
     audience: ["engineering"]
     source_of_truth: true
     summary: "Accepted implementation spec текущего Excel MVP как фактического слоя пилота AI-аналитика отчетов."
+  - path: "docs/specs/marketplace-1c-mapping-service.md"
+    title: "Own marketplace/1C mapping service"
+    doc_type: "spec"
+    status: "implemented"
+    audience: ["engineering", "consultant", "operations"]
+    source_of_truth: true
+    summary: "Implemented spec собственного сервиса сопоставления WB/Ozon и 1С с кандидатами, ручными решениями и экспортом sku_mapping."
   - path: "docs/specs/onec-marketplace-mapping-http-service.md"
     title: "1C marketplace mapping read-only HTTP service"
     doc_type: "spec"
-    status: "accepted"
+    status: "superseded"
     audience: ["engineering", "client_admin"]
-    source_of_truth: true
-    summary: "Accepted spec узкого read-only HTTP-сервиса 1С для сопоставления WB и 1С из расширения ИС_Маркетплейс."
+    source_of_truth: false
+    summary: "Superseded spec узкого read-only HTTP-сервиса 1С; теперь только candidate import/fallback для собственного сервиса сопоставления."
   - path: "docs/specs/onec-marketplace-mapping-client-extension.md"
-    title: "1C client extension for WB/1C mapping export"
+    title: "1C client extension for marketplace/1C mapping export"
     doc_type: "spec"
-    status: "accepted"
+    status: "superseded"
     audience: ["engineering", "client_admin"]
-    source_of_truth: true
-    summary: "Accepted spec клиентского read-only .cfe расширения offonika для экспорта сопоставления WB и 1С."
+    source_of_truth: false
+    summary: "Superseded spec клиентского read-only .cfe расширения offonika; теперь только candidate import/fallback для собственного сервиса сопоставления."
   - path: "docs/changelogs/excel-mvp.md"
     title: "Excel MVP changelog"
     doc_type: "changelog"
@@ -74,7 +88,7 @@ documents:
   - path: "docs/specs/wb-unit-economics-client-web-cabinet.md"
     title: "Клиентский web-кабинет WB/1C юнит-экономики"
     doc_type: "spec"
-    status: "draft"
+    status: "superseded"
     audience: ["engineering", "consultant"]
     source_of_truth: false
     summary: "Draft spec первого клиентского web-кабинета поверх принятой Excel-методики."
@@ -106,6 +120,13 @@ documents:
     audience: ["engineering", "operations"]
     source_of_truth: true
     summary: "Accepted spec для read-only Ozon Seller API, raw snapshots и общего marketplace_api_snapshot слоя."
+  - path: "docs/specs/month-close-control-pilot.md"
+    title: "Пилот контроля закрытия месяца по 1С"
+    doc_type: "spec"
+    status: "draft"
+    audience: ["engineering", "consultant", "operations"]
+    source_of_truth: false
+    summary: "Draft-контур пилота закрытия месяца: онлайн-ОСВ через OData, регистры налогов/ЕНС/НДС и процессные подтверждения до CRM."
   - path: "docs/specs/wb-unit-economics-ai-git-workflow.md"
     title: "AI development Git workflow"
     doc_type: "spec"
@@ -126,7 +147,7 @@ documents:
     status: "draft"
     audience: ["client", "consultant", "engineering"]
     source_of_truth: false
-    summary: "Короткий клиентский пакет приемки текущей опубликованной ревизии report_run."
+    summary: "Шаблон и процедура read-only сборки пакета приемки по явному опубликованному report_id."
   - path: "docs/client-value-proposition-ai-assistant.md"
     title: "Выгода AI-ассистента отчетов для консалтинговой компании"
     doc_type: "client_value_proposition"
@@ -191,16 +212,16 @@ documents:
     source_of_truth: false
     summary: "Инструкция по read-only доступу к 1С."
   - path: "docs/runbooks/onec-marketplace-mapping-http-service.md"
-    title: "HTTP-сервис 1С для сопоставления WB и 1С"
+    title: "HTTP-сервис 1С для сопоставления маркетплейсов и 1С"
     doc_type: "runbook"
-    status: "draft"
+    status: "superseded"
     audience: ["engineering", "client_admin"]
     source_of_truth: false
     summary: "Настройка узкого read-only HTTP-сервиса 1С для выгрузки сопоставления WB и 1С из расширения ИС_Маркетплейс."
   - path: "docs/runbooks/onec-marketplace-mapping-client-extension.md"
-    title: "Клиентское расширение 1С для экспорта сопоставления WB и 1С"
+    title: "Клиентское расширение 1С для экспорта сопоставления маркетплейсов и 1С"
     doc_type: "runbook"
-    status: "draft"
+    status: "superseded"
     audience: ["engineering", "client_admin"]
     source_of_truth: false
     summary: "Сборка, установка, публикация и проверка клиентского .cfe расширения offonika."
@@ -249,17 +270,24 @@ documents:
   - path: "docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md"
     title: "Ключевые решения Excel MVP"
     doc_type: "decision"
-    status: "accepted"
+    status: "superseded"
     audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Историческое решение с legacy-формулой НДС 5/105 и УСН 1%, замененное профильной налоговой методикой."
+  - path: "docs/decisions/2026-07-10-tax-profiles-osno-profit.md"
+    title: "Налоговые профили, ОСНО и прибыль до НДФЛ"
+    doc_type: "decision"
+    status: "accepted"
+    audience: ["engineering", "consultant", "client"]
     source_of_truth: true
-    summary: "Краткая фиксация принятых решений по текущей методике Excel MVP."
+    summary: "Accepted ADR по налоговым профилям, ОСНО, НДС к уплате, Управленческой прибыли WB и прибыли до НДФЛ."
   - path: "docs/decisions/2026-06-23-db-first-publication-baseline.md"
     title: "DB-first publication baseline"
     doc_type: "decision"
     status: "accepted"
     audience: ["engineering", "operations", "consultant"]
-    source_of_truth: true
-    summary: "Текущий published/current DB-first baseline, parity-решение 18179 vs 18820 и blocker source refresh integrations."
+    source_of_truth: false
+    summary: "Исторический снимок DB-first публикации на 23.06.2026 и parity-решение 18179 vs 18820."
   - path: "docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md"
     title: "Provider registry and source refresh retention"
     doc_type: "decision"

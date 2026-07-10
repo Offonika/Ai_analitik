@@ -20,6 +20,7 @@ EXPORT_SHEETS = {
     "lostSales": "Упущенные продажи",
     "documentReconciliation": "Сверка документов 1С",
     "reconciliationMonthly": "Сверка с 1С ОПиУ",
+    "taxInputReconciliation": "Сверка входящего НДС",
 }
 
 OZON_EXPORT_SHEETS = {
@@ -54,6 +55,13 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "sppRate",
         "revenue",
         "vat",
+        "vatOutput",
+        "vatInput",
+        "vatInputFromWb",
+        "vatInputFrom1c",
+        "vatInputDifference",
+        "vatInputCompleteness",
+        "vatPayable",
         "revenueWithoutVat",
         "cost",
         "commission",
@@ -64,12 +72,17 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "penalties",
         "acquiring",
         "usn",
+        "incomeTaxKind",
+        "incomeTaxBase",
+        "incomeTax",
+        "incomeTaxIncluded",
         "profitBeforeTax",
         "profit",
         "margin",
         "unitProfit",
         "taxMethod",
         "taxProfileSource",
+        "taxCompleteness",
         "status",
         "statusReason",
         "sppStatus",
@@ -233,7 +246,30 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "amount",
         "effectAmount",
         "share",
+        "taxSystem",
+        "taxProfileSource",
+        "taxCompleteness",
         "sourceLabels",
+        "expenseBasis",
+        "attributionType",
+        "periodExpenseAmount",
+        "skuAttributedExpenseAmount",
+        "unattributedExpenseAmount",
+        "allocatedUnattributedExpenseAmount",
+        "overAttributedExpenseAmount",
+        "periodExpenseDeltaAmount",
+        "roundingDeltaAmount",
+        "costQualityStatus",
+        "revenueCoveragePct",
+        "quantityCoveragePct",
+        "missingCostCount",
+        "anomalyCount",
+        "insufficientHistoryCount",
+        "estimatedCostImpact",
+        "materialityThresholdAmount",
+        "martAverageUnitCost",
+        "direct1cAverageUnitCost",
+        "direct1cDeviationPct",
         "status",
         "actionText",
     ],
@@ -247,6 +283,7 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "productName",
         "quantity",
         "onecRevenue",
+        "unitCost",
         "cogs",
         "ozonCommission",
         "ozonServices",
@@ -255,11 +292,34 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "ozonStorage",
         "ozonOtherExpenses",
         "ozonExpenses",
+        "skuAttributedExpenseAmount",
+        "periodUnattributedExpenseAmount",
+        "expenseBasis",
+        "expenseAttributionType",
+        "expenseAllocationBasis",
+        "profitBeforeTax",
+        "marginBeforeTax",
+        "vatOutput",
+        "vatInput",
+        "vatPayable",
+        "revenueTax",
+        "incomeTax",
+        "profitBeforeIncomeTax",
+        "profitAfterTax",
+        "marginAfterTax",
+        "taxSystem",
+        "taxProfileSource",
+        "taxCompleteness",
         "profit",
         "margin",
         "onecItemId",
         "onecName",
         "qualityStatus",
+        "costQualityStatus",
+        "referenceUnitCost",
+        "unitCostDeviationPct",
+        "estimatedCostImpact",
+        "costQualityReason",
         "expenseStatus",
         "problemReason",
         "actionText",
@@ -275,6 +335,11 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "amount",
         "effectAmount",
         "allocationShare",
+        "expenseBasis",
+        "attributionType",
+        "periodExpenseAmount",
+        "skuAttributedExpenseAmount",
+        "unattributedExpenseAmount",
         "basis",
         "status",
         "note",
@@ -290,6 +355,11 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "amount",
         "effectAmount",
         "allocationShare",
+        "expenseBasis",
+        "attributionType",
+        "periodExpenseAmount",
+        "skuAttributedExpenseAmount",
+        "unattributedExpenseAmount",
         "includedInSkuProfit",
         "basis",
         "status",
@@ -301,8 +371,29 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "ozonAmount",
         "onecAmount",
         "deltaAmount",
+        "periodExpenseAmount",
+        "skuAttributedExpenseAmount",
+        "unattributedExpenseAmount",
+        "allocatedUnattributedExpenseAmount",
+        "overAttributedExpenseAmount",
+        "periodExpenseDeltaAmount",
+        "roundingDeltaAmount",
+        "expenseBasis",
+        "attributionType",
         "includedInExpense",
+        "includedInSkuProfit",
         "note",
+    ],
+    "taxInputReconciliation": [
+        "week",
+        "weekEnd",
+        "cabinet",
+        "organization",
+        "vatInputFromWb",
+        "vatInputFrom1c",
+        "vatInputDifference",
+        "vatInputCompleteness",
+        "sourceRowCount",
     ],
 }
 
@@ -330,7 +421,14 @@ COLUMN_LABELS = {
     "spp": "СПП",
     "sppRate": "% СПП",
     "revenue": "Выручка после СПП",
-    "vat": "НДС",
+    "vat": "НДС к уплате",
+    "vatOutput": "Исходящий НДС",
+    "vatInput": "Входящий НДС",
+    "vatInputFromWb": "НДС входящий WB",
+    "vatInputFrom1c": "НДС входящий 1С",
+    "vatInputDifference": "Расхождение НДС",
+    "vatInputCompleteness": "Полнота НДС",
+    "vatPayable": "НДС к уплате",
     "revenueWithoutVat": "Выручка без НДС",
     "cost": "Себестоимость 1С",
     "md1Markup": "МД1 Наценка",
@@ -345,14 +443,27 @@ COLUMN_LABELS = {
     "md5AfterPromotion": "МД5 после продвижения",
     "penalties": "Штрафы/доплаты WB",
     "acquiring": "Эквайринг WB",
-    "md6BeforeTax": "МД6 до налогов",
-    "usn": "Налог с выручки",
-    "profitBeforeTax": "Прибыль до налогов",
-    "profit": "Маржинальный доход WB после налогов",
-    "margin": "Маржа после налогов",
-    "unitProfit": "МД после налогов на шт",
-    "taxMethod": "Налоговый режим/ставка",
+    "md6BeforeTax": "МД6 до НДФЛ",
+    "usn": "Налог с выручки/НДФЛ",
+    "incomeTaxKind": "Вид НДФЛ",
+    "incomeTaxBase": "База НДФЛ",
+    "incomeTax": "НДФЛ",
+    "incomeTaxIncluded": "НДФЛ включен",
+    "profitBeforeTax": "Управленческая прибыль до НДФЛ",
+    "marginBeforeTax": "Маржа до налогов",
+    "profitBeforeIncomeTax": "Управленческая прибыль до НДФЛ",
+    "profitAfterTax": "Прибыль после налогов",
+    "marginAfterTax": "Маржа после налогов",
+    "revenueTax": "Налог с выручки",
+    "taxSystem": "Налоговый режим",
+    "profit": "Управленческая прибыль WB",
+    "margin": "Маржа без НДС",
+    "unitProfit": "Упр. прибыль на шт",
+    "taxMethod": "Налоговый метод",
     "taxProfileSource": "Источник налогового профиля",
+    "taxCompleteness": "Полнота налогового расчета",
+    "weekEnd": "Конец недели",
+    "sourceRowCount": "Строк источника",
     "statusReason": "Причина статуса",
     "sppStatus": "Статус СПП",
     "lossClass": "Класс убытка",
@@ -440,6 +551,7 @@ COLUMN_LABELS = {
     "productName": "Товар Ozon",
     "quantity": "Количество",
     "onecRevenue": "Выручка 1С",
+    "unitCost": "Себестоимость единицы 1С",
     "cogs": "Себестоимость 1С",
     "ozonCommission": "Комиссия Ozon",
     "ozonServices": "Услуги Ozon",
@@ -451,11 +563,37 @@ COLUMN_LABELS = {
     "onecItemId": "Ключ номенклатуры 1С",
     "onecName": "Номенклатура 1С",
     "qualityStatus": "Статус расчета",
+    "costQualityStatus": "Качество себестоимости",
+    "referenceUnitCost": "Референсная стоимость единицы",
+    "unitCostDeviationPct": "Отклонение от референса",
+    "estimatedCostImpact": "Предполагаемое влияние на COGS",
+    "costQualityReason": "Причина качества себестоимости",
+    "revenueCoveragePct": "Покрытие себестоимостью по выручке",
+    "quantityCoveragePct": "Покрытие себестоимостью по количеству",
+    "missingCostCount": "Строк без себестоимости",
+    "anomalyCount": "Аномальных SKU",
+    "insufficientHistoryCount": "SKU с недостаточной историей",
+    "materialityThresholdAmount": "Порог существенности",
+    "martAverageUnitCost": "Средняя стоимость mart",
+    "direct1cAverageUnitCost": "Средняя стоимость регистра 1С",
+    "direct1cDeviationPct": "Отклонение mart от регистра 1С",
     "expenseStatus": "Статус расходов",
     "problemReason": "Причина статуса",
     "sourceLabel": "Источник",
     "allocationShare": "Доля распределения",
     "basis": "База расчета",
+    "expenseBasis": "База расхода",
+    "expenseAttributionType": "Тип атрибуции",
+    "expenseAllocationBasis": "База распределения",
+    "attributionType": "Тип атрибуции",
+    "periodExpenseAmount": "Mutual settlement",
+    "skuAttributedExpenseAmount": "Расходы из Ozon detail",
+    "periodUnattributedExpenseAmount": "Остаток периода",
+    "unattributedExpenseAmount": "Остаток периода",
+    "allocatedUnattributedExpenseAmount": "Распределенный остаток",
+    "overAttributedExpenseAmount": "Ozon detail больше mutual settlement",
+    "periodExpenseDeltaAmount": "Дельта периода",
+    "roundingDeltaAmount": "Округление",
     "includedInSkuProfit": "Включено в прибыль SKU",
     "kind": "Тип строки",
     "parentLabel": "Связанная строка",
@@ -465,10 +603,10 @@ COLUMN_LABELS = {
 }
 
 SHEET_COLUMN_LABELS = {
-    ("liquidityRows", "profit"): "МД после налогов",
+    ("liquidityRows", "profit"): "Упр. прибыль",
     ("liquidityRows", "status"): "Статус данных",
     ("monthly", "status"): "Статус месяца",
-    ("monthly", "profit"): "Маржинальный доход WB после налогов",
+    ("monthly", "profit"): "Управленческая прибыль WB",
     ("returns", "status"): "Статус данных",
     ("documentReconciliation", "status"): "Статус сверки",
     ("ozonReconciliationRows", "onecAmount"): "1C контроль",
@@ -481,6 +619,8 @@ STATUS_LABELS = {
     "ready": "Готово",
     "needs_review": "Нужна проверка",
     "partial_source": "Неполный источник",
+    "complete": "Полное",
+    "warning": "Предупреждение",
     "partial_period": "Неполный период",
     "source_coverage_gap": "Недостаточное покрытие источников",
     "blocked": "Заблокировано",
@@ -494,6 +634,13 @@ STATUS_LABELS = {
     "task_failed": "Задача завершилась ошибкой",
     "task_timeout": "Истекло время ожидания задачи",
     "db_first_report_marts": "DB-first витрины отчета",
+    "insufficient_history": "Недостаточно истории",
+    "unit_cost_outlier": "Аномальная стоимость",
+    "nonpositive_unit_cost": "Неположительная стоимость",
+    "missing_cost": "Нет себестоимости",
+    "within_reference_range": "В пределах референса",
+    "not_evaluated": "Не проверено",
+    "not_applicable": "Не применимо",
 }
 
 STATUS_FIELDS = {
@@ -501,14 +648,33 @@ STATUS_FIELDS = {
     "sourceStatus",
     "payoutStatus",
     "periodStatus",
+    "costQualityStatus",
+    "costQualityReason",
 }
 
-PERCENT_FIELDS = {"returnRate", "return_rate", "sppRate", "margin", "share"}
+PERCENT_FIELDS = {
+    "returnRate",
+    "return_rate",
+    "sppRate",
+    "margin",
+    "marginBeforeTax",
+    "marginAfterTax",
+    "share",
+    "revenueCoveragePct",
+    "quantityCoveragePct",
+    "unitCostDeviationPct",
+    "direct1cDeviationPct",
+}
 MONEY_FIELDS = {
     "revenueBeforeSpp",
     "spp",
     "revenue",
     "vat",
+    "vatOutput",
+    "vatInput",
+    "vatPayable",
+    "revenueTax",
+    "incomeTax",
     "revenueWithoutVat",
     "cost",
     "md1Markup",
@@ -526,6 +692,8 @@ MONEY_FIELDS = {
     "md6BeforeTax",
     "usn",
     "profitBeforeTax",
+    "profitBeforeIncomeTax",
+    "profitAfterTax",
     "profit",
     "unitProfit",
     "amount",
@@ -555,6 +723,12 @@ MONEY_FIELDS = {
     "mp_expenses_delta",
     "effectAmount",
     "onecRevenue",
+    "unitCost",
+    "referenceUnitCost",
+    "estimatedCostImpact",
+    "materialityThresholdAmount",
+    "martAverageUnitCost",
+    "direct1cAverageUnitCost",
     "cogs",
     "ozonCommission",
     "ozonServices",
@@ -563,8 +737,16 @@ MONEY_FIELDS = {
     "ozonStorage",
     "ozonOtherExpenses",
     "ozonExpenses",
+    "skuAttributedExpenseAmount",
+    "periodUnattributedExpenseAmount",
     "ozonAmount",
     "deltaAmount",
+    "periodExpenseAmount",
+    "unattributedExpenseAmount",
+    "allocatedUnattributedExpenseAmount",
+    "overAttributedExpenseAmount",
+    "periodExpenseDeltaAmount",
+    "roundingDeltaAmount",
 }
 
 
@@ -640,21 +822,29 @@ def _ozon_export_rows(diagnostics: dict[str, Any], key: str) -> list[dict[str, A
         return [
             dict(item)
             for item in _safe_rows(mart.get("articleDrilldown"))
-            if item.get("kind") == "sku_allocation"
+            if item.get("includedInSkuProfit")
         ]
     if key == "ozonReconciliationRows":
-        return [
+        rows = [
+            dict(item)
+            for item in _safe_rows(mart.get("articleDrilldown"))
+            if item.get("kind") == "period_expense_control"
+        ]
+        rows.extend(
             dict(item)
             for item in _safe_rows(
                 (diagnostics.get("expenseReconciliation") or {}).get("articleRows")
             )
-        ]
+        )
+        return rows
     return []
 
 
 def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
     mart = diagnostics.get("ozonMart") or {}
     totals = mart.get("totals") or {}
+    attribution = mart.get("expenseAttribution") or {}
+    cost_quality = mart.get("costQuality") or {}
     revenue = _number_or_none(totals.get("onecRevenue"))
     expense_status = str(
         (diagnostics.get("expenseReconciliation") or {}).get("status") or ""
@@ -668,6 +858,41 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
             and expense_status != "matched"
             and group not in {"revenue", "cogs", "result"}
         )
+    if cost_quality:
+        quality_status = str(cost_quality.get("status") or "complete")
+        rows.append(
+            {
+                "articleId": "cost_quality",
+                "label": "Контроль качества себестоимости",
+                "group": "cogs",
+                "costQualityStatus": quality_status,
+                "revenueCoveragePct": cost_quality.get("revenueCoveragePct"),
+                "quantityCoveragePct": cost_quality.get("quantityCoveragePct"),
+                "missingCostCount": cost_quality.get("missingCostCount"),
+                "anomalyCount": cost_quality.get("anomalyCount"),
+                "insufficientHistoryCount": cost_quality.get(
+                    "insufficientHistoryCount"
+                ),
+                "estimatedCostImpact": cost_quality.get("estimatedImpactAmount"),
+                "materialityThresholdAmount": cost_quality.get(
+                    "materialityThresholdAmount"
+                ),
+                "martAverageUnitCost": cost_quality.get("martAverageUnitCost"),
+                "direct1cAverageUnitCost": cost_quality.get(
+                    "direct1cAverageUnitCost"
+                ),
+                "direct1cDeviationPct": cost_quality.get("direct1cDeviationPct"),
+                "status": "ready" if quality_status == "complete" else "needs_review",
+                "actionText": (
+                    "Действие не требуется."
+                    if quality_status == "complete"
+                    else (
+                        "Проверить предупреждения по SKU; исправления выполняет "
+                        "аналитик."
+                    )
+                ),
+            }
+        )
         rows.append(
             {
                 "articleId": item.get("articleId"),
@@ -679,11 +904,81 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 if effect is not None and revenue and revenue > 0
                 else None,
                 "sourceLabels": item.get("sourceLabels") or [],
+                "expenseBasis": attribution.get("basis")
+                or totals.get("expenseBasis"),
+                "attributionType": attribution.get("status") or "",
+                "periodExpenseAmount": attribution.get("periodExpenseAmount"),
+                "skuAttributedExpenseAmount": attribution.get(
+                    "skuAttributedExpenseAmount"
+                ),
+                "unattributedExpenseAmount": attribution.get(
+                    "unattributedExpenseAmount"
+                ),
+                "allocatedUnattributedExpenseAmount": attribution.get(
+                    "allocatedUnattributedExpenseAmount"
+                ),
+                "overAttributedExpenseAmount": attribution.get(
+                    "overAttributedExpenseAmount"
+                ),
+                "periodExpenseDeltaAmount": attribution.get(
+                    "periodExpenseDeltaAmount"
+                ),
+                "roundingDeltaAmount": attribution.get("roundingDeltaAmount"),
                 "status": "needs_review" if needs_review else "ready",
                 "actionText": (
                     "Сверить строку в листе «Сверка Ozon 1C»."
                     if needs_review
                     else "Действие не требуется."
+                ),
+            }
+        )
+    closed_totals = mart.get("closedPeriodTotals") or {}
+    tax_rows = (
+        ("vat_output", "Исходящий НДС", "vatOutput"),
+        ("vat_input", "Входящий НДС", "vatInput"),
+        ("vat_payable", "НДС к уплате", "vatPayable"),
+        ("revenue_tax", "Налог с выручки", "revenueTax"),
+        ("income_tax", "НДФЛ / налог на доход", "incomeTax"),
+        ("profit_after_tax", "Прибыль после налогов", "profitAfterTax"),
+    )
+    for article_id, label, field in tax_rows:
+        value = totals.get(field)
+        rows.append(
+            {
+                "articleId": article_id,
+                "label": label,
+                "group": "tax",
+                "amount": value,
+                "effectAmount": value,
+                "status": "ready" if value is not None else "needs_review",
+                "taxSystem": totals.get("taxSystem") or "",
+                "taxProfileSource": totals.get("taxProfileSource") or "missing",
+                "taxCompleteness": totals.get("taxCompleteness") or "not_calculated",
+                "actionText": (
+                    "Действие не требуется."
+                    if value is not None
+                    else "Подтвердить налоговый профиль и полноту налоговой базы."
+                ),
+            }
+        )
+    excluded_open = _safe_rows(mart.get("excludedOpenPeriods"))
+    excluded_incomplete = _safe_rows(mart.get("excludedIncompletePeriods"))
+    if excluded_open or excluded_incomplete:
+        rows.append(
+            {
+                "articleId": "closed_period_profit",
+                "label": "Прибыль до налогов закрытых периодов",
+                "group": "result",
+                "amount": closed_totals.get("profitBeforeTax"),
+                "effectAmount": closed_totals.get("profitBeforeTax"),
+                "status": "needs_review",
+                "actionText": (
+                    "Общий итог скрыт: есть незакрытый месяц."
+                    if excluded_open
+                    else (
+                        "Общий итог скрыт: закрытый месяц исключен из-за неполных "
+                        "данных."
+                    )
                 ),
             }
         )
@@ -710,8 +1005,42 @@ def _write_ozon_methodology(sheet: Any, diagnostics: dict[str, Any]) -> None:
             "Не создает ReportRun и не заменяет клиентский WB Excel MVP",
         ),
         ("Выручка", "1C отчет комиссионера / регистр продаж Ozon"),
-        ("Себестоимость", "1C cost index по сопоставленной номенклатуре"),
-        ("Расходы Ozon", "Mutual settlement; cash-flow только контроль"),
+        (
+            "Себестоимость",
+            "Signed-движения 1C по организации, номенклатуре и календарному месяцу",
+        ),
+        (
+            "Контроль себестоимости",
+            "Медиана до 3 прошлых закрытых месяцев; аномалия ниже 50% или выше "
+            "200% блокирует месяц при влиянии от max(100 000 руб.; 0,5% выручки)",
+        ),
+        (
+            "Расходы Ozon",
+            "SKU-поля Ozon detail первичны; mutual settlement - контроль периода",
+        ),
+        (
+            "Fallback распределения",
+            "Только положительный остаток mutual settlement минус SKU-detail "
+            "распределяется по доле 1C-выручки",
+        ),
+        (
+            "Отрицательный остаток",
+            "Не распределяется; показывается как Ozon detail больше mutual settlement",
+        ),
+        ("Cash-flow", "Денежный контроль, не база P&L"),
+        (
+            "Налоговый профиль",
+            "Явный профиль 1C, затем аудируемое временное исключение, затем missing",
+        ),
+        (
+            "Незакрытый месяц",
+            "Общая прибыль скрывается; closedPeriodTotals выводится отдельно",
+        ),
+        (
+            "Закрытый неполный месяц",
+            "Исключается из closedPeriodTotals и выводится в excludedIncompletePeriods",
+        ),
+        ("Legacy P&L", "Не используется; API-блок pnl помечен deprecated"),
         (
             "1C без пары в Ozon",
             "Показывается в сверке и не распределяется в прибыль SKU",

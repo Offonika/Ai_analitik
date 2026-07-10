@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from zipfile import ZipFile
@@ -41,28 +41,46 @@ from wb_unit_economics.excel import (
 from wb_unit_economics.onec_opiu import OnecOpiuSummary
 
 
+def _complete_stock_history_csv(*, zero_date: date) -> str:
+    start = date(2026, 3, 1)
+    end = date(2026, 6, 17)
+    dates = []
+    current = start
+    while current <= end:
+        dates.append(current)
+        current += timedelta(days=1)
+    headers = ",".join(item.strftime("%d.%m.%Y") for item in dates)
+    values = ",".join("0" if item == zero_date else "3" for item in dates)
+    return f"NmID,VendorCode,Name,{headers}\n101,A-1,Product 1,{values}\n"
+
+
 def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> None:
     stock_history_dir = tmp_path / "wb_stock_history"
     stock_history_dir.mkdir()
     with ZipFile(stock_history_dir / "stock_history.zip", "w") as archive:
         archive.writestr(
             "stock.csv",
-            (
-                "NmID,VendorCode,Name,01.03.2026,02.03.2026\n"
-                "101,A-1,Product 1,3,2\n"
-            ),
+                (
+                    _complete_stock_history_csv(zero_date=date(2026, 3, 2))
+                ),
         )
     (stock_history_dir / "manifest.json").write_text(
         json.dumps(
             {
                 "period_start": "2026-03-01",
-                "period_end": "2026-06-17",
+                    "period_end": "2026-06-17",
+                    "stock_type": "wb",
                 "results": [
-                    {
-                        "status": "ok",
-                        "seller_account_id": "WB_ACCOUNT_1",
-                        "output_file": "stock_history.zip",
-                    }
+                        {
+                            "status": "ok",
+                            "seller_account_id": "WB_ACCOUNT_1",
+                            "output_file": "stock_history.zip",
+                        },
+                        {
+                            "status": "ok",
+                            "seller_account_id": "WB_ACCOUNT_2",
+                            "output_file": "stock_history.zip",
+                        },
                 ],
             },
             ensure_ascii=False,
@@ -342,8 +360,8 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert summary_values["Маржинальный доход WB до налогов"] == float(
         report.total_gross_profit
     )
-    assert summary_values["НДС"] == 47.62
-    assert summary_values["Маржинальный доход WB после налогов"] == float(
+    assert summary_values["НДС к уплате"] == 47.62
+    assert summary_values["Управленческая прибыль WB"] == float(
         report.total_profit_after_taxes
     )
     assert summary.tables
@@ -364,8 +382,13 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert (
         report_reconciliation.cell(2, report_idx["Выручка после СПП"] + 1).value == 1000
     )
-    assert report_reconciliation.cell(2, report_idx["НДС"] + 1).value == 47.62
-    assert report_reconciliation.cell(2, report_idx["Налог с выручки"] + 1).value == 10
+    assert (
+        report_reconciliation.cell(2, report_idx["НДС к уплате"] + 1).value == 47.62
+    )
+    assert (
+        report_reconciliation.cell(2, report_idx["Налог с выручки/НДФЛ"] + 1).value
+        == 10
+    )
     assert (
         report_reconciliation.cell(
             2, report_idx["Маржинальный доход WB до налогов"] + 1
@@ -374,7 +397,7 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     )
     assert (
         report_reconciliation.cell(
-            2, report_idx["Маржинальный доход WB после налогов"] + 1
+            2, report_idx["Управленческая прибыль WB"] + 1
         ).value
         == 512.38
     )
@@ -602,21 +625,36 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert unit_headers[unit_idx["СПП"]] == "СПП"
     assert unit_headers[unit_idx["% СПП"]] == "% СПП"
     assert unit_headers[unit_idx["Выручка после СПП"]] == "Выручка после СПП"
-    assert unit_headers[unit_idx["НДС"]] == "НДС"
+    assert unit_headers[unit_idx["НДС к уплате"]] == "НДС к уплате"
+    assert unit_headers[unit_idx["Исходящий НДС"]] == "Исходящий НДС"
+    assert unit_headers[unit_idx["Входящий НДС"]] == "Входящий НДС"
     assert unit_headers[unit_idx["Хранение WB"]] == "Хранение WB"
     assert unit_headers[unit_idx["Продвижение WB"]] == "Продвижение WB"
-    assert unit_headers[unit_idx["Налог с выручки"]] == "Налог с выручки"
     assert (
-        unit_headers[unit_idx["Маржинальный доход WB после налогов"]]
-        == "Маржинальный доход WB после налогов"
+        unit_headers[unit_idx["Налог с выручки/НДФЛ"]]
+        == "Налог с выручки/НДФЛ"
+    )
+    assert (
+        unit_headers[unit_idx["Управленческая прибыль WB"]]
+        == "Управленческая прибыль WB"
     )
     assert unit_headers[unit_idx["Причина статуса"]] == "Причина статуса"
     assert unit_headers[unit_idx["Статус СПП"]] == "Статус СПП"
-    assert unit_headers[unit_idx["Налоговый режим/ставка"]] == "Налоговый режим/ставка"
+    assert unit_headers[unit_idx["Налоговый метод"]] == "Налоговый метод"
     assert (
         unit_headers[unit_idx["Источник налогового профиля"]]
         == "Источник налогового профиля"
     )
+    assert (
+        unit_headers[unit_idx["Полнота налогового расчета"]]
+        == "Полнота налогового расчета"
+    )
+    assert unit_headers[unit_idx["Режим P&L НДС"]] == "Режим P&L НДС"
+    assert unit_headers[unit_idx["НДС входящий WB"]] == "НДС входящий WB"
+    assert unit_headers[unit_idx["НДС входящий 1С"]] == "НДС входящий 1С"
+    assert unit_headers[unit_idx["Расхождение НДС"]] == "Расхождение НДС"
+    assert unit_headers[unit_idx["Полнота НДС"]] == "Полнота НДС"
+    assert "Сверка входящего НДС" in workbook.sheetnames
     unit_rows = [
         row
         for row in unit_economics.iter_rows(min_row=2, max_col=len(unit_headers))
@@ -642,15 +680,20 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert unit_rows[0][unit_idx["Выручка после СПП"]].value == 1000
     assert unit_rows[0][unit_idx["Хранение WB"]].value == 20
     assert unit_rows[0][unit_idx["Продвижение WB"]].value == 0
-    assert unit_rows[0][unit_idx["Налог с выручки"]].value == 10
-    assert unit_rows[0][unit_idx["Маржинальный доход WB после налогов"]].value == 512.38
+    assert unit_rows[0][unit_idx["Налог с выручки/НДФЛ"]].value == 10
+    assert unit_rows[0][unit_idx["Управленческая прибыль WB"]].value == 512.38
+    assert unit_rows[0][unit_idx["Режим P&L НДС"]].value == "legacy_tax_layer"
     assert (
-        unit_rows[0][unit_idx["Налоговый режим/ставка"]].value
-        == "НДС внутри цены 5/105; УСН 1% от выручки"
+        unit_rows[0][unit_idx["Налоговый метод"]].value
+        == "legacy: НДС внутри цены 5/105; налог с выручки 1%"
     )
     assert (
         unit_rows[0][unit_idx["Источник налогового профиля"]].value
         == "legacy-default"
+    )
+    assert (
+        unit_rows[0][unit_idx["Полнота налогового расчета"]].value
+        == "legacy_complete"
     )
     assert unit_rows[0][unit_idx["Статус СПП"]].value == (
         "СПП не передается текущим источником"
@@ -669,7 +712,10 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
         liquidity_headers[liquidity_idx["МД4 после логистики и приемки"]]
         == "МД4 после логистики и приемки"
     )
-    assert liquidity_headers[liquidity_idx["МД после налогов"]] == "МД после налогов"
+    assert (
+        liquidity_headers[liquidity_idx["Упр. прибыль"]]
+        == "Упр. прибыль"
+    )
     assert (
         liquidity_headers[liquidity_idx["Статус ликвидности"]]
         == "Статус ликвидности"
@@ -677,12 +723,12 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert liquidity_headers[liquidity_idx["Статус данных"]] == "Статус данных"
     assert liquidity.tables
     liquidity_profit = sum(
-        row[liquidity_idx["МД после налогов"]].value or 0
+        row[liquidity_idx["Упр. прибыль"]].value or 0
         for row in liquidity.iter_rows(min_row=2, max_col=len(liquidity_headers))
         if row[liquidity_idx["Товар"]].value
     )
     unit_profit = sum(
-        row[unit_idx["Маржинальный доход WB после налогов"]].value or 0
+        row[unit_idx["Управленческая прибыль WB"]].value or 0
         for row in unit_economics.iter_rows(min_row=2, max_col=len(unit_headers))
         if row[unit_idx["Товар"]].value
     )
@@ -737,7 +783,7 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert "Возвраты, шт" in dashboard_labels
     assert "Выручка до СПП" in dashboard_labels
     assert "Выручка после СПП" in dashboard_labels
-    assert "Маржинальный доход WB после налогов" in dashboard_labels
+    assert "Управленческая прибыль WB" in dashboard_labels
     assert "Доля возвратов" in dashboard_labels
     assert "Убыточных SKU" in dashboard_labels
     assert dashboard.tables
@@ -760,8 +806,8 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert return_headers[return_idx["Баркод"]] == "Баркод"
     assert return_headers[return_idx["Причина возврата"]] == "Причина возврата"
     assert (
-        return_headers[return_idx["Маржинальный доход WB после налогов"]]
-        == "Маржинальный доход WB после налогов"
+        return_headers[return_idx["Управленческая прибыль WB"]]
+        == "Управленческая прибыль WB"
     )
     return_rows = [
         row
@@ -776,14 +822,18 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
         "Причина возврата не передается текущими источниками"
     )
     lost_sales = workbook["Упущенные продажи"]
-    assert lost_sales["A1"].value == "Упущенные продажи: предварительная оценка"
+    assert lost_sales["A1"].value == (
+        "Оценка недополученного маржинального дохода до налогов"
+    )
     assert lost_sales.row_dimensions[2].height == 18
     assert lost_sales.row_dimensions[3].height == 18
     assert lost_sales["A14"].value == "Кабинет WB"
     assert lost_sales["H14"].value == "Дней без остатка WB"
     assert lost_sales["J14"].value == "Остаток 1С на складах, шт"
     assert lost_sales["K14"].value == "Склады 1С с остатком"
-    assert lost_sales["P14"].value == "Потенциально упущенная прибыль"
+    assert lost_sales["P14"].value == (
+        "Оценка недополученного маржинального дохода до налогов"
+    )
     lost_headers = [cell.value for cell in lost_sales[14]]
     lost_idx = {header: index for index, header in enumerate(lost_headers)}
     product_1_lost_rows = [

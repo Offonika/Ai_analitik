@@ -433,6 +433,7 @@ def extract_gross_profit_document_rows(
                 "revenue": Decimal("0"),
                 "vat": Decimal("0"),
                 "cogs": Decimal("0"),
+                "cogs_without_vat": Decimal("0"),
                 "settlement_total": None,
                 "rows": 0,
             },
@@ -446,6 +447,9 @@ def extract_gross_profit_document_rows(
         group["revenue"] += decimal_from_value(record.get("Сумма"))
         group["vat"] += decimal_from_value(record.get("СуммаНДС"))
         group["cogs"] += decimal_from_value(record.get("Себестоимость"))
+        group["cogs_without_vat"] += decimal_from_value(
+            record.get("СебестоимостьБезНДС")
+        )
         settlement_total = _settlement_total_from_record(record)
         if settlement_total is not None and group["settlement_total"] is None:
             group["settlement_total"] = settlement_total
@@ -462,11 +466,7 @@ def extract_gross_profit_document_rows(
             week_start,
             week_end,
         ) = key
-        if (
-            group["quantity"] == 0
-            and group["revenue"] == 0
-            and group["cogs"] == 0
-        ):
+        if group["quantity"] == 0 and group["revenue"] == 0 and group["cogs"] == 0:
             continue
         result.append(
             OnecGrossProfitDocumentRow(
@@ -484,6 +484,7 @@ def extract_gross_profit_document_rows(
                 revenue=group["revenue"],
                 vat=group["vat"],
                 cogs=group["cogs"],
+                cogs_without_vat=group["cogs_without_vat"],
                 gross_profit=group["revenue"] - group["cogs"],
                 settlement_total=group["settlement_total"],
                 source_row_count=int(group["rows"]),
@@ -576,9 +577,8 @@ def _is_fixed_receipt(record: Mapping[str, Any]) -> bool:
     if not _parse_bool(record.get("Active"), default=True):
         return False
     record_type = _text(record.get("RecordType")).lower()
-    return (
-        record_type in RECEIPT_RECORD_TYPES
-        and _parse_bool(record.get("ФиксированнаяСтоимость"), default=False)
+    return record_type in RECEIPT_RECORD_TYPES and _parse_bool(
+        record.get("ФиксированнаяСтоимость"), default=False
     )
 
 
@@ -599,9 +599,8 @@ def _filter_marketplace_counterparties(
     marketplace_keys = {
         (_text(record.get("Организация_Key")), _text(record.get("Контрагент_Key")))
         for record in records
-        if "отчеткомиссионера" in _text(
-            record.get("Документ_Type") or record.get("Recorder_Type")
-        ).lower()
+        if "отчеткомиссионера"
+        in _text(record.get("Документ_Type") or record.get("Recorder_Type")).lower()
     }
     if not marketplace_keys:
         return records

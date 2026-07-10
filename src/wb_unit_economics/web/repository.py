@@ -4,19 +4,34 @@ import csv
 import hashlib
 import re
 import uuid
+from calendar import monthrange
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy import and_, case, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from wb_unit_economics.calculation import (
+    tax_profile_is_confirmed,
+    tax_profile_is_osno,
+)
+from wb_unit_economics.config import (
+    tax_profile_source_diagnostic,
+    tax_profiles_from_account_org_mapping,
+)
+from wb_unit_economics.contracts import (
+    AccountOrgMapping,
+    TaxProfile,
+    VatDeductionMode,
+    VatMode,
+)
 from wb_unit_economics.liquidity import (
     GROUP_FIELDS,
     aggregate_liquidity_rows,
@@ -24,7 +39,9 @@ from wb_unit_economics.liquidity import (
     liquidity_statuses,
 )
 from wb_unit_economics.ozon_mart import (
+    _onec_commissioner_revenue_by_item,
     build_ozon_unit_economics_mart,
+    combine_ozon_monthly_marts,
     empty_ozon_mart_payload,
 )
 from wb_unit_economics.web import providers, security
@@ -40,6 +57,11 @@ from wb_unit_economics.web.models import (
     ConsultingFirm,
     DataRefreshJob,
     LiveCheckCache,
+    Marketplace1cCurrentMapping,
+    MarketplaceMappingItem,
+    OnecMappingItem,
+    OrganizationTaxProfile,
+    OrganizationTaxProfileOverride,
     ReportArtifact,
     ReportDocumentReconciliationRow,
     ReportLostSalesRow,
@@ -68,6 +90,29 @@ BLOCKED_SOURCE_REFRESH_STATUSES = {"blocked_active_refresh", "blocked_low_disk"}
 READINESS_REVIEW_RATIO = 0.20
 READINESS_REVIEW_MIN_ROWS = 3
 REPORT_ROWS_MAX_LIMIT = 1000
+PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO = "without_vat_for_osno"
+EXPENSE_FIELD_LABELS: tuple[tuple[str, str], ...] = (
+    ("Себестоимость 1С", "cost"),
+    ("Комиссия WB", "commission"),
+    ("Логистика WB", "logistics"),
+    ("Хранение WB", "storage"),
+    ("Приемка WB", "acceptance"),
+    ("WB Продвижение", "promotion"),
+    ("Штрафы/доплаты WB", "penalties"),
+    ("Эквайринг WB", "acquiring"),
+)
+SERVICE_EXPENSE_FIELDS = (
+    "commission",
+    "logistics",
+    "storage",
+    "acceptance",
+    "promotion",
+    "penalties",
+    "acquiring",
+)
+VAT_ELIGIBLE_SERVICE_EXPENSE_FIELDS = tuple(
+    field for field in SERVICE_EXPENSE_FIELDS if field != "penalties"
+)
 READINESS_LABELS = {
     "ready": "Готов к отправке",
     "needs_review": "Нужна проверка",
@@ -88,6 +133,15 @@ SOURCE_LOAD_FAILED_MARKERS = (
     "schema",
     "needs_configuration",
 )
+
+
+class ReportPublicationBlocked(ValueError):
+    def __init__(self, blockers: list[dict[str, Any]]) -> None:
+        self.blockers = blockers
+        codes = ", ".join(as_text(item.get("code")) for item in blockers)
+        super().__init__(f"financial publication blocked: {codes}")
+
+
 OZON_DIAGNOSTIC_FINANCE_SOURCE = "ozon_finance_cash_flow"
 OZON_DIAGNOSTIC_PRODUCT_SOURCE = "ozon_products_report"
 OZON_REALIZATION_SOURCE = "ozon_realization"
@@ -164,12 +218,6 @@ INTEGRATION_STATUSES = {
     "disabled",
 }
 
-MONTH_ORDER = [
-    "Март 2026",
-    "Апрель 2026",
-    "Май 2026",
-    "Июнь 2026 (неполный месяц)",
-]
 RU_MONTH_NAMES = {
     1: "Январь",
     2: "Февраль",
@@ -184,6 +232,7 @@ RU_MONTH_NAMES = {
     11: "Ноябрь",
     12: "Декабрь",
 }
+RU_MONTH_NUMBERS = {name.casefold(): number for number, name in RU_MONTH_NAMES.items()}
 
 
 def new_id(prefix: str) -> str:
@@ -485,6 +534,368 @@ def ensure_client_company(
     return company
 
 
+def set_client_company_onec_organization(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+    company_id: str,
+    onec_organization_id: str,
+) -> ClientCompany:
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    company = db.get(ClientCompany, company_id)
+    if company is None or company.client_id != client.id:
+        raise LookupError("client company not found")
+    organization_id = onec_organization_id.strip()
+    if organization_id and not _onec_organization_exists(
+        db,
+        client_id=client.id,
+        organization_id=organization_id,
+    ):
+        raise ValueError("1C organization is not present in the latest snapshot")
+    previous = company.onec_organization_id
+    company.onec_organization_id = organization_id
+    company.updated_at = security.utcnow()
+    audit(
+        db,
+        action="client_company_onec_organization_changed",
+        user=user,
+        tenant_id=client.tenant_id,
+        entity_type="client_company",
+        entity_id=company.id,
+        payload={
+            "previousOrganizationId": previous,
+            "newOrganizationId": organization_id,
+        },
+    )
+    return company
+
+
+def onec_organizations_payload(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+) -> dict[str, Any]:
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    latest = db.scalar(
+        select(SourceRefreshRun)
+        .where(
+            SourceRefreshRun.client_id == client.id,
+            SourceRefreshRun.status.in_(
+                {"source_loaded", "needs_review", "report_created"}
+            ),
+        )
+        .order_by(SourceRefreshRun.created_at.desc())
+    )
+    if latest is None:
+        return {"refreshRunId": None, "items": []}
+    items: dict[str, dict[str, str]] = {}
+    for row in db.scalars(
+        select(SourceSnapshotRow).where(
+            SourceSnapshotRow.refresh_run_id == latest.id,
+            SourceSnapshotRow.source_type == "onec_organizations",
+        )
+    ):
+        payload = row.row_payload or {}
+        organization_id = _safe_payload_text(payload, "Ref_Key")
+        if not organization_id:
+            continue
+        items[organization_id] = {
+            "id": organization_id,
+            "name": _safe_payload_text(
+                payload,
+                "Description",
+                "НаименованиеПолное",
+                "НаименованиеСокращенное",
+            ),
+        }
+    return {
+        "refreshRunId": latest.id,
+        "items": sorted(
+            items.values(),
+            key=lambda item: (item["name"].casefold(), item["id"]),
+        ),
+    }
+
+
+def create_tax_profile_override(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+    company_id: str,
+    tax_system: str,
+    vat_rate: Decimal,
+    vat_mode: str,
+    vat_deduction_mode: str,
+    revenue_tax_rate: Decimal,
+    income_tax_kind: str,
+    valid_from: date,
+    valid_to: date | None,
+    reason: str,
+) -> OrganizationTaxProfileOverride:
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    company = db.get(ClientCompany, company_id)
+    if company is None or company.client_id != client.id:
+        raise LookupError("client company not found")
+    if not company.onec_organization_id:
+        raise ValueError("link the company to a 1C organization first")
+    if not tax_system.strip():
+        raise ValueError("tax system is required")
+    if vat_mode not in {item.value for item in VatMode}:
+        raise ValueError("unsupported VAT mode")
+    if vat_deduction_mode not in {item.value for item in VatDeductionMode}:
+        raise ValueError("unsupported VAT deduction mode")
+    if vat_rate < 0 or revenue_tax_rate < 0:
+        raise ValueError("tax rates must be non-negative")
+    if valid_to is not None and valid_to < valid_from:
+        raise ValueError("valid_to must be on or after valid_from")
+    if not reason.strip():
+        raise ValueError("override reason is required")
+    overlap_conditions = [
+        OrganizationTaxProfileOverride.client_company_id == company.id,
+        OrganizationTaxProfileOverride.status == "active",
+        or_(
+            OrganizationTaxProfileOverride.valid_to.is_(None),
+            OrganizationTaxProfileOverride.valid_to >= valid_from,
+        ),
+    ]
+    if valid_to is not None:
+        overlap_conditions.append(OrganizationTaxProfileOverride.valid_from <= valid_to)
+    overlap = db.scalar(
+        select(OrganizationTaxProfileOverride.id).where(*overlap_conditions)
+    )
+    if overlap is not None:
+        raise ValueError("active tax profile override overlaps this period")
+    now = security.utcnow()
+    override = OrganizationTaxProfileOverride(
+        id=_stable_entity_id(
+            "tax_override",
+            company.id,
+            valid_from.isoformat(),
+            tax_system,
+            str(uuid.uuid4()),
+        ),
+        tenant_id=client.tenant_id,
+        client_id=client.id,
+        client_company_id=company.id,
+        organization_id=company.onec_organization_id,
+        tax_system=tax_system.strip(),
+        vat_rate=vat_rate,
+        vat_mode=vat_mode,
+        vat_deduction_mode=vat_deduction_mode,
+        revenue_tax_rate=revenue_tax_rate,
+        income_tax_kind=income_tax_kind.strip(),
+        valid_from=valid_from,
+        valid_to=valid_to,
+        status="active",
+        reason=reason.strip(),
+        created_by_user_id=user.id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(override)
+    audit(
+        db,
+        action="tax_profile_override_created",
+        user=user,
+        tenant_id=client.tenant_id,
+        entity_type="tax_profile_override",
+        entity_id=override.id,
+        payload={
+            "clientCompanyId": company.id,
+            "organizationId": company.onec_organization_id,
+            "validFrom": valid_from.isoformat(),
+            "validTo": valid_to.isoformat() if valid_to else None,
+            "taxSystem": override.tax_system,
+        },
+    )
+    return override
+
+
+def disable_tax_profile_override(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+    company_id: str,
+    override_id: str,
+) -> OrganizationTaxProfileOverride:
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    override = db.get(OrganizationTaxProfileOverride, override_id)
+    if (
+        override is None
+        or override.client_id != client.id
+        or override.client_company_id != company_id
+    ):
+        raise LookupError("tax profile override not found")
+    override.status = "disabled"
+    override.updated_at = security.utcnow()
+    audit(
+        db,
+        action="tax_profile_override_disabled",
+        user=user,
+        tenant_id=client.tenant_id,
+        entity_type="tax_profile_override",
+        entity_id=override.id,
+        payload={"clientCompanyId": company_id},
+    )
+    return override
+
+
+def resolve_company_tax_profile(
+    db: Session,
+    *,
+    company: ClientCompany | None,
+    calculation_date: date,
+    refresh_run: SourceRefreshRun | None = None,
+) -> tuple[TaxProfile | None, dict[str, Any]]:
+    if company is None or not company.onec_organization_id:
+        return None, {
+            "status": "missing_company_link",
+            "source": "missing",
+            "message": "Компания не связана с организацией 1C.",
+        }
+    source_conditions = [
+        OrganizationTaxProfile.client_company_id == company.id,
+        OrganizationTaxProfile.organization_id == company.onec_organization_id,
+        OrganizationTaxProfile.status == "active",
+        or_(
+            OrganizationTaxProfile.valid_from.is_(None),
+            OrganizationTaxProfile.valid_from <= calculation_date,
+        ),
+        or_(
+            OrganizationTaxProfile.valid_to.is_(None),
+            OrganizationTaxProfile.valid_to >= calculation_date,
+        ),
+    ]
+    if refresh_run is not None:
+        source_conditions.append(
+            OrganizationTaxProfile.source_refresh_run_id == refresh_run.id
+        )
+    source_profiles = list(
+        db.scalars(
+            select(OrganizationTaxProfile)
+            .where(*source_conditions)
+            .order_by(
+                OrganizationTaxProfile.valid_from.desc(),
+                OrganizationTaxProfile.created_at.desc(),
+            )
+        )
+    )
+    if refresh_run is None and source_profiles:
+        latest_profile_run_id = source_profiles[0].source_refresh_run_id
+        source_profiles = [
+            item
+            for item in source_profiles
+            if item.source_refresh_run_id == latest_profile_run_id
+        ]
+    if len(source_profiles) > 1:
+        return None, {
+            "status": "conflict",
+            "source": "1c",
+            "message": "В 1C найдено несколько налоговых профилей на дату.",
+        }
+    if source_profiles:
+        item = source_profiles[0]
+        return _tax_profile_from_model(company.client_id, item), {
+            "status": "ready",
+            "source": item.source,
+            "profileId": item.id,
+            "manualOverride": False,
+        }
+    overrides = list(
+        db.scalars(
+            select(OrganizationTaxProfileOverride)
+            .where(
+                OrganizationTaxProfileOverride.client_company_id == company.id,
+                OrganizationTaxProfileOverride.organization_id
+                == company.onec_organization_id,
+                OrganizationTaxProfileOverride.status == "active",
+                OrganizationTaxProfileOverride.valid_from <= calculation_date,
+                or_(
+                    OrganizationTaxProfileOverride.valid_to.is_(None),
+                    OrganizationTaxProfileOverride.valid_to >= calculation_date,
+                ),
+            )
+            .order_by(OrganizationTaxProfileOverride.valid_from.desc())
+        )
+    )
+    if len(overrides) > 1:
+        return None, {
+            "status": "conflict",
+            "source": "manual_override",
+            "message": "Несколько ручных налоговых профилей действуют одновременно.",
+        }
+    if overrides:
+        item = overrides[0]
+        return _tax_profile_from_model(company.client_id, item), {
+            "status": "override",
+            "source": "manual_override",
+            "profileId": item.id,
+            "manualOverride": True,
+            "reason": item.reason,
+        }
+    return None, {
+        "status": "missing",
+        "source": "missing",
+        "message": "Налоговый профиль организации на дату не найден.",
+    }
+
+
+def _tax_profile_from_model(client_id: str, item: Any) -> TaxProfile:
+    return TaxProfile(
+        client_id=client_id,
+        organization_id=item.organization_id,
+        tax_system=item.tax_system,
+        vat_rate=item.vat_rate,
+        vat_mode=VatMode(item.vat_mode),
+        vat_deduction_mode=VatDeductionMode(
+            getattr(item, "vat_deduction_mode", "unknown") or "unknown"
+        ),
+        revenue_tax_rate=item.revenue_tax_rate,
+        income_tax_kind=item.income_tax_kind,
+        valid_from=item.valid_from,
+        valid_to=item.valid_to,
+        source=("manual_override" if hasattr(item, "reason") else item.source),
+    )
+
+
+def _onec_organization_exists(
+    db: Session,
+    *,
+    client_id: str,
+    organization_id: str,
+) -> bool:
+    latest = db.scalar(
+        select(SourceRefreshRun)
+        .where(
+            SourceRefreshRun.client_id == client_id,
+            SourceRefreshRun.status.in_(
+                {"source_loaded", "needs_review", "report_created"}
+            ),
+        )
+        .order_by(SourceRefreshRun.created_at.desc())
+    )
+    if latest is None:
+        return False
+    return (
+        db.scalar(
+            select(SourceSnapshotRow.id).where(
+                SourceSnapshotRow.refresh_run_id == latest.id,
+                SourceSnapshotRow.source_type == "onec_organizations",
+                SourceSnapshotRow.row_payload["Ref_Key"].as_string() == organization_id,
+            )
+        )
+        is not None
+    )
+
+
 def ensure_wb_cabinet(
     db: Session,
     *,
@@ -502,6 +913,14 @@ def ensure_wb_cabinet(
     cabinet_id = _stable_entity_id("wb", client_id, key)
     now = security.utcnow()
     cabinet = db.get(WbCabinet, cabinet_id)
+    if cabinet is None:
+        cabinet = _matching_wb_cabinet(
+            db,
+            client_id=client_id,
+            label=label,
+            cabinet_key=key,
+            provider=provider,
+        )
     if cabinet is None:
         cabinet = WbCabinet(
             id=cabinet_id,
@@ -524,6 +943,227 @@ def ensure_wb_cabinet(
             cabinet.client_company_id = client_company_id
         cabinet.updated_at = now
     return cabinet
+
+
+def _matching_wb_cabinet(
+    db: Session,
+    *,
+    client_id: str,
+    label: str,
+    cabinet_key: str,
+    provider: str,
+) -> WbCabinet | None:
+    label_key = _stable_key(label)
+    identity_filters = []
+    if label:
+        identity_filters.append(WbCabinet.display_name == label)
+    if label_key:
+        identity_filters.append(WbCabinet.cabinet_key == label_key)
+    if provider:
+        identity_filters.append(WbCabinet.provider == provider)
+    if cabinet_key:
+        identity_filters.append(WbCabinet.cabinet_key == cabinet_key)
+    if not identity_filters:
+        return None
+    candidates = list(
+        db.scalars(
+            select(WbCabinet).where(
+                WbCabinet.client_id == client_id,
+                or_(*identity_filters),
+            )
+        )
+    )
+    if not candidates:
+        return None
+
+    def sort_key(item: WbCabinet) -> tuple[int, int, int, int, datetime, str]:
+        display_match = int(not label or item.display_name != label)
+        label_key_match = int(not label_key or item.cabinet_key != label_key)
+        provider_match = int(not provider or item.provider != provider)
+        active_match = int(item.status != "active")
+        return (
+            display_match,
+            label_key_match,
+            provider_match,
+            active_match,
+            _as_aware(item.created_at),
+            item.id,
+        )
+
+    return sorted(candidates, key=sort_key)[0]
+
+
+def dedupe_wb_cabinets(
+    db: Session,
+    *,
+    tenant_id: str = "",
+    client_id: str = "",
+) -> dict[str, int]:
+    conditions = []
+    if tenant_id:
+        conditions.append(WbCabinet.tenant_id == tenant_id)
+    if client_id:
+        conditions.append(WbCabinet.client_id == client_id)
+    cabinets = list(
+        db.scalars(select(WbCabinet).where(*conditions).order_by(WbCabinet.id))
+    )
+    groups: dict[tuple[str, str], list[WbCabinet]] = defaultdict(list)
+    for cabinet in cabinets:
+        normalized_name = _stable_key(cabinet.display_name)
+        if not normalized_name:
+            continue
+        groups[(cabinet.client_id, normalized_name)].append(cabinet)
+
+    integration_refs = _wb_integration_refs(db, tenant_id=tenant_id)
+    counts: dict[str, int] = {
+        "duplicate_groups": 0,
+        "merged_cabinets": 0,
+        "tenant_integrations": 0,
+    }
+    reference_models = (
+        ReportUnitRow,
+        ReportLostSalesRow,
+        ReportDocumentReconciliationRow,
+        SourceLoad,
+        SourceRefreshCollection,
+        SourceSnapshotRow,
+        MarketplaceMappingItem,
+    )
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        counts["duplicate_groups"] += 1
+        canonical = _canonical_wb_cabinet(group, integration_refs)
+        duplicates = [item for item in group if item.id != canonical.id]
+        for duplicate in duplicates:
+            _merge_wb_cabinet_fields(canonical, duplicate)
+            counts["tenant_integrations"] += _retarget_integration_wb_cabinet(
+                db,
+                old_id=duplicate.id,
+                new_cabinet=canonical,
+            )
+            for model in reference_models:
+                key = model.__tablename__
+                counts[key] = counts.get(key, 0) + _retarget_wb_cabinet_model(
+                    db,
+                    model,
+                    old_id=duplicate.id,
+                    new_id=canonical.id,
+                    tenant_id=canonical.tenant_id,
+                    client_id=canonical.client_id,
+                )
+            db.delete(duplicate)
+            counts["merged_cabinets"] += 1
+        canonical.updated_at = security.utcnow()
+    db.flush()
+    return counts
+
+
+def _wb_integration_refs(
+    db: Session, *, tenant_id: str = ""
+) -> dict[str, list[TenantIntegration]]:
+    conditions = []
+    if tenant_id:
+        conditions.append(TenantIntegration.tenant_id == tenant_id)
+    refs: dict[str, list[TenantIntegration]] = defaultdict(list)
+    for integration in db.scalars(select(TenantIntegration).where(*conditions)):
+        if integration_provider_base(integration.provider) != "wb_api":
+            continue
+        payload = integration.config_payload or {}
+        wb_cabinet_id = str(payload.get("wbCabinetId") or "").strip()
+        if wb_cabinet_id:
+            refs[wb_cabinet_id].append(integration)
+    return refs
+
+
+def _canonical_wb_cabinet(
+    cabinets: list[WbCabinet],
+    integration_refs: dict[str, list[TenantIntegration]],
+) -> WbCabinet:
+    integration_providers = {
+        integration.provider
+        for refs in integration_refs.values()
+        for integration in refs
+    }
+
+    def sort_key(item: WbCabinet) -> tuple[int, int, int, int, datetime, str]:
+        return (
+            int(not integration_refs.get(item.id)),
+            int(not item.provider or item.provider not in integration_providers),
+            int(not item.provider),
+            int(item.status != "active"),
+            _as_aware(item.created_at),
+            item.id,
+        )
+
+    return sorted(cabinets, key=sort_key)[0]
+
+
+def _merge_wb_cabinet_fields(canonical: WbCabinet, duplicate: WbCabinet) -> None:
+    if not canonical.client_company_id and duplicate.client_company_id:
+        canonical.client_company_id = duplicate.client_company_id
+    if not canonical.provider and duplicate.provider:
+        canonical.provider = duplicate.provider
+    if canonical.status != "active" and duplicate.status == "active":
+        canonical.status = "active"
+    if not canonical.display_name and duplicate.display_name:
+        canonical.display_name = duplicate.display_name
+
+
+def _retarget_integration_wb_cabinet(
+    db: Session,
+    *,
+    old_id: str,
+    new_cabinet: WbCabinet,
+) -> int:
+    changed = 0
+    for integration in db.scalars(
+        select(TenantIntegration).where(
+            TenantIntegration.tenant_id == new_cabinet.tenant_id
+        )
+    ):
+        if integration_provider_base(integration.provider) != "wb_api":
+            continue
+        payload = dict(integration.config_payload or {})
+        if payload.get("wbCabinetId") != old_id:
+            continue
+        payload["wbCabinetId"] = new_cabinet.id
+        payload["cabinetName"] = payload.get("cabinetName") or new_cabinet.display_name
+        if new_cabinet.client_company_id and not payload.get("clientCompanyId"):
+            payload["clientCompanyId"] = new_cabinet.client_company_id
+        integration.config_payload = payload
+        integration.updated_at = security.utcnow()
+        changed += 1
+    return changed
+
+
+def _retarget_wb_cabinet_model(
+    db: Session,
+    model: type[ReportUnitRow]
+    | type[ReportLostSalesRow]
+    | type[ReportDocumentReconciliationRow]
+    | type[SourceLoad]
+    | type[SourceRefreshCollection]
+    | type[SourceSnapshotRow]
+    | type[MarketplaceMappingItem],
+    *,
+    old_id: str,
+    new_id: str,
+    tenant_id: str,
+    client_id: str,
+) -> int:
+    conditions = [model.wb_cabinet_id == old_id]
+    if hasattr(model, "tenant_id"):
+        conditions.append(model.tenant_id == tenant_id)
+    if hasattr(model, "client_id"):
+        conditions.append(model.client_id == client_id)
+    result = db.execute(
+        update(model)
+        .where(*conditions)
+        .values(wb_cabinet_id=new_id)
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
 
 
 def create_client_workspace(
@@ -760,19 +1400,58 @@ def client_payload(db: Session, user: User, client: Client) -> dict[str, Any]:
     }
 
 
-def _client_companies_payload(db: Session, client: Client) -> list[dict[str, str]]:
-    return [
-        {
-            "id": item.id,
-            "label": item.display_name,
-            "status": item.status,
-        }
-        for item in db.scalars(
-            select(ClientCompany)
-            .where(ClientCompany.client_id == client.id)
-            .order_by(ClientCompany.display_name, ClientCompany.id)
+def _client_companies_payload(db: Session, client: Client) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in db.scalars(
+        select(ClientCompany)
+        .where(ClientCompany.client_id == client.id)
+        .order_by(ClientCompany.display_name, ClientCompany.id)
+    ):
+        profile, profile_status = resolve_company_tax_profile(
+            db,
+            company=item,
+            calculation_date=security.utcnow().date(),
         )
-    ]
+        if profile is not None and not tax_profile_is_confirmed(profile):
+            profile_status = {
+                **profile_status,
+                "status": "unconfirmed",
+                "message": (
+                    "Налоговый профиль найден, но право на вычет или методика "
+                    "не подтверждены."
+                ),
+            }
+        result.append(
+            {
+                "id": item.id,
+                "label": item.display_name,
+                "status": item.status,
+                "onecOrganizationId": item.onec_organization_id,
+                "taxProfileStatus": profile_status.get("status") or "missing",
+                "taxProfileSource": profile_status.get("source") or "missing",
+                "taxSystem": profile.tax_system if profile else "",
+                "vatRate": float(profile.vat_rate) if profile else None,
+                "vatMode": profile.vat_mode.value if profile else "",
+                "vatDeductionMode": (
+                    profile.vat_deduction_mode.value if profile else "unknown"
+                ),
+                "revenueTaxRate": (
+                    float(profile.revenue_tax_rate) if profile else None
+                ),
+                "taxProfileValidFrom": (
+                    profile.valid_from.isoformat()
+                    if profile and profile.valid_from
+                    else None
+                ),
+                "taxProfileValidTo": (
+                    profile.valid_to.isoformat()
+                    if profile and profile.valid_to
+                    else None
+                ),
+                "taxProfileManualOverride": bool(profile_status.get("manualOverride")),
+            }
+        )
+    return result
 
 
 def _client_cabinets_payload(db: Session, client: Client) -> list[dict[str, str]]:
@@ -805,9 +1484,9 @@ def list_tenant_integrations(
     require_staff(user, tenant_id)
     existing = []
     for item in db.scalars(
-            select(TenantIntegration)
-            .where(TenantIntegration.tenant_id == tenant_id)
-            .order_by(TenantIntegration.provider)
+        select(TenantIntegration)
+        .where(TenantIntegration.tenant_id == tenant_id)
+        .order_by(TenantIntegration.provider)
     ):
         if providers.is_supported_provider(item.provider):
             existing.append(item)
@@ -1013,6 +1692,37 @@ def record_tenant_integration_check(
     return integration
 
 
+def record_tenant_integration_runtime_check(
+    db: Session,
+    *,
+    tenant_id: str,
+    provider: str,
+    status: str,
+    message: str,
+    check_payload: dict[str, Any],
+) -> TenantIntegration | None:
+    """Store scheduler health separately from the last manual integration check."""
+
+    _validate_integration_provider(provider)
+    if status not in {"check_ok", "check_failed"}:
+        raise ValueError("unsupported runtime integration check status")
+    integration = _tenant_integration(db, tenant_id, provider)
+    if integration is None:
+        return None
+    now = security.utcnow()
+    config_payload = dict(integration.config_payload or {})
+    config_payload["lastRuntimeCheck"] = {
+        "status": status,
+        "message": message[:1000],
+        "checkedAt": now.isoformat(),
+        **check_payload,
+    }
+    integration.config_payload = config_payload
+    integration.updated_at = now
+    db.flush()
+    return integration
+
+
 def disable_tenant_integration(
     db: Session,
     *,
@@ -1068,8 +1778,13 @@ def tenant_integration_payload(
             "readOnly": True,
             "storageMode": "none",
             "lastCheck": None,
+            "runtimeStatus": "",
+            "runtimeCheckedAt": None,
+            "runtimeMessage": "",
+            "lastRuntimeCheck": None,
         }
     config_payload = integration.config_payload or {}
+    runtime_check = config_payload.get("lastRuntimeCheck") or {}
     return {
         "tenantId": integration.tenant_id,
         "provider": integration.provider,
@@ -1103,6 +1818,10 @@ def tenant_integration_payload(
         "readOnly": True,
         "storageMode": config_payload.get("storage", "hash_only"),
         "lastCheck": config_payload.get("lastCheck"),
+        "runtimeStatus": runtime_check.get("status", ""),
+        "runtimeCheckedAt": runtime_check.get("checkedAt"),
+        "runtimeMessage": runtime_check.get("message", ""),
+        "lastRuntimeCheck": runtime_check or None,
     }
 
 
@@ -1299,18 +2018,19 @@ def list_reports_for_user(
     tenant_ids = allowed_tenant_ids(user)
     if not tenant_ids:
         return []
-    return list(
+    reports = list(
         db.scalars(
             select(ReportRun)
             .where(ReportRun.tenant_id.in_(tenant_ids))
             .order_by(ReportRun.is_current.desc(), ReportRun.generated_at.desc())
         )
     )
+    return [report for report in reports if _report_visible_to_user(user, report)]
 
 
 def list_reports_for_client(db: Session, user: User, client_id: str) -> list[ReportRun]:
     client = require_client_access(db, user, client_id)
-    return list(
+    reports = list(
         db.scalars(
             select(ReportRun)
             .where(
@@ -1320,6 +2040,7 @@ def list_reports_for_client(db: Session, user: User, client_id: str) -> list[Rep
             .order_by(ReportRun.is_current.desc(), ReportRun.generated_at.desc())
         )
     )
+    return [report for report in reports if _report_visible_to_user(user, report)]
 
 
 def latest_report_for_user(
@@ -1369,7 +2090,11 @@ def latest_report_for_client(
 
 def require_report(db: Session, user: User, report_id: str) -> ReportRun:
     report = db.get(ReportRun, report_id)
-    if report is None or report.tenant_id not in allowed_tenant_ids(user):
+    if (
+        report is None
+        or report.tenant_id not in allowed_tenant_ids(user)
+        or not _report_visible_to_user(user, report)
+    ):
         raise PermissionError("report access denied")
     return report
 
@@ -1387,9 +2112,16 @@ def require_report_for_client(
         report is None
         or report.tenant_id != client.tenant_id
         or report.client_id != client.id
+        or not _report_visible_to_user(user, report)
     ):
         raise PermissionError("report access denied")
     return report
+
+
+def _report_visible_to_user(user: User, report: ReportRun) -> bool:
+    if has_role(user, STAFF_ROLES, report.tenant_id):
+        return True
+    return report.publication_status == "published" and report.is_current
 
 
 def active_data_refresh_job(db: Session, report: ReportRun) -> DataRefreshJob | None:
@@ -1535,9 +2267,7 @@ def active_source_refresh_run(
     )
     if client_id:
         statement = statement.where(SourceRefreshRun.client_id == client_id)
-    return db.scalar(
-        statement.order_by(SourceRefreshRun.created_at.desc())
-    )
+    return db.scalar(statement.order_by(SourceRefreshRun.created_at.desc()))
 
 
 def active_conflicting_source_refresh_run(
@@ -1567,15 +2297,16 @@ def latest_source_refresh_run(
     tenant_id: str,
     client_id: str | None = None,
     mode: str | None = None,
+    include_dry_run: bool = True,
 ) -> SourceRefreshRun | None:
     statement = select(SourceRefreshRun).where(SourceRefreshRun.tenant_id == tenant_id)
     if client_id:
         statement = statement.where(SourceRefreshRun.client_id == client_id)
     if mode:
         statement = statement.where(SourceRefreshRun.mode == mode)
-    return db.scalar(
-        statement.order_by(SourceRefreshRun.created_at.desc())
-    )
+    if not include_dry_run:
+        statement = statement.where(SourceRefreshRun.dry_run.is_(False))
+    return db.scalar(statement.order_by(SourceRefreshRun.created_at.desc()))
 
 
 def require_source_refresh_run(
@@ -1605,6 +2336,7 @@ def create_source_refresh_run(
     client_id: str | None = None,
     user: User | None = None,
     source_report: ReportRun | None = None,
+    resumed_from_run: SourceRefreshRun | None = None,
     reason: str = "",
     enforce_active_check: bool = True,
 ) -> SourceRefreshRun:
@@ -1628,6 +2360,7 @@ def create_source_refresh_run(
         requested_by_user_id=user.id if user else None,
         source_report_run_id=source_report.id if source_report else None,
         new_report_run_id=None,
+        resumed_from_run_id=resumed_from_run.id if resumed_from_run else None,
         mode=mode,
         credential_source=credential_source,
         dry_run=dry_run,
@@ -1658,6 +2391,7 @@ def create_source_refresh_run(
             "snapshotSetId": snapshot_set_id,
             "periodStart": period_start.isoformat(),
             "periodEnd": period_end.isoformat(),
+            "resumedFromRunId": resumed_from_run.id if resumed_from_run else None,
         },
     )
     return refresh_run
@@ -1701,6 +2435,7 @@ def add_source_refresh_collection(
     source_type: str,
     source_label: str,
     required: bool,
+    publication_required: bool = False,
     status: str,
     snapshot_hash: str = "",
     row_count: int = 0,
@@ -1723,6 +2458,7 @@ def add_source_refresh_collection(
         source_type=source_type[:120],
         source_label=source_label[:300],
         required=required,
+        publication_required=publication_required,
         status=status[:80],
         snapshot_hash=snapshot_hash[:160],
         row_count=max(0, int(row_count)),
@@ -1734,6 +2470,412 @@ def add_source_refresh_collection(
     db.add(item)
     db.flush()
     return item
+
+
+def sync_organization_tax_profiles(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    user: User | None = None,
+) -> SourceRefreshCollection:
+    organization_rows = list(
+        db.scalars(
+            select(SourceSnapshotRow).where(
+                SourceSnapshotRow.refresh_run_id == refresh_run.id,
+                SourceSnapshotRow.source_type == "onec_organizations",
+            )
+        )
+    )
+    notice_rows = list(
+        db.scalars(
+            select(SourceSnapshotRow).where(
+                SourceSnapshotRow.refresh_run_id == refresh_run.id,
+                SourceSnapshotRow.source_type
+                == "onec_tax_special_regime_notifications",
+            )
+        )
+    )
+    organizations = {
+        _safe_payload_text(row.row_payload or {}, "Ref_Key"): row
+        for row in organization_rows
+        if _safe_payload_text(row.row_payload or {}, "Ref_Key")
+    }
+    companies = list(
+        db.scalars(
+            select(ClientCompany)
+            .where(
+                ClientCompany.client_id == refresh_run.client_id,
+                ClientCompany.status == "active",
+            )
+            .order_by(ClientCompany.id)
+        )
+    )
+    linked_count = 0
+    auto_linked_count = 0
+    organization_name_index: dict[str, list[str]] = defaultdict(list)
+    for organization_id, row in organizations.items():
+        payload = row.row_payload or {}
+        for value in (
+            _safe_payload_text(payload, "Description"),
+            _safe_payload_text(payload, "НаименованиеПолное"),
+            _safe_payload_text(payload, "НаименованиеСокращенное"),
+        ):
+            key = _organization_match_key(value)
+            if key and organization_id not in organization_name_index[key]:
+                organization_name_index[key].append(organization_id)
+    for company in companies:
+        if company.onec_organization_id in organizations:
+            linked_count += 1
+            continue
+        if company.source_key in organizations:
+            company.onec_organization_id = company.source_key
+            company.updated_at = security.utcnow()
+            linked_count += 1
+            auto_linked_count += 1
+            audit(
+                db,
+                action="client_company_onec_organization_auto_linked",
+                user=user,
+                tenant_id=refresh_run.tenant_id,
+                entity_type="client_company",
+                entity_id=company.id,
+                payload={
+                    "organizationId": company.source_key,
+                    "refreshRunId": refresh_run.id,
+                    "method": "saved_ref_key",
+                },
+            )
+            continue
+        candidates = organization_name_index.get(
+            _organization_match_key(company.display_name), []
+        )
+        if len(candidates) != 1:
+            continue
+        company.onec_organization_id = candidates[0]
+        company.updated_at = security.utcnow()
+        linked_count += 1
+        auto_linked_count += 1
+        audit(
+            db,
+            action="client_company_onec_organization_auto_linked",
+            user=user,
+            tenant_id=refresh_run.tenant_id,
+            entity_type="client_company",
+            entity_id=company.id,
+            payload={
+                "organizationId": candidates[0],
+                "refreshRunId": refresh_run.id,
+                "method": "unique_exact_normalized_name",
+            },
+        )
+    _auto_link_single_ozon_cabinet(
+        db,
+        refresh_run=refresh_run,
+        companies=companies,
+        user=user,
+    )
+    notice_payloads = [row.row_payload or {} for row in notice_rows]
+    source_profile_count = 0
+    company_diagnostics: list[dict[str, Any]] = []
+    for company in companies:
+        organization_id = company.onec_organization_id
+        organization_row = organizations.get(organization_id)
+        diagnostic = tax_profile_source_diagnostic(
+            organization_id,
+            organization=(organization_row.row_payload or {})
+            if organization_row is not None
+            else None,
+            special_tax_mode_rows=notice_payloads,
+        )
+        company_diagnostics.append(
+            {
+                "clientCompanyId": company.id,
+                "companyLabel": company.display_name,
+                "organizationId": organization_id,
+                **diagnostic,
+            }
+        )
+        if organization_row is None:
+            continue
+        mapping = AccountOrgMapping(
+            client_id=refresh_run.client_id,
+            seller_account_id=company.id,
+            organization_id=organization_id,
+            seller_account_name=company.display_name,
+            organization_name=company.display_name,
+        )
+        profiles = tax_profiles_from_account_org_mapping(
+            refresh_run.client_id,
+            [mapping],
+            onec_organization_rows=[organization_row.row_payload or {}],
+            special_tax_mode_rows=notice_payloads,
+        )
+        if not profiles:
+            continue
+        profile = profiles[0]
+        source_hashes = [organization_row.raw_payload_hash]
+        source_hashes.extend(
+            row.raw_payload_hash
+            for row in notice_rows
+            if _safe_payload_text(row.row_payload or {}, "Организация_Key")
+            == organization_id
+        )
+        source_snapshot_hash = hashlib.sha256(
+            "|".join(sorted(source_hashes)).encode("utf-8")
+        ).hexdigest()
+        profile_id = _stable_entity_id(
+            "tax_profile",
+            refresh_run.id,
+            organization_id,
+            profile.valid_from.isoformat() if profile.valid_from else "",
+            profile.source,
+        )
+        if db.get(OrganizationTaxProfile, profile_id) is None:
+            db.add(
+                OrganizationTaxProfile(
+                    id=profile_id,
+                    tenant_id=refresh_run.tenant_id,
+                    client_id=refresh_run.client_id,
+                    client_company_id=company.id,
+                    organization_id=organization_id,
+                    tax_system=profile.tax_system,
+                    vat_rate=profile.vat_rate,
+                    vat_mode=profile.vat_mode.value,
+                    vat_deduction_mode=profile.vat_deduction_mode.value,
+                    revenue_tax_rate=profile.revenue_tax_rate,
+                    income_tax_kind=profile.income_tax_kind,
+                    valid_from=profile.valid_from,
+                    valid_to=profile.valid_to,
+                    source=profile.source,
+                    source_refresh_run_id=refresh_run.id,
+                    source_snapshot_hash=source_snapshot_hash,
+                    methodology_version="ozon-tax-profile-v2",
+                    status="active",
+                    created_at=security.utcnow(),
+                )
+            )
+        source_profile_count += 1
+    db.flush()
+    _effective_profiles, resolution = _source_refresh_tax_profile_resolution(
+        db,
+        refresh_run,
+        companies=companies,
+    )
+    profile_count = int(resolution["profileCount"])
+    missing_count = int(resolution["missingProfileCount"])
+    unconfirmed_count = int(resolution["unconfirmedProfileCount"])
+    status = (
+        "loaded"
+        if companies and not missing_count and not unconfirmed_count
+        else "needs_review"
+    )
+    diagnostic_message = (
+        "Налоговые реквизиты всех организаций получены из 1С."
+        if company_diagnostics
+        and all(item["status"] == "ready" for item in company_diagnostics)
+        else (
+            "Справочник организаций загружен из 1С, но для части организаций "
+            "OData не опубликовала полный налоговый профиль."
+        )
+    )
+    digest = hashlib.sha256(
+        (
+            f"{refresh_run.id}:{source_profile_count}:{profile_count}:"
+            f"{missing_count}:{unconfirmed_count}:{linked_count}:"
+            f"{resolution['manualOverrideCount']}"
+        ).encode()
+    ).hexdigest()
+    return add_source_refresh_collection(
+        db,
+        refresh_run,
+        source_type="onec_tax_profiles",
+        source_label="Налоговые профили организаций 1C",
+        required=False,
+        status=status,
+        snapshot_hash=digest,
+        row_count=profile_count,
+        payload={
+            "methodologyVersion": "ozon-tax-profile-v2",
+            "companyCount": len(companies),
+            "linkedCompanyCount": linked_count,
+            "autoLinkedCompanyCount": auto_linked_count,
+            "profileCount": profile_count,
+            "sourceProfileCount": source_profile_count,
+            "manualOverrideCount": resolution["manualOverrideCount"],
+            "missingProfileCount": missing_count,
+            "unconfirmedProfileCount": unconfirmed_count,
+            "fallbackPolicy": "explicit_1c_then_audited_manual_override_then_missing",
+            "message": diagnostic_message,
+            "companyDiagnostics": company_diagnostics,
+        },
+    )
+
+
+def tax_profiles_for_source_refresh(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+) -> list[TaxProfile]:
+    """Return only profiles resolved for this refresh and its report period."""
+
+    profiles, _resolution = _source_refresh_tax_profile_resolution(db, refresh_run)
+    return profiles
+
+
+def _source_refresh_tax_profile_resolution(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    companies: list[ClientCompany] | None = None,
+) -> tuple[list[TaxProfile], dict[str, int]]:
+    active_companies = companies
+    if active_companies is None:
+        active_companies = list(
+            db.scalars(
+                select(ClientCompany)
+                .where(
+                    ClientCompany.client_id == refresh_run.client_id,
+                    ClientCompany.status == "active",
+                )
+                .order_by(ClientCompany.id)
+            )
+        )
+    profiles_by_signature: dict[tuple[Any, ...], TaxProfile] = {}
+    ready_count = 0
+    manual_override_count = 0
+    missing_count = 0
+    unconfirmed_count = 0
+    for company in active_companies:
+        profiles, _checks, ready = _company_tax_profiles_for_period(
+            db,
+            company=company,
+            period_start=refresh_run.period_start,
+            period_end=refresh_run.period_end,
+            refresh_run=refresh_run,
+        )
+        if not ready:
+            if profiles:
+                unconfirmed_count += 1
+            else:
+                missing_count += 1
+            continue
+        ready_count += 1
+        if any(profile.source == "manual_override" for profile in profiles):
+            manual_override_count += 1
+        for profile in profiles:
+            profiles_by_signature.setdefault(_tax_profile_signature(profile), profile)
+    profiles = sorted(
+        profiles_by_signature.values(),
+        key=lambda profile: (
+            profile.organization_id,
+            profile.valid_from or date.min,
+            profile.valid_to or date.max,
+            profile.source,
+        ),
+    )
+    return profiles, {
+        "profileCount": ready_count,
+        "manualOverrideCount": manual_override_count,
+        "missingProfileCount": missing_count,
+        "unconfirmedProfileCount": unconfirmed_count,
+    }
+
+
+def validate_source_snapshot_duplicates(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+) -> SourceRefreshCollection:
+    position_duplicates = db.execute(
+        select(
+            SourceSnapshotRow.collection_id,
+            SourceSnapshotRow.row_number,
+            func.count(SourceSnapshotRow.id).label("count"),
+        )
+        .where(SourceSnapshotRow.refresh_run_id == refresh_run.id)
+        .group_by(SourceSnapshotRow.collection_id, SourceSnapshotRow.row_number)
+        .having(func.count(SourceSnapshotRow.id) > 1)
+        .limit(100)
+    ).all()
+    payload_duplicates = db.execute(
+        select(
+            SourceSnapshotRow.source_type,
+            SourceSnapshotRow.wb_cabinet_id,
+            SourceSnapshotRow.raw_payload_hash,
+            func.count(SourceSnapshotRow.id).label("count"),
+        )
+        .where(
+            SourceSnapshotRow.refresh_run_id == refresh_run.id,
+            SourceSnapshotRow.raw_payload_hash != "",
+        )
+        .group_by(
+            SourceSnapshotRow.source_type,
+            SourceSnapshotRow.wb_cabinet_id,
+            SourceSnapshotRow.raw_payload_hash,
+        )
+        .having(func.count(SourceSnapshotRow.id) > 1)
+        .limit(100)
+    ).all()
+    extra_rows = sum(int(item.count) - 1 for item in payload_duplicates)
+    position_extra_rows = sum(int(item.count) - 1 for item in position_duplicates)
+    status = "needs_review" if extra_rows or position_extra_rows else "loaded"
+    return add_source_refresh_collection(
+        db,
+        refresh_run,
+        source_type="snapshot_duplicate_control",
+        source_label="Контроль дублей снимка",
+        required=False,
+        status=status,
+        row_count=extra_rows + position_extra_rows,
+        payload={
+            "positionDuplicateGroups": len(position_duplicates),
+            "positionExtraRows": position_extra_rows,
+            "payloadDuplicateGroups": len(payload_duplicates),
+            "payloadExtraRows": extra_rows,
+            "scope": "single_refresh_run",
+            "blocksProfit": bool(extra_rows or position_extra_rows),
+        },
+    )
+
+
+def _auto_link_single_ozon_cabinet(
+    db: Session,
+    *,
+    refresh_run: SourceRefreshRun,
+    companies: list[ClientCompany],
+    user: User | None,
+) -> None:
+    if len(companies) != 1:
+        return
+    cabinets = list(
+        db.scalars(
+            select(WbCabinet).where(
+                WbCabinet.client_id == refresh_run.client_id,
+                WbCabinet.status == "active",
+                WbCabinet.provider.ilike("ozon%"),
+            )
+        )
+    )
+    if len(cabinets) != 1 or cabinets[0].client_company_id:
+        return
+    cabinet = cabinets[0]
+    cabinet.client_company_id = companies[0].id
+    cabinet.updated_at = security.utcnow()
+    audit(
+        db,
+        action="ozon_cabinet_company_auto_linked",
+        user=user,
+        tenant_id=refresh_run.tenant_id,
+        entity_type="wb_cabinet",
+        entity_id=cabinet.id,
+        payload={
+            "clientCompanyId": companies[0].id,
+            "refreshRunId": refresh_run.id,
+            "method": "single_company_single_ozon_cabinet",
+        },
+    )
+
+
+def _organization_match_key(value: str) -> str:
+    return " ".join(value.casefold().split())
 
 
 def add_source_snapshot_row(
@@ -1753,11 +2895,16 @@ def add_source_snapshot_row(
             SourceSnapshotRow.refresh_run_id == collection.refresh_run_id,
             SourceSnapshotRow.collection_id == collection.id,
             SourceSnapshotRow.row_number == row_number,
-            SourceSnapshotRow.raw_payload_hash == raw_payload_hash,
         )
     )
     if existing is not None:
-        return existing
+        collection.status = "needs_review"
+        collection.error_message = (
+            "duplicate_source_row_position_same_payload"
+            if existing.raw_payload_hash == raw_payload_hash
+            else "duplicate_source_row_position"
+        )
+        raise ValueError("duplicate source row position")
     item = SourceSnapshotRow(
         refresh_run_id=collection.refresh_run_id,
         collection_id=collection.id,
@@ -1784,6 +2931,24 @@ def add_source_snapshot_rows(
 ) -> int:
     if not rows:
         return 0
+    positions = [int(row["row_number"]) for row in rows]
+    if len(set(positions)) != len(positions):
+        collection.status = "needs_review"
+        collection.error_message = "duplicate_source_row_position_in_batch"
+        raise ValueError("duplicate source row position in batch")
+    existing_positions = set(
+        db.scalars(
+            select(SourceSnapshotRow.row_number).where(
+                SourceSnapshotRow.refresh_run_id == collection.refresh_run_id,
+                SourceSnapshotRow.collection_id == collection.id,
+                SourceSnapshotRow.row_number.in_(positions),
+            )
+        )
+    )
+    if existing_positions:
+        collection.status = "needs_review"
+        collection.error_message = "duplicate_source_row_position_existing"
+        raise ValueError("duplicate source row position already exists")
     loaded_at = collection.loaded_at or security.utcnow()
     values = [
         {
@@ -1805,29 +2970,30 @@ def add_source_snapshot_rows(
     dialect_name = db.get_bind().dialect.name
     table = SourceSnapshotRow.__table__
     if dialect_name == "postgresql":
-        statement = postgresql_insert(table).values(values).on_conflict_do_nothing(
-            index_elements=[
-                "refresh_run_id",
-                "collection_id",
-                "row_number",
-                "raw_payload_hash",
-            ]
+        statement = (
+            postgresql_insert(table)
+            .values(values)
+            .on_conflict_do_nothing()
+            .returning(table.c.id)
         )
-        result = db.execute(statement)
+        inserted_count = len(db.execute(statement).scalars().all())
     elif dialect_name == "sqlite":
-        statement = sqlite_insert(table).values(values).on_conflict_do_nothing(
-            index_elements=[
-                "refresh_run_id",
-                "collection_id",
-                "row_number",
-                "raw_payload_hash",
-            ]
+        statement = (
+            sqlite_insert(table)
+            .values(values)
+            .on_conflict_do_nothing()
+            .returning(table.c.id)
         )
-        result = db.execute(statement)
+        inserted_count = len(db.execute(statement).scalars().all())
     else:
         result = db.execute(insert(table), values)
+        inserted_count = int(result.rowcount or 0)
     db.flush()
-    return int(result.rowcount or 0)
+    if inserted_count != len(values):
+        collection.status = "needs_review"
+        collection.error_message = "duplicate_source_row_conflict"
+        raise ValueError("one or more source rows conflict with existing rows")
+    return inserted_count
 
 
 def source_refresh_run_payload(
@@ -1853,6 +3019,7 @@ def source_refresh_run_payload(
             refresh_run.source_report_run_id if include_sensitive else None
         ),
         "newReportRunId": refresh_run.new_report_run_id,
+        "resumedFromRunId": refresh_run.resumed_from_run_id,
         "mode": refresh_run.mode,
         "credentialSource": refresh_run.credential_source if include_sensitive else "",
         "dryRun": refresh_run.dry_run,
@@ -1893,6 +3060,7 @@ def source_refresh_collection_payload(
         "sourceType": item.source_type,
         "sourceLabel": item.source_label,
         "required": item.required,
+        "publicationRequired": item.publication_required,
         "status": item.status,
         "snapshotHash": item.snapshot_hash if include_sensitive else "",
         "rowCount": item.row_count,
@@ -1973,6 +3141,7 @@ def latest_ozon_diagnostics_payload(
         tenant_id=tenant_id,
         client_id=client_id,
         mode="ozon-only",
+        include_dry_run=False,
     )
     if refresh_run is None:
         return {
@@ -2086,8 +3255,7 @@ def latest_ozon_diagnostics_payload(
                 refresh_run=refresh_run,
                 source_type=OZON_REALIZATION_SOURCE,
                 wb_cabinet_id=wb_cabinet_id,
-            )
-            .limit(OZON_PNL_MAX_SOURCE_ROWS)
+            ).limit(OZON_PNL_MAX_SOURCE_ROWS)
         )
     )
     realization_pnl_rows = _ozon_rows_matching_period(
@@ -2226,33 +3394,157 @@ def latest_ozon_diagnostics_payload(
         onec_expenses,
     )
     _apply_ozon_period_expenses_to_pnl(pnl, ozon_expenses)
-    ozon_mart = build_ozon_unit_economics_mart(
-        realization_rows=realization_pnl_rows,
-        commissioner_rows=commissioner_rows,
-        unit_costs=onec_costs,
-        mapping_resolver=_ozon_mart_mapping_resolver(
-            onec_indexes=onec_indexes,
-            ozon_mapping=ozon_mapping,
-        ),
-        buyout_reconciliation=reconciliation,
-        period_expense_amount=(
-            (ozon_expenses.get("summary") or {}).get("expenseAmount")
-            if ozon_expenses.get("basis")
-            == "ozon_mutual_settlement_expense_documents"
-            else None
-        ),
-        period_expense_articles=(
-            ozon_expenses.get("categoryRows") or []
-            if ozon_expenses.get("basis")
-            == "ozon_mutual_settlement_expense_documents"
-            else []
-        ),
-        period_expense_basis=str(ozon_expenses.get("basis") or ""),
-        period_start=period_start,
-        period_end=period_end,
+    pnl["deprecated"] = True
+    pnl["replacement"] = "ozonMart"
+    pnl["message"] = (
+        "Legacy Ozon P&L сохранен только для технической диагностики; "
+        "используйте ozonMart."
+    )
+    effective_period_start = period_start or refresh_run.period_start
+    effective_period_end = period_end or refresh_run.period_end
+    cabinet = _ozon_calculation_cabinet(
+        db,
+        client_id=refresh_run.client_id,
+        requested_cabinet_id=wb_cabinet_id,
+    )
+    company = (
+        db.get(ClientCompany, cabinet.client_company_id)
+        if cabinet is not None and cabinet.client_company_id
+        else None
+    )
+    organization_id = company.onec_organization_id if company is not None else ""
+    project_mapping_preview_index = _ozon_project_mapping_preview_index(
+        db,
+        tenant_id=tenant_id,
+        client_id=refresh_run.client_id,
+        wb_cabinet_id=wb_cabinet_id,
+    )
+    organization_commissioner_rows = _onec_rows_for_organization(
+        commissioner_rows,
+        organization_id=organization_id,
+    )
+    ozon_counterparty_ids = tuple(
+        str(item)
+        for item in ((pnl.get("onecOzon") or {}).get("counterpartyIds") or [])
+        if item
+    )
+    realization_periods_known = bool(
+        _ozon_source_periods(collections, OZON_REALIZATION_SOURCE)
+    )
+    fallback_realization_month = _single_onec_document_month(
+        organization_commissioner_rows
+    )
+    monthly_marts: list[dict[str, Any]] = []
+    for month_start, month_end in _month_ranges(
+        effective_period_start,
+        effective_period_end,
+    ):
+        monthly_realization_rows = _ozon_rows_matching_period(
+            realization_snapshot_rows,
+            collections=collections,
+            source_type=OZON_REALIZATION_SOURCE,
+            period_start=month_start,
+            period_end=month_end,
+        )
+        if not realization_periods_known:
+            requested_month = (month_start.year, month_start.month)
+            monthly_realization_rows = (
+                realization_snapshot_rows
+                if fallback_realization_month == requested_month
+                else []
+            )
+        monthly_mutual_rows = _ozon_rows_matching_period(
+            mutual_settlement_rows,
+            collections=collections,
+            source_type=OZON_MUTUAL_SETTLEMENT_SOURCE,
+            period_start=month_start,
+            period_end=month_end,
+        )
+        tax_profile, tax_profile_status = resolve_company_tax_profile(
+            db,
+            company=company,
+            calculation_date=month_end,
+            refresh_run=refresh_run,
+        )
+        monthly_costs = _onec_sales_cost_index(
+            sales_register_rows,
+            period_start=month_start,
+            period_end=month_end,
+            organization_id=organization_id,
+        )
+        reference_unit_costs = _onec_previous_closed_month_costs(
+            sales_register_rows,
+            commissioner_rows=organization_commissioner_rows,
+            before_month=month_start,
+            organization_id=organization_id,
+        )
+        direct_1c_cost_control = _onec_direct_cost_control(
+            sales_register_rows,
+            period_start=month_start,
+            period_end=month_end,
+            organization_id=organization_id,
+            counterparty_ids=ozon_counterparty_ids,
+        )
+        monthly_input_vat = _onec_sales_input_vat_index(
+            sales_register_rows,
+            period_start=month_start,
+            period_end=month_end,
+            organization_id=organization_id,
+        )
+        monthly_expenses = _ozon_mutual_settlement_expenses_payload(monthly_mutual_rows)
+        if monthly_expenses.get("status") != "loaded":
+            monthly_expenses = _ozon_cash_flow_expenses_payload(
+                finance_snapshot_rows,
+                period_start=month_start,
+                period_end=month_end,
+            )
+        monthly_mart = build_ozon_unit_economics_mart(
+            realization_rows=monthly_realization_rows,
+            commissioner_rows=organization_commissioner_rows,
+            unit_costs=monthly_costs,
+            mapping_resolver=_ozon_mart_mapping_resolver(
+                onec_indexes=onec_indexes,
+                ozon_mapping=ozon_mapping,
+                project_mapping_preview_index=project_mapping_preview_index,
+                preferred_onec_item_ids=_ozon_mart_preferred_onec_item_ids(
+                    commissioner_rows=organization_commissioner_rows,
+                    unit_costs=monthly_costs,
+                    period_start=month_start,
+                    period_end=month_end,
+                ),
+            ),
+            buyout_reconciliation={},
+            period_expense_amount=(
+                (monthly_expenses.get("summary") or {}).get("expenseAmount")
+                if monthly_expenses.get("basis")
+                == "ozon_mutual_settlement_expense_documents"
+                else None
+            ),
+            period_expense_articles=(
+                monthly_expenses.get("categoryRows") or []
+                if monthly_expenses.get("basis")
+                == "ozon_mutual_settlement_expense_documents"
+                else []
+            ),
+            period_expense_basis=str(monthly_expenses.get("basis") or ""),
+            period_start=month_start,
+            period_end=month_end,
+            preview_limit=OZON_PNL_MAX_SOURCE_ROWS,
+            tax_profile=tax_profile,
+            tax_profile_required=True,
+            input_vat_by_item=monthly_input_vat,
+            reference_unit_costs=reference_unit_costs,
+            direct_1c_cost_control=direct_1c_cost_control,
+        )
+        monthly_mart["taxProfile"].update(tax_profile_status)
+        monthly_mart["periodExpenseSource"] = monthly_expenses
+        monthly_marts.append(monthly_mart)
+    ozon_mart = combine_ozon_monthly_marts(
+        monthly_marts,
         preview_limit=row_limit,
     )
-    _apply_ozon_period_expenses_to_mart(ozon_mart, ozon_expenses)
+    ozon_mart["periodExpenseSource"] = ozon_expenses
+    _block_ozon_profit_for_duplicate_snapshot(ozon_mart, collections)
     ozon_mart["articleDrilldown"] = _ozon_article_drilldown_payload(
         ozon_mart,
         expense_reconciliation,
@@ -2327,6 +3619,70 @@ def latest_ozon_diagnostics_payload(
         "unitRows": _ozon_unit_rows_payload_from_mart(ozon_mart, row_limit),
         "issues": issues,
     }
+
+
+def _ozon_calculation_cabinet(
+    db: Session,
+    *,
+    client_id: str,
+    requested_cabinet_id: str,
+) -> WbCabinet | None:
+    if requested_cabinet_id:
+        cabinet = db.get(WbCabinet, requested_cabinet_id)
+        if cabinet is not None and cabinet.client_id == client_id:
+            return cabinet
+        return None
+    cabinets = list(
+        db.scalars(
+            select(WbCabinet).where(
+                WbCabinet.client_id == client_id,
+                WbCabinet.status == "active",
+                WbCabinet.provider.ilike("ozon%"),
+            )
+        )
+    )
+    return cabinets[0] if len(cabinets) == 1 else None
+
+
+def _onec_rows_for_organization(
+    rows: list[SourceSnapshotRow],
+    *,
+    organization_id: str,
+) -> list[SourceSnapshotRow]:
+    if not organization_id:
+        return rows
+    return [
+        row
+        for row in rows
+        if _safe_payload_text(
+            row.row_payload or {},
+            "Организация_Key",
+            "organization_id",
+            "organizationId",
+        )
+        == organization_id
+    ]
+
+
+def _single_onec_document_month(
+    rows: list[SourceSnapshotRow],
+) -> tuple[int, int] | None:
+    months = {
+        (value.year, value.month)
+        for row in rows
+        if (
+            value := date_or_none(
+                _safe_payload_text(
+                    row.row_payload or {},
+                    "Date",
+                    "Дата",
+                    "date",
+                )
+            )
+        )
+        is not None
+    }
+    return next(iter(months)) if len(months) == 1 else None
 
 
 def _ozon_issue_payload(
@@ -2512,8 +3868,7 @@ def _ozon_issue_payload(
                         "realization; для финальной прибыли нужен полный расчет."
                         if has_partial_cogs
                         else (
-                            "Проверьте mapping и себестоимость 1C по товарным "
-                            "строкам."
+                            "Проверьте mapping и себестоимость 1C по товарным строкам."
                         )
                         if has_realization
                         else "Для прибыли после 1C нужны товарные продажи Ozon."
@@ -2524,10 +3879,9 @@ def _ozon_issue_payload(
     if pnl:
         onec_ozon = pnl.get("onecOzon") or {}
         sales_register = onec_ozon.get("salesRegister") or {}
-        delta = (
-            _decimal_from_payload_value(sales_register.get("deltaVsCommissionerNet"))
-            or Decimal("0")
-        )
+        delta = _decimal_from_payload_value(
+            sales_register.get("deltaVsCommissionerNet")
+        ) or Decimal("0")
         extra_loaded = any(
             item.source_type in OZON_EXTRA_RECONCILIATION_SOURCES
             and _source_collection_loaded(item)
@@ -2588,9 +3942,7 @@ def _with_ozon_mart_issues(
     issues: dict[str, Any],
     ozon_mart: dict[str, Any],
 ) -> dict[str, Any]:
-    existing_codes = {
-        str(item.get("code") or "") for item in issues.get("items") or []
-    }
+    existing_codes = {str(item.get("code") or "") for item in issues.get("items") or []}
     merged_items = list(issues.get("items") or [])
     for item in ozon_mart.get("issues") or []:
         if not isinstance(item, dict):
@@ -2746,13 +4098,35 @@ def _ozon_unit_row_from_mart_row(row: dict[str, Any]) -> dict[str, Any]:
         "ozonStorage": row.get("ozonStorage"),
         "ozonOtherExpenses": row.get("ozonOtherExpenses"),
         "ozonExpenses": row.get("ozonExpenses"),
+        "skuAttributedExpenseAmount": row.get("skuAttributedExpenseAmount"),
+        "periodUnattributedExpenseAmount": row.get("periodUnattributedExpenseAmount"),
         "profit": row.get("profit"),
         "profitAmount": row.get("profitAmount"),
         "margin": row.get("margin"),
+        "profitBeforeTax": row.get("profitBeforeTax"),
+        "marginBeforeTax": row.get("marginBeforeTax"),
+        "vatOutput": row.get("vatOutput"),
+        "vatInput": row.get("vatInput"),
+        "vatPayable": row.get("vatPayable"),
+        "revenueTax": row.get("revenueTax"),
+        "incomeTax": row.get("incomeTax"),
+        "profitBeforeIncomeTax": row.get("profitBeforeIncomeTax"),
+        "profitAfterTax": row.get("profitAfterTax"),
+        "marginAfterTax": row.get("marginAfterTax"),
+        "taxSystem": row.get("taxSystem") or "",
+        "taxProfileSource": row.get("taxProfileSource") or "missing",
+        "taxCompleteness": row.get("taxCompleteness") or "not_calculated",
+        "profitAliasDeprecated": True,
         "mappingStatus": row.get("mappingStatus") or "",
         "qualityStatus": row.get("qualityStatus") or "",
+        "costQualityStatus": row.get("costQualityStatus") or "not_evaluated",
+        "referenceUnitCost": row.get("referenceUnitCost"),
+        "unitCostDeviationPct": row.get("unitCostDeviationPct"),
+        "estimatedCostImpact": row.get("estimatedCostImpact"),
+        "costQualityReason": row.get("costQualityReason") or "not_evaluated",
         "expenseStatus": row.get("expenseStatus") or "",
         "expenseBasis": row.get("expenseBasis") or "",
+        "expenseAttributionType": row.get("expenseAttributionType") or "",
         "expenseAllocationBasis": row.get("expenseAllocationBasis") or "",
         "expenseAllocationShare": row.get("expenseAllocationShare"),
         "problemReason": row.get("problemReason") or "",
@@ -2789,6 +4163,78 @@ def _ozon_mapping_preview_index(
         if name_key:
             index[("productName", name_key)] = row
     return index
+
+
+def _ozon_project_mapping_preview_index(
+    db: Session,
+    *,
+    tenant_id: str,
+    client_id: str,
+    wb_cabinet_id: str = "",
+) -> dict[tuple[str, str], dict[str, Any]]:
+    conditions = [
+        MarketplaceMappingItem.tenant_id == tenant_id,
+        MarketplaceMappingItem.client_id == client_id,
+        MarketplaceMappingItem.marketplace == "ozon",
+        MarketplaceMappingItem.status == "matched",
+        Marketplace1cCurrentMapping.revoked_at.is_(None),
+        Marketplace1cCurrentMapping.status == "matched",
+    ]
+    if wb_cabinet_id:
+        conditions.append(MarketplaceMappingItem.wb_cabinet_id == wb_cabinet_id)
+    rows = db.execute(
+        select(
+            MarketplaceMappingItem,
+            Marketplace1cCurrentMapping,
+            OnecMappingItem,
+        )
+        .join(
+            Marketplace1cCurrentMapping,
+            Marketplace1cCurrentMapping.item_id == MarketplaceMappingItem.id,
+        )
+        .join(
+            OnecMappingItem,
+            OnecMappingItem.id == Marketplace1cCurrentMapping.onec_mapping_item_id,
+        )
+        .where(*conditions)
+    ).all()
+    candidates_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item, current, onec in rows:
+        preview = {
+            "productName": item.title,
+            "offerId": item.offer_id,
+            "productId": item.product_id,
+            "sku": item.ozon_sku,
+            "barcode": item.barcode,
+            "status": "matched",
+            "matchMethod": f"mapping_service:{current.match_method or 'current'}",
+            "matchKey": item.offer_id or item.ozon_sku or item.product_id,
+            "onecItemId": onec.onec_item_id,
+            "onecName": onec.name[:240],
+            "onecArticle": onec.onec_article[:120],
+        }
+        for field, value in (
+            ("offerId", item.offer_id),
+            ("productId", item.product_id),
+            ("sku", item.ozon_sku),
+            ("barcode", item.barcode),
+        ):
+            key = _mapping_lookup_key(value)
+            if key:
+                candidates_by_key[(field, key)].append(preview)
+        name_key = _mapping_name_key(item.title)
+        if name_key:
+            candidates_by_key[("productName", name_key)].append(preview)
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, candidates in candidates_by_key.items():
+        unique = {
+            str(candidate.get("onecItemId") or ""): candidate
+            for candidate in candidates
+            if candidate.get("onecItemId")
+        }
+        if len(unique) == 1:
+            result[key] = next(iter(unique.values()))
+    return result
 
 
 def _ozon_mapping_preview_for_candidate(
@@ -2833,38 +4279,76 @@ def _check_ozon_unit_mapping_candidate(
     *,
     onec_indexes: dict[str, Any],
     ozon_mapping_preview_index: dict[tuple[str, str], dict[str, Any]],
+    preferred_onec_item_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     preview = _ozon_mapping_preview_for_candidate(
         candidate,
         ozon_mapping_preview_index,
     )
-    if preview:
+    if preview and str(preview.get("status") or "") != "ambiguous":
         return {
             "statusCounter": _ozon_mapping_status_counter(
                 str(preview.get("status") or "")
             ),
             "row": preview,
         }
-    return _check_ozon_mapping_candidate(candidate, onec_indexes)
+    checked = _check_ozon_mapping_candidate(
+        candidate,
+        onec_indexes,
+        preferred_onec_item_ids=preferred_onec_item_ids or set(),
+    )
+    if preview and (checked.get("row") or {}).get("status") != "matched":
+        return {
+            "statusCounter": _ozon_mapping_status_counter(
+                str(preview.get("status") or "")
+            ),
+            "row": preview,
+        }
+    return checked
 
 
 def _ozon_mart_mapping_resolver(
     *,
     onec_indexes: dict[str, Any],
     ozon_mapping: dict[str, Any],
+    project_mapping_preview_index: dict[tuple[str, str], dict[str, Any]] | None = None,
+    preferred_onec_item_ids: set[str] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
     preview_index = _ozon_mapping_preview_index(ozon_mapping)
+    project_mapping_preview_index = project_mapping_preview_index or {}
 
     def _resolve(candidate: dict[str, Any]) -> dict[str, Any] | None:
+        project_mapping = _ozon_mapping_preview_for_candidate(
+            candidate,
+            project_mapping_preview_index,
+        )
+        if project_mapping is not None:
+            return project_mapping
         checked = _check_ozon_unit_mapping_candidate(
             candidate,
             onec_indexes=onec_indexes,
             ozon_mapping_preview_index=preview_index,
+            preferred_onec_item_ids=preferred_onec_item_ids or set(),
         )
         row = checked.get("row")
         return row if isinstance(row, dict) else None
 
     return _resolve
+
+
+def _ozon_mart_preferred_onec_item_ids(
+    *,
+    commissioner_rows: list[SourceSnapshotRow],
+    unit_costs: Mapping[str, Decimal],
+    period_start: date | None,
+    period_end: date | None,
+) -> set[str]:
+    revenue_by_item, _ = _onec_commissioner_revenue_by_item(
+        commissioner_rows,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    return set(revenue_by_item).intersection(unit_costs)
 
 
 def _ozon_revenue_reconciliation_payload(
@@ -2878,21 +4362,19 @@ def _ozon_revenue_reconciliation_payload(
             "status": "missing",
             "message": "Нет 1C регистра продаж для сверки Ozon.",
         }
-    register_amount = (
-        _decimal_from_payload_value(sales_register.get("amount")) or Decimal("0")
-    )
-    commissioner_amount = (
-        _decimal_from_payload_value(onec_ozon.get("netSalesAmount")) or Decimal("0")
-    )
+    register_amount = _decimal_from_payload_value(
+        sales_register.get("amount")
+    ) or Decimal("0")
+    commissioner_amount = _decimal_from_payload_value(
+        onec_ozon.get("netSalesAmount")
+    ) or Decimal("0")
     buyout_summary = ozon_buyouts.get("summary") or {}
-    buyout_amount = (
-        _decimal_from_payload_value(buyout_summary.get("ozonApiAmount"))
-        or Decimal("0")
-    )
-    buyout_quantity = (
-        _decimal_from_payload_value(buyout_summary.get("ozonApiQuantity"))
-        or Decimal("0")
-    )
+    buyout_amount = _decimal_from_payload_value(
+        buyout_summary.get("ozonApiAmount")
+    ) or Decimal("0")
+    buyout_quantity = _decimal_from_payload_value(
+        buyout_summary.get("ozonApiQuantity")
+    ) or Decimal("0")
     ozon_total = commissioner_amount + buyout_amount
     delta = register_amount - ozon_total
     matched_buyouts = int(buyout_summary.get("foundInOzonApi") or 0)
@@ -3026,7 +4508,6 @@ def _ozon_mutual_settlement_expenses_payload(
     expense_names = {
         "Акт выполненных работ",
         "Отчет о перевыставлении услуг",
-        "Отчет о реализации",
     }
     item_totals: dict[str, dict[str, Decimal | int]] = defaultdict(
         lambda: {
@@ -3044,18 +4525,12 @@ def _ozon_mutual_settlement_expenses_payload(
         name = _safe_payload_text(payload, "Наименование", "name")
         if not name:
             continue
-        debit = (
-            _decimal_from_payload_value(
-                payload.get("Сумма дебиторской задолженности, RUR")
-            )
-            or Decimal("0")
-        )
-        credit = (
-            _decimal_from_payload_value(
-                payload.get("Сумма кредиторской задолженности, RUR")
-            )
-            or Decimal("0")
-        )
+        debit = _decimal_from_payload_value(
+            payload.get("Сумма дебиторской задолженности, RUR")
+        ) or Decimal("0")
+        credit = _decimal_from_payload_value(
+            payload.get("Сумма кредиторской задолженности, RUR")
+        ) or Decimal("0")
         item = item_totals[name]
         item["debit"] = Decimal(item["debit"]) + debit
         item["credit"] = Decimal(item["credit"]) + credit
@@ -3485,20 +4960,29 @@ def _ozon_expense_reconciliation_payload(
             "ozon": ozon_expenses,
             "onec": onec_expenses,
         }
-    delta = onec_amount - ozon_amount
+    control_only_matches = _ozon_control_only_expense_matches(
+        ozon_expenses,
+        onec_expenses,
+    )
+    control_only_matched_amount = sum(
+        (Decimal(str(item["amount"])) for item in control_only_matches),
+        Decimal("0"),
+    )
+    comparable_onec_amount = onec_amount - control_only_matched_amount
+    delta = comparable_onec_amount - ozon_amount
     tolerance = max(abs(ozon_amount) * Decimal("0.0005"), Decimal("1"))
     detail_rows = _ozon_expense_reconciliation_detail_rows(
         ozon_expenses,
         onec_expenses,
         ozon_amount=ozon_amount,
-        onec_amount=onec_amount,
+        onec_amount=comparable_onec_amount,
         delta=delta,
     )
     article_rows = _ozon_expense_article_reconciliation_rows(
         ozon_expenses,
         onec_expenses,
         ozon_amount=ozon_amount,
-        onec_amount=onec_amount,
+        onec_amount=comparable_onec_amount,
         delta=delta,
     )
     has_unmatched_article = any(
@@ -3507,8 +4991,7 @@ def _ozon_expense_reconciliation_payload(
     )
     status = (
         "matched"
-        if not has_unmatched_article
-        and _decimal_close(delta, Decimal("0"), tolerance)
+        if not has_unmatched_article and _decimal_close(delta, Decimal("0"), tolerance)
         else "review"
     )
     return {
@@ -3527,12 +5010,73 @@ def _ozon_expense_reconciliation_payload(
         ),
         "ozonExpenseAmount": _json_number(ozon_amount),
         "onecExpenseAmount": _json_number(onec_amount),
+        "onecComparableExpenseAmount": _json_number(comparable_onec_amount),
+        "controlOnlyMatchedAmount": _json_number(control_only_matched_amount),
         "deltaAmount": _json_number(delta),
         "detailRows": detail_rows,
         "articleRows": article_rows,
         "ozon": ozon_expenses,
         "onec": onec_expenses,
     }
+
+
+def _ozon_control_only_expense_matches(
+    ozon_expenses: Mapping[str, Any],
+    onec_expenses: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    controls: list[dict[str, Any]] = []
+    for item in _safe_payload_list(ozon_expenses.get("categoryRows")):
+        if not isinstance(item, Mapping) or item.get("includedInExpense"):
+            continue
+        if str(item.get("label") or "").strip().casefold() != "отчет о реализации":
+            continue
+        amount = _decimal_from_payload_value(item.get("debitAmount"))
+        if amount is None or amount <= 0:
+            continue
+        controls.append(
+            {
+                "label": item.get("label") or "Отчет о реализации",
+                "amount": amount,
+            }
+        )
+    documents: list[dict[str, Any]] = []
+    for item in _safe_payload_list(onec_expenses.get("documentRows")):
+        if not isinstance(item, Mapping) or not item.get("includedInControl"):
+            continue
+        amount = _decimal_from_payload_value(item.get("amount"))
+        if amount is None:
+            continue
+        documents.append(
+            {
+                "label": item.get("label") or "1C документ",
+                "amount": amount,
+            }
+        )
+    matches: list[dict[str, Any]] = []
+    used_document_indexes: set[int] = set()
+    tolerance = Decimal("1")
+    for control in controls:
+        match_index: int | None = None
+        match_diff: Decimal | None = None
+        for index, document in enumerate(documents):
+            if index in used_document_indexes:
+                continue
+            diff = abs(Decimal(document["amount"]) - Decimal(control["amount"]))
+            if diff <= tolerance and (match_diff is None or diff < match_diff):
+                match_index = index
+                match_diff = diff
+        if match_index is None:
+            continue
+        used_document_indexes.add(match_index)
+        document = documents[match_index]
+        matches.append(
+            {
+                "label": control["label"],
+                "onecLabel": document["label"],
+                "amount": Decimal(control["amount"]),
+            }
+        )
+    return matches
 
 
 def _ozon_expense_article_reconciliation_rows(
@@ -3590,6 +5134,43 @@ def _ozon_expense_article_reconciliation_rows(
     rows: list[dict[str, Any]] = []
     used_onec_indexes: set[int] = set()
     tolerance = Decimal("1")
+    for control_match in _ozon_control_only_expense_matches(
+        ozon_expenses,
+        onec_expenses,
+    ):
+        amount = Decimal(control_match["amount"])
+        match_index = next(
+            (
+                index
+                for index, onec_item in enumerate(onec_rows)
+                if index not in used_onec_indexes
+                and onec_item["label"] == control_match["onecLabel"]
+                and _decimal_close(
+                    Decimal(onec_item["amount"]),
+                    amount,
+                    tolerance,
+                )
+            ),
+            None,
+        )
+        if match_index is None:
+            continue
+        used_onec_indexes.add(match_index)
+        rows.append(
+            {
+                "kind": "control_matched",
+                "label": control_match["label"],
+                "parentLabel": f"1C: {control_match['onecLabel']}",
+                "ozonAmount": _json_number(amount),
+                "onecAmount": _json_number(amount),
+                "deltaAmount": 0.0,
+                "includedInExpense": False,
+                "note": (
+                    "Сверено с дебетовой частью отчета о реализации; "
+                    "это контроль взаиморасчетов, не дополнительный расход P&L."
+                ),
+            }
+        )
     for ozon_item in ozon_rows:
         ozon_row_amount = Decimal(ozon_item["amount"])
         match_index: int | None = None
@@ -3679,6 +5260,7 @@ def _ozon_article_drilldown_payload(
         for item in _safe_payload_list(ozon_mart.get("articleDrilldown"))
         if isinstance(item, Mapping)
     ]
+    rows.extend(_ozon_expense_attribution_control_rows(ozon_mart))
     for item in _safe_payload_list(expense_reconciliation.get("articleRows")):
         if not isinstance(item, Mapping):
             continue
@@ -3707,6 +5289,8 @@ def _ozon_article_drilldown_payload(
                 "deltaAmount": item.get("deltaAmount"),
                 "includedInSkuProfit": False,
                 "basis": "ozon_1c_expense_reconciliation",
+                "expenseBasis": "ozon_1c_expense_reconciliation",
+                "attributionType": "reconciliation",
                 "allocationShare": None,
                 "qualityStatus": "review" if "unmatched" in kind else "ready",
                 "expenseStatus": kind,
@@ -3718,9 +5302,84 @@ def _ozon_article_drilldown_payload(
     return rows
 
 
+def _ozon_expense_attribution_control_rows(
+    ozon_mart: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    attribution = ozon_mart.get("expenseAttribution")
+    if not isinstance(attribution, Mapping):
+        return []
+    status = str(attribution.get("status") or "")
+    if not status or status == "not_applicable":
+        return []
+    period_amount = attribution.get("periodExpenseAmount")
+    sku_amount = attribution.get("skuAttributedExpenseAmount")
+    residual_amount = attribution.get("unattributedExpenseAmount")
+    allocated_amount = attribution.get("allocatedUnattributedExpenseAmount")
+    over_amount = attribution.get("overAttributedExpenseAmount")
+    delta_amount = attribution.get("periodExpenseDeltaAmount")
+    tone_status = (
+        "review"
+        if status in {"sku_detail_above_period", "not_allocated"}
+        else "matched"
+    )
+    return [
+        {
+            "kind": "period_expense_control",
+            "articleId": "period_expense_control",
+            "label": "Контроль расходов Ozon detail ↔ mutual settlement",
+            "group": "reconciliation",
+            "sourceLabel": attribution.get("basis") or "",
+            "sourceRowId": "",
+            "martRowId": "",
+            "offerId": "",
+            "productId": "",
+            "sku": "",
+            "barcode": "",
+            "productName": "",
+            "onecItemId": "",
+            "onecName": "",
+            "amount": allocated_amount,
+            "effectAmount": delta_amount,
+            "periodExpenseAmount": period_amount,
+            "skuAttributedExpenseAmount": sku_amount,
+            "unattributedExpenseAmount": residual_amount,
+            "allocatedUnattributedExpenseAmount": allocated_amount,
+            "overAttributedExpenseAmount": over_amount,
+            "roundingDeltaAmount": attribution.get("roundingDeltaAmount"),
+            "periodExpenseDeltaAmount": delta_amount,
+            "includedInSkuProfit": False,
+            "basis": attribution.get("basis") or "",
+            "expenseBasis": attribution.get("basis") or "",
+            "attributionType": status,
+            "allocationShare": None,
+            "expenseAllocationBasis": attribution.get("allocationBasis") or "",
+            "qualityStatus": tone_status,
+            "expenseStatus": status,
+            "status": tone_status,
+            "note": attribution.get("message") or "",
+            "actionText": _ozon_expense_attribution_action_text(status),
+        }
+    ]
+
+
+def _ozon_expense_attribution_action_text(status: str) -> str:
+    if status == "mixed_sku_and_period_unattributed":
+        return "Проверить распределенный остаток периода по статьям Ozon."
+    if status == "allocated_period_expense":
+        return "Проверить, можно ли получить SKU-detail расходы вместо fallback."
+    if status == "sku_detail_above_period":
+        return (
+            "Проверить период mutual settlement и состав detail; отрицательный "
+            "остаток не распределен."
+        )
+    if status == "sku_direct":
+        return "Действие не требуется: SKU-detail покрывает расходы периода."
+    return "Проверить базу расходов Ozon."
+
+
 def _ozon_reconciliation_article_id(label: str) -> str:
     text = label.casefold()
-    if "отчет о реализации" in text:
+    if "комисс" in text or "вознагражден" in text:
         return "commission"
     if "перевыстав" in text:
         return "partner_services"
@@ -3738,13 +5397,14 @@ def _ozon_reconciliation_article_id(label: str) -> str:
 def _ozon_reconciliation_action_text(kind: str) -> str:
     if kind == "onec_unmatched":
         return (
-            "Проверить соседний месяц mutual settlement или отдельный отчет "
-            "услуг Ozon."
+            "Проверить соседний месяц mutual settlement или отдельный отчет услуг Ozon."
         )
     if kind == "ozon_unmatched":
         return "Проверить, почему статья Ozon API не разнесена в 1C."
     if kind == "article_matched":
         return "Действие не требуется: статья сверена по сумме."
+    if kind == "control_matched":
+        return "Действие не требуется: контрольная сумма объяснена."
     return "Проверить итоговую дельту сверки."
 
 
@@ -3899,22 +5559,17 @@ def _apply_ozon_period_expenses_to_mart(
         (ozon_expenses.get("summary") or {}).get("expenseAmount")
     )
     mart["periodExpenseSource"] = ozon_expenses
-    if expense_amount is None or ozon_expenses.get("status") != "loaded":
+    if (
+        expense_amount is None
+        or ozon_expenses.get("status") != "loaded"
+        or ozon_expenses.get("basis") != "ozon_mutual_settlement_expense_documents"
+    ):
         return
     totals = mart.get("totals")
     if not isinstance(totals, dict):
         return
-    totals["ozonExpenses"] = _json_number(expense_amount)
-    totals["expenseBasis"] = ozon_expenses.get("basis") or "ozon_expense_source"
-    revenue = _decimal_from_payload_value(totals.get("onecRevenue"))
-    cogs = _decimal_from_payload_value(totals.get("cogs"))
-    if revenue is None or cogs is None:
-        totals["profit"] = None
-        totals["margin"] = None
-        return
-    profit = revenue - cogs - expense_amount
-    totals["profit"] = _json_number(profit)
-    totals["margin"] = _json_number(profit / revenue) if revenue else None
+    totals["periodExpenseAmount"] = _json_number(expense_amount)
+    totals["periodExpenseBasis"] = ozon_expenses.get("basis") or ""
 
 
 def _ozon_pnl_payload(
@@ -3978,9 +5633,7 @@ def _ozon_pnl_payload(
             quantity = _ozon_realization_quantity(item)
             revenue_amount = _ozon_realization_amount(item)
             unit_cost = (
-                onec_costs.get(onec_item_id)
-                if mapping_status == "matched"
-                else None
+                onec_costs.get(onec_item_id) if mapping_status == "matched" else None
             )
             cogs_amount = quantity * unit_cost if quantity > 0 and unit_cost else None
             if cogs_amount is not None:
@@ -4053,10 +5706,10 @@ def _ozon_pnl_payload(
         empty_payload["mappedProducts"] = int(
             (ozon_mapping.get("summary") or {}).get("matched") or 0
         )
-        empty_payload["mappingReviewRows"] = int(
-            (ozon_mapping.get("summary") or {}).get("missing") or 0
-        ) + int((ozon_mapping.get("summary") or {}).get("ambiguous") or 0) + int(
-            (ozon_mapping.get("summary") or {}).get("noKey") or 0
+        empty_payload["mappingReviewRows"] = (
+            int((ozon_mapping.get("summary") or {}).get("missing") or 0)
+            + int((ozon_mapping.get("summary") or {}).get("ambiguous") or 0)
+            + int((ozon_mapping.get("summary") or {}).get("noKey") or 0)
         )
         empty_payload["onecOzon"] = onec_ozon
         empty_payload["periodFilter"] = {
@@ -4093,10 +5746,7 @@ def _ozon_pnl_payload(
             "для сверки."
         )
     elif costed_item_rows:
-        message = (
-            "Ozon v1: 1C-себестоимость применена по "
-            "доступным товарным строкам."
-        )
+        message = "Ozon v1: 1C-себестоимость применена по доступным товарным строкам."
     elif not realization_item_rows:
         message = (
             "Ozon v1: для прибыли после 1C нужна товарная детализация продаж Ozon."
@@ -4343,7 +5993,14 @@ def _apply_ozon_buyout_unit_row(
     pnl["unitRowSummary"] = summary
 
 
-def _onec_sales_cost_index(rows: list[SourceSnapshotRow]) -> dict[str, Decimal]:
+def _onec_sales_cost_index(
+    rows: list[SourceSnapshotRow],
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    without_vat: bool = False,
+    organization_id: str = "",
+) -> dict[str, Decimal]:
     totals: dict[str, dict[str, Decimal]] = defaultdict(
         lambda: {
             "direct_quantity": Decimal("0"),
@@ -4353,7 +6010,33 @@ def _onec_sales_cost_index(rows: list[SourceSnapshotRow]) -> dict[str, Decimal]:
         }
     )
     for row in rows:
-        for item in _iter_onec_recordset_items(row.row_payload or {}):
+        payload = row.row_payload or {}
+        row_organization_id = _safe_payload_text(
+            payload,
+            "Организация_Key",
+            "organization_id",
+            "organizationId",
+        )
+        for item in _iter_onec_recordset_items(payload):
+            item_organization_id = (
+                _safe_payload_text(
+                    item,
+                    "Организация_Key",
+                    "organization_id",
+                    "organizationId",
+                )
+                or row_organization_id
+            )
+            if organization_id and item_organization_id != organization_id:
+                continue
+            if (period_start is not None or period_end is not None) and not (
+                _onec_payload_matches_period(
+                    item,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+            ):
+                continue
             onec_item_id = _safe_payload_text(
                 item,
                 "Номенклатура_Key",
@@ -4362,33 +6045,184 @@ def _onec_sales_cost_index(rows: list[SourceSnapshotRow]) -> dict[str, Decimal]:
             )
             if not onec_item_id:
                 continue
-            quantity = abs(_payload_decimal(item, "Количество", "quantity", "qty"))
-            cost = abs(
-                _payload_decimal(
-                    item,
-                    "Себестоимость",
-                    "СебестоимостьБезНДС",
-                    "cost",
-                    "cost_amount",
-                )
+            quantity = _payload_decimal(item, "Количество", "quantity", "qty")
+            cost_keys = (
+                ("СебестоимостьБезНДС", "cost_without_vat")
+                if without_vat
+                else ("Себестоимость", "cost", "cost_amount")
             )
-            if quantity > 0:
+            cost = _payload_decimal(item, *cost_keys)
+            if quantity:
                 totals[onec_item_id]["total_quantity"] += quantity
-            if cost > 0:
+            if cost:
                 totals[onec_item_id]["total_cost"] += cost
-            if quantity > 0 and cost > 0:
+            if quantity and cost:
                 totals[onec_item_id]["direct_quantity"] += quantity
                 totals[onec_item_id]["direct_cost"] += cost
     result: dict[str, Decimal] = {}
     for onec_item_id, values in totals.items():
         direct_quantity = values["direct_quantity"]
-        if direct_quantity:
-            result[onec_item_id] = values["direct_cost"] / direct_quantity
+        direct_cost = values["direct_cost"]
+        if direct_quantity and direct_cost:
+            result[onec_item_id] = direct_cost / direct_quantity
             continue
         total_quantity = values["total_quantity"]
         if total_quantity and values["total_cost"]:
             result[onec_item_id] = values["total_cost"] / total_quantity
     return result
+
+
+def _onec_previous_closed_month_costs(
+    rows: list[SourceSnapshotRow],
+    *,
+    commissioner_rows: list[SourceSnapshotRow],
+    before_month: date,
+    organization_id: str = "",
+    month_count: int = 3,
+) -> dict[str, tuple[Decimal, ...]]:
+    history: dict[str, list[Decimal]] = defaultdict(list)
+    closed_months = 0
+    cursor = date(before_month.year, before_month.month, 1)
+    for _ in range(12):
+        cursor_end = cursor - timedelta(days=1)
+        cursor_start = date(cursor_end.year, cursor_end.month, 1)
+        _revenue, has_commissioner = _onec_commissioner_revenue_by_item(
+            commissioner_rows,
+            period_start=cursor_start,
+            period_end=cursor_end,
+        )
+        cursor = cursor_start
+        if not has_commissioner:
+            continue
+        index = _onec_sales_cost_index(
+            rows,
+            period_start=cursor_start,
+            period_end=cursor_end,
+            organization_id=organization_id,
+        )
+        for item_id, unit_cost in index.items():
+            if unit_cost > 0:
+                history[item_id].append(unit_cost)
+        closed_months += 1
+        if closed_months >= max(1, int(month_count)):
+            break
+    return {item_id: tuple(values) for item_id, values in history.items()}
+
+
+def _onec_direct_cost_control(
+    rows: list[SourceSnapshotRow],
+    *,
+    period_start: date,
+    period_end: date,
+    organization_id: str = "",
+    counterparty_ids: tuple[str, ...] = (),
+) -> dict[str, Decimal | None]:
+    if not counterparty_ids:
+        return {"quantity": None, "cogs": None}
+    counterparties = set(counterparty_ids)
+    quantity = Decimal("0")
+    cogs = Decimal("0")
+    matched = False
+    for row in rows:
+        payload = row.row_payload or {}
+        row_organization_id = _safe_payload_text(
+            payload,
+            "Организация_Key",
+            "organization_id",
+            "organizationId",
+        )
+        for item in _iter_onec_recordset_items(payload):
+            item_organization_id = (
+                _safe_payload_text(
+                    item,
+                    "Организация_Key",
+                    "organization_id",
+                    "organizationId",
+                )
+                or row_organization_id
+            )
+            if organization_id and item_organization_id != organization_id:
+                continue
+            if not _onec_payload_matches_period(
+                item,
+                period_start=period_start,
+                period_end=period_end,
+            ):
+                continue
+            counterparty_id = _safe_payload_text(
+                item,
+                "Контрагент_Key",
+                "counterparty_id",
+                "counterpartyId",
+            )
+            if counterparty_id not in counterparties:
+                continue
+            matched = True
+            quantity += _payload_decimal(item, "Количество", "quantity", "qty")
+            cogs += _payload_decimal(item, "Себестоимость", "cost", "cost_amount")
+    return {
+        "quantity": quantity if matched else None,
+        "cogs": cogs if matched else None,
+    }
+
+
+def _onec_sales_input_vat_index(
+    rows: list[SourceSnapshotRow],
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    organization_id: str = "",
+) -> dict[str, Decimal]:
+    result: dict[str, Decimal] = defaultdict(Decimal)
+    confirmed_items: set[str] = set()
+    for row in rows:
+        payload = row.row_payload or {}
+        row_organization_id = _safe_payload_text(
+            payload,
+            "Организация_Key",
+            "organization_id",
+            "organizationId",
+        )
+        for item in _iter_onec_recordset_items(payload):
+            item_organization_id = (
+                _safe_payload_text(
+                    item,
+                    "Организация_Key",
+                    "organization_id",
+                    "organizationId",
+                )
+                or row_organization_id
+            )
+            if organization_id and item_organization_id != organization_id:
+                continue
+            if (period_start is not None or period_end is not None) and not (
+                _onec_payload_matches_period(
+                    item,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+            ):
+                continue
+            onec_item_id = _safe_payload_text(
+                item,
+                "Номенклатура_Key",
+                "onec_item_id",
+                "item_id",
+            )
+            if not onec_item_id:
+                continue
+            input_vat = _first_payload_decimal(
+                item,
+                "ВходящийНДСИтого",
+                "СуммаВходящегоНДСИтого",
+                "input_vat_total",
+                "confirmed_input_vat",
+            )
+            if input_vat is None:
+                continue
+            confirmed_items.add(onec_item_id)
+            result[onec_item_id] += abs(input_vat)
+    return {item_id: result[item_id] for item_id in confirmed_items}
 
 
 def _iter_onec_recordset_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4428,9 +6262,7 @@ def _ozon_pnl_totals_payload(
         "revenueBasis": revenue_basis
         or ("onec_commissioner_net" if revenue_override is not None else "none"),
         "commissionAmount": _json_number(totals["commissionAmount"]),
-        "deliveryAndReturnAmount": _json_number(
-            totals["deliveryAndReturnAmount"]
-        ),
+        "deliveryAndReturnAmount": _json_number(totals["deliveryAndReturnAmount"]),
         "servicesAmount": _json_number(totals["servicesAmount"]),
         "ozonExpenses": _json_number(expenses),
         "profitBeforeCogs": _json_number(profit_before_cogs),
@@ -4739,8 +6571,10 @@ def _ozon_diagnostic_source_summary(
         ),
         "mapping": _collection_group_summary(
             collections,
-            lambda item: item.source_type == "sku_mapping"
-            or item.source_type in OZON_ONEC_MARKETPLACE_MAPPING_SOURCES,
+            lambda item: (
+                item.source_type == "sku_mapping"
+                or item.source_type in OZON_ONEC_MARKETPLACE_MAPPING_SOURCES
+            ),
         ),
         "onec": _collection_group_summary(
             collections,
@@ -4759,6 +6593,7 @@ def _collection_group_summary(
     return {
         "total": len(items),
         "required": sum(1 for item in items if item.required),
+        "publicationRequired": sum(1 for item in items if item.publication_required),
         "loaded": sum(1 for item in items if _source_collection_loaded(item)),
         "failed": sum(1 for item in items if _source_collection_failed(item)),
         "rowCount": sum(
@@ -4899,16 +6734,18 @@ def _ozon_buyouts_payload(
         ozon_buyout_rows,
         collections=collections,
     )
-    items = _dedupe_onec_buyout_items([
-        item
-        for row in rows
-        if (item := _onec_ozon_buyout_row_payload(row)) is not None
-        and _onec_buyout_matches_period(
-            row.row_payload or {},
-            period_start=period_start,
-            period_end=period_end,
-        )
-    ])
+    items = _dedupe_onec_buyout_items(
+        [
+            item
+            for row in rows
+            if (item := _onec_ozon_buyout_row_payload(row)) is not None
+            and _onec_buyout_matches_period(
+                row.row_payload or {},
+                period_start=period_start,
+                period_end=period_end,
+            )
+        ]
+    )
     if not items:
         ozon_loaded_amount = sum(item["amount"] for item in ozon_period_totals.values())
         ozon_loaded_quantity = sum(
@@ -4924,9 +6761,7 @@ def _ozon_buyouts_payload(
         payload["summary"]["ozonApiAmount"] = _json_number(ozon_loaded_amount)
         payload["summary"]["ozonApiQuantity"] = _json_number(ozon_loaded_quantity)
         payload["summary"]["ozonApiLoadedAmount"] = _json_number(ozon_loaded_amount)
-        payload["summary"]["ozonApiLoadedQuantity"] = _json_number(
-            ozon_loaded_quantity
-        )
+        payload["summary"]["ozonApiLoadedQuantity"] = _json_number(ozon_loaded_quantity)
         payload["summary"]["ozonApiLoadedProductRows"] = int(ozon_loaded_product_rows)
         return payload
 
@@ -4949,9 +6784,7 @@ def _ozon_buyouts_payload(
         if not relevant_periods or period in relevant_periods
     }
     ozon_loaded_amount = sum(item["amount"] for item in ozon_period_totals.values())
-    ozon_loaded_quantity = sum(
-        item["quantity"] for item in ozon_period_totals.values()
-    )
+    ozon_loaded_quantity = sum(item["quantity"] for item in ozon_period_totals.values())
     ozon_loaded_product_rows = sum(
         item["productRows"] for item in ozon_period_totals.values()
     )
@@ -5252,6 +7085,73 @@ def _ozon_rows_matching_period(
     return result
 
 
+def _month_ranges(period_start: date, period_end: date) -> list[tuple[date, date]]:
+    if period_end < period_start:
+        return []
+    result: list[tuple[date, date]] = []
+    current = date(period_start.year, period_start.month, 1)
+    while current <= period_end:
+        next_month = (
+            date(current.year + 1, 1, 1)
+            if current.month == 12
+            else date(current.year, current.month + 1, 1)
+        )
+        result.append(
+            (
+                max(current, period_start),
+                min(next_month - timedelta(days=1), period_end),
+            )
+        )
+        current = next_month
+    return result
+
+
+def _block_ozon_profit_for_duplicate_snapshot(
+    mart: dict[str, Any],
+    collections: list[SourceRefreshCollection],
+) -> None:
+    duplicate_control = next(
+        (
+            item
+            for item in collections
+            if item.source_type == "snapshot_duplicate_control"
+        ),
+        None,
+    )
+    if duplicate_control is None or duplicate_control.status != "needs_review":
+        return
+    payload = duplicate_control.payload or {}
+    if not payload.get("blocksProfit"):
+        return
+    mart["status"] = "needs_review"
+    mart["message"] = (
+        "В снимке найдены дубли строк; прибыль заблокирована до сверки источника."
+    )
+    for totals_key in ("totals", "closedPeriodTotals"):
+        totals = mart.get(totals_key)
+        if not isinstance(totals, dict):
+            continue
+        for key in (
+            "profit",
+            "margin",
+            "profitBeforeTax",
+            "marginBeforeTax",
+            "profitBeforeIncomeTax",
+            "profitAfterTax",
+            "marginAfterTax",
+        ):
+            totals[key] = None
+    mart.setdefault("issues", []).append(
+        {
+            "code": "ozon_mart_duplicate_snapshot_rows",
+            "title": "Дубли строк источника",
+            "value": f"{int(duplicate_control.row_count or 0)} строк",
+            "detail": "Повторно загрузите источник после исправления дублей.",
+            "tone": "review",
+        }
+    )
+
+
 def _ozon_row_period(
     row: SourceSnapshotRow,
     *,
@@ -5275,9 +7175,8 @@ def _ozon_row_period(
         return row_number_period
     if page_index is None:
         return None
-    return (
-        periods.get((seller_id, page_index))
-        or periods.get((str(page_index), page_index))
+    return periods.get((seller_id, page_index)) or periods.get(
+        (str(page_index), page_index)
     )
 
 
@@ -5361,9 +7260,7 @@ def _ozon_period_from_output_file(value: str) -> tuple[date, date] | None:
     if month < 1 or month > 12:
         return None
     start = date(year, month, 1)
-    next_month = (
-        date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
-    )
+    next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     return start, next_month - timedelta(days=1)
 
 
@@ -5671,6 +7568,12 @@ def _ozon_mapping_diagnostics_payload(
         tenant_id=tenant_id,
         refresh_run=refresh_run,
     )
+    project_mapping_preview_index = _ozon_project_mapping_preview_index(
+        db,
+        tenant_id=tenant_id,
+        client_id=refresh_run.client_id,
+        wb_cabinet_id=wb_cabinet_id,
+    )
     summary = {
         "matched": 0,
         "missing": 0,
@@ -5680,7 +7583,18 @@ def _ozon_mapping_diagnostics_payload(
     }
     preview_rows: list[dict[str, Any]] = []
     for candidate in candidates:
-        checked = _check_ozon_mapping_candidate(candidate, onec_indexes)
+        project_mapping = _ozon_mapping_preview_for_candidate(
+            candidate,
+            project_mapping_preview_index,
+        )
+        checked = (
+            {
+                "statusCounter": "matched",
+                "row": project_mapping,
+            }
+            if project_mapping is not None
+            else _check_ozon_mapping_candidate(candidate, onec_indexes)
+        )
         summary[checked["statusCounter"]] += 1
         if len(preview_rows) < limit:
             preview_rows.append(checked["row"])
@@ -6163,6 +8077,8 @@ def _onec_mapping_item(payload: dict[str, Any]) -> dict[str, str]:
 def _check_ozon_mapping_candidate(
     candidate: dict[str, Any],
     indexes: dict[str, Any],
+    *,
+    preferred_onec_item_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     attempts = [
         (
@@ -6206,6 +8122,8 @@ def _check_ozon_mapping_candidate(
             "row": _ozon_mapping_preview_row(candidate, "no_key", "", {}, ""),
         }
 
+    preferred_onec_item_ids = preferred_onec_item_ids or set()
+    ambiguous_result: dict[str, Any] | None = None
     for method, value, index in attempts:
         key = _mapping_lookup_key(value)
         if not key:
@@ -6223,7 +8141,23 @@ def _check_ozon_mapping_candidate(
                 ),
             }
         if len(matches) > 1:
-            return {
+            preferred_matches = [
+                item
+                for item in matches
+                if str(item.get("id") or "") in preferred_onec_item_ids
+            ]
+            if len(preferred_matches) == 1:
+                return {
+                    "statusCounter": "matched",
+                    "row": _ozon_mapping_preview_row(
+                        candidate,
+                        "matched",
+                        f"{method}_period_financials",
+                        preferred_matches[0],
+                        value or "",
+                    ),
+                }
+            ambiguous_result = ambiguous_result or {
                 "statusCounter": "ambiguous",
                 "row": _ozon_mapping_preview_row(
                     candidate,
@@ -6233,6 +8167,9 @@ def _check_ozon_mapping_candidate(
                     value or "",
                 ),
             }
+
+    if ambiguous_result is not None:
+        return ambiguous_result
 
     return {
         "statusCounter": "missing",
@@ -6803,10 +8740,11 @@ def import_dashboard_payload(
     db.flush()
     for item in payload.get("unitRows", []):
         ids = _row_entity_ids(db, report, item)
+        row_item = _row_item_with_resolved_cabinet(item, ids)
         db.add(
             _unit_row(
                 report.id,
-                item,
+                row_item,
                 client_id=ids["client_id"],
                 client_company_id=ids["client_company_id"],
                 wb_cabinet_id=ids["wb_cabinet_id"],
@@ -6814,10 +8752,11 @@ def import_dashboard_payload(
         )
     for item in payload.get("lostSales", []):
         ids = _row_entity_ids(db, report, item)
+        row_item = _row_item_with_resolved_cabinet(item, ids)
         db.add(
             _lost_sales_row(
                 report.id,
-                item,
+                row_item,
                 client_id=ids["client_id"],
                 wb_cabinet_id=ids["wb_cabinet_id"],
             )
@@ -6826,10 +8765,11 @@ def import_dashboard_payload(
         db.add(_reconciliation_row(report.id, item))
     for item in payload.get("documentReconciliation", []):
         ids = _row_entity_ids(db, report, item)
+        row_item = _row_item_with_resolved_cabinet(item, ids)
         db.add(
             _document_reconciliation_row(
                 report.id,
-                item,
+                row_item,
                 client_id=ids["client_id"],
                 client_company_id=ids["client_company_id"],
                 wb_cabinet_id=ids["wb_cabinet_id"],
@@ -6841,6 +8781,8 @@ def import_dashboard_payload(
             client_id=report.client_id,
             wb_cabinet_id="",
             report_run_id=report.id,
+            source_refresh_run_id=None,
+            required=False,
             source_type=lineage_type,
             source_label=report.source_workbook or lineage_type,
             status="loaded",
@@ -6896,17 +8838,65 @@ def save_report_marts(
     )
 
 
+def replace_source_loads_from_refresh(
+    db: Session,
+    report: ReportRun,
+    refresh_run: SourceRefreshRun,
+) -> None:
+    if (
+        refresh_run.tenant_id != report.tenant_id
+        or refresh_run.client_id != report.client_id
+    ):
+        raise ValueError("source refresh does not belong to report client")
+    db.execute(delete(SourceLoad).where(SourceLoad.report_run_id == report.id))
+    for item in refresh_run.collections:
+        db.add(
+            SourceLoad(
+                tenant_id=refresh_run.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id=item.wb_cabinet_id,
+                report_run_id=report.id,
+                source_refresh_run_id=refresh_run.id,
+                required=item.required,
+                publication_required=item.publication_required,
+                source_type=item.source_type,
+                source_label=item.source_label,
+                status=item.status,
+                snapshot_hash=item.snapshot_hash,
+                row_count=item.row_count,
+                loaded_at=item.loaded_at,
+            )
+        )
+    db.flush()
+
+
 def publish_report(db: Session, report: ReportRun) -> ReportRun:
     db.flush()
-    db.execute(
-        update(ReportRun)
-        .where(
-            ReportRun.tenant_id == report.tenant_id,
-            ReportRun.client_id == report.client_id,
-            ReportRun.id != report.id,
+    blockers = report_publication_blockers(db, report)
+    if blockers:
+        audit(
+            db,
+            action="report_publication_blocked",
+            tenant_id=report.tenant_id,
+            entity_type="report_run",
+            entity_id=report.id,
+            payload={"blockers": blockers},
         )
-        .values(is_current=False)
+        raise ReportPublicationBlocked(blockers)
+    previous_reports = list(
+        db.scalars(
+            select(ReportRun).where(
+                ReportRun.tenant_id == report.tenant_id,
+                ReportRun.client_id == report.client_id,
+                ReportRun.id != report.id,
+                ReportRun.is_current.is_(True),
+            )
+        )
     )
+    for previous in previous_reports:
+        previous.is_current = False
+        if previous.publication_status == "published":
+            previous.publication_status = "superseded"
     report.publication_status = "published"
     report.is_current = True
     audit(
@@ -6952,20 +8942,69 @@ def _row_entity_ids(
         )
         company_id = company.id if company else ""
     wb_cabinet_id = as_text(item.get("wbCabinetId"))
+    wb_cabinet_label = ""
     if not wb_cabinet_id:
-        cabinet = ensure_wb_cabinet(
-            db,
-            tenant_id=report.tenant_id,
-            client_id=client_id,
-            display_name=cabinet_name,
-            client_company_id=company_id,
+        cabinet = _single_active_wb_provider_cabinet(
+            db, client_id=client_id, client_company_id=company_id
         )
+        if cabinet is not None and company_id and not cabinet.client_company_id:
+            cabinet.client_company_id = company_id
+            cabinet.updated_at = security.utcnow()
+        if cabinet is None:
+            cabinet = ensure_wb_cabinet(
+                db,
+                tenant_id=report.tenant_id,
+                client_id=client_id,
+                display_name=cabinet_name,
+                client_company_id=company_id,
+            )
         wb_cabinet_id = cabinet.id if cabinet else ""
+        wb_cabinet_label = cabinet.display_name if cabinet else ""
     return {
         "client_id": client_id,
         "client_company_id": company_id,
         "wb_cabinet_id": wb_cabinet_id,
+        "wb_cabinet_label": wb_cabinet_label,
     }
+
+
+def _single_active_wb_provider_cabinet(
+    db: Session,
+    *,
+    client_id: str,
+    client_company_id: str = "",
+) -> WbCabinet | None:
+    candidates = [
+        item
+        for item in db.scalars(
+            select(WbCabinet).where(
+                WbCabinet.client_id == client_id,
+                WbCabinet.status == "active",
+            )
+        )
+        if integration_provider_base(item.provider) == "wb_api"
+    ]
+    if client_company_id:
+        company_matches = [
+            item for item in candidates if item.client_company_id == client_company_id
+        ]
+        if len(company_matches) == 1:
+            return company_matches[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _row_item_with_resolved_cabinet(
+    item: dict[str, Any],
+    ids: dict[str, str],
+) -> dict[str, Any]:
+    cabinet_label = ids.get("wb_cabinet_label") or ""
+    if not cabinet_label or as_text(item.get("wbCabinetId")):
+        return item
+    row_item = dict(item)
+    row_item["cabinet"] = cabinet_label
+    return row_item
 
 
 def _unit_row(
@@ -7004,6 +9043,13 @@ def _unit_row(
         spp=decimal_value(item.get("spp")),
         revenue=decimal_value(item.get("revenue")),
         vat=decimal_value(item.get("vat")),
+        vat_output=decimal_value(item.get("vatOutput")),
+        vat_input=decimal_value(item.get("vatInput")),
+        vat_input_from_wb=decimal_value(item.get("vatInputFromWb")),
+        vat_input_from_1c=decimal_value(item.get("vatInputFrom1c")),
+        vat_input_difference=decimal_value(item.get("vatInputDifference")),
+        vat_input_completeness=as_text(item.get("vatInputCompleteness")),
+        vat_payable=decimal_value(item.get("vatPayable")),
         revenue_without_vat=decimal_value(item.get("revenueWithoutVat")),
         cost=decimal_value(item.get("cost")),
         commission=decimal_value(item.get("commission")),
@@ -7014,12 +9060,18 @@ def _unit_row(
         penalties=decimal_value(item.get("penalties")),
         acquiring=decimal_value(item.get("acquiring")),
         usn=decimal_value(item.get("usn")),
+        income_tax_kind=as_text(item.get("incomeTaxKind")),
+        income_tax_base=decimal_value(item.get("incomeTaxBase")),
+        income_tax=decimal_value(item.get("incomeTax")),
+        income_tax_included=bool(item.get("incomeTaxIncluded") or False),
         profit_before_tax=decimal_value(item.get("profitBeforeTax")),
         profit=decimal_value(item.get("profit")),
         margin=decimal_or_none(item.get("margin")),
         unit_profit=decimal_or_none(item.get("unitProfit")),
         tax_method=as_text(item.get("taxMethod")),
         tax_profile_source=as_text(item.get("taxProfileSource")),
+        tax_completeness=as_text(item.get("taxCompleteness")),
+        pnl_vat_mode=as_text(item.get("pnlVatMode")),
         status=as_text(item.get("status")),
         status_reason=as_text(item.get("statusReason")),
         spp_status=as_text(item.get("sppStatus")),
@@ -7064,14 +9116,18 @@ def _reconciliation_row(
         report_run_id=report_id,
         month=as_text(item.get("month")),
         wb_quantity=decimal_value(item.get("wb_quantity")),
-        onec_quantity=decimal_value(item.get("onec_quantity")),
-        quantity_delta=decimal_value(item.get("quantity_delta")),
+        onec_quantity=decimal_or_none(item.get("onec_quantity")),
+        quantity_delta=decimal_or_none(item.get("quantity_delta")),
         wb_cogs=decimal_value(item.get("wb_cogs")),
-        onec_cogs=decimal_value(item.get("onec_cogs")),
-        cogs_delta=decimal_value(item.get("cogs_delta")),
+        onec_cogs=decimal_or_none(item.get("onec_cogs")),
+        cogs_delta=decimal_or_none(item.get("cogs_delta")),
         wb_mp_expenses=decimal_value(item.get("wb_mp_expenses")),
-        onec_mp_expenses=decimal_value(item.get("onec_mp_expenses")),
-        mp_expenses_delta=decimal_value(item.get("mp_expenses_delta")),
+        onec_mp_expenses=decimal_or_none(item.get("onec_mp_expenses")),
+        mp_expenses_delta=decimal_or_none(item.get("mp_expenses_delta")),
+        status=as_text(item.get("status")),
+        wb_basis=as_text(item.get("wbBasis") or item.get("wb_basis")),
+        onec_basis=as_text(item.get("onecBasis") or item.get("onec_basis")),
+        source_run_id=as_text(item.get("sourceRunId") or item.get("source_run_id")),
         comment=as_text(item.get("comment")),
     )
 
@@ -7123,13 +9179,9 @@ def _document_reconciliation_row(
         wb_amount=decimal_or_none(item.get("wbAmount")),
         onec_amount=decimal_or_none(item.get("onecAmount")),
         amount_delta=decimal_or_none(item.get("amountDelta")),
-        buyout_retail_amount_sum=decimal_or_none(
-            item.get("buyoutRetailAmountSum")
-        ),
+        buyout_retail_amount_sum=decimal_or_none(item.get("buyoutRetailAmountSum")),
         buyout_for_pay_sum=decimal_or_none(item.get("buyoutForPaySum")),
-        buyout_bank_payment_sum=decimal_or_none(
-            item.get("buyoutBankPaymentSum")
-        ),
+        buyout_bank_payment_sum=decimal_or_none(item.get("buyoutBankPaymentSum")),
         onec_expense_invoice_amount=decimal_or_none(
             item.get("onecExpenseInvoiceAmount")
         ),
@@ -7183,15 +9235,20 @@ def report_full_payload(
     source_coverage = _source_coverage_for_report(db, report)
     unit_rows = [_row_payload(row) for row in rows]
     liquidity_rows = liquidity_rows_payload(aggregate_liquidity_rows(unit_rows))
+    tax_context = _tax_context_payload(db, report, rows)
+    tax_input_reconciliation_rows = _tax_input_reconciliation_payload_from_unit_rows(
+        rows,
+        tax_context=tax_context,
+    )
     document_reconciliation_rows = [
         _document_reconciliation_payload(row) for row in document_reconciliation
     ]
-    latest_refresh = latest_source_refresh_payload(
+    latest_refresh = _source_refresh_payload_for_report(
         db,
-        tenant_id=report.tenant_id,
-        client_id=report.client_id,
+        report,
         include_sensitive=include_staff_readiness,
     )
+    lost_sales_coverage = _lost_sales_coverage_payload(db, report)
     return {
         "meta": _report_meta_payload(report, source_coverage),
         "readiness": report_readiness_payload(
@@ -7206,17 +9263,24 @@ def report_full_payload(
             liquidity_rows=liquidity_rows,
             document_reconciliation=document_reconciliation_rows,
         ),
-        "monthly": monthly_payload(unit_rows),
+        "monthly": monthly_payload(
+            unit_rows,
+            period_start=report.period_start,
+            period_end=report.period_end,
+        ),
         "expenses": expense_payload(unit_rows),
         "unitRows": unit_rows,
         "liquidityRows": liquidity_rows,
         "returns": returns_payload(unit_rows, report.return_reason_limitation),
         "lostSales": [_lost_payload(row) for row in lost],
+        "lostSalesCoverage": lost_sales_coverage,
+        "taxContext": tax_context,
         "reconciliation": [],
         "reconciliationMonthly": [
             _reconciliation_payload(row) for row in reconciliation
         ],
         "documentReconciliation": document_reconciliation_rows,
+        "taxInputReconciliation": tax_input_reconciliation_rows,
         "latestSourceRefresh": latest_refresh,
     }
 
@@ -7238,10 +9302,22 @@ def report_summary_payload(
         for row in document_reconciliation_source_rows
     ]
     liquidity_rows = _summary_liquidity_rows(db, report)
-    latest_refresh = latest_source_refresh_payload(
+    report_rows = list(
+        db.scalars(
+            select(ReportUnitRow)
+            .where(ReportUnitRow.report_run_id == report.id)
+            .order_by(ReportUnitRow.id)
+        )
+    )
+    tax_context = _tax_context_payload(db, report, report_rows)
+    lost_sales_coverage = _lost_sales_coverage_payload(db, report)
+    tax_input_reconciliation_rows = _tax_input_reconciliation_payload_from_unit_rows(
+        report_rows,
+        tax_context=tax_context,
+    )
+    latest_refresh = _source_refresh_payload_for_report(
         db,
-        tenant_id=report.tenant_id,
-        client_id=report.client_id,
+        report,
         include_sensitive=include_staff_readiness,
     )
     return {
@@ -7259,7 +9335,9 @@ def report_summary_payload(
             document_reconciliation=document_reconciliation_rows,
         ),
         "kpis": _summary_kpis_payload(
-            {**stats, **_lost_sales_stats_for_report(db, report)}
+            {**stats, **_lost_sales_stats_for_report(db, report)},
+            tax_context=tax_context,
+            lost_sales_coverage=lost_sales_coverage,
         ),
         "quality": _summary_quality_payload(
             stats,
@@ -7271,6 +9349,8 @@ def report_summary_payload(
         "expenses": _summary_expense_payload(db, report),
         "liquidityRows": liquidity_rows,
         "lostSales": _summary_lost_sales_payload(db, report),
+        "lostSalesCoverage": lost_sales_coverage,
+        "taxContext": tax_context,
         "reconciliation": [],
         "reconciliationMonthly": [
             _reconciliation_payload(row)
@@ -7281,6 +9361,7 @@ def report_summary_payload(
             )
         ],
         "documentReconciliation": document_reconciliation_rows,
+        "taxInputReconciliation": tax_input_reconciliation_rows,
         "latestSourceRefresh": latest_refresh,
     }
 
@@ -7306,6 +9387,7 @@ def _report_meta_payload(
         "sourceCoverageEnd": source_coverage[1].isoformat() if source_coverage else "",
         "methodologyVersion": report.methodology_version,
         "generatedAt": report.generated_at.strftime("%d.%m.%Y %H:%M"),
+        "generatedAtIso": report.generated_at.isoformat(),
         "sourceWorkbook": report.source_workbook,
         "publicationStatus": report.publication_status,
         "isCurrent": report.is_current,
@@ -7313,6 +9395,36 @@ def _report_meta_payload(
         "sourceSnapshotSetId": report.source_snapshot_set_id,
         "returnReasonLimitation": report.return_reason_limitation,
     }
+
+
+def _source_refresh_payload_for_report(
+    db: Session,
+    report: ReportRun,
+    *,
+    include_sensitive: bool,
+) -> dict[str, Any] | None:
+    refresh_run_id = db.scalar(
+        select(SourceLoad.source_refresh_run_id)
+        .where(
+            SourceLoad.report_run_id == report.id,
+            SourceLoad.source_refresh_run_id.is_not(None),
+        )
+        .order_by(SourceLoad.id.desc())
+        .limit(1)
+    )
+    if refresh_run_id:
+        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        if refresh_run is not None:
+            return source_refresh_run_payload(
+                refresh_run,
+                include_sensitive=include_sensitive,
+            )
+    return latest_source_refresh_payload(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        include_sensitive=include_sensitive,
+    )
 
 
 def report_readiness_payload(
@@ -7394,20 +9506,25 @@ def report_readiness_payload(
         )
         score -= 20
     else:
-        failed_loads = [load for load in source_loads if _source_load_failed(load)]
-        if failed_loads:
+        blocking_loads = [
+            load
+            for load in source_loads
+            if (load.required or load.publication_required)
+            and not _source_load_ok(load)
+        ]
+        if blocking_loads:
             blocking_reasons.append(
                 _readiness_reason(
                     "source_load_failed",
-                    "Есть неуспешные загрузки источников.",
-                    len(failed_loads),
+                    "Обязательная загрузка или источник публикации не завершены.",
+                    len(blocking_loads),
                 )
             )
             score -= 40
         incomplete_loads = [
             load
             for load in source_loads
-            if load not in failed_loads and not _source_load_ok(load)
+            if load not in blocking_loads and not _source_load_ok(load)
         ]
         if incomplete_loads:
             review_reasons.append(
@@ -7508,6 +9625,18 @@ def report_readiness_payload(
         )
         score -= 10
 
+    financial_blockers = _financial_integrity_blockers(
+        db,
+        report,
+        source_loads=source_loads,
+        missing_cost_count=missing_cost_count,
+        mapping_count=mapping_count,
+        document_reconciliation_issue_count=document_reconciliation_issue_count,
+    )
+    blocking_reasons.extend(financial_blockers)
+    if financial_blockers:
+        score = min(score, 40)
+
     if _too_many_problem_rows_count(problem_count, row_count):
         review_reasons.append(
             _readiness_reason(
@@ -7579,8 +9708,11 @@ def _row_payload(row: ReportUnitRow) -> dict[str, Any]:
         "clientCompanyId": row.client_company_id,
         "wbCabinetId": row.wb_cabinet_id,
         "week": row.week.isoformat() if row.week else "",
-        "month": row.month,
-        "documentReport": row.document_report,
+        "month": _effective_row_month(row),
+        "documentReport": _closing_date_label(
+            row.document_report,
+            row.week + timedelta(days=6) if row.week else None,
+        ),
         "wbReportId": row.wb_report_id,
         "wbReportDate": row.wb_report_date,
         "organization": row.organization,
@@ -7599,6 +9731,13 @@ def _row_payload(row: ReportUnitRow) -> dict[str, Any]:
         "spp": as_float(row.spp),
         "revenue": as_float(row.revenue),
         "vat": as_float(row.vat),
+        "vatOutput": as_float(row.vat_output),
+        "vatInput": as_float(row.vat_input),
+        "vatInputFromWb": as_float(row.vat_input_from_wb),
+        "vatInputFrom1c": as_float(row.vat_input_from_1c),
+        "vatInputDifference": as_float(row.vat_input_difference),
+        "vatInputCompleteness": row.vat_input_completeness,
+        "vatPayable": as_float(row.vat_payable),
         "revenueWithoutVat": as_float(row.revenue_without_vat),
         "cost": as_float(row.cost),
         "commission": as_float(row.commission),
@@ -7609,18 +9748,130 @@ def _row_payload(row: ReportUnitRow) -> dict[str, Any]:
         "penalties": as_float(row.penalties),
         "acquiring": as_float(row.acquiring),
         "usn": as_float(row.usn),
+        "incomeTaxKind": row.income_tax_kind,
+        "incomeTaxBase": as_float(row.income_tax_base),
+        "incomeTax": as_float(row.income_tax),
+        "incomeTaxIncluded": row.income_tax_included,
         "profitBeforeTax": as_float(row.profit_before_tax),
         "profit": as_float(row.profit),
         "margin": as_float(row.margin),
         "unitProfit": as_float(row.unit_profit),
         "taxMethod": row.tax_method,
         "taxProfileSource": row.tax_profile_source,
+        "taxCompleteness": row.tax_completeness,
+        "pnlVatMode": row.pnl_vat_mode,
         "status": row.status,
         "statusReason": row.status_reason,
         "sppStatus": row.spp_status,
         "lossClass": row.loss_class,
         "lossDriver": row.loss_driver,
     }
+
+
+def _effective_row_month(row: ReportUnitRow) -> str:
+    return _effective_month_label(row.week, row.month)
+
+
+def _effective_month_label(week: date | None, stored_month: str) -> str:
+    if week is None:
+        return stored_month
+    closing_date = week + timedelta(days=6)
+    label = f"{RU_MONTH_NAMES[closing_date.month]} {closing_date.year}"
+    if stored_month.casefold().startswith(label.casefold()):
+        return stored_month
+    return label
+
+
+def _closing_date_label(value: str, closing_date: date | None) -> str:
+    if not value or closing_date is None:
+        return value
+    return re.sub(
+        r"закрытие\s+\d{2}\.\d{2}\.\d{4}",
+        f"закрытие {closing_date:%d.%m.%Y}",
+        value,
+    )
+
+
+def _tax_input_reconciliation_payload_from_unit_rows(
+    rows: list[ReportUnitRow],
+    *,
+    tax_context: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        week = row.week.isoformat() if row.week else ""
+        key = (week, row.cabinet, row.organization)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "week": week,
+                "weekEnd": "",
+                "cabinet": row.cabinet,
+                "organization": row.organization,
+                "vatInputFromWb": 0.0,
+                "vatInputFromWbCharges": 0.0,
+                "vatInputFromWbReversals": 0.0,
+                "vatInputFrom1c": 0.0,
+                "vatInputFrom1cCharges": 0.0,
+                "vatInputFrom1cReversals": 0.0,
+                "sourceRowCount": 0,
+                "statuses": set(),
+            },
+        )
+        wb_value = float(row.vat_input_from_wb or 0)
+        onec_value = float(row.vat_input_from_1c or 0)
+        bucket["vatInputFromWb"] += wb_value
+        bucket["vatInputFrom1c"] += onec_value
+        bucket["sourceRowCount"] += 1
+        if row.vat_input_completeness:
+            bucket["statuses"].add(row.vat_input_completeness)
+    result = []
+    deduction_status = str((tax_context or {}).get("vatDeductionMode") or "unknown")
+    for bucket in buckets.values():
+        vat_from_wb = bucket["vatInputFromWb"]
+        vat_from_1c = bucket["vatInputFrom1c"]
+        bucket["vatInputFromWbCharges"] = max(vat_from_wb, 0.0)
+        bucket["vatInputFromWbReversals"] = min(vat_from_wb, 0.0)
+        bucket["vatInputFrom1cCharges"] = max(vat_from_1c, 0.0)
+        bucket["vatInputFrom1cReversals"] = min(vat_from_1c, 0.0)
+        statuses = bucket.pop("statuses")
+        bucket["vatInputDifference"] = round(vat_from_1c - vat_from_wb, 2)
+        onec_has_documents = bool(
+            bucket["vatInputFrom1cCharges"] or bucket["vatInputFrom1cReversals"]
+        )
+        bucket["vatInputCompleteness"] = (
+            _worse_tax_input_status(statuses) if onec_has_documents else "missing"
+        )
+        bucket["wbEvidenceStatus"] = "confirmed" if vat_from_wb else "missing"
+        bucket["onecEvidenceStatus"] = "confirmed" if onec_has_documents else "missing"
+        bucket["vatDeductionMode"] = deduction_status
+        bucket["wbSource"] = "WB weekly realization report"
+        bucket["onecSource"] = (
+            "1C confirming documents" if onec_has_documents else "missing"
+        )
+        result.append(bucket)
+    result.sort(
+        key=lambda item: (
+            abs(float(item["vatInputDifference"])),
+            str(item["week"]),
+        ),
+        reverse=True,
+    )
+    for index, bucket in enumerate(result, start=1):
+        bucket["id"] = f"tax-input-reconciliation-{index}"
+    return result
+
+
+def _worse_tax_input_status(statuses: set[str]) -> str:
+    priority = {
+        "mismatch": 30,
+        "partial": 20,
+        "missing": 10,
+        "confirmed": 0,
+    }
+    if not statuses:
+        return "missing"
+    return max(statuses, key=lambda status: priority.get(status, 0))
 
 
 def options_payload(
@@ -7650,14 +9901,11 @@ def options_payload(
 
     document_reconciliation = document_reconciliation or []
     liquidity_rows = liquidity_rows or []
-    month_values = {row.get("month") for row in rows}
-    months = [month for month in MONTH_ORDER if month in month_values]
-    extra_months = sorted(
-        as_text(item) for item in month_values if item and item not in months
-    )
+    month_values = {as_text(row.get("month")) for row in rows if row.get("month")}
+    months = _ordered_values(list(month_values))
     weeks = sorted(as_text(row.get("week")) for row in rows if row.get("week"))
     return {
-        "months": months + extra_months,
+        "months": months,
         "periodStart": weeks[0] if weeks else "",
         "periodEnd": weeks[-1] if weeks else "",
         "cabinets": unique_entities("wbCabinetId", "cabinet"),
@@ -7702,19 +9950,26 @@ def options_payload(
     }
 
 
-def monthly_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def monthly_payload(
+    rows: list[dict[str, Any]],
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> list[dict[str, Any]]:
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
         month = as_text(row.get("month"))
         if not month:
             continue
+        month_start = _month_start_from_row_payload(row) or _month_start_from_label(
+            month
+        )
+        month_key = month_start.isoformat() if month_start else month
         bucket = buckets.setdefault(
-            month,
+            month_key,
             {
                 "month": month,
-                "status": "неполный месяц"
-                if "непол" in month.lower()
-                else "полный месяц",
+                "monthStart": month_start.isoformat() if month_start else "",
                 "sales": 0.0,
                 "returns": 0.0,
                 "revenue": 0.0,
@@ -7723,43 +9978,120 @@ def monthly_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         bucket["sales"] += float(row.get("sales") or 0)
         bucket["returns"] += float(row.get("returns") or 0)
-        bucket["revenue"] += float(row.get("revenue") or 0)
-        bucket["profit"] += float(row.get("profit") or 0)
+        bucket["revenue"] += float(_payload_management_revenue(row))
+        bucket["profit"] += float(_payload_management_profit(row))
     for bucket in buckets.values():
+        metadata = _month_period_metadata(
+            date_or_none(bucket.get("monthStart")),
+            period_start=period_start,
+            period_end=period_end,
+            fallback_partial="непол" in str(bucket.get("month") or "").casefold(),
+        )
+        bucket.update(metadata)
+        bucket["status"] = "неполный месяц" if bucket["isPartial"] else "полный месяц"
         bucket["return_rate"] = (
             bucket["returns"] / bucket["sales"] if bucket["sales"] else None
         )
         bucket["margin"] = (
             bucket["profit"] / bucket["revenue"] if bucket["revenue"] else None
         )
-    return [
-        buckets[month] for month in options_payload(rows)["months"] if month in buckets
-    ]
+    return sorted(
+        buckets.values(),
+        key=lambda item: str(item.get("monthStart") or item.get("month") or ""),
+    )
+
+
+def _pnl_payload_decimal(row: Mapping[str, Any], key: str) -> Decimal:
+    value = row.get(key)
+    if value is None or value == "":
+        return Decimal("0")
+    return Decimal(str(value))
+
+
+def _pnl_payload_text(row: Mapping[str, Any], key: str) -> str:
+    value = row.get(key)
+    return "" if value is None else str(value)
+
+
+def _payload_uses_osno_without_vat_pnl(row: Mapping[str, Any]) -> bool:
+    return _payload_has_explicit_without_vat_pnl_mode(
+        row
+    ) or _payload_has_osno_tax_method(row)
+
+
+def _payload_has_explicit_without_vat_pnl_mode(row: Mapping[str, Any]) -> bool:
+    return _pnl_payload_text(row, "pnlVatMode") == PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO
+
+
+def _payload_has_osno_tax_method(row: Mapping[str, Any]) -> bool:
+    return "ОСНО" in _pnl_payload_text(row, "taxMethod").upper()
+
+
+def _payload_management_revenue(row: Mapping[str, Any]) -> Decimal:
+    if _payload_uses_osno_without_vat_pnl(row):
+        return _pnl_payload_decimal(row, "revenueWithoutVat")
+    return _pnl_payload_decimal(row, "revenue")
+
+
+def _payload_management_profit(row: Mapping[str, Any]) -> Decimal:
+    if _payload_has_explicit_without_vat_pnl_mode(row):
+        return _pnl_payload_decimal(row, "profitBeforeTax")
+    return _pnl_payload_decimal(row, "profit")
+
+
+def _payload_service_gross(row: Mapping[str, Any]) -> Decimal:
+    return sum(
+        (_pnl_payload_decimal(row, key) for key in SERVICE_EXPENSE_FIELDS),
+        Decimal("0"),
+    )
+
+
+def _payload_service_vat_in_pnl(row: Mapping[str, Any]) -> Decimal:
+    if not _payload_uses_osno_without_vat_pnl(row):
+        return Decimal("0")
+    service_gross = _payload_service_gross(row)
+    if service_gross == 0:
+        return Decimal("0")
+    # For OSNO P&L: profit = revenue_without_vat - cost - services_gross + service_vat.
+    return (
+        _payload_management_profit(row)
+        - _payload_management_revenue(row)
+        + _pnl_payload_decimal(row, "cost")
+        + service_gross
+    )
+
+
+def _payload_pnl_expense(row: Mapping[str, Any], key: str) -> Decimal:
+    amount = _pnl_payload_decimal(row, key)
+    if key not in VAT_ELIGIBLE_SERVICE_EXPENSE_FIELDS:
+        return amount
+    vat_base = sum(
+        (
+            _pnl_payload_decimal(row, field)
+            for field in VAT_ELIGIBLE_SERVICE_EXPENSE_FIELDS
+        ),
+        Decimal("0"),
+    )
+    if vat_base == 0:
+        return amount
+    return amount - (_payload_service_vat_in_pnl(row) * amount / vat_base)
 
 
 def expense_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    labels = [
-        ("Себестоимость 1С", "cost"),
-        ("Комиссия WB", "commission"),
-        ("Логистика WB", "logistics"),
-        ("Хранение WB", "storage"),
-        ("Приемка WB", "acceptance"),
-        ("WB Продвижение", "promotion"),
-        ("Штрафы/доплаты WB", "penalties"),
-        ("Эквайринг WB", "acquiring"),
-        ("НДС", "vat"),
-        ("Налог с выручки", "usn"),
-    ]
-    revenue = sum(float(row.get("revenue") or 0) for row in rows)
+    revenue = sum((_payload_management_revenue(row) for row in rows), Decimal("0"))
     result = []
-    for label, key in labels:
-        amount = sum(float(row.get(key) or 0) for row in rows)
+    for label, key in EXPENSE_FIELD_LABELS:
+        amount_decimal = sum(
+            (_payload_pnl_expense(row, key) for row in rows),
+            Decimal("0"),
+        )
+        amount = float(amount_decimal)
         if amount:
             result.append(
                 {
                     "expense": label,
                     "amount": amount,
-                    "share": amount / revenue if revenue else None,
+                    "share": float(amount_decimal / revenue) if revenue else None,
                 }
             )
     return result
@@ -7869,23 +10201,43 @@ def _lost_sales_stats_for_conditions(db: Session, *conditions: Any) -> dict[str,
 
 def _row_stats_for_conditions(db: Session, *conditions: Any) -> dict[str, Any]:
     row_count = _count_rows(db, *conditions)
-    revenue = _sum_column(db, ReportUnitRow.revenue, *conditions)
-    profit = _sum_column(db, ReportUnitRow.profit, *conditions)
+    revenue = _sum_column(db, _pnl_revenue_expression(), *conditions)
+    revenue_with_vat = _sum_column(db, ReportUnitRow.revenue, *conditions)
+    profit = _sum_column(db, _pnl_profit_expression(), *conditions)
+    profit_before_tax = _sum_column(db, ReportUnitRow.profit_before_tax, *conditions)
     sales = _sum_column(db, ReportUnitRow.sales, *conditions)
     returns = _sum_column(db, ReportUnitRow.returns, *conditions)
     return {
         "row_count": row_count,
         "revenue": revenue,
+        "revenue_with_vat": revenue_with_vat,
+        "pnl_without_vat_rows": _count_rows(
+            db, *conditions, _pnl_without_vat_condition()
+        ),
         "profit": profit,
+        "profit_before_tax": profit_before_tax,
+        "vat_output": _sum_column(db, ReportUnitRow.vat_output, *conditions),
+        "vat_input": _sum_column(db, ReportUnitRow.vat_input, *conditions),
+        "vat_payable": _sum_column(db, ReportUnitRow.vat_payable, *conditions),
+        "income_tax": _sum_column(db, ReportUnitRow.income_tax, *conditions),
+        "income_tax_included_rows": _count_rows(
+            db, *conditions, ReportUnitRow.income_tax_included.is_(True)
+        ),
         "sales": sales,
         "returns": returns,
-        "loss_rows": _count_rows(db, *conditions, ReportUnitRow.profit < 0),
+        "loss_rows": _count_rows(
+            db,
+            *conditions,
+            ReportUnitRow.profit < 0,
+            ~_penalty_only_condition(),
+        ),
+        "penalty_only_rows": _count_rows(db, *conditions, _penalty_only_condition()),
         "ok_rows": _count_rows(db, *conditions, ReportUnitRow.status == "ОК"),
         "missing_cost_rows": _count_rows(
             db,
             *conditions,
             ReportUnitRow.status != "ОК",
-            _quality_condition("себестоим"),
+            _missing_cost_condition(),
         ),
         "mapping_rows": _count_rows(
             db,
@@ -7931,6 +10283,351 @@ def _sum_column(db: Session, column: Any, *conditions: Any) -> float:
     return float(db.scalar(statement) or 0)
 
 
+def _pnl_revenue_expression() -> Any:
+    return case(
+        (
+            _pnl_without_vat_condition(),
+            ReportUnitRow.revenue_without_vat,
+        ),
+        else_=ReportUnitRow.revenue,
+    )
+
+
+def _pnl_profit_expression() -> Any:
+    return case(
+        (
+            ReportUnitRow.pnl_vat_mode == PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO,
+            ReportUnitRow.profit_before_tax,
+        ),
+        else_=ReportUnitRow.profit,
+    )
+
+
+def _pnl_without_vat_condition() -> Any:
+    return or_(
+        ReportUnitRow.pnl_vat_mode == PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO,
+        ReportUnitRow.tax_method.ilike("%ОСНО%"),
+    )
+
+
+def _penalty_only_condition() -> Any:
+    return and_(
+        ReportUnitRow.sales == 0,
+        ReportUnitRow.returns == 0,
+        ReportUnitRow.net_qty == 0,
+        ReportUnitRow.revenue == 0,
+        ReportUnitRow.cost == 0,
+        ReportUnitRow.commission == 0,
+        ReportUnitRow.logistics == 0,
+        ReportUnitRow.storage == 0,
+        ReportUnitRow.acceptance == 0,
+        ReportUnitRow.promotion == 0,
+        ReportUnitRow.acquiring == 0,
+        ReportUnitRow.penalties != 0,
+    )
+
+
+def _lost_sales_coverage_payload(db: Session, report: ReportRun) -> dict[str, Any]:
+    total_days = (report.period_end - report.period_start).days + 1
+    load = db.scalar(
+        select(SourceLoad)
+        .where(
+            SourceLoad.report_run_id == report.id,
+            SourceLoad.source_type == "wb_stock_history_daily",
+        )
+        .order_by(SourceLoad.id.desc())
+    )
+    if load is None or not load.source_refresh_run_id:
+        return {
+            "status": "not_loaded",
+            "calculated": False,
+            "coveredDays": 0,
+            "totalDays": total_days,
+            "message": "Не рассчитано: история остатков для этого отчета не загружена.",
+            "accounts": [],
+        }
+    collections = list(
+        db.scalars(
+            select(SourceRefreshCollection)
+            .where(
+                SourceRefreshCollection.refresh_run_id == load.source_refresh_run_id,
+                SourceRefreshCollection.source_type == "wb_stock_history_daily",
+            )
+            .order_by(SourceRefreshCollection.id)
+        )
+    )
+    accounts: list[dict[str, Any]] = []
+    for collection in collections:
+        payload = collection.payload or {}
+        source_accounts = payload.get("accounts")
+        if isinstance(source_accounts, list):
+            for item in source_accounts:
+                if isinstance(item, Mapping):
+                    accounts.append(dict(item))
+            continue
+        accounts.append(
+            {
+                "sellerAccountId": payload.get("sellerAccountId") or "",
+                "cabinet": payload.get("cabinet") or collection.source_label,
+                "status": payload.get("status") or collection.status,
+                "coveredDays": int(payload.get("coveredDays") or 0),
+                "totalDays": int(payload.get("totalDays") or total_days),
+                "calculated": bool(payload.get("calculated")),
+            }
+        )
+    calculated = bool(accounts) and all(
+        bool(item.get("calculated")) for item in accounts
+    )
+    covered_days = min(
+        (int(item.get("coveredDays") or 0) for item in accounts),
+        default=0,
+    )
+    statuses = {str(item.get("status") or "incomplete") for item in accounts}
+    status = "complete" if calculated else "incomplete"
+    if "missing_scope" in statuses or "access_error" in statuses:
+        status = "missing_scope"
+    return {
+        "status": status,
+        "calculated": calculated,
+        "coveredDays": covered_days,
+        "totalDays": total_days,
+        "message": (
+            "Покрытие истории остатков полное."
+            if calculated
+            else (
+                "Не рассчитано: история остатков покрывает "
+                f"{covered_days} из {total_days} дней."
+            )
+        ),
+        "accounts": accounts,
+    }
+
+
+def _tax_context_payload(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[ReportUnitRow],
+) -> dict[str, Any]:
+    report_rows = list(rows)
+    missing_markers = ("не найден", "missing", "unknown", "не подтверж")
+    sources = {
+        str(row.tax_profile_source or "").strip()
+        for row in report_rows
+        if str(row.tax_profile_source or "").strip()
+    }
+    row_context_missing = not sources or any(
+        any(marker in source.casefold() for marker in missing_markers)
+        for source in sources
+    )
+    company_ids = {
+        row.client_company_id for row in report_rows if row.client_company_id
+    }
+    profiles: list[TaxProfile] = []
+    profile_statuses: list[dict[str, Any]] = []
+    company_profiles_ready: list[bool] = []
+    for company_id in sorted(company_ids):
+        company = db.get(ClientCompany, company_id)
+        company_profiles, checks, company_ready = _company_tax_profiles_for_period(
+            db,
+            company=company,
+            period_start=report.period_start,
+            period_end=report.period_end,
+        )
+        company_profiles_ready.append(company_ready)
+        profiles.extend(company_profiles)
+        profile_statuses.append(
+            {
+                "clientCompanyId": company_id,
+                "status": "ready" if company_ready else "unconfirmed",
+                "periodStart": report.period_start.isoformat(),
+                "periodEnd": report.period_end.isoformat(),
+                "checks": checks,
+            }
+        )
+    all_profiles_ready = bool(company_ids) and all(company_profiles_ready)
+    calculated = bool(report_rows) and all_profiles_ready and not row_context_missing
+    if not calculated:
+        return {
+            "status": "missing",
+            "calculated": False,
+            "taxSystem": None,
+            "vatRate": None,
+            "vatMode": None,
+            "vatDeductionMode": "unknown",
+            "revenueTaxRate": None,
+            "incomeTaxKind": None,
+            "source": "missing",
+            "message": "Налоговый профиль не подтверждён.",
+            "profiles": profile_statuses,
+        }
+    tax_systems = {profile.tax_system for profile in profiles}
+    vat_rates = {profile.vat_rate for profile in profiles}
+    vat_modes = {profile.vat_mode.value for profile in profiles}
+    deduction_modes = {profile.vat_deduction_mode.value for profile in profiles}
+    revenue_rates = {profile.revenue_tax_rate for profile in profiles}
+    income_tax_kinds = {profile.income_tax_kind for profile in profiles}
+    mixed = any(
+        len(values) > 1
+        for values in (
+            tax_systems,
+            vat_rates,
+            vat_modes,
+            deduction_modes,
+            revenue_rates,
+            income_tax_kinds,
+        )
+    )
+    return {
+        "status": "mixed" if mixed else "ready",
+        "calculated": True,
+        "taxSystem": next(iter(tax_systems)) if len(tax_systems) == 1 else "mixed",
+        "vatRate": float(next(iter(vat_rates))) if len(vat_rates) == 1 else None,
+        "vatMode": next(iter(vat_modes)) if len(vat_modes) == 1 else "mixed",
+        "vatDeductionMode": (
+            next(iter(deduction_modes)) if len(deduction_modes) == 1 else "mixed"
+        ),
+        "revenueTaxRate": (
+            float(next(iter(revenue_rates))) if len(revenue_rates) == 1 else None
+        ),
+        "incomeTaxKind": (
+            next(iter(income_tax_kinds)) if len(income_tax_kinds) == 1 else "mixed"
+        ),
+        "source": "mixed" if len(sources) > 1 else next(iter(sources), "profile"),
+        "message": "Налоговый профиль подтверждён.",
+        "profiles": profile_statuses,
+    }
+
+
+def _company_tax_profiles_for_period(
+    db: Session,
+    *,
+    company: ClientCompany | None,
+    period_start: date,
+    period_end: date,
+    refresh_run: SourceRefreshRun | None = None,
+) -> tuple[list[TaxProfile], list[dict[str, Any]], bool]:
+    check_dates = _tax_profile_period_check_dates(
+        db,
+        company=company,
+        period_start=period_start,
+        period_end=period_end,
+        refresh_run=refresh_run,
+    )
+    profiles_by_signature: dict[tuple[Any, ...], TaxProfile] = {}
+    checks: list[dict[str, Any]] = []
+    ready = True
+    for calculation_date in check_dates:
+        profile, profile_status = resolve_company_tax_profile(
+            db,
+            company=company,
+            calculation_date=calculation_date,
+            refresh_run=refresh_run,
+        )
+        check = dict(profile_status)
+        check["date"] = calculation_date.isoformat()
+        if profile is None:
+            ready = False
+            checks.append(check)
+            continue
+        check["vatDeductionMode"] = profile.vat_deduction_mode.value
+        check["taxSystem"] = profile.tax_system
+        confirmed = tax_profile_is_confirmed(profile)
+        check["confirmed"] = confirmed
+        if not confirmed:
+            check["status"] = "unconfirmed"
+            ready = False
+        profiles_by_signature.setdefault(_tax_profile_signature(profile), profile)
+        checks.append(check)
+    profiles = list(profiles_by_signature.values())
+    if not profiles:
+        ready = False
+    tax_system_kinds = {tax_profile_is_osno(profile) for profile in profiles}
+    if len(tax_system_kinds) > 1:
+        ready = False
+        checks.append(
+            {
+                "status": "unconfirmed",
+                "message": "Налоговая система меняется внутри периода отчета.",
+            }
+        )
+    return profiles, checks, ready
+
+
+def _tax_profile_period_check_dates(
+    db: Session,
+    *,
+    company: ClientCompany | None,
+    period_start: date,
+    period_end: date,
+    refresh_run: SourceRefreshRun | None = None,
+) -> list[date]:
+    dates = {period_start, period_end}
+    if company is None or not company.onec_organization_id:
+        return sorted(dates)
+    source_conditions = [
+        OrganizationTaxProfile.client_company_id == company.id,
+        OrganizationTaxProfile.organization_id == company.onec_organization_id,
+        OrganizationTaxProfile.status == "active",
+        or_(
+            OrganizationTaxProfile.valid_to.is_(None),
+            OrganizationTaxProfile.valid_to >= period_start,
+        ),
+        or_(
+            OrganizationTaxProfile.valid_from.is_(None),
+            OrganizationTaxProfile.valid_from <= period_end,
+        ),
+    ]
+    if refresh_run is not None:
+        source_conditions.append(
+            OrganizationTaxProfile.source_refresh_run_id == refresh_run.id
+        )
+    source_profiles = list(
+        db.scalars(select(OrganizationTaxProfile).where(*source_conditions))
+    )
+    overrides = list(
+        db.scalars(
+            select(OrganizationTaxProfileOverride).where(
+                OrganizationTaxProfileOverride.client_company_id == company.id,
+                OrganizationTaxProfileOverride.organization_id
+                == company.onec_organization_id,
+                OrganizationTaxProfileOverride.status == "active",
+                or_(
+                    OrganizationTaxProfileOverride.valid_to.is_(None),
+                    OrganizationTaxProfileOverride.valid_to >= period_start,
+                ),
+                OrganizationTaxProfileOverride.valid_from <= period_end,
+            )
+        )
+    )
+    for profile in [*source_profiles, *overrides]:
+        if (
+            profile.valid_from is not None
+            and period_start <= profile.valid_from <= period_end
+        ):
+            dates.add(profile.valid_from)
+        if (
+            profile.valid_to is not None
+            and period_start <= profile.valid_to < period_end
+        ):
+            dates.add(profile.valid_to + timedelta(days=1))
+    return sorted(dates)
+
+
+def _tax_profile_signature(profile: TaxProfile) -> tuple[Any, ...]:
+    return (
+        profile.organization_id,
+        profile.tax_system,
+        profile.vat_rate,
+        profile.vat_mode.value,
+        profile.vat_deduction_mode.value,
+        profile.revenue_tax_rate,
+        profile.income_tax_kind,
+        profile.valid_from,
+        profile.valid_to,
+        profile.source,
+    )
+
+
 def _quality_condition(*markers: str) -> Any:
     haystack = func.lower(
         func.coalesce(ReportUnitRow.status, "")
@@ -7942,20 +10639,74 @@ def _quality_condition(*markers: str) -> Any:
     return or_(*(haystack.like(f"%{marker.lower()}%") for marker in markers))
 
 
-def _summary_kpis_payload(stats: dict[str, Any]) -> dict[str, Any]:
+def _missing_cost_condition() -> Any:
+    status = func.lower(func.trim(func.coalesce(ReportUnitRow.status, "")))
+    reason = func.lower(func.trim(func.coalesce(ReportUnitRow.status_reason, "")))
+    return and_(
+        ReportUnitRow.net_qty != 0,
+        or_(
+            status == "нет себестоимости 1с",
+            reason.like("%себестоим%"),
+            and_(status == "себестоимость 1с требует сверки", reason == ""),
+        ),
+    )
+
+
+def _summary_kpis_payload(
+    stats: dict[str, Any],
+    *,
+    tax_context: Mapping[str, Any] | None = None,
+    lost_sales_coverage: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     revenue = float(stats["revenue"])
+    revenue_with_vat = float(stats.get("revenue_with_vat", revenue))
     profit = float(stats["profit"])
+    profit_management = float(stats.get("profit_before_tax", stats["profit"]))
+    tax_calculated = bool((tax_context or {}).get("calculated"))
+    lost_sales_calculated = bool((lost_sales_coverage or {}).get("calculated"))
     return {
         "revenue": revenue,
-        "profit": profit,
-        "margin": profit / revenue if revenue else None,
+        "revenueWithoutVat": revenue,
+        "revenueWithVat": revenue_with_vat,
+        "pnlWithoutVat": int(stats.get("pnl_without_vat_rows") or 0) > 0,
+        "profit": profit if tax_calculated else None,
+        "profitBeforeTax": profit_management,
+        "profitManagement": profit_management,
+        "profitAfterIncomeTax": profit if tax_calculated else None,
+        "incomeTaxIncluded": (
+            int(stats.get("income_tax_included_rows") or 0) > 0
+            if tax_calculated
+            else False
+        ),
+        "incomeTax": float(stats.get("income_tax") or 0) if tax_calculated else None,
+        "vatOutput": float(stats.get("vat_output") or 0) if tax_calculated else None,
+        "vatInput": float(stats.get("vat_input") or 0) if tax_calculated else None,
+        "vatPayable": float(stats.get("vat_payable") or 0) if tax_calculated else None,
+        "margin": profit / revenue if revenue and tax_calculated else None,
+        "marginManagement": profit_management / revenue if revenue else None,
         "sales": float(stats["sales"]),
         "returns": float(stats["returns"]),
         "lossRows": int(stats["loss_rows"]),
+        "penaltyOnlyRows": int(stats.get("penalty_only_rows") or 0),
         "lostSalesRows": int(stats.get("lost_sales_rows") or 0),
-        "lostSalesUnits": float(stats.get("lost_sales_units") or 0),
-        "lostSalesRevenue": float(stats.get("lost_sales_revenue") or 0),
-        "lostSalesProfit": float(stats.get("lost_sales_profit") or 0),
+        "lostSalesUnits": (
+            float(stats.get("lost_sales_units") or 0) if lost_sales_calculated else None
+        ),
+        "lostSalesRevenue": (
+            float(stats.get("lost_sales_revenue") or 0)
+            if lost_sales_calculated
+            else None
+        ),
+        "lostSalesProfit": (
+            float(stats.get("lost_sales_profit") or 0)
+            if lost_sales_calculated
+            else None
+        ),
+        "lostContributionMargin": (
+            float(stats.get("lost_sales_profit") or 0)
+            if lost_sales_calculated
+            else None
+        ),
         "rowCount": int(stats["row_count"]),
     }
 
@@ -7974,9 +10725,7 @@ def _summary_quality_payload(
         for load in loads
         if not _source_load_ok(load) and not _source_load_failed(load)
     )
-    document_kpis = _document_reconciliation_kpis(
-        document_reconciliation_rows or []
-    )
+    document_kpis = _document_reconciliation_kpis(document_reconciliation_rows or [])
     return {
         "okRows": ok_rows,
         "okShare": ok_rows / row_count if row_count else 0,
@@ -7999,7 +10748,7 @@ def _summary_options_payload(
     liquidity_rows: list[dict[str, Any]],
     document_reconciliation: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    months = _ordered_values(_distinct_unit_values(db, report, ReportUnitRow.month))
+    months = _ordered_values(_distinct_effective_months(db, report))
     weeks = _distinct_unit_values(db, report, ReportUnitRow.week, skip_empty=False)
     statuses = {
         *_distinct_unit_values(db, report, ReportUnitRow.status),
@@ -8058,13 +10807,23 @@ def _distinct_unit_values(
     conditions = [ReportUnitRow.report_run_id == report.id, column.is_not(None)]
     if skip_empty:
         conditions.append(column != "")
-    values = db.scalars(
-        select(column)
-        .where(*conditions)
-        .distinct()
-        .order_by(column)
-    )
+    values = db.scalars(select(column).where(*conditions).distinct().order_by(column))
     return list(values)
+
+
+def _distinct_effective_months(db: Session, report: ReportRun) -> list[str]:
+    rows = db.execute(
+        select(ReportUnitRow.week, ReportUnitRow.month)
+        .where(ReportUnitRow.report_run_id == report.id)
+        .distinct()
+    )
+    return sorted(
+        {
+            month
+            for week, stored_month in rows
+            if (month := _effective_month_label(week, stored_month))
+        }
+    )
 
 
 def _distinct_entities(
@@ -8095,92 +10854,183 @@ def _distinct_entities(
 
 
 def _ordered_values(values: list[str]) -> list[str]:
-    value_set = set(values)
-    ordered = [month for month in MONTH_ORDER if month in value_set]
-    return ordered + sorted(item for item in values if item and item not in ordered)
+    return sorted(
+        (item for item in values if item),
+        key=lambda item: (_month_start_from_label(item) or date.max, item),
+    )
+
+
+def _month_start_from_label(value: str) -> date | None:
+    match = re.match(r"^([А-Яа-яЁё]+)\s+(\d{4})", value.strip())
+    if match is None:
+        return None
+    month_number = RU_MONTH_NUMBERS.get(match.group(1).casefold())
+    if month_number is None:
+        return None
+    return date(int(match.group(2)), month_number, 1)
+
+
+def _month_start_from_row_payload(row: Mapping[str, Any]) -> date | None:
+    week = date_or_none(row.get("week"))
+    if week is None:
+        return None
+    closing_date = week + timedelta(days=6)
+    return closing_date.replace(day=1)
+
+
+def _month_period_metadata(
+    month_start: date | None,
+    *,
+    period_start: date | None,
+    period_end: date | None,
+    fallback_partial: bool = False,
+) -> dict[str, Any]:
+    if month_start is None:
+        return {
+            "isPartial": fallback_partial,
+            "daysElapsed": 0,
+            "daysInMonth": 0,
+        }
+    days_in_month = monthrange(month_start.year, month_start.month)[1]
+    month_end = month_start.replace(day=days_in_month)
+    if period_start is None or period_end is None:
+        return {
+            "isPartial": fallback_partial,
+            "daysElapsed": 0 if fallback_partial else days_in_month,
+            "daysInMonth": days_in_month,
+        }
+    covered_start = max(month_start, period_start)
+    covered_end = min(month_end, period_end)
+    days_elapsed = max(0, (covered_end - covered_start).days + 1)
+    return {
+        "isPartial": days_elapsed < days_in_month,
+        "daysElapsed": days_elapsed,
+        "daysInMonth": days_in_month,
+    }
 
 
 def _summary_monthly_payload(db: Session, report: ReportRun) -> list[dict[str, Any]]:
     return _monthly_payload_for_conditions(
-        db, ReportUnitRow.report_run_id == report.id
+        db,
+        ReportUnitRow.report_run_id == report.id,
+        report=report,
     )
 
 
 def _monthly_payload_for_conditions(
-    db: Session, *conditions: Any
+    db: Session, *conditions: Any, report: ReportRun | None = None
 ) -> list[dict[str, Any]]:
     rows = db.execute(
         select(
+            ReportUnitRow.week,
             ReportUnitRow.month,
             func.coalesce(func.sum(ReportUnitRow.sales), 0),
             func.coalesce(func.sum(ReportUnitRow.returns), 0),
-            func.coalesce(func.sum(ReportUnitRow.revenue), 0),
-            func.coalesce(func.sum(ReportUnitRow.profit), 0),
+            func.coalesce(func.sum(_pnl_revenue_expression()), 0),
+            func.coalesce(func.sum(_pnl_profit_expression()), 0),
         )
-        .where(*conditions, ReportUnitRow.month != "")
-        .group_by(ReportUnitRow.month)
+        .where(*conditions)
+        .group_by(ReportUnitRow.week, ReportUnitRow.month)
     )
-    buckets = {}
-    for month, sales, returns, revenue, profit in rows:
+    buckets: dict[str, dict[str, Any]] = {}
+    for week, stored_month, sales, returns, revenue, profit in rows:
+        month = _effective_month_label(week, stored_month)
+        if not month:
+            continue
+        month_start = (
+            (week + timedelta(days=6)).replace(day=1)
+            if week is not None
+            else _month_start_from_label(month)
+        )
+        month_key = month_start.isoformat() if month_start else month
         sales_float = float(sales or 0)
         returns_float = float(returns or 0)
         revenue_float = float(revenue or 0)
         profit_float = float(profit or 0)
-        buckets[month] = {
-            "month": month,
-            "status": "неполный месяц" if "непол" in month.lower() else "полный месяц",
-            "sales": sales_float,
-            "returns": returns_float,
-            "revenue": revenue_float,
-            "profit": profit_float,
-            "return_rate": returns_float / sales_float if sales_float else None,
-            "margin": profit_float / revenue_float if revenue_float else None,
-        }
-    return [
-        buckets[month] for month in _ordered_values(list(buckets)) if month in buckets
-    ]
+        bucket = buckets.setdefault(
+            month_key,
+            {
+                "month": month,
+                "monthStart": month_start.isoformat() if month_start else "",
+                "sales": 0.0,
+                "returns": 0.0,
+                "revenue": 0.0,
+                "profit": 0.0,
+            },
+        )
+        bucket["sales"] += sales_float
+        bucket["returns"] += returns_float
+        bucket["revenue"] += revenue_float
+        bucket["profit"] += profit_float
+    for bucket in buckets.values():
+        metadata = _month_period_metadata(
+            date_or_none(bucket.get("monthStart")),
+            period_start=report.period_start if report else None,
+            period_end=report.period_end if report else None,
+            fallback_partial="непол" in str(bucket.get("month") or "").casefold(),
+        )
+        bucket.update(metadata)
+        bucket["status"] = "неполный месяц" if bucket["isPartial"] else "полный месяц"
+        bucket["return_rate"] = (
+            bucket["returns"] / bucket["sales"] if bucket["sales"] else None
+        )
+        bucket["margin"] = (
+            bucket["profit"] / bucket["revenue"] if bucket["revenue"] else None
+        )
+    return sorted(
+        buckets.values(),
+        key=lambda item: str(item.get("monthStart") or item.get("month") or ""),
+    )
 
 
 def _summary_expense_payload(db: Session, report: ReportRun) -> list[dict[str, Any]]:
-    return _expense_payload_for_conditions(
-        db, ReportUnitRow.report_run_id == report.id
-    )
+    return _expense_payload_for_conditions(db, ReportUnitRow.report_run_id == report.id)
 
 
 def _expense_payload_for_conditions(
     db: Session, *conditions: Any
 ) -> list[dict[str, Any]]:
-    labels = [
-        ("Себестоимость 1С", ReportUnitRow.cost),
-        ("Комиссия WB", ReportUnitRow.commission),
-        ("Логистика WB", ReportUnitRow.logistics),
-        ("Хранение WB", ReportUnitRow.storage),
-        ("Приемка WB", ReportUnitRow.acceptance),
-        ("WB Продвижение", ReportUnitRow.promotion),
-        ("Штрафы/доплаты WB", ReportUnitRow.penalties),
-        ("Эквайринг WB", ReportUnitRow.acquiring),
-        ("НДС", ReportUnitRow.vat),
-        ("Налог с выручки", ReportUnitRow.usn),
-    ]
-    revenue = _sum_column(db, ReportUnitRow.revenue, *conditions)
+    rows = list(
+        db.execute(
+            select(
+                ReportUnitRow.pnl_vat_mode.label("pnlVatMode"),
+                ReportUnitRow.tax_method.label("taxMethod"),
+                ReportUnitRow.revenue.label("revenue"),
+                ReportUnitRow.revenue_without_vat.label("revenueWithoutVat"),
+                ReportUnitRow.profit_before_tax.label("profitBeforeTax"),
+                ReportUnitRow.profit.label("profit"),
+                ReportUnitRow.cost.label("cost"),
+                ReportUnitRow.commission.label("commission"),
+                ReportUnitRow.logistics.label("logistics"),
+                ReportUnitRow.storage.label("storage"),
+                ReportUnitRow.acceptance.label("acceptance"),
+                ReportUnitRow.promotion.label("promotion"),
+                ReportUnitRow.penalties.label("penalties"),
+                ReportUnitRow.acquiring.label("acquiring"),
+            ).where(*conditions)
+        ).mappings()
+    )
+    revenue = sum((_payload_management_revenue(row) for row in rows), Decimal("0"))
     result = []
-    for label, column in labels:
-        amount = _sum_column(db, column, *conditions)
+    for label, key in EXPENSE_FIELD_LABELS:
+        amount_decimal = sum(
+            (_payload_pnl_expense(row, key) for row in rows),
+            Decimal("0"),
+        )
+        amount = float(amount_decimal)
         if amount:
             result.append(
                 {
                     "expense": label,
                     "amount": amount,
-                    "share": amount / revenue if revenue else None,
+                    "share": float(amount_decimal / revenue) if revenue else None,
                 }
             )
     return result
 
 
 def _summary_liquidity_rows(db: Session, report: ReportRun) -> list[dict[str, Any]]:
-    return _liquidity_rows_for_conditions(
-        db, ReportUnitRow.report_run_id == report.id
-    )
+    return _liquidity_rows_for_conditions(db, ReportUnitRow.report_run_id == report.id)
 
 
 def _liquidity_rows_for_conditions(
@@ -8203,7 +11053,15 @@ def _liquidity_rows_for_conditions(
         "penalties": ReportUnitRow.penalties,
         "acquiring": ReportUnitRow.acquiring,
         "vat": ReportUnitRow.vat,
+        "vatOutput": ReportUnitRow.vat_output,
+        "vatInput": ReportUnitRow.vat_input,
+        "vatInputFromWb": ReportUnitRow.vat_input_from_wb,
+        "vatInputFrom1c": ReportUnitRow.vat_input_from_1c,
+        "vatInputDifference": ReportUnitRow.vat_input_difference,
+        "vatPayable": ReportUnitRow.vat_payable,
         "usn": ReportUnitRow.usn,
+        "incomeTaxBase": ReportUnitRow.income_tax_base,
+        "incomeTax": ReportUnitRow.income_tax,
         "profitBeforeTax": ReportUnitRow.profit_before_tax,
         "profit": ReportUnitRow.profit,
     }
@@ -8282,6 +11140,7 @@ def _lost_payload(row: ReportLostSalesRow) -> dict[str, Any]:
         "sales": as_float(row.sales),
         "lostUnits": as_float(row.lost_units),
         "lostRevenue": as_float(row.lost_revenue),
+        "lostContributionMargin": as_float(row.lost_profit),
         "lostProfit": as_float(row.lost_profit),
         "note": row.note,
     }
@@ -8299,6 +11158,10 @@ def _reconciliation_payload(row: ReportReconciliationMonthly) -> dict[str, Any]:
         "wb_mp_expenses": as_float(row.wb_mp_expenses),
         "onec_mp_expenses": as_float(row.onec_mp_expenses),
         "mp_expenses_delta": as_float(row.mp_expenses_delta),
+        "status": row.status,
+        "wbBasis": row.wb_basis,
+        "onecBasis": row.onec_basis,
+        "sourceRunId": row.source_run_id,
         "comment": row.comment,
     }
 
@@ -8389,12 +11252,10 @@ def _document_reconciliation_has_issue(
     row: ReportDocumentReconciliationRow,
 ) -> bool:
     status = as_text(row.status).lower()
-    payout_status = as_text(row.payout_status).lower()
     period_status = as_text(row.period_status).lower()
     return any(
         (
             status != "ok",
-            payout_status not in {"", "ok", "нет", "нет ограничений"},
             period_status not in {"", "ok", "полный период"},
             _document_reconciliation_missing_onec(row),
             _document_reconciliation_has_delta(row),
@@ -8407,12 +11268,8 @@ def _document_reconciliation_kpis(
 ) -> dict[str, Any]:
     issue_rows = [row for row in rows if _document_reconciliation_has_issue(row)]
     ok_rows = [row for row in rows if not _document_reconciliation_has_issue(row)]
-    missing_onec = [
-        row for row in rows if _document_reconciliation_missing_onec(row)
-    ]
-    quantity_delta = sum(
-        _decimal_as_float(row.quantity_delta) for row in rows
-    )
+    missing_onec = [row for row in rows if _document_reconciliation_missing_onec(row)]
+    quantity_delta = sum(_decimal_as_float(row.quantity_delta) for row in rows)
     amount_delta = sum(_decimal_as_float(row.amount_delta) for row in rows)
     return {
         "documentCount": len(rows),
@@ -8632,6 +11489,24 @@ def _readiness_next_action(
         "too_many_data_quality_issues": (
             "Исправить качество данных перед отправкой клиенту."
         ),
+        "pnl_method_mismatch": "Пересчитать P&L по единой методике ОСНО без НДС.",
+        "profit_semantics_mismatch": (
+            "Устранить расхождение profit и profitBeforeTax до НДФЛ."
+        ),
+        "vat_input_unconfirmed": "Подтвердить входящий НДС документами 1С.",
+        "cogs_reconciliation_failed": (
+            "Закрыть себестоимость без НДС и сопоставление WB-1С."
+        ),
+        "source_lineage_failed": "Повторить обязательные загрузки источников.",
+        "required_wb_expense_source_missing": (
+            "Загрузить контроль хранения и приемки WB."
+        ),
+        "monthly_reconciliation_unresolved": (
+            "Закрыть независимую месячную сверку WB-1С."
+        ),
+        "document_reconciliation_unresolved": (
+            "Расшифровать документные расхождения WB-1С."
+        ),
         "client_draft_missing": "Подготовить клиентский AI-черновик.",
         "client_draft_not_ready": (
             "Проверить и пометить клиентский AI-черновик готовым."
@@ -8650,6 +11525,264 @@ def _source_load_ok(load: SourceLoad) -> bool:
 def _source_load_failed(load: SourceLoad) -> bool:
     status = load.status.strip().lower()
     return any(marker in status for marker in SOURCE_LOAD_FAILED_MARKERS)
+
+
+def _report_tax_profile_publication_context(
+    db: Session,
+    report: ReportRun,
+    *,
+    source_loads: list[SourceLoad],
+) -> tuple[int, set[str]]:
+    report_condition = ReportUnitRow.report_run_id == report.id
+    source_refresh_backed = bool(report.source_snapshot_set_id) or any(
+        bool(load.source_refresh_run_id) for load in source_loads
+    )
+    source_text = func.lower(
+        func.trim(func.coalesce(ReportUnitRow.tax_profile_source, ""))
+    )
+    explicit_missing = or_(
+        source_text.in_({"missing", "unknown", "unconfirmed", "not_confirmed"}),
+        func.lower(func.coalesce(ReportUnitRow.tax_completeness, "")).like(
+            "%missing_tax_profile%"
+        ),
+        func.lower(func.coalesce(ReportUnitRow.tax_method, "")).like(
+            "%налоговый профиль не найден%"
+        ),
+        ReportUnitRow.tax_method.like("%Налоговый профиль не найден%"),
+    )
+    if source_refresh_backed:
+        explicit_missing = or_(explicit_missing, source_text == "")
+    explicit_issue_count = _count_rows(db, report_condition, explicit_missing)
+    if not source_refresh_backed and not explicit_issue_count:
+        return 0, set()
+
+    company_ids = set(
+        db.scalars(
+            select(ReportUnitRow.client_company_id)
+            .where(
+                report_condition,
+                ReportUnitRow.client_company_id != "",
+            )
+            .distinct()
+        )
+    )
+    company_issue_count = 0
+    osno_company_ids: set[str] = set()
+    for company_id in sorted(company_ids):
+        company = db.get(ClientCompany, company_id)
+        profiles, _checks, ready = _company_tax_profiles_for_period(
+            db,
+            company=company,
+            period_start=report.period_start,
+            period_end=report.period_end,
+        )
+        if not ready:
+            company_issue_count += 1
+            continue
+        profile_is_osno = {tax_profile_is_osno(profile) for profile in profiles}
+        if len(profile_is_osno) != 1:
+            company_issue_count += 1
+            continue
+        if profile_is_osno == {True}:
+            osno_company_ids.add(company_id)
+    if source_refresh_backed and not company_ids:
+        company_issue_count = max(company_issue_count, 1)
+    return max(explicit_issue_count, company_issue_count), osno_company_ids
+
+
+def _financial_integrity_blockers(
+    db: Session,
+    report: ReportRun,
+    *,
+    source_loads: list[SourceLoad],
+    missing_cost_count: int,
+    mapping_count: int,
+    document_reconciliation_issue_count: int,
+) -> list[dict[str, Any]]:
+    report_condition = ReportUnitRow.report_run_id == report.id
+    tax_profile_issue_count, osno_company_ids = _report_tax_profile_publication_context(
+        db,
+        report,
+        source_loads=source_loads,
+    )
+    osno_markers: list[Any] = [
+        ReportUnitRow.pnl_vat_mode == PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO,
+        ReportUnitRow.tax_method.ilike("%ОСНО%"),
+    ]
+    if osno_company_ids:
+        osno_markers.append(ReportUnitRow.client_company_id.in_(osno_company_ids))
+    osno_condition = and_(report_condition, or_(*osno_markers))
+    osno_rows = _count_rows(db, osno_condition)
+
+    blockers: list[dict[str, Any]] = []
+    if tax_profile_issue_count:
+        blockers.append(
+            _readiness_reason(
+                "tax_profile_unconfirmed",
+                ("Налоговый профиль не подтвержден для всех организаций и дат отчета."),
+                tax_profile_issue_count,
+            )
+        )
+
+    if not osno_rows:
+        return blockers
+
+    method_mismatch = _count_rows(
+        db,
+        osno_condition,
+        ReportUnitRow.pnl_vat_mode != PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO,
+    )
+    if method_mismatch:
+        blockers.append(
+            _readiness_reason(
+                "pnl_method_mismatch",
+                "Смешаны несовместимые методы прибыли и НДС.",
+                method_mismatch,
+            )
+        )
+
+    profit_mismatch = _count_rows(
+        db,
+        osno_condition,
+        ReportUnitRow.income_tax_included.is_(False),
+        func.abs(ReportUnitRow.profit - ReportUnitRow.profit_before_tax) > 1,
+    )
+    if profit_mismatch:
+        blockers.append(
+            _readiness_reason(
+                "profit_semantics_mismatch",
+                "Прибыль до НДФЛ расходится между полями profit и profitBeforeTax.",
+                profit_mismatch,
+            )
+        )
+
+    vat_unconfirmed = _count_rows(
+        db,
+        osno_condition,
+        func.lower(func.coalesce(ReportUnitRow.vat_input_completeness, ""))
+        != "confirmed",
+    )
+    if vat_unconfirmed:
+        blockers.append(
+            _readiness_reason(
+                "vat_input_unconfirmed",
+                "Входящий НДС не подтвержден независимым источником 1С.",
+                vat_unconfirmed,
+            )
+        )
+
+    if missing_cost_count or mapping_count:
+        blockers.append(
+            _readiness_reason(
+                "cogs_reconciliation_failed",
+                "Себестоимость без НДС или сопоставление WB-1С не закрыты.",
+                missing_cost_count + mapping_count,
+            )
+        )
+
+    required_bad_loads = [
+        load
+        for load in source_loads
+        if (load.required or load.publication_required)
+        and (
+            not _source_load_ok(load)
+            or _source_load_failed(load)
+            or not _source_load_covers_report(db, load, report)
+        )
+    ]
+    if required_bad_loads:
+        blockers.append(
+            _readiness_reason(
+                "source_lineage_failed",
+                "Обязательный нижележащий источник не прошел загрузку.",
+                len(required_bad_loads),
+            )
+        )
+
+    sales = _sum_column(db, ReportUnitRow.sales, report_condition)
+    storage_and_acceptance = _sum_column(
+        db,
+        ReportUnitRow.storage + ReportUnitRow.acceptance,
+        report_condition,
+    )
+    expense_control_loaded = any(
+        load.source_type in {"wb_sales_report_list", "wb_paid_storage"}
+        and _source_load_ok(load)
+        and (
+            load.row_count > 0
+            or (
+                load.source_type == "wb_paid_storage"
+                and load.status.strip().lower() == "empty_expected"
+            )
+        )
+        and _source_load_covers_report(db, load, report)
+        for load in source_loads
+    )
+    if sales > 0 and storage_and_acceptance == 0 and not expense_control_loaded:
+        blockers.append(
+            _readiness_reason(
+                "required_wb_expense_source_missing",
+                "Нулевые хранение и приемка не подтверждены контрольным источником WB.",
+            )
+        )
+
+    monthly_reconciliation_issues = int(
+        db.scalar(
+            select(func.count())
+            .select_from(ReportReconciliationMonthly)
+            .where(
+                ReportReconciliationMonthly.report_run_id == report.id,
+                ReportReconciliationMonthly.status != "Сходится",
+            )
+        )
+        or 0
+    )
+    if monthly_reconciliation_issues:
+        blockers.append(
+            _readiness_reason(
+                "monthly_reconciliation_unresolved",
+                "Независимая месячная сверка WB-1С не закрыта.",
+                monthly_reconciliation_issues,
+            )
+        )
+    if document_reconciliation_issue_count:
+        blockers.append(
+            _readiness_reason(
+                "document_reconciliation_unresolved",
+                "Есть недокументированные расхождения по документам WB-1С.",
+                document_reconciliation_issue_count,
+            )
+        )
+    return blockers
+
+
+def _source_load_covers_report(
+    db: Session,
+    load: SourceLoad,
+    report: ReportRun,
+) -> bool:
+    if not load.source_refresh_run_id:
+        return False
+    refresh_run = db.get(SourceRefreshRun, load.source_refresh_run_id)
+    if refresh_run is None:
+        return False
+    required_start = report.period_start
+    required_end = report.period_end
+    if load.source_type == "wb_finance_detail":
+        required_start -= timedelta(days=required_start.weekday())
+        required_end -= timedelta(days=(required_end.weekday() + 1) % 7)
+    return (
+        refresh_run.period_start <= required_start
+        and refresh_run.period_end >= required_end
+    )
+
+
+def report_publication_blockers(
+    db: Session,
+    report: ReportRun,
+) -> list[dict[str, Any]]:
+    readiness = report_readiness_payload(db, report)
+    return list(readiness.get("blockingReasons") or [])
 
 
 def _is_partial_period(report: ReportRun) -> bool:
@@ -8706,18 +11839,27 @@ def _filtered_report_analytics_payload(
     document_reconciliation_rows = _document_reconciliation_rows_for_conditions(
         db, *document_reconciliation_conditions
     )
+    filtered_rows = list(db.scalars(select(ReportUnitRow).where(*unit_conditions)))
+    tax_context = _tax_context_payload(db, report, filtered_rows)
+    lost_sales_coverage = _lost_sales_coverage_payload(db, report)
     return {
-        "kpis": _summary_kpis_payload(stats),
+        "kpis": _summary_kpis_payload(
+            stats,
+            tax_context=tax_context,
+            lost_sales_coverage=lost_sales_coverage,
+        ),
         "quality": _summary_quality_payload(
             stats,
             _source_loads_for_report(db, report),
             report,
             document_reconciliation_rows=document_reconciliation_rows,
         ),
-        "monthly": _monthly_payload_for_conditions(db, *unit_conditions),
+        "monthly": _monthly_payload_for_conditions(db, *unit_conditions, report=report),
         "expenses": _expense_payload_for_conditions(db, *unit_conditions),
         "liquidityRows": _liquidity_rows_for_conditions(db, *unit_conditions),
         "lostSales": _lost_sales_payload_for_conditions(db, *lost_sales_conditions),
+        "lostSalesCoverage": lost_sales_coverage,
+        "taxContext": tax_context,
     }
 
 
@@ -8750,7 +11892,15 @@ def query_report_rows(
     if period_condition is not None:
         conditions.append(period_condition)
     if month:
-        conditions.append(ReportUnitRow.month == month)
+        month_period = _month_filter_period(month)
+        month_condition = (
+            _row_period_condition(report, *month_period) if month_period else None
+        )
+        conditions.append(
+            month_condition
+            if month_condition is not None
+            else ReportUnitRow.month == month
+        )
     if cabinet:
         conditions.append(ReportUnitRow.cabinet == cabinet)
     if organization:
@@ -8776,7 +11926,9 @@ def query_report_rows(
     if document_report:
         conditions.append(ReportUnitRow.document_report == document_report)
     if preset == "losses":
-        conditions.append(ReportUnitRow.profit < 0)
+        conditions.extend((ReportUnitRow.profit < 0, ~_penalty_only_condition()))
+    if preset == "penaltyOnly":
+        conditions.append(_penalty_only_condition())
     if preset == "missingCost":
         conditions.append(ReportUnitRow.status.ilike("%себестоим%"))
     if preset == "missingMapping":
@@ -8866,9 +12018,7 @@ def query_document_reconciliation_rows(
 ) -> dict[str, Any]:
     limit = max(1, min(limit, REPORT_ROWS_MAX_LIMIT))
     offset = max(0, offset)
-    conditions: list[Any] = [
-        ReportDocumentReconciliationRow.report_run_id == report.id
-    ]
+    conditions: list[Any] = [ReportDocumentReconciliationRow.report_run_id == report.id]
     if status:
         conditions.append(ReportDocumentReconciliationRow.status == status)
     period_condition = _document_reconciliation_period_condition(
@@ -8886,8 +12036,7 @@ def query_document_reconciliation_rows(
     if client_company_id:
         conditions.append(
             or_(
-                ReportDocumentReconciliationRow.client_company_id
-                == client_company_id,
+                ReportDocumentReconciliationRow.client_company_id == client_company_id,
                 ReportDocumentReconciliationRow.organization == client_company_id,
             )
         )
@@ -8932,6 +12081,614 @@ def query_document_reconciliation_rows(
     }
 
 
+FINANCIAL_RECONCILIATION_TYPES = {
+    "revenue_with_vat": "Выручка с НДС",
+    "penalties": "Штрафы",
+}
+FINANCIAL_RECONCILIATION_TOLERANCE = Decimal("1")
+
+
+def query_financial_document_reconciliation(
+    db: Session,
+    report: ReportRun,
+    *,
+    query: str = "",
+    period_start: date | None = None,
+    period_end: date | None = None,
+    control_type: str = "",
+    delta_only: bool = False,
+) -> dict[str, Any]:
+    """Reconcile cabinet P&L totals with persisted 1C document facts.
+
+    The cabinet side assigns a weekly WB row by its closing Sunday
+    (``week + 6 days``). The 1C side follows the actual register/invoice date.
+    Keeping those bases explicit makes residual document differences visible
+    without moving a cross-month week by its Monday start.
+    """
+
+    selected_start = period_start or report.period_start
+    selected_end = period_end or report.period_end
+    if selected_start and selected_end and selected_start > selected_end:
+        selected_start, selected_end = selected_end, selected_start
+
+    unit_rows = list(
+        db.scalars(
+            select(ReportUnitRow).where(ReportUnitRow.report_run_id == report.id)
+        )
+    )
+    document_rows = list(
+        db.scalars(
+            select(ReportDocumentReconciliationRow).where(
+                ReportDocumentReconciliationRow.report_run_id == report.id
+            )
+        )
+    )
+    refresh_run = _latest_financial_onec_refresh_run(db, report)
+    source_rows = _financial_onec_source_rows(db, report, refresh_run)
+    source_statuses = _financial_onec_source_statuses(db, refresh_run)
+    sales_available = _financial_source_available(
+        source_statuses.get("onec_sales_register", "")
+    )
+    penalties_available = _financial_source_available(
+        source_statuses.get("onec_incoming_invoices", "")
+    )
+
+    wb_revenue, wb_revenue_total = _wb_revenue_document_buckets(
+        document_rows,
+        unit_rows,
+        period_start=selected_start,
+        period_end=selected_end,
+    )
+    onec_revenue, onec_revenue_total = _onec_revenue_document_buckets(
+        source_rows,
+        period_start=selected_start,
+        period_end=selected_end,
+    )
+    wb_penalties, wb_penalties_total = _wb_penalty_document_buckets(
+        unit_rows,
+        period_start=selected_start,
+        period_end=selected_end,
+    )
+    onec_penalties, onec_penalties_total = _onec_penalty_document_buckets(
+        source_rows.get("onec_incoming_invoices", []),
+        period_start=selected_start,
+        period_end=selected_end,
+    )
+
+    rows: list[dict[str, Any]] = []
+    rows.extend(
+        _financial_reconciliation_rows(
+            control_type="revenue_with_vat",
+            wb_buckets=wb_revenue,
+            onec_buckets=onec_revenue,
+            source_available=sales_available,
+        )
+    )
+    rows.extend(
+        _financial_reconciliation_rows(
+            control_type="penalties",
+            wb_buckets=wb_penalties,
+            onec_buckets=onec_penalties,
+            source_available=penalties_available,
+        )
+    )
+
+    if control_type in FINANCIAL_RECONCILIATION_TYPES:
+        rows = [row for row in rows if row["controlType"] == control_type]
+    if query:
+        needle = query.casefold()
+        rows = [
+            row
+            for row in rows
+            if needle
+            in " ".join(
+                str(row.get(key) or "")
+                for key in (
+                    "controlLabel",
+                    "period",
+                    "wbDocument",
+                    "onecDocuments",
+                    "status",
+                    "comment",
+                )
+            ).casefold()
+        ]
+    if delta_only:
+        rows = [row for row in rows if row["status"] != "Сходится"]
+
+    rows.sort(
+        key=lambda row: (
+            0 if row["controlType"] == "revenue_with_vat" else 1,
+            row.get("periodStart") or "",
+            row.get("documentType") or "",
+        )
+    )
+    revenue_onec = onec_revenue_total if sales_available else None
+    penalties_onec = onec_penalties_total if penalties_available else None
+    return {
+        "items": rows,
+        "total": len(rows),
+        "period": {
+            "start": selected_start.isoformat() if selected_start else "",
+            "end": selected_end.isoformat() if selected_end else "",
+            "wbBasis": "week_end",
+            "onecBasis": "actual_document_date",
+        },
+        "kpis": {
+            "revenueWb": _json_number(wb_revenue_total),
+            "revenueOnec": _json_number(revenue_onec),
+            "revenueDelta": _json_number(
+                revenue_onec - wb_revenue_total if revenue_onec is not None else None
+            ),
+            "penaltiesWb": _json_number(wb_penalties_total),
+            "penaltiesOnec": _json_number(penalties_onec),
+            "penaltiesDelta": _json_number(
+                penalties_onec - wb_penalties_total
+                if penalties_onec is not None
+                else None
+            ),
+            "issueRows": sum(row["status"] != "Сходится" for row in rows),
+        },
+        "source": {
+            "refreshRunId": refresh_run.id if refresh_run else "",
+            "status": refresh_run.status if refresh_run else "missing",
+            "snapshotSetId": refresh_run.snapshot_set_id if refresh_run else "",
+            "loadedAt": (refresh_run.finished_at or refresh_run.updated_at).isoformat()
+            if refresh_run
+            else "",
+            "salesRegisterRows": len(source_rows.get("onec_sales_register", [])),
+            "incomingInvoiceRows": len(source_rows.get("onec_incoming_invoices", [])),
+        },
+    }
+
+
+def _latest_financial_onec_refresh_run(
+    db: Session, report: ReportRun
+) -> SourceRefreshRun | None:
+    candidates = list(
+        db.scalars(
+            select(SourceRefreshRun)
+            .where(
+                SourceRefreshRun.tenant_id == report.tenant_id,
+                SourceRefreshRun.client_id == report.client_id,
+            )
+            .order_by(SourceRefreshRun.created_at.desc())
+            .limit(30)
+        )
+    )
+    fallback = None
+    required_types = {"onec_sales_register", "onec_incoming_invoices"}
+    for refresh_run in candidates:
+        source_types = set(
+            db.scalars(
+                select(SourceRefreshCollection.source_type).where(
+                    SourceRefreshCollection.refresh_run_id == refresh_run.id,
+                    SourceRefreshCollection.source_type.in_(
+                        {
+                            "onec_sales_register",
+                            "onec_incoming_invoices",
+                        }
+                    ),
+                )
+            )
+        )
+        if required_types.issubset(source_types):
+            return refresh_run
+        if source_types and fallback is None:
+            fallback = refresh_run
+    return fallback
+
+
+def _financial_onec_source_rows(
+    db: Session,
+    report: ReportRun,
+    refresh_run: SourceRefreshRun | None,
+) -> dict[str, list[SourceSnapshotRow]]:
+    result: dict[str, list[SourceSnapshotRow]] = {}
+    if refresh_run is None:
+        return result
+    for source_type in (
+        "onec_sales_register",
+        "onec_incoming_invoices",
+        "onec_expense_invoices",
+    ):
+        result[source_type] = list(
+            db.scalars(
+                _source_snapshot_rows_select(
+                    tenant_id=report.tenant_id,
+                    refresh_run=refresh_run,
+                    source_type=source_type,
+                ).order_by(SourceSnapshotRow.row_number)
+            )
+        )
+    return result
+
+
+def _financial_onec_source_statuses(
+    db: Session, refresh_run: SourceRefreshRun | None
+) -> dict[str, str]:
+    if refresh_run is None:
+        return {}
+    collections = list(
+        db.scalars(
+            select(SourceRefreshCollection).where(
+                SourceRefreshCollection.refresh_run_id == refresh_run.id,
+                SourceRefreshCollection.source_type.in_(
+                    {
+                        "onec_sales_register",
+                        "onec_incoming_invoices",
+                        "onec_expense_invoices",
+                    }
+                ),
+            )
+        )
+    )
+    return {item.source_type: item.status for item in collections}
+
+
+def _financial_source_available(status: str) -> bool:
+    return status.strip().lower() in SOURCE_LOAD_OK_STATUSES
+
+
+def _wb_revenue_document_buckets(
+    document_rows: list[ReportDocumentReconciliationRow],
+    unit_rows: list[ReportUnitRow],
+    *,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[dict[tuple[date, str], dict[str, Any]], Decimal]:
+    buckets: dict[tuple[date, str], dict[str, Any]] = {}
+    for row in document_rows:
+        week = row.sales_period_start
+        if week is None or not _date_in_period(
+            week + timedelta(days=6),
+            period_start=period_start,
+            period_end=period_end,
+        ):
+            continue
+        document_type = row.document_type or "Документ WB"
+        bucket = buckets.setdefault(
+            (week, document_type),
+            {"amount": Decimal("0"), "documents": set()},
+        )
+        bucket["amount"] += row.wb_amount or Decimal("0")
+        for label in (
+            row.wb_report_ids,
+            _closing_date_label(row.document_report, row.sales_period_end),
+        ):
+            if label:
+                bucket["documents"].add(label)
+    total = sum(
+        (
+            row.revenue or Decimal("0")
+            for row in unit_rows
+            if _date_in_period(
+                row.week + timedelta(days=6) if row.week else None,
+                period_start=period_start,
+                period_end=period_end,
+            )
+        ),
+        Decimal("0"),
+    )
+    return buckets, total
+
+
+def _onec_revenue_document_buckets(
+    source_rows: dict[str, list[SourceSnapshotRow]],
+    *,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[dict[tuple[date, str], dict[str, Any]], Decimal]:
+    expense_headers = {
+        _safe_payload_text(row.row_payload or {}, "Ref_Key"): row.row_payload or {}
+        for row in source_rows.get("onec_expense_invoices", [])
+        if _safe_payload_text(row.row_payload or {}, "Ref_Key")
+    }
+    documents: dict[tuple[date, str, str, date], dict[str, Any]] = {}
+    total = Decimal("0")
+    for row in source_rows.get("onec_sales_register", []):
+        for item in _iter_onec_recordset_items(row.row_payload or {}):
+            if item.get("Active") is False:
+                continue
+            actual_date = _payload_date_or_none(
+                _safe_payload_text(item, "Period", "Период", "Date", "Дата")
+            )
+            document_id = _safe_payload_text(item, "Документ", "document_id")
+            document_type = _financial_revenue_document_type(
+                _safe_payload_text(item, "Документ_Type", "document_type")
+            )
+            if actual_date is None or not document_type:
+                continue
+            logical_week = _financial_document_week(actual_date, document_type)
+            key = (logical_week, document_type, document_id, actual_date)
+            document = documents.setdefault(
+                key,
+                {
+                    "amount": Decimal("0"),
+                    "label": _financial_onec_revenue_document_label(
+                        document_type,
+                        actual_date,
+                        document_id,
+                        expense_headers.get(document_id),
+                    ),
+                },
+            )
+            amount = _payload_decimal(item, "Сумма", "amount")
+            document["amount"] += amount
+            if _date_in_period(
+                actual_date, period_start=period_start, period_end=period_end
+            ):
+                total += amount
+
+    buckets: dict[tuple[date, str], dict[str, Any]] = {}
+    for (week, document_type, _document_id, actual_date), document in documents.items():
+        if document["amount"] == 0:
+            continue
+        bucket = buckets.setdefault(
+            (week, document_type),
+            {
+                "amount": Decimal("0"),
+                "documents": [],
+                "outsideDocuments": [],
+            },
+        )
+        entry = {
+            "label": document["label"],
+            "date": actual_date,
+            "amount": document["amount"],
+        }
+        if _date_in_period(
+            actual_date, period_start=period_start, period_end=period_end
+        ):
+            bucket["amount"] += document["amount"]
+            bucket["documents"].append(entry)
+        else:
+            bucket["outsideDocuments"].append(entry)
+    return buckets, total
+
+
+def _financial_revenue_document_type(value: str) -> str:
+    normalized = value.casefold()
+    if "отчеткомиссионера" in normalized:
+        return "Отчет комиссионера"
+    if "расходнаянакладная" in normalized:
+        return "Уведомление о выкупе"
+    return ""
+
+
+def _financial_document_week(actual_date: date, document_type: str) -> date:
+    week = actual_date - timedelta(days=actual_date.weekday())
+    if document_type == "Уведомление о выкупе":
+        week -= timedelta(days=7)
+    return week
+
+
+def _financial_onec_revenue_document_label(
+    document_type: str,
+    actual_date: date,
+    document_id: str,
+    header: dict[str, Any] | None,
+) -> str:
+    if header:
+        number = _safe_payload_text(header, "Number", "Номер")
+        if number:
+            return f"Расходная накладная {number} от {_ru_short_date(actual_date)}"
+    short_id = document_id[:8] if document_id else "без номера"
+    return f"{document_type} {short_id} от {_ru_short_date(actual_date)}"
+
+
+def _wb_penalty_document_buckets(
+    unit_rows: list[ReportUnitRow],
+    *,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[dict[tuple[date, str], dict[str, Any]], Decimal]:
+    buckets: dict[tuple[date, str], dict[str, Any]] = {}
+    total = Decimal("0")
+    for row in unit_rows:
+        week = row.week
+        if week is None or not _date_in_period(
+            week + timedelta(days=6),
+            period_start=period_start,
+            period_end=period_end,
+        ):
+            continue
+        amount = row.penalties or Decimal("0")
+        total += amount
+        bucket = buckets.setdefault(
+            (week, "Штрафы WB"),
+            {"amount": Decimal("0"), "documents": set()},
+        )
+        bucket["amount"] += amount
+        label = (
+            _closing_date_label(row.document_report, week + timedelta(days=6))
+            or row.wb_report_id
+        )
+        if label:
+            bucket["documents"].add(label)
+    return buckets, total
+
+
+def _onec_penalty_document_buckets(
+    rows: list[SourceSnapshotRow],
+    *,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[dict[tuple[date, str], dict[str, Any]], Decimal]:
+    buckets: dict[tuple[date, str], dict[str, Any]] = {}
+    total = Decimal("0")
+    for row in rows:
+        payload = row.row_payload or {}
+        if payload.get("DeletionMark") is True or payload.get("Posted") is False:
+            continue
+        actual_date = _payload_date_or_none(_safe_payload_text(payload, "Date", "Дата"))
+        if actual_date is None:
+            continue
+        amount = _onec_penalty_invoice_amount(payload)
+        if amount == 0:
+            continue
+        week = actual_date - timedelta(days=actual_date.weekday())
+        bucket = buckets.setdefault(
+            (week, "Штрафы WB"),
+            {
+                "amount": Decimal("0"),
+                "documents": [],
+                "outsideDocuments": [],
+            },
+        )
+        entry = {
+            "label": _financial_penalty_document_label(payload, actual_date),
+            "date": actual_date,
+            "amount": amount,
+        }
+        if _date_in_period(
+            actual_date, period_start=period_start, period_end=period_end
+        ):
+            bucket["amount"] += amount
+            bucket["documents"].append(entry)
+            total += amount
+        else:
+            bucket["outsideDocuments"].append(entry)
+    return buckets, total
+
+
+def _onec_penalty_invoice_amount(payload: dict[str, Any]) -> Decimal:
+    amount = Decimal("0")
+    for table_name in ("Расходы", "Запасы"):
+        table = payload.get(table_name)
+        if not isinstance(table, list):
+            continue
+        for item in table:
+            if not isinstance(item, dict):
+                continue
+            text = " ".join(
+                _safe_payload_text(
+                    item,
+                    "Содержание",
+                    "Номенклатура",
+                    "Комментарий",
+                    "Наименование",
+                    "description",
+                )
+                for _ in (0,)
+            ).casefold()
+            if "штраф" in text:
+                amount += _payload_decimal(item, "Сумма", "Всего", "amount")
+    return amount
+
+
+def _financial_penalty_document_label(
+    payload: dict[str, Any], actual_date: date
+) -> str:
+    number = _safe_payload_text(payload, "Number", "Номер") or "без номера"
+    incoming = _safe_payload_text(payload, "НомерВходящегоДокумента", "incoming_number")
+    incoming_text = f" (вх. {incoming})" if incoming else ""
+    return (
+        f"Приходная накладная {number}{incoming_text} от {_ru_short_date(actual_date)}"
+    )
+
+
+def _financial_reconciliation_rows(
+    *,
+    control_type: str,
+    wb_buckets: dict[tuple[date, str], dict[str, Any]],
+    onec_buckets: dict[tuple[date, str], dict[str, Any]],
+    source_available: bool,
+) -> list[dict[str, Any]]:
+    rows = []
+    onec_period_keys = {
+        key for key, bucket in onec_buckets.items() if bucket.get("documents")
+    }
+    for week, document_type in sorted(set(wb_buckets) | onec_period_keys):
+        wb = wb_buckets.get((week, document_type))
+        onec = onec_buckets.get((week, document_type), {})
+        wb_amount = wb["amount"] if wb else Decimal("0")
+        onec_amount = onec.get("amount", Decimal("0")) if source_available else None
+        in_documents = onec.get("documents", [])
+        outside_documents = onec.get("outsideDocuments", [])
+        delta = onec_amount - wb_amount if onec_amount is not None else None
+        status, comment = _financial_reconciliation_status(
+            wb_present=wb is not None,
+            onec_documents=in_documents,
+            outside_documents=outside_documents,
+            delta=delta,
+            source_available=source_available,
+        )
+        rows.append(
+            {
+                "controlType": control_type,
+                "controlLabel": FINANCIAL_RECONCILIATION_TYPES[control_type],
+                "period": (
+                    f"{_ru_short_date(week)}–{_ru_short_date(week + timedelta(days=6))}"
+                ),
+                "periodStart": week.isoformat(),
+                "periodEnd": (week + timedelta(days=6)).isoformat(),
+                "documentType": document_type,
+                "wbDocument": _financial_wb_documents(wb),
+                "onecDocuments": _financial_onec_documents(
+                    in_documents, outside_documents
+                ),
+                "wbAmount": _json_number(wb_amount),
+                "onecAmount": _json_number(onec_amount),
+                "delta": _json_number(delta),
+                "status": status,
+                "comment": comment,
+            }
+        )
+    return rows
+
+
+def _financial_wb_documents(bucket: dict[str, Any] | None) -> str:
+    if not bucket:
+        return "Неделя WB вне выбранного периода"
+    documents = sorted(str(item) for item in bucket.get("documents", set()) if item)
+    if len(documents) > 4:
+        hidden_count = len(documents) - 4
+        documents = [*documents[:4], f"ещё {hidden_count}"]
+    return "; ".join(documents) or "Агрегат P&L по неделе WB"
+
+
+def _financial_onec_documents(
+    in_documents: list[dict[str, Any]], outside_documents: list[dict[str, Any]]
+) -> str:
+    labels = [document["label"] for document in in_documents]
+    labels.extend(f"Вне периода: {document['label']}" for document in outside_documents)
+    return "; ".join(labels) or "—"
+
+
+def _financial_reconciliation_status(
+    *,
+    wb_present: bool,
+    onec_documents: list[dict[str, Any]],
+    outside_documents: list[dict[str, Any]],
+    delta: Decimal | None,
+    source_available: bool,
+) -> tuple[str, str]:
+    if not source_available:
+        return "Нет источника 1С", "Источник 1С не загружен; сумма не заменена нулем."
+    if not wb_present and onec_documents:
+        return (
+            "Есть только в 1С периода",
+            "Документ 1С входит в период, а связанная неделя WB начинается "
+            "за его пределами.",
+        )
+    if wb_present and not onec_documents and outside_documents:
+        dates = ", ".join(_ru_short_date(item["date"]) for item in outside_documents)
+        return (
+            "Документ 1С вне периода",
+            f"Связанный документ 1С датирован {dates} и не включен в сумму периода.",
+        )
+    if wb_present and not onec_documents:
+        return "Нет документа 1С", "Для недели WB не найден документ 1С."
+    if delta is not None and abs(delta) <= FINANCIAL_RECONCILIATION_TOLERANCE:
+        return "Сходится", "Суммы сходятся в пределах допуска 1 ₽."
+    return "Расхождение", "Проверьте состав, сумму и дату документов этой недели."
+
+
+def _ru_short_date(value: date) -> str:
+    return value.strftime("%d.%m.%Y")
+
+
 def _document_reconciliation_period_condition(
     period_start: date | None,
     period_end: date | None,
@@ -8963,9 +12720,9 @@ def _row_period_condition(
         return None
     week_conditions = [ReportUnitRow.week.is_not(None)]
     if period_start:
-        week_conditions.append(ReportUnitRow.week >= period_start)
+        week_conditions.append(ReportUnitRow.week >= period_start - timedelta(days=6))
     if period_end:
-        week_conditions.append(ReportUnitRow.week <= period_end)
+        week_conditions.append(ReportUnitRow.week <= period_end - timedelta(days=6))
     row_date_conditions = [and_(*week_conditions)]
     iso_date_conditions = [
         ReportUnitRow.week.is_(None),
@@ -8982,10 +12739,27 @@ def _row_period_condition(
     row_date_conditions.append(and_(*iso_date_conditions))
     month_condition = _row_period_month_condition(report, period_start, period_end)
     if month_condition is not None:
-        row_date_conditions.append(
-            and_(ReportUnitRow.week.is_(None), month_condition)
-        )
+        row_date_conditions.append(and_(ReportUnitRow.week.is_(None), month_condition))
     return or_(*row_date_conditions)
+
+
+def _month_filter_period(value: str) -> tuple[date, date] | None:
+    normalized = value.replace("(неполный месяц)", "").strip().casefold()
+    for month_number, month_name in RU_MONTH_NAMES.items():
+        prefix = f"{month_name.casefold()} "
+        if not normalized.startswith(prefix):
+            continue
+        try:
+            year = int(normalized.removeprefix(prefix).strip())
+            start = date(year, month_number, 1)
+        except ValueError:
+            return None
+        if month_number == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month_number + 1, 1)
+        return start, next_month - timedelta(days=1)
+    return None
 
 
 def _row_period_month_condition(
@@ -9355,6 +13129,10 @@ def report_freshness_payload(
                 "wbCabinetId": item.wb_cabinet_id,
                 "status": item.status,
                 "rowCount": item.row_count,
+                "snapshotHash": item.snapshot_hash,
+                "sourceRefreshRunId": item.source_refresh_run_id,
+                "required": item.required,
+                "publicationRequired": item.publication_required,
                 "loadedAt": item.loaded_at.isoformat(),
             }
             for item in loads
@@ -9522,7 +13300,7 @@ def management_report_text(summary: dict[str, Any]) -> str:
     return (
         f"Период: {summary['meta']['period']}\n"
         f"Выручка после СПП: {totals['revenue']:,.0f} ₽\n"
-        f"Маржинальный доход WB после налогов: {totals['profit']:,.0f} ₽\n"
+        f"Управленческая прибыль WB: {totals['profit']:,.0f} ₽\n"
         f"Маржа: {margin:.1%}\n"
         f"Убыточных строк: {int(totals['losses'])}\n"
         f"Строк требуют проверки данных: {int(totals['review'])}\n"

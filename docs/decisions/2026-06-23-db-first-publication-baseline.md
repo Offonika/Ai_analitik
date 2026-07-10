@@ -4,9 +4,15 @@ doc_type: decision
 domain: "marketplace-analytics"
 audience: ["engineering", "operations", "consultant"]
 status: accepted
-updated_at: "2026-06-23"
+source_of_truth: false
+snapshot_as_of: "2026-06-23"
+updated_at: "2026-07-10"
 source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 ---
+
+> **Исторический снимок на 23.06.2026.** Документ не определяет текущий
+> опубликованный отчет. Живое состояние всегда читается из БД по явному
+> `report_id`.
 
 # Контекст
 
@@ -14,14 +20,13 @@ source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 контур: расчетные витрины сохранены в Postgres, а Excel/CSV/HTML/DOCX/PDF
 созданы как артефакты из опубликованного `report_id`.
 
-Этот документ фиксирует эксплуатационный baseline и parity-решение, чтобы
-дальше не смешивать текущий воспроизводимый отчет со старым числом из чернового
-плана.
+Этот документ фиксирует исторический эксплуатационный baseline и
+parity-решение, чтобы не смешивать снимок на 23.06.2026 с живым отчетом.
 
 # Baseline
 
 - Tenant: `shumeyko`.
-- Current report: `excel_mvp_2026_03_01_2026_06_17`.
+- Report snapshot: `excel_mvp_2026_03_01_2026_06_17`.
 - Lineage: `db_first_report_marts`.
 - Publication status: `published/current`.
 - Schema version: `2026_06_23_db_first_report_marts`.
@@ -33,15 +38,15 @@ source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 
 # Parity Decision
 
-Текущее воспроизводимое состояние:
+Воспроизводимое состояние снимка на 23.06.2026:
 
 - Postgres `report_unit_rows`: 18179 строк.
 - DB-first CSV `unitRows.csv`: 18179 data rows.
 - Stable Excel sheet `Юнит экономика`: 18179 data rows.
-- Current Power BI mart `unit_economics.csv`: 18179 data rows.
+- Power BI mart того снимка `unit_economics.csv`: 18179 data rows.
 - `lostSales` в DB/CSV/Excel: 776 data rows.
 
-Число `18820` не найдено в текущих docs/specs/tests/scripts как закрепленный
+Число `18820` не было найдено в docs/specs/tests/scripts того снимка как
 приемочный критерий и не воспроизводится текущими локальными DB-first
 артефактами. До появления доказательного старого эталона считать `18820`
 устаревшим ориентиром из рабочего плана, а не обязательным acceptance number.
@@ -50,7 +55,7 @@ source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 `18820`, разбор выполнять отдельно: сначала найти класс отличающихся строк и
 только потом менять расчет или source selection. Молча подгонять строки нельзя.
 
-# Source Refresh State
+# Source Refresh State As Of 2026-06-23
 
 Расписание systemd работает, но source refresh не готов к live-загрузке:
 
@@ -63,10 +68,11 @@ source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 
 # Operational Check
 
-Для проверки текущего baseline использовать:
+Для повторной проверки этого исторического снимка использовать явный id:
 
 ```bash
 .venv/bin/python scripts/check_db_first_publication.py \
+  --report-id excel_mvp_2026_03_01_2026_06_17 \
   --require-postgres \
   --require-files
 ```
@@ -75,6 +81,7 @@ source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 
 ```bash
 .venv/bin/python scripts/check_db_first_publication.py \
+  --report-id excel_mvp_2026_03_01_2026_06_17 \
   --require-postgres \
   --require-files \
   --require-integrations

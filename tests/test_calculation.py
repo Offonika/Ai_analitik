@@ -11,16 +11,21 @@ from tests.fixtures import (
     sku_mappings,
     wb_snapshots,
 )
-from wb_unit_economics.calculation import build_unit_economics_report
+from wb_unit_economics.calculation import (
+    build_unit_economics_report,
+    calculate_progressive_income_tax,
+)
 from wb_unit_economics.contracts import (
     AdvertisingScope,
     DataQualityStatus,
     MappingStatus,
+    OnecMarketplaceServiceRow,
     OnecUnfCostSnapshot,
     ReportStatus,
     SalesModel,
     SkuMapping,
     TaxProfile,
+    VatDeductionMode,
     VatMode,
     WbExpenseAllocationBase,
     WbSalesReportSummaryRow,
@@ -39,12 +44,30 @@ def build_report(as_of_date: date = date(2026, 6, 16)):
     )
 
 
+def cost_snapshots_with_input_vat() -> list[OnecUnfCostSnapshot]:
+    costs = cost_snapshots()
+    return [
+        costs[0].model_copy(
+            update={
+                "input_vat_value": Decimal("16.50"),
+                "input_vat_source": "1c_sales_register",
+            }
+        ),
+        costs[1].model_copy(
+            update={
+                "input_vat_value": Decimal("33.00"),
+                "input_vat_source": "1c_sales_register",
+            }
+        ),
+    ]
+
+
 def test_report_marks_q2_before_end_as_partial_period() -> None:
     assert build_report().status is ReportStatus.PARTIAL_PERIOD
     assert build_report(date(2026, 7, 1)).status is ReportStatus.FINAL
 
 
-def test_report_period_filters_source_rows() -> None:
+def test_report_period_filters_source_rows_by_closing_week() -> None:
     march_snapshot = wb_snapshots()[0].model_copy(
         update={
             "period_start": date(2026, 3, 31),
@@ -73,7 +96,7 @@ def test_report_period_filters_source_rows() -> None:
     )
 
     assert len(report.rows) == 1
-    assert report.rows[0].source_snapshot_hashes == ("april-hash",)
+    assert report.rows[0].source_snapshot_hashes == ("april-hash", "march-hash")
     assert report.rows[0].is_partial_week is True
     assert report.source_coverage_start == date(2026, 3, 31)
     assert report.source_coverage_end == date(2026, 4, 1)
@@ -100,16 +123,20 @@ def test_profit_formula_includes_acquiring_and_cost_extra() -> None:
     assert row.spp_discount == Decimal("0.00")
     assert row.spp_discount_rate == Decimal("0.0000")
     assert row.spp_source_status == "СПП не передается текущим источником"
-    assert row.tax_method == "НДС внутри цены 5/105; УСН 1% от выручки"
+    assert row.tax_method == "legacy: НДС внутри цены 5/105; налог с выручки 1%"
+    assert row.vat_output == Decimal("47.62")
+    assert row.vat_input == Decimal("0")
+    assert row.vat_payable == Decimal("47.62")
+    assert row.tax_completeness == "legacy_complete"
     assert row.data_quality_status is DataQualityStatus.RELIABLE
     assert row.advertising_scope is AdvertisingScope.EXCLUDED_FROM_MVP
 
 
-def test_osno_tax_profile_uses_vat_22_inside_price() -> None:
+def test_osno_tax_profile_uses_vat_22_inside_price_and_input_vat() -> None:
     report = build_unit_economics_report(
         client_id=CLIENT_ID,
         wb_snapshots=wb_snapshots(),
-        cost_snapshots=cost_snapshots(),
+        cost_snapshots=cost_snapshots_with_input_vat(),
         sku_mappings=sku_mappings(),
         account_org_mapping=account_org_mapping(),
         tax_profiles=[
@@ -119,6 +146,7 @@ def test_osno_tax_profile_uses_vat_22_inside_price() -> None:
                 tax_system="ОСНО",
                 vat_rate=Decimal("22"),
                 vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
                 revenue_tax_rate=Decimal("0"),
                 source="Catalog_Организации",
             )
@@ -129,14 +157,305 @@ def test_osno_tax_profile_uses_vat_22_inside_price() -> None:
 
     row = next(item for item in report.rows if item.nm_id == 101)
     assert row.revenue_without_vat == Decimal("819.67")
-    assert row.vat_5_from_revenue == Decimal("180.33")
+    assert row.vat_output == Decimal("180.33")
+    assert row.vat_input == Decimal("33.00")
+    assert row.vat_payable == Decimal("147.33")
+    assert row.vat_5_from_revenue == Decimal("147.33")
     assert row.usn_1_from_revenue == Decimal("0.00")
-    assert row.profit_after_taxes == Decimal("389.67")
-    assert row.tax_method == "ОСНО; НДС 22% внутри цены; налог с выручки 0%"
+    assert row.income_tax_base == Decimal("422.67")
+    assert row.income_tax == Decimal("0")
+    assert row.income_tax_included is False
+    assert row.tax_completeness == "vat_input_partial_ndfl_not_allocated"
+    assert row.profit_after_taxes == Decimal("422.67")
+    assert row.gross_profit == Decimal("422.67")
+    assert row.cogs_from_1c_with_extra_costs == Decimal("197.00")
+    assert row.margin_after_taxes == Decimal("0.5157")
+    assert row.pnl_vat_mode == "without_vat_for_osno"
+    assert (
+        row.tax_method == "ОСНО; НДС 22% внутри цены; налог с выручки 0%; "
+        "входящий НДС учтен; НДФЛ ИП сверху"
+    )
     assert row.tax_profile_source == "Catalog_Организации"
 
 
-def test_tax_profiles_are_selected_by_organization() -> None:
+def test_osno_uses_explicit_wb_input_vat() -> None:
+    sale = wb_snapshots()[0].model_copy(update={"vat_input_from_wb": Decimal("4.45")})
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale],
+        cost_snapshots=cost_snapshots_with_input_vat(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                revenue_tax_rate=Decimal("0"),
+                source="Catalog_Организации",
+            )
+        ],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.vat_input_from_wb == Decimal("4.45")
+    assert row.vat_input_from_1c == Decimal("0.00")
+    assert row.vat_input == Decimal("37.45")
+    assert row.vat_payable == Decimal("142.88")
+    assert row.vat_input_completeness == "partial"
+    assert row.tax_completeness == "vat_input_partial_ndfl_not_allocated"
+
+
+def test_osno_calculates_wb_service_vat_and_reconciles_1c_control() -> None:
+    service_row = OnecMarketplaceServiceRow(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        counterparty_id="WB",
+        document_id="service-1",
+        document_number="1",
+        document_date=date(2026, 4, 13),
+        week_start=date(2026, 4, 6),
+        week_end=date(2026, 4, 12),
+        service_category="Комиссия WB",
+        service_name="Комиссия WB",
+        amount=Decimal("122.95"),
+        vat=Decimal("27.05"),
+        total=Decimal("150"),
+        source_row_hash="service-hash-1",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=cost_snapshots_with_input_vat(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                revenue_tax_rate=Decimal("0"),
+                source="Catalog_Организации",
+            )
+        ],
+        onec_marketplace_service_rows=[service_row],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.vat_input_from_wb == Decimal("27.05")
+    assert row.vat_input_from_1c == Decimal("27.05")
+    assert row.vat_input == Decimal("60.05")
+    assert row.vat_payable == Decimal("120.28")
+    assert row.gross_profit == Decimal("449.72")
+    assert row.profit_after_taxes == Decimal("449.72")
+    assert row.vat_input_difference == Decimal("0.00")
+    assert row.vat_input_completeness == "confirmed"
+    reconciliation = report.tax_input_reconciliation_rows[0]
+    assert reconciliation.vat_input_from_wb == Decimal("27.05")
+    assert reconciliation.vat_input_from_1c == Decimal("27.05")
+    assert reconciliation.vat_input_completeness == "confirmed"
+
+
+def test_osno_pnl_uses_no_vat_revenue_cogs_and_wb_services() -> None:
+    sale = wb_snapshots()[0].model_copy(
+        update={
+            "quantity": Decimal("1"),
+            "net_revenue": Decimal("1220"),
+            "wb_commission": Decimal("122"),
+            "logistics": Decimal("0"),
+            "storage": Decimal("0"),
+            "acceptance": Decimal("0"),
+            "penalties_and_holdbacks": Decimal("0"),
+            "acquiring": Decimal("0"),
+            "raw_payload_hash": "wb-hash-osno-no-vat-pnl",
+        }
+    )
+    cost = cost_snapshots()[0].model_copy(
+        update={
+            "cost_value": Decimal("500"),
+            "extra_costs_value": Decimal("0"),
+            "cost_method": (
+                "sales_register_weighted_average_without_vat_reconciliation_needs_review"
+            ),
+            "source_document": "AccumulationRegister_Продажи/СебестоимостьБезНДС",
+        }
+    )
+    service_row = OnecMarketplaceServiceRow(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        counterparty_id="WB",
+        document_id="service-1",
+        document_number="1",
+        document_date=date(2026, 4, 13),
+        week_start=date(2026, 4, 6),
+        week_end=date(2026, 4, 12),
+        service_category="Комиссия WB",
+        service_name="Комиссия WB",
+        amount=Decimal("100"),
+        vat=Decimal("22"),
+        total=Decimal("122"),
+        source_row_hash="service-hash-no-vat-pnl",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale],
+        cost_snapshots=[cost],
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                revenue_tax_rate=Decimal("0"),
+                source="Catalog_Организации",
+            )
+        ],
+        onec_marketplace_service_rows=[service_row],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.revenue_without_vat == Decimal("1000.00")
+    assert row.vat_output == Decimal("220.00")
+    assert row.vat_input == Decimal("22.00")
+    assert row.vat_payable == Decimal("198.00")
+    assert row.cogs_from_1c_with_extra_costs == Decimal("500.00")
+    assert row.gross_profit == Decimal("400.00")
+    assert row.profit_after_taxes == Decimal("400.00")
+    assert row.pnl_vat_mode == "without_vat_for_osno"
+
+
+def test_osno_penalty_is_full_expense_and_has_no_deductible_vat() -> None:
+    penalty = wb_snapshots()[0].model_copy(
+        update={
+            "quantity": Decimal("0"),
+            "net_revenue": Decimal("0"),
+            "wb_commission": Decimal("0"),
+            "logistics": Decimal("0"),
+            "storage": Decimal("0"),
+            "acceptance": Decimal("0"),
+            "wb_promotion": Decimal("0"),
+            "penalties_and_holdbacks": Decimal("122"),
+            "acquiring": Decimal("0"),
+            "vat_input_from_wb": Decimal("22"),
+            "raw_payload_hash": "wb-penalty-only",
+        }
+    )
+    penalty_document = OnecMarketplaceServiceRow(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        counterparty_id="WB",
+        document_id="penalty-service",
+        document_number="P-1",
+        document_date=date(2026, 4, 13),
+        week_start=date(2026, 4, 6),
+        week_end=date(2026, 4, 12),
+        service_category="Штрафы",
+        service_name="Штрафы",
+        amount=Decimal("122"),
+        vat=Decimal("22"),
+        total=Decimal("144"),
+        source_row_hash="penalty-service-hash",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[penalty],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                source="Catalog_Организации",
+            )
+        ],
+        onec_marketplace_service_rows=[penalty_document],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.penalties_and_holdbacks == Decimal("122.00")
+    assert row.vat_input == Decimal("0.00")
+    assert row.gross_profit == Decimal("-122.00")
+    assert row.profit_after_taxes == Decimal("-122.00")
+    assert row.profit_per_unit is None
+    assert row.profit_after_taxes_per_unit is None
+
+
+def test_osno_vat_input_mismatch_marks_needs_review() -> None:
+    sale = wb_snapshots()[0].model_copy(update={"vat_input_from_wb": Decimal("4.45")})
+    service_row = OnecMarketplaceServiceRow(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        counterparty_id="WB",
+        document_id="service-1",
+        document_number="1",
+        document_date=date(2026, 4, 13),
+        week_start=date(2026, 4, 6),
+        week_end=date(2026, 4, 12),
+        service_category="Комиссия WB",
+        service_name="Комиссия WB",
+        amount=Decimal("100"),
+        vat=Decimal("9"),
+        total=Decimal("109"),
+        source_row_hash="service-hash-1",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale],
+        cost_snapshots=cost_snapshots_with_input_vat(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                source="Catalog_Организации",
+            )
+        ],
+        onec_marketplace_service_rows=[service_row],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.vat_input_from_wb == Decimal("4.45")
+    assert row.vat_input_from_1c == Decimal("9.00")
+    assert row.vat_input_difference == Decimal("4.55")
+    assert row.vat_input_completeness == "mismatch"
+    assert row.data_quality_status is DataQualityStatus.TAX_REVIEW
+
+
+def test_osno_missing_input_vat_marks_row_needs_review() -> None:
     report = build_unit_economics_report(
         client_id=CLIENT_ID,
         wb_snapshots=wb_snapshots(),
@@ -150,14 +469,49 @@ def test_tax_profiles_are_selected_by_organization() -> None:
                 tax_system="ОСНО",
                 vat_rate=Decimal("22"),
                 vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                revenue_tax_rate=Decimal("0"),
+                source="Catalog_Организации",
+            )
+        ],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = next(item for item in report.rows if item.nm_id == 101)
+    assert row.data_quality_status is DataQualityStatus.TAX_REVIEW
+    assert row.vat_output == Decimal("180.33")
+    assert row.vat_input == Decimal("0")
+    assert row.vat_payable == Decimal("0")
+    assert row.vat_5_from_revenue == Decimal("0")
+    assert row.profit_after_taxes == row.gross_profit
+    assert row.tax_completeness == "input_vat_missing"
+
+
+def test_tax_profiles_are_selected_by_organization() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots_with_input_vat(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
                 source="Catalog_Организации",
             ),
             TaxProfile(
                 client_id=CLIENT_ID,
                 organization_id="1C_ORG_2",
-                tax_system="legacy_mvp",
+                tax_system="УСН Доходы",
                 vat_rate=Decimal("5"),
                 vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
                 revenue_tax_rate=Decimal("0.01"),
                 source="fixture",
             ),
@@ -168,8 +522,11 @@ def test_tax_profiles_are_selected_by_organization() -> None:
 
     osno_row = next(item for item in report.rows if item.nm_id == 101)
     legacy_row = next(item for item in report.rows if item.nm_id == 202)
-    assert osno_row.vat_5_from_revenue == Decimal("180.33")
+    assert osno_row.vat_output == Decimal("180.33")
+    assert osno_row.vat_input == Decimal("33.00")
+    assert osno_row.vat_5_from_revenue == Decimal("147.33")
     assert osno_row.usn_1_from_revenue == Decimal("0.00")
+    assert osno_row.pnl_vat_mode == "without_vat_for_osno"
     assert legacy_row.vat_5_from_revenue == Decimal("-23.81")
     assert legacy_row.usn_1_from_revenue == Decimal("-5.00")
 
@@ -188,6 +545,7 @@ def test_missing_required_tax_profile_marks_row_needs_review() -> None:
                 tax_system="ОСНО",
                 vat_rate=Decimal("22"),
                 vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
                 source="Catalog_Организации",
             )
         ],
@@ -196,12 +554,102 @@ def test_missing_required_tax_profile_marks_row_needs_review() -> None:
     )
 
     row = next(item for item in report.rows if item.nm_id == 202)
-    assert row.data_quality_status is DataQualityStatus.NEEDS_REVIEW
+    assert row.data_quality_status is DataQualityStatus.TAX_PROFILE_MISSING
     assert row.vat_5_from_revenue == Decimal("0")
     assert row.usn_1_from_revenue == Decimal("0")
     assert row.profit_after_taxes == row.gross_profit
     assert row.tax_method == "Налоговый профиль не найден"
     assert row.tax_profile_source == "missing"
+
+
+def test_zero_net_sale_and_return_do_not_require_cost() -> None:
+    sale = wb_snapshots()[0]
+    returned = sale.model_copy(
+        update={
+            "wb_document_id": "doc-return",
+            "operation_type": "return",
+            "quantity": Decimal("-2"),
+            "net_revenue": Decimal("-1000"),
+            "wb_commission": Decimal("-100"),
+            "logistics": Decimal("-50"),
+            "storage": Decimal("-20"),
+            "acceptance": Decimal("-10"),
+            "penalties_and_holdbacks": Decimal("-5"),
+            "acquiring": Decimal("-15"),
+            "raw_payload_hash": "wb-return-hash",
+        }
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale, returned],
+        cost_snapshots=[],
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.quantity == Decimal("0")
+    assert row.cogs_from_1c_with_extra_costs == Decimal("0.00")
+    assert row.data_quality_status is DataQualityStatus.RELIABLE
+
+
+def test_unconfirmed_or_unsupported_tax_profile_does_not_calculate_taxes() -> None:
+    profiles = [
+        TaxProfile(
+            client_id=CLIENT_ID,
+            organization_id="1C_ORG_1",
+            tax_system="УСН Доходы",
+            vat_rate=Decimal("0"),
+            vat_mode=VatMode.NONE,
+            vat_deduction_mode=VatDeductionMode.UNKNOWN,
+            revenue_tax_rate=Decimal("0.06"),
+            source="Catalog_Организации",
+        ),
+        TaxProfile(
+            client_id=CLIENT_ID,
+            organization_id="1C_ORG_1",
+            tax_system="УСН Доходы минус расходы",
+            vat_rate=Decimal("0"),
+            vat_mode=VatMode.NONE,
+            vat_deduction_mode=VatDeductionMode.NOT_APPLICABLE,
+            revenue_tax_rate=Decimal("0.15"),
+            source="Catalog_Организации",
+        ),
+    ]
+
+    for profile in profiles:
+        report = build_unit_economics_report(
+            client_id=CLIENT_ID,
+            wb_snapshots=wb_snapshots(),
+            cost_snapshots=cost_snapshots(),
+            sku_mappings=sku_mappings(),
+            account_org_mapping=account_org_mapping(),
+            tax_profiles=[profile],
+            generated_at=datetime(
+                2026,
+                6,
+                16,
+                12,
+                0,
+                tzinfo=ZoneInfo("Europe/Moscow"),
+            ),
+            as_of_date=date(2026, 6, 16),
+        )
+
+        row = next(item for item in report.rows if item.nm_id == 101)
+        assert row.tax_method == "Налоговый профиль не найден"
+        assert row.tax_profile_source == "missing"
+        assert row.vat_5_from_revenue == Decimal("0")
+        assert row.usn_1_from_revenue == Decimal("0")
+        assert row.profit_after_taxes == row.gross_profit
+
+
+def test_ip_ndfl_progressive_tax_uses_annual_cumulative_base() -> None:
+    assert calculate_progressive_income_tax(Decimal("2400000")) == Decimal("312000.00")
+    assert calculate_progressive_income_tax(Decimal("5300000")) == Decimal("756000.00")
+    assert calculate_progressive_income_tax(Decimal("0")) == Decimal("0.00")
 
 
 def test_unit_economics_row_keeps_sales_returns_and_net_quantity() -> None:
@@ -239,6 +687,31 @@ def test_unit_economics_row_keeps_sales_returns_and_net_quantity() -> None:
     assert row.return_amount == Decimal("400.00")
     assert row.return_rate_by_quantity == Decimal("0.5000")
     assert row.cogs_from_1c_with_extra_costs == Decimal("115.00")
+
+
+def test_profit_per_unit_is_empty_when_net_quantity_is_not_positive() -> None:
+    returned = wb_snapshots()[0].model_copy(
+        update={
+            "operation_type": "return",
+            "quantity": Decimal("-1"),
+            "net_revenue": Decimal("-400"),
+            "wb_commission": Decimal("-40"),
+            "raw_payload_hash": "return-only",
+        }
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[returned],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].quantity == Decimal("-1")
+    assert report.rows[0].profit_per_unit is None
+    assert report.rows[0].profit_after_taxes_per_unit is None
 
 
 def test_zero_amount_goods_rows_do_not_increase_document_quantity() -> None:
@@ -378,9 +851,7 @@ def test_report_type_from_sales_report_list_classifies_document_kind() -> None:
 
 
 def test_report_type_suffix_fallback_marks_review_status() -> None:
-    snapshot = wb_snapshots()[0].model_copy(
-        update={"wb_report_id": "535699202604061"}
-    )
+    snapshot = wb_snapshots()[0].model_copy(update={"wb_report_id": "535699202604061"})
     unrelated_summary = WbSalesReportSummaryRow(
         client_id=CLIENT_ID,
         seller_account_id="WB_ACCOUNT_1",
@@ -670,6 +1141,41 @@ def test_zero_cost_for_goods_movement_is_missing_cost() -> None:
     assert report.rows[0].data_quality_status is DataQualityStatus.MISSING_COST
 
 
+def test_zero_effective_cost_uses_nearest_nonzero_cost_with_review() -> None:
+    base_cost = cost_snapshots()[0]
+    older_nonzero_cost = base_cost.model_copy(
+        update={
+            "cost_value": Decimal("100"),
+            "extra_costs_value": Decimal("15"),
+            "effective_from": date(2026, 3, 1),
+            "effective_to": date(2026, 3, 31),
+            "source_document": "older non-zero 1C cost",
+        }
+    )
+    current_zero_cost = base_cost.model_copy(
+        update={
+            "cost_value": Decimal("0"),
+            "extra_costs_value": Decimal("0"),
+            "effective_from": date(2026, 4, 6),
+            "effective_to": date(2026, 4, 12),
+            "source_document": "current zero 1C cost",
+        }
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=[older_nonzero_cost, current_zero_cost],
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("230.00")
+    assert report.rows[0].data_quality_status is DataQualityStatus.NEEDS_REVIEW
+
+
 def test_unique_article_cost_fallback_handles_mapping_item_mismatch() -> None:
     mapping = SkuMapping(
         client_id=CLIENT_ID,
@@ -889,7 +1395,7 @@ def test_onec_report_packages_split_commissioner_report_and_buyout() -> None:
     rows_by_kind = {
         row.document_label: row for row in report.onec_report_reconciliation_rows
     }
-    assert rows_by_kind["Отчет комиссионера"].document_date == date(2026, 5, 25)
+    assert rows_by_kind["Отчет комиссионера"].document_date == date(2026, 5, 24)
     assert rows_by_kind["Отчет комиссионера"].week_start == date(2026, 5, 18)
     assert rows_by_kind["Отчет комиссионера"].week_end == date(2026, 5, 24)
     assert rows_by_kind["Отчет комиссионера"].sales_amount == Decimal("914576.00")
@@ -976,6 +1482,54 @@ def test_partial_week_is_visible_for_q2_boundary() -> None:
         report_period_end=date(2026, 6, 17),
     )
     assert report.rows[0].is_partial_week is True
+
+
+def test_april_report_excludes_week_closing_in_may() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[
+            wb_snapshots()[0].model_copy(
+                update={
+                    "period_start": date(2026, 4, 27),
+                    "period_end": date(2026, 4, 27),
+                }
+            )
+        ],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 5, 4, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 5, 4),
+        report_period_start=date(2026, 4, 1),
+        report_period_end=date(2026, 4, 30),
+    )
+
+    assert report.rows == []
+    assert report.onec_report_reconciliation_rows == []
+
+
+def test_april_report_includes_march_days_from_week_closing_in_april() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[
+            wb_snapshots()[0].model_copy(
+                update={
+                    "period_start": date(2026, 3, 30),
+                    "period_end": date(2026, 3, 30),
+                }
+            )
+        ],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 5, 4, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 5, 4),
+        report_period_start=date(2026, 4, 1),
+        report_period_end=date(2026, 4, 30),
+    )
+
+    assert report.rows[0].document_report.endswith("закрытие 05.04.2026")
+    assert report.onec_report_reconciliation_rows[0].document_date == date(2026, 4, 5)
 
 
 def test_custom_report_period_controls_status_and_partial_weeks() -> None:

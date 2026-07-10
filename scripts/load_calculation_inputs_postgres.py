@@ -160,7 +160,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sales-cost-amount-field",
-        default="Себестоимость",
+        default="СебестоимостьБезНДС",
         choices=["Себестоимость", "СебестоимостьБезНДС"],
     )
     return parser.parse_args()

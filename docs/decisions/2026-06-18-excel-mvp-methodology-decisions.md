@@ -3,10 +3,16 @@ title: "Ключевые решения Excel MVP"
 doc_type: decision
 domain: "marketplace-analytics"
 audience: ["engineering", "consultant"]
-status: accepted
-updated_at: "2026-06-18"
+status: superseded
+source_of_truth: false
+superseded_by: "docs/decisions/2026-07-10-tax-profiles-osno-profit.md"
+updated_at: "2026-07-10"
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
 ---
+
+> **Устаревшее решение.** Налоговая часть заменена ADR
+> `docs/decisions/2026-07-10-tax-profiles-osno-profit.md`. Формула
+> `НДС 5/105 + УСН 1%` допустима только для исторических legacy-отчетов.
 
 # Контекст
 

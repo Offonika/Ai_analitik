@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build DB-first report marts from read-only sources and publish atomically."""
+"""Build DB-first report marts as a safe draft or gated atomic publish."""
 
 # ruff: noqa: E402
 
@@ -9,6 +9,7 @@ import argparse
 import os
 import sys
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,13 @@ from scripts.export_report_artifacts import (
     export_report_artifacts,
 )
 from wb_unit_economics.calculation import build_unit_economics_report
+from wb_unit_economics.config import tax_profiles_from_account_org_mapping
+from wb_unit_economics.contracts import (
+    AccountOrgMapping,
+    TaxProfile,
+    VatDeductionMode,
+    VatMode,
+)
 from wb_unit_economics.mapping import (
     build_sku_mapping_from_articles,
     build_sku_mapping_from_onec_marketplace_files,
@@ -29,8 +37,10 @@ from wb_unit_economics.mapping import (
     load_wb_card_flat_rows,
 )
 from wb_unit_economics.onec_cost import (
+    extract_gross_profit_document_rows,
     load_provisional_cost_snapshots,
     load_sales_register_cost_snapshots,
+    load_sales_register_rows,
 )
 from wb_unit_economics.postgres_finance import (
     default_postgres_target,
@@ -47,9 +57,8 @@ from wb_unit_economics.wb_finance import (
 )
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
+from wb_unit_economics.web.models import SourceRefreshRun
 from wb_unit_economics.web.settings import WebSettings
-
-DEFAULT_REPORT_ID = "excel_mvp_2026_03_01_2026_06_17"
 
 
 def main() -> int:
@@ -73,6 +82,13 @@ def main() -> int:
         )
         _validate_marts(build["payload"])
         db.flush()
+        if args.source_refresh_run_id:
+            refresh_run = db.get(SourceRefreshRun, args.source_refresh_run_id)
+            if refresh_run is None:
+                raise ValueError(
+                    f"source refresh not found: {args.source_refresh_run_id}"
+                )
+            repository.replace_source_loads_from_refresh(db, report, refresh_run)
         if args.export_all:
             records = export_report_artifacts(
                 repository.report_full_payload(db, report),
@@ -95,9 +111,13 @@ def main() -> int:
                     byte_size=record["byte_size"],
                     status=record["status"],
                 )
-        repository.publish_report(db, report)
+        if args.publish:
+            repository.publish_report(db, report)
         db.commit()
-    print(f"Published report: {args.report_id}")
+    if args.publish:
+        print(f"Published report: {args.report_id}")
+    else:
+        print(f"Saved draft report: {args.report_id}")
     print(f"Report rows: {len(build['payload'].get('unitRows', []))}")
     print(f"Lost sales rows: {len(build['payload'].get('lostSales', []))}")
     for artifact_type, record in records:
@@ -105,7 +125,11 @@ def main() -> int:
     return 0
 
 
-def build_db_first_payload(args: argparse.Namespace) -> dict:
+def build_db_first_payload(
+    args: argparse.Namespace,
+    *,
+    tax_profiles: list[TaxProfile] | None = None,
+) -> dict:
     wb_finance_dir = args.wb_finance_dir or excel_mvp._latest_dir(
         Path("data/wb_finance")
     )
@@ -119,20 +143,34 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
         args.sales_register_dir
         or excel_mvp._latest_sales_register_dir(Path("data/onec_gross_profit_samples"))
     )
-    wb_stock_history_dir = args.wb_stock_history_dir or excel_mvp._optional_latest_dir(
-        Path("data/wb_stock_history_daily")
-    )
+    onec_services_dir = getattr(args, "onec_services_dir", None)
+    if onec_services_dir is None:
+        onec_services_dir = excel_mvp._latest_onec_services_dir(
+            Path("data/onec_marketplace_service_samples")
+        )
+    wb_stock_history_dir = args.wb_stock_history_dir
+    if wb_stock_history_dir is None and getattr(
+        args, "allow_latest_stock_history_fallback", False
+    ):
+        wb_stock_history_dir = excel_mvp._optional_latest_dir(
+            Path("data/wb_stock_history_daily")
+        )
     onec_stock_dir = (
         args.onec_stock_dir
         or excel_mvp._latest_onec_stock_dir(Path("data/onec_samples"))
         or onec_dir
     )
     report_period_start = args.report_period_start or excel_mvp._manifest_period_date(
-        wb_finance_dir, "period_start", date(2026, 3, 1)
+        wb_finance_dir, "period_start", None
     )
     report_period_end = args.report_period_end or excel_mvp._manifest_period_date(
-        wb_finance_dir, "period_end", date(2026, 6, 17)
+        wb_finance_dir, "period_end", None
     )
+    if report_period_start is None or report_period_end is None:
+        raise SystemExit(
+            "Report period is missing; pass --report-period-start and "
+            "--report-period-end or provide both dates in the WB manifest."
+        )
 
     account_mapping = excel_mvp._account_org_mapping(
         args.client_id,
@@ -145,6 +183,23 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
     organization_labels = {
         item.organization_id: item.organization_name for item in account_mapping
     }
+    source_tax_profiles = (
+        tax_profiles
+        if tax_profiles is not None
+        else tax_profiles_from_account_org_mapping(
+            args.client_id,
+            account_mapping,
+            onec_organization_rows=excel_mvp._organizations_from_sample(onec_dir),
+            special_tax_mode_rows=excel_mvp._optional_onec_rows(
+                onec_dir, "tax_special_regime_notifications"
+            ),
+        )
+    )
+    tax_profiles = _tax_profiles_for_rebuild(
+        args,
+        account_mapping,
+        source_profiles=source_tax_profiles,
+    )
     postgres_target = default_postgres_target(
         database=args.postgres_db_name,
         host=args.postgres_host,
@@ -200,11 +255,15 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
             snapshot_id=args.cost_snapshot_id,
         )
     elif sales_register_dir:
+        sales_cost_amount_field = _sales_cost_amount_field(
+            args.sales_cost_amount_field,
+            tax_profiles=tax_profiles,
+        )
         cost_snapshots = load_sales_register_cost_snapshots(
             sales_register_dir,
             client_id=args.client_id,
             reference_dir=onec_dir,
-            amount_field=args.sales_cost_amount_field,
+            amount_field=sales_cost_amount_field,
             marketplace_counterparties_only=True,
         )
     else:
@@ -226,6 +285,22 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
         paid_storage_dir=args.wb_paid_storage_dir,
         promotion_stats_dir=args.wb_promotion_stats_dir,
     )
+    marketplace_service_rows = excel_mvp._onec_marketplace_service_rows(
+        args.client_id,
+        onec_services_dir,
+        reference_dir=onec_dir,
+        sales_register_dir=sales_register_dir,
+    )
+    onec_gross_profit_rows = (
+        extract_gross_profit_document_rows(
+            client_id=args.client_id,
+            sales_rows=load_sales_register_rows(sales_register_dir),
+            marketplace_counterparties_only=True,
+        )
+        if sales_register_dir
+        and (sales_register_dir / "sales_register.raw.json").exists()
+        else []
+    )
     generated_at = datetime.now(tz=excel_mvp.MOSCOW_TZ)
     if args.wb_finance_source == "files-stream":
         streamed = build_streamed_unit_economics_report(
@@ -236,6 +311,8 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
             account_org_mapping=account_mapping,
             wb_sales_report_summary_rows=wb_summary_rows,
             expense_allocation_bases=expense_allocation_bases,
+            onec_marketplace_service_rows=marketplace_service_rows,
+            tax_profiles=tax_profiles,
             generated_at=generated_at,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
@@ -253,6 +330,8 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
             account_org_mapping=account_mapping,
             wb_sales_report_summary_rows=wb_summary_rows,
             expense_allocation_bases=expense_allocation_bases,
+            onec_marketplace_service_rows=marketplace_service_rows,
+            tax_profiles=tax_profiles,
             generated_at=generated_at,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
@@ -266,6 +345,10 @@ def build_db_first_payload(args: argparse.Namespace) -> dict:
         onec_stock_dir=onec_stock_dir,
         account_labels=account_labels,
         organization_labels=organization_labels,
+        onec_gross_profit_rows=onec_gross_profit_rows,
+        onec_marketplace_service_rows=marketplace_service_rows,
+        wb_sales_report_summary_rows=wb_summary_rows,
+        source_run_id=getattr(args, "source_refresh_run_id", ""),
         client_name=args.tenant_name,
     )
     if not report.rows:
@@ -286,7 +369,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--tenant-id", default="shumeyko")
     parser.add_argument("--tenant-name", default="Шумейко и Партнеры")
-    parser.add_argument("--report-id", default=DEFAULT_REPORT_ID)
+    parser.add_argument("--report-id", required=True)
     parser.add_argument("--source-snapshot-set-id", default="")
     parser.add_argument("--client-id", default=excel_mvp.CLIENT_ID)
     parser.add_argument("--wb-finance-dir", type=Path, default=None)
@@ -298,10 +381,19 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/onec_marketplace_mapping"),
     )
     parser.add_argument("--sales-register-dir", type=Path, default=None)
+    parser.add_argument("--onec-services-dir", type=Path, default=None)
     parser.add_argument("--wb-report-list-dir", type=Path, default=None)
     parser.add_argument("--wb-paid-storage-dir", type=Path, default=None)
     parser.add_argument("--wb-promotion-stats-dir", type=Path, default=None)
     parser.add_argument("--wb-stock-history-dir", type=Path, default=None)
+    parser.add_argument(
+        "--allow-latest-stock-history-fallback",
+        action="store_true",
+        help=(
+            "Allow an explicit manual fallback to the latest local WB stock-history "
+            "snapshot. Strict report-period coverage is still required."
+        ),
+    )
     parser.add_argument("--onec-stock-dir", type=Path, default=None)
     parser.add_argument(
         "--report-period-start",
@@ -353,15 +445,117 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sales-cost-amount-field",
-        choices=["Себестоимость", "СебестоимостьБезНДС"],
-        default="Себестоимость",
+        choices=["auto", "Себестоимость", "СебестоимостьБезНДС"],
+        default="auto",
+    )
+    parser.add_argument("--source-refresh-run-id", default="")
+    parser.add_argument(
+        "--tax-system",
+        default="",
+        help="Audited explicit tax system for every mapped 1C organization.",
+    )
+    parser.add_argument("--vat-rate", type=Decimal, default=None)
+    parser.add_argument(
+        "--vat-mode",
+        choices=[item.value for item in VatMode],
+        default=VatMode.INCLUDED.value,
+    )
+    parser.add_argument(
+        "--vat-deduction-mode",
+        choices=[item.value for item in VatDeductionMode],
+        default=VatDeductionMode.UNKNOWN.value,
+    )
+    parser.add_argument("--revenue-tax-rate", type=Decimal, default=Decimal("0"))
+    parser.add_argument("--income-tax-kind", default="ip_ndfl_progressive")
+    parser.add_argument(
+        "--tax-profile-source",
+        default="accepted_manual_profile",
+        help="Safe audit label stored in report rows; never put a secret here.",
     )
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "reports" / "db_first"
     )
     parser.add_argument("--excel-path", type=Path, default=DEFAULT_EXCEL)
     parser.add_argument("--export-all", action="store_true")
+    publication_group = parser.add_mutually_exclusive_group()
+    publication_group.add_argument(
+        "--publish",
+        action="store_true",
+        help=(
+            "Publish only after the staff draft has passed the financial gate; "
+            "the safe default is draft-only."
+        ),
+    )
+    publication_group.add_argument(
+        "--draft-only",
+        action="store_true",
+        help="Compatibility flag; draft-only is already the safe default.",
+    )
     return parser.parse_args()
+
+
+def _tax_profiles_for_rebuild(
+    args: argparse.Namespace,
+    account_mapping: list[AccountOrgMapping],
+    *,
+    source_profiles: list[TaxProfile],
+) -> list[TaxProfile]:
+    tax_system = str(getattr(args, "tax_system", "") or "").strip()
+    if not tax_system:
+        return source_profiles
+    vat_rate = getattr(args, "vat_rate", None)
+    if vat_rate is None:
+        raise ValueError("--vat-rate is required with --tax-system")
+    vat_mode = VatMode(str(getattr(args, "vat_mode", VatMode.INCLUDED.value)))
+    vat_deduction_mode = VatDeductionMode(
+        str(
+            getattr(
+                args,
+                "vat_deduction_mode",
+                VatDeductionMode.UNKNOWN.value,
+            )
+        )
+    )
+    if vat_deduction_mode is VatDeductionMode.UNKNOWN:
+        raise ValueError(
+            "--vat-deduction-mode must be confirmed with --tax-system"
+        )
+    revenue_tax_rate = Decimal(str(getattr(args, "revenue_tax_rate", 0)))
+    income_tax_kind = str(
+        getattr(args, "income_tax_kind", "ip_ndfl_progressive") or ""
+    ).strip()
+    source = str(
+        getattr(args, "tax_profile_source", "accepted_manual_profile") or ""
+    ).strip()
+    if not source:
+        raise ValueError("--tax-profile-source must not be empty")
+    organization_ids = sorted({item.organization_id for item in account_mapping})
+    return [
+        TaxProfile(
+            client_id=args.client_id,
+            organization_id=organization_id,
+            tax_system=tax_system,
+            vat_rate=vat_rate,
+            vat_mode=vat_mode,
+            vat_deduction_mode=vat_deduction_mode,
+            revenue_tax_rate=revenue_tax_rate,
+            income_tax_kind=income_tax_kind,
+            source=source,
+        )
+        for organization_id in organization_ids
+    ]
+
+
+def _sales_cost_amount_field(value: str, *, tax_profiles: list[object]) -> str:
+    if value != "auto":
+        return value
+    if any(
+        "осно" in str(getattr(profile, "tax_system", "")).casefold()
+        or "общ" in str(getattr(profile, "tax_system", "")).casefold()
+        for profile in tax_profiles
+    ):
+        return "СебестоимостьБезНДС"
+    return "Себестоимость"
 
 
 def _settings(args: argparse.Namespace) -> WebSettings:
@@ -383,7 +577,8 @@ def _validate_marts(payload: dict) -> None:
         row
         for row in payload["unitRows"]
         if row.get("status") in blocked
-        and row.get("lossClass") != "Нужна проверка данных"
+        and row.get("lossClass")
+        not in {"Нужна проверка данных", "Штрафной инцидент без продаж"}
     ]
     if wrong:
         raise ValueError(

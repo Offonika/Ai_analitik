@@ -5,6 +5,7 @@ doc_type: spec
 domain: "marketplace-analytics"
 status: accepted
 owner: "engineering"
+audience: ["engineering", "agent"]
 source_of_truth: true
 related_code:
   - scripts/ai_git_publish.py

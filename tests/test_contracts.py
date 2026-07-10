@@ -6,12 +6,19 @@ from decimal import Decimal
 import pytest
 
 from tests.fixtures import CLIENT_ID, sku_mappings, wb_snapshots
-from wb_unit_economics.config import default_account_org_mapping, default_tax_profiles
+from wb_unit_economics.config import (
+    default_account_org_mapping,
+    default_tax_profiles,
+    tax_profile_source_diagnostic,
+    tax_profiles_from_account_org_mapping,
+)
 from wb_unit_economics.contracts import (
+    AccountOrgMapping,
     MappingStatus,
     Marketplace,
     OzonApiSnapshot,
     SalesModel,
+    VatDeductionMode,
     VatMode,
 )
 from wb_unit_economics.marketplace import (
@@ -38,6 +45,173 @@ def test_default_tax_profiles_keep_legacy_tax_method() -> None:
         ("1C_ORG_2", Decimal("5"), VatMode.INCLUDED),
     ]
     assert all(item.revenue_tax_rate == Decimal("0.01") for item in profiles)
+    assert all(item.vat_deduction_mode is VatDeductionMode.UNKNOWN for item in profiles)
+
+
+def test_tax_profiles_do_not_infer_galustov_osno_from_name() -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        CLIENT_ID,
+        [
+            AccountOrgMapping(
+                client_id=CLIENT_ID,
+                seller_account_id="WB_ACCOUNT_1",
+                organization_id="galustov-org",
+                seller_account_name="ИП Галустов",
+                organization_name="Галустов Рафаэль Рудольфович",
+            )
+        ],
+    )
+
+    assert profiles == []
+
+
+def test_shumeyko_partner_mapping_does_not_force_osno_without_onec_settings() -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        "shumeyko-partners",
+        [
+            AccountOrgMapping(
+                client_id="shumeyko-partners",
+                seller_account_id="WB_ACCOUNT_1",
+                organization_id="1C_ORG_1",
+                seller_account_name="WB cabinet 1",
+                organization_name="1C organization 1",
+            ),
+            AccountOrgMapping(
+                client_id="shumeyko-partners",
+                seller_account_id="WB_ACCOUNT_2",
+                organization_id="1C_ORG_2",
+                seller_account_name="WB cabinet 2",
+                organization_name="1C organization 2",
+            ),
+        ],
+    )
+
+    assert profiles == []
+
+
+def test_tax_profiles_do_not_infer_usn_from_insurance_contribution_field() -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        "shumeyko-partners",
+        [
+            AccountOrgMapping(
+                client_id="shumeyko-partners",
+                seller_account_id="WB_ACCOUNT_1",
+                organization_id="ORG-USN",
+                seller_account_name="ИП Галустов",
+                organization_name="Галустов Рафаэль Рудольфович",
+            )
+        ],
+        onec_organization_rows=[
+            {
+                "Ref_Key": "ORG-USN",
+                "ВидУчетаСтраховыхВзносов": "УчитыватьВУСН",
+            }
+        ],
+    )
+
+    assert profiles == []
+
+
+@pytest.mark.parametrize("default_vat_kind", ["Общая", "БезНДС"])
+def test_default_vat_kind_from_onec_is_a_hint_not_a_tax_profile(
+    default_vat_kind: str,
+) -> None:
+    organization = {
+        "Ref_Key": "ORG-USN",
+        "ВидСтавкиНДСПоУмолчанию": default_vat_kind,
+        "НДСВключатьВСтоимость": True,
+    }
+    mapping = [
+        AccountOrgMapping(
+            client_id="shumeyko-partners",
+            seller_account_id="WB_ACCOUNT_1",
+            organization_id="ORG-USN",
+            seller_account_name="WB cabinet 1",
+            organization_name="ИП на УСН",
+        )
+    ]
+
+    profiles = tax_profiles_from_account_org_mapping(
+        "shumeyko-partners",
+        mapping,
+        onec_organization_rows=[organization],
+    )
+    diagnostic = tax_profile_source_diagnostic(
+        "ORG-USN",
+        organization=organization,
+    )
+
+    assert profiles == []
+    assert diagnostic["status"] == "missing_authoritative_fields"
+    assert diagnostic["oneCHints"] == {
+        "defaultVatRateKind": default_vat_kind,
+        "vatIncludedInCost": True,
+        "authoritativeForTaxSystem": False,
+    }
+    assert "taxSystem" in diagnostic["missingFields"]
+    assert "vatDeductionMode" in diagnostic["missingFields"]
+
+
+def test_tax_profiles_require_explicit_rates_in_special_tax_notification() -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        "shumeyko-partners",
+        [
+            AccountOrgMapping(
+                client_id="shumeyko-partners",
+                seller_account_id="WB_ACCOUNT_1",
+                organization_id="ORG-USN",
+                seller_account_name="WB cabinet 1",
+                organization_name="1C organization 1",
+            )
+        ],
+        special_tax_mode_rows=[
+            {
+                "Ref_Key": "NOTICE-1",
+                "Posted": True,
+                "DeletionMark": False,
+                "Организация_Key": "ORG-USN",
+                "ВидУведомления": "УведомлениеОПереходеНаУСН",
+                "ДатаПодписи": "2026-01-01T00:00:00",
+            }
+        ],
+    )
+
+    assert profiles == []
+
+
+def test_tax_profiles_use_explicit_onec_organization_profile() -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        "shumeyko-partners",
+        [
+            AccountOrgMapping(
+                client_id="shumeyko-partners",
+                seller_account_id="OZON-1",
+                organization_id="ORG-USN",
+                seller_account_name="Ozon cabinet",
+                organization_name="ООО Пример",
+            )
+        ],
+        onec_organization_rows=[
+            {
+                "Ref_Key": "ORG-USN",
+                "СистемаНалогообложения": "УСН Доходы",
+                "СтавкаНДС": "0",
+                "РежимНДС": "none",
+                "РежимВычетаНДС": "not_applicable",
+                "СтавкаНалогаСВыручки": "0.06",
+                "ДатаНачала": "2026-01-01",
+            }
+        ],
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].organization_id == "ORG-USN"
+    assert profiles[0].tax_system == "УСН Доходы"
+    assert profiles[0].vat_mode is VatMode.NONE
+    assert profiles[0].vat_deduction_mode is VatDeductionMode.NOT_APPLICABLE
+    assert profiles[0].revenue_tax_rate == Decimal("0.06")
+    assert profiles[0].valid_from == date(2026, 1, 1)
+    assert profiles[0].source == "Catalog_Организации"
 
 
 def test_wb_snapshot_contract_parses_decimal_and_sales_model() -> None:

@@ -63,6 +63,39 @@ def test_source_refresh_preflight_accepts_runtime_ready_integrations(
     assert "Health: ready_with_warnings" in result.stdout
 
 
+def test_ozon_only_preflight_ignores_broken_wb_and_requires_ozon(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'web.sqlite3'}"
+    _seed_db(database_url, integrations=True)
+    session_factory = make_session_factory(make_engine(database_url))
+    with session_factory() as db:
+        wb = db.query(TenantIntegration).filter_by(
+            tenant_id="shumeyko",
+            provider="wb_api",
+        ).one()
+        wb.status = "check_failed"
+        db.commit()
+
+    result = _run_preflight(
+        tmp_path,
+        database_url,
+        "--mapping-dir",
+        str(_mapping_dir(tmp_path)),
+        "--source-refresh-root",
+        str(tmp_path / "source_refresh"),
+        "--min-free-gb",
+        "0",
+        mode="ozon-only",
+    )
+
+    assert result.returncode == 0
+    assert "Ozon API ready integrations: 1" in result.stdout
+    assert "WB API ready integrations" not in result.stdout
+    assert "wb_api tenant integrations are not runtime-ready" not in result.stdout
+    assert "Health: ready_with_warnings" in result.stdout
+
+
 def _seed_db(database_url: str, *, integrations: bool = False) -> None:
     engine = make_engine(database_url)
     init_db(engine)
@@ -132,7 +165,12 @@ def _mapping_dir(tmp_path: Path) -> Path:
     return mapping_dir
 
 
-def _run_preflight(tmp_path: Path, database_url: str, *args: str):
+def _run_preflight(
+    tmp_path: Path,
+    database_url: str,
+    *args: str,
+    mode: str = "daily",
+):
     project_root = Path(__file__).resolve().parents[1]
     return subprocess.run(
         [
@@ -143,7 +181,7 @@ def _run_preflight(tmp_path: Path, database_url: str, *args: str):
             "--tenant",
             "shumeyko",
             "--mode",
-            "daily",
+            mode,
             *args,
         ],
         cwd=project_root,
