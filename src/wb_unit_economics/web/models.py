@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -90,6 +91,16 @@ class ClientCompany(Base):
             name="uq_client_company_source_key",
         ),
         Index("ix_client_companies_client", "client_id", "status"),
+        Index(
+            "uq_client_companies_active_onec_organization",
+            "client_id",
+            "onec_organization_id",
+            unique=True,
+            postgresql_where=text(
+                "onec_organization_id <> '' AND status = 'active'"
+            ),
+            sqlite_where=text("onec_organization_id <> '' AND status = 'active'"),
+        ),
         {"schema": "wb_unit_economics"},
     )
 
@@ -110,6 +121,44 @@ class ClientCompany(Base):
     )
 
     client: Mapped[Client] = relationship()
+
+
+class ClientCompanyAlias(Base):
+    __tablename__ = "client_company_aliases"
+    __table_args__ = (
+        UniqueConstraint(
+            "client_id",
+            "client_company_id",
+            "alias_key",
+            name="uq_client_company_alias_target",
+        ),
+        Index(
+            "ix_client_company_alias_lookup",
+            "client_id",
+            "alias_key",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id")
+    )
+    client_company_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.client_companies.id", ondelete="CASCADE")
+    )
+    alias_key: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="display_name")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class OrganizationTaxProfile(Base):
@@ -152,6 +201,10 @@ class OrganizationTaxProfile(Base):
     valid_from: Mapped[date | None] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String, nullable=False)
+    rate_basis_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    basis_document: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confirmed_by: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_object_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     source_refresh_run_id: Mapped[str] = mapped_column(
         ForeignKey("wb_unit_economics.source_refresh_runs.id")
     )
@@ -197,6 +250,54 @@ class OrganizationTaxProfileOverride(Base):
         Numeric, nullable=False, default=0
     )
     income_tax_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    rate_basis_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    basis_document: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confirmed_by: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_object_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class OrganizationInputVatPolicy(Base):
+    __tablename__ = "organization_input_vat_policies"
+    __table_args__ = (
+        Index(
+            "ix_organization_input_vat_policies_lookup",
+            "client_company_id",
+            "status",
+            "valid_from",
+            "valid_to",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
+    client_company_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.client_companies.id")
+    )
+    organization_id: Mapped[str] = mapped_column(String, nullable=False)
+    mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="accounting_fact"
+    )
+    product_vat_basis: Mapped[str] = mapped_column(
+        String, nullable=False, default="sales_cost_difference"
+    )
+    service_vat_basis: Mapped[str] = mapped_column(
+        String, nullable=False, default="wb_gross_22_122"
+    )
     valid_from: Mapped[date] = mapped_column(Date, nullable=False)
     valid_to: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
@@ -378,6 +479,9 @@ class ReportRun(Base):
         String, nullable=False, default=""
     )
     methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    marketplace_expense_context_version: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
     source_workbook: Mapped[str] = mapped_column(String, nullable=False, default="")
     source_workbook_path: Mapped[str] = mapped_column(
         String, nullable=False, default=""
@@ -467,6 +571,11 @@ class ReportUnitRow(Base):
             "article_1c",
             "barcode",
         ),
+        Index(
+            "ix_report_unit_rows_accounting_period",
+            "report_run_id",
+            "accounting_period_date",
+        ),
         {"schema": "wb_unit_economics"},
     )
 
@@ -479,6 +588,10 @@ class ReportUnitRow(Base):
     wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     row_uid: Mapped[str] = mapped_column(String, nullable=False)
     week: Mapped[date | None] = mapped_column(Date)
+    accounting_period_date: Mapped[date | None] = mapped_column(Date)
+    accounting_period_source: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
     month: Mapped[str] = mapped_column(String, nullable=False, default="")
     document_report: Mapped[str] = mapped_column(String, nullable=False, default="")
     wb_report_id: Mapped[str] = mapped_column(String, nullable=False, default="")
@@ -509,17 +622,38 @@ class ReportUnitRow(Base):
     vat_input_from_1c: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, default=0
     )
+    vat_input_from_import_scenario: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, default=0
+    )
+    vat_input_from_wb_scenario: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, default=0
+    )
     vat_input_difference: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, default=0
     )
     vat_input_completeness: Mapped[str] = mapped_column(
         String, nullable=False, default=""
     )
+    input_vat_mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="accounting_fact"
+    )
+    vat_input_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     vat_payable: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     revenue_without_vat: Mapped[Decimal] = mapped_column(
         Numeric, nullable=False, default=0
     )
     cost: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric)
+    cost_method: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cost_match_status: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    cost_source_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cost_source_period_start: Mapped[date | None] = mapped_column(Date)
+    cost_source_period_end: Mapped[date | None] = mapped_column(Date)
+    cost_source_document: Mapped[str] = mapped_column(Text, nullable=False, default="")
     commission: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     logistics: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     storage: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
@@ -584,6 +718,9 @@ class ReportLostSalesRow(Base):
     lost_revenue: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     lost_profit: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    calculation_context: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
 
 
 class ReportReconciliationMonthly(Base):
@@ -612,6 +749,61 @@ class ReportReconciliationMonthly(Base):
     onec_basis: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source_run_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+class ReportMarketplaceExpenseRow(Base):
+    __tablename__ = "report_marketplace_expense_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id", "row_uid", name="uq_report_marketplace_expense_row_uid"
+        ),
+        Index(
+            "ix_report_marketplace_expense_filter",
+            "report_run_id",
+            "recognition_date",
+            "wb_cabinet_id",
+            "client_company_id",
+            "control_group",
+            "match_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id")
+    )
+    client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    seller_account_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cabinet: Mapped[str] = mapped_column(String, nullable=False, default="")
+    organization_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    organization: Mapped[str] = mapped_column(String, nullable=False, default="")
+    counterparty_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    recognition_date: Mapped[date | None] = mapped_column(Date)
+    document_date: Mapped[date | None] = mapped_column(Date)
+    input_date: Mapped[date | None] = mapped_column(Date)
+    document_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    document_number: Mapped[str] = mapped_column(String, nullable=False, default="")
+    input_number: Mapped[str] = mapped_column(String, nullable=False, default="")
+    document_comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    service_category: Mapped[str] = mapped_column(String, nullable=False, default="")
+    control_group: Mapped[str] = mapped_column(String, nullable=False, default="")
+    service_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    amount_without_vat: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, default=0
+    )
+    vat: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
+    amount_with_vat: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, default=0
+    )
+    source_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    match_status: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_row_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
 
 
 class ReportDocumentReconciliationRow(Base):
@@ -682,6 +874,15 @@ class ReportDocumentReconciliationRow(Base):
     buyout_retail_amount_sum: Mapped[Decimal | None] = mapped_column(Numeric)
     buyout_for_pay_sum: Mapped[Decimal | None] = mapped_column(Numeric)
     buyout_bank_payment_sum: Mapped[Decimal | None] = mapped_column(Numeric)
+    buyout_primary_document_id: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    buyout_primary_document_status: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    buyout_primary_document_quantity: Mapped[Decimal | None] = mapped_column(Numeric)
+    buyout_primary_document_amount: Mapped[Decimal | None] = mapped_column(Numeric)
+    buyout_primary_document_delta: Mapped[Decimal | None] = mapped_column(Numeric)
     onec_expense_invoice_amount: Mapped[Decimal | None] = mapped_column(Numeric)
     buyout_retail_delta: Mapped[Decimal | None] = mapped_column(Numeric)
     buyout_for_pay_delta: Mapped[Decimal | None] = mapped_column(Numeric)
@@ -690,6 +891,10 @@ class ReportDocumentReconciliationRow(Base):
     wb_for_pay_sum: Mapped[Decimal | None] = mapped_column(Numeric)
     onec_settlement_total: Mapped[Decimal | None] = mapped_column(Numeric)
     settlement_delta: Mapped[Decimal | None] = mapped_column(Numeric)
+    onec_vat: Mapped[Decimal | None] = mapped_column(Numeric)
+    onec_cogs: Mapped[Decimal | None] = mapped_column(Numeric)
+    onec_cogs_without_vat: Mapped[Decimal | None] = mapped_column(Numeric)
+    onec_gross_profit: Mapped[Decimal | None] = mapped_column(Numeric)
     onec_source_rows: Mapped[int | None] = mapped_column(Integer)
     comment: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
@@ -756,6 +961,15 @@ class SourceRefreshRun(Base):
     resumed_from_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("wb_unit_economics.source_refresh_runs.id")
     )
+    base_source_refresh_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id")
+    )
+    blocked_by_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id")
+    )
+    worker_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    failure_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mode: Mapped[str] = mapped_column(String, nullable=False)
     credential_source: Mapped[str] = mapped_column(String, nullable=False)
     dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -825,13 +1039,6 @@ class SourceSnapshotRow(Base):
             "refresh_run_id",
             "collection_id",
             "row_number",
-            "raw_payload_hash",
-            name="uq_source_snapshot_row_hash",
-        ),
-        UniqueConstraint(
-            "refresh_run_id",
-            "collection_id",
-            "row_number",
             name="uq_source_snapshot_row_position",
         ),
         Index(
@@ -860,6 +1067,231 @@ class SourceSnapshotRow(Base):
     raw_payload_hash: Mapped[str] = mapped_column(String, nullable=False)
     row_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MarketplaceFinanceDailyFact(Base):
+    __tablename__ = "marketplace_finance_daily_facts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "marketplace",
+            "grain_hash",
+            name="uq_marketplace_finance_daily_fact_grain",
+        ),
+        Index(
+            "ix_marketplace_finance_daily_facts_window",
+            "tenant_id",
+            "client_id",
+            "marketplace",
+            "fact_date",
+        ),
+        Index(
+            "ix_marketplace_finance_daily_facts_product",
+            "tenant_id",
+            "marketplace",
+            "nm_id",
+            "barcode",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    marketplace: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    seller_account_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    organization_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    fact_date: Mapped[date] = mapped_column(Date, nullable=False)
+    marketplace_report_id: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    document_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
+    nm_id: Mapped[int | None] = mapped_column(Integer)
+    vendor_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    barcode: Mapped[str] = mapped_column(String, nullable=False, default="")
+    onec_item_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sales_model: Mapped[str] = mapped_column(String, nullable=False, default="")
+    operation_group: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sales_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    return_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False, default=0)
+    return_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    net_revenue: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    wb_commission: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    logistics: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    storage: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    acceptance: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    marketplace_promotion: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    penalties_and_holdbacks: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    acquiring: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    cogs: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    vat_input_from_marketplace: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    vat_input_from_1c: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False)
+    grain_hash: Mapped[str] = mapped_column(String, nullable=False)
+    is_partial_source: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    source_snapshot_set_id: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_refresh_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id")
+    )
+    methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MarketplaceOperationFact(Base):
+    __tablename__ = "marketplace_operation_facts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "marketplace",
+            "source_type",
+            "source_key",
+            name="uq_marketplace_operation_fact_source",
+        ),
+        Index(
+            "ix_marketplace_operation_facts_window",
+            "tenant_id",
+            "client_id",
+            "marketplace",
+            "operation_date",
+        ),
+        Index(
+            "ix_marketplace_operation_facts_product",
+            "tenant_id",
+            "marketplace",
+            "product_id",
+            "offer_id",
+            "sku",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    marketplace: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    seller_account_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_type: Mapped[str] = mapped_column(String, nullable=False)
+    source_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_row_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    operation_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    posting_number: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    offer_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sku: Mapped[str] = mapped_column(String, nullable=False, default="")
+    service_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    service_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    barcode: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    operation_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    operation_date: Mapped[date | None] = mapped_column(Date)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False, default=0)
+    amount: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    income: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    expense: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    debit_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    credit_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    commission: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    service_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    logistics: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    storage: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    promotion: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    compensation: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    other_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    expenses_loaded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    is_partial_source: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    currency: Mapped[str] = mapped_column(String, nullable=False, default="RUB")
+    source_endpoint: Mapped[str] = mapped_column(String, nullable=False, default="")
+    raw_payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_set_id: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_refresh_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id")
+    )
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MarketplaceFactStaging(Base):
+    __tablename__ = "marketplace_fact_staging"
+    __table_args__ = (
+        UniqueConstraint(
+            "load_id",
+            "grain_hash",
+            name="uq_marketplace_fact_staging_load_grain",
+        ),
+        Index(
+            "ix_marketplace_fact_staging_load",
+            "load_id",
+            "fact_kind",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    load_id: Mapped[str] = mapped_column(String, nullable=False)
+    fact_kind: Mapped[str] = mapped_column(String, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+    client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    marketplace: Mapped[str] = mapped_column(String, nullable=False)
+    grain_hash: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class MarketplaceMappingItem(Base):

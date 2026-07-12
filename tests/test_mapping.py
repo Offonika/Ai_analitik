@@ -3,13 +3,115 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from wb_unit_economics.contracts import AccountOrgMapping, MappingStatus
+from wb_unit_economics.contracts import AccountOrgMapping, MappingStatus, SkuMapping
 from wb_unit_economics.mapping import (
     build_sku_mapping_from_articles,
     build_sku_mapping_from_onec_marketplace_files,
+    merge_sku_mappings_with_current,
 )
 
 TZ = ZoneInfo("Europe/Moscow")
+
+
+def test_current_mapping_overrides_product_and_keeps_legacy_barcode_aliases() -> None:
+    fallback = [
+        _sku_mapping(barcode="111", onec_item_id="OLD"),
+        _sku_mapping(barcode="222", onec_item_id="OLD"),
+    ]
+    current = [
+        _sku_mapping(
+            barcode="111",
+            onec_item_id="NEW",
+            match_method="mapping_service_auto_barcode",
+        )
+    ]
+
+    merged = merge_sku_mappings_with_current(fallback, current)
+
+    assert len(merged) == 2
+    assert {item.barcode for item in merged} == {"111", "222"}
+    assert {item.onec_item_id for item in merged} == {"NEW"}
+    assert {item.match_method for item in merged} == {
+        "mapping_service_auto_barcode"
+    }
+
+
+def test_current_mapping_keeps_alias_characteristic_for_same_onec_item() -> None:
+    fallback = [
+        _sku_mapping(
+            barcode="222",
+            onec_item_id="ITEM-1",
+            onec_characteristic="SIZE-L",
+        )
+    ]
+    current = [
+        _sku_mapping(
+            barcode="111",
+            onec_item_id="ITEM-1",
+            onec_characteristic="",
+            match_method="imported_mapping_file",
+        )
+    ]
+
+    merged = merge_sku_mappings_with_current(fallback, current)
+
+    alias = next(item for item in merged if item.barcode == "222")
+    assert alias.onec_characteristic == "SIZE-L"
+
+
+def test_imported_current_projection_does_not_replace_legacy_file_identity() -> None:
+    fallback = [_sku_mapping(barcode="222", onec_item_id="LEGACY-PRECISE")]
+    current = [
+        _sku_mapping(
+            barcode="111",
+            onec_item_id="LOSSY-IMPORT",
+            match_method="imported_mapping_file",
+        )
+    ]
+
+    merged = merge_sku_mappings_with_current(fallback, current)
+
+    alias = next(item for item in merged if item.barcode == "222")
+    assert alias.onec_item_id == "LEGACY-PRECISE"
+
+
+def test_conflicting_current_products_do_not_overwrite_legacy_alias() -> None:
+    fallback = [_sku_mapping(barcode="222", onec_item_id="OLD")]
+    current = [
+        _sku_mapping(barcode="111", onec_item_id="NEW-1"),
+        _sku_mapping(barcode="333", onec_item_id="NEW-2"),
+    ]
+
+    merged = merge_sku_mappings_with_current(fallback, current)
+
+    alias = next(item for item in merged if item.barcode == "222")
+    assert alias.onec_item_id == "OLD"
+
+
+def _sku_mapping(
+    *,
+    barcode: str,
+    onec_item_id: str,
+    match_method: str = "onec_marketplace_mapping",
+    onec_characteristic: str = "",
+) -> SkuMapping:
+    return SkuMapping(
+        client_id="client",
+        seller_account_id="WB_ACCOUNT_1",
+        organization_id="ORG-1",
+        nm_id=101,
+        vendor_code="A-1",
+        barcode=barcode,
+        onec_item_id=onec_item_id,
+        onec_article=onec_item_id,
+        onec_characteristic=onec_characteristic,
+        match_method=match_method,
+        confidence="1",
+        status=MappingStatus.MATCHED,
+        comment="fixture",
+        updated_by="test",
+        updated_at=datetime(2026, 7, 11, 7, 0, tzinfo=TZ),
+    )
 
 
 def account_mapping() -> list[AccountOrgMapping]:

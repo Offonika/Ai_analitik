@@ -23,9 +23,7 @@ OZON_SELLER_INFO_URL = "https://api-seller.ozon.ru/v1/seller/info"
 OZON_CASH_FLOW_CHECK_URL = (
     "https://api-seller.ozon.ru/v1/finance/cash-flow-statement/list"
 )
-OZON_STOCK_CHECK_URL = (
-    "https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses"
-)
+OZON_STOCK_CHECK_URL = "https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses"
 
 
 @dataclass(frozen=True)
@@ -127,7 +125,7 @@ def _check_wb_api(settings: WebSettings, secret: str) -> IntegrationCheckResult:
     except httpx.HTTPError as exc:
         return IntegrationCheckResult(
             status="check_failed",
-            message="WB API не ответил на read-only ping.",
+            message="WB API не ответил на проверочный запрос без изменения данных.",
             payload={
                 "provider": "wb_api",
                 "checkedAt": checked_at,
@@ -146,28 +144,33 @@ def _check_wb_api(settings: WebSettings, secret: str) -> IntegrationCheckResult:
     if response.status_code == 200:
         return IntegrationCheckResult(
             status="check_ok",
-            message="WB Finance ping прошел, токен принят read-only проверкой.",
+            message=(
+                "Проверочный запрос финансового раздела WB прошёл, "
+                "токен принят для чтения данных."
+            ),
             payload=payload,
         )
     if response.status_code == 429:
         return IntegrationCheckResult(
             status="check_failed",
-            message="WB ограничил частоту ping. Повторите проверку позже.",
+            message=(
+                "WB ограничил частоту проверочных запросов. "
+                "Повторите проверку позже."
+            ),
             payload=payload,
         )
     return IntegrationCheckResult(
         status="check_failed",
         message=(
-            "WB не принял токен для Finance ping. Проверьте срок действия, "
-            "категорию Finance и режим read-only."
+            "WB не принял токен для проверки финансового раздела. "
+            "Проверьте срок действия, "
+            "категорию финансов и доступ только для чтения."
         ),
         payload=payload,
     )
 
 
-def _check_onec_readonly(
-    settings: WebSettings, secret: str
-) -> IntegrationCheckResult:
+def _check_onec_readonly(settings: WebSettings, secret: str) -> IntegrationCheckResult:
     checked_at = security.utcnow().isoformat()
     config = _parse_onec_secret(secret)
     result = check_onec_odata_metadata(
@@ -193,14 +196,14 @@ def _check_onec_readonly(
     if result.ok:
         return IntegrationCheckResult(
             status="check_ok",
-            message="1С OData metadata доступна в read-only режиме.",
+            message="Метаданные 1С OData доступны в режиме только для чтения.",
             payload=payload,
         )
     return IntegrationCheckResult(
         status="check_failed",
         message=(
-            "1С OData metadata недоступна. Проверьте URL, пользователя, пароль "
-            "и read-only права."
+            "Метаданные 1С OData недоступны. Проверьте URL, пользователя, пароль "
+            "и права только для чтения."
         ),
         payload=payload,
     )
@@ -214,7 +217,8 @@ def _check_ozon_api(settings: WebSettings, secret: str) -> IntegrationCheckResul
         return IntegrationCheckResult(
             status="check_failed",
             message=(
-                "Ozon secret должен содержать Client-Id и Api-Key в JSON "
+                "Секрет Ozon должен содержать идентификатор клиента и API-ключ "
+                "в формате JSON "
                 "или key=value формате."
             ),
             payload={
@@ -250,7 +254,7 @@ def _check_ozon_api(settings: WebSettings, secret: str) -> IntegrationCheckResul
                     return IntegrationCheckResult(
                         status="check_ok",
                         message=(
-                            "Ozon read-only проверка прошла по рабочему "
+                            "Проверка Ozon без изменения данных прошла по рабочему "
                             f"источнику {endpoint_category}."
                         ),
                         payload={
@@ -265,7 +269,10 @@ def _check_ozon_api(settings: WebSettings, secret: str) -> IntegrationCheckResul
     except httpx.HTTPError as exc:
         return IntegrationCheckResult(
             status="check_failed",
-            message="Ozon Seller API не ответил на read-only проверку.",
+            message=(
+                "API кабинета продавца Ozon не ответил на проверку "
+                "без изменения данных."
+            ),
             payload={
                 "provider": "ozon_api",
                 "checkedAt": checked_at,
@@ -290,7 +297,10 @@ def _check_ozon_api(settings: WebSettings, secret: str) -> IntegrationCheckResul
         )
     return IntegrationCheckResult(
         status="check_failed",
-        message="Ozon не принял Client-Id/Api-Key для read-only проверки.",
+        message=(
+            "Ozon не принял идентификатор клиента и API-ключ для проверки "
+            "без изменения данных."
+        ),
         payload=payload,
     )
 

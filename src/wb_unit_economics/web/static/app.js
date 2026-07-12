@@ -7,6 +7,10 @@ const state = {
   clientLoadToken: 0,
   rowsRequestKey: "",
   drilldownRequestKey: "",
+  drilldownPreset: "review",
+  buyoutReconciliationRequestKey: "",
+  cogsReconciliationRequestKey: "",
+  marketplaceExpenseReconciliationRequestKey: "",
   onecReconciliationRequestKey: "",
   mappingItemsRequestKey: "",
   activeWidgetOverlay: null,
@@ -20,6 +24,8 @@ const state = {
   integrationProviderFilter: "",
   draftIntegration: null,
   latestSourceRefresh: null,
+  latestSourceRefreshAttempt: null,
+  activeSourceRefresh: null,
   latestOzonDiagnostics: null,
   ozonDiagnosticsParams: "",
   ozonUnitStatusFilter: "",
@@ -59,16 +65,34 @@ const EXCEL_REBUILD_SOURCE_REFRESH_STATUSES = new Set([
 const els = {
   loginView: document.querySelector("#login-view"),
   cabinetView: document.querySelector("#cabinet-view"),
+  brandLockup: document.querySelector(".brand-lockup"),
   loginForm: document.querySelector("#login-form"),
   loginError: document.querySelector("#login-error"),
   reportTitle: document.querySelector("#report-title"),
   reportSubtitle: document.querySelector("#report-subtitle"),
+  reportLoadRetryButton: document.querySelector("#report-load-retry-button"),
   clientSelect: document.querySelector("#client-select"),
   topbarCabinetSelect: document.querySelector("#topbar-cabinet-select"),
   topbarPeriodStart: document.querySelector("#topbar-period-start"),
   topbarPeriodEnd: document.querySelector("#topbar-period-end"),
   logoutButton: document.querySelector("#logout-button"),
   clientOutputButton: document.querySelector("#client-output-button"),
+  reportBuildButton: document.querySelector("#report-build-button"),
+  reportWizardOverlay: document.querySelector("#report-wizard-overlay"),
+  reportWizardClose: document.querySelector("#report-wizard-close"),
+  reportWizardForm: document.querySelector("#report-wizard-form"),
+  reportWizardClient: document.querySelector("#report-wizard-client"),
+  reportWizardScope: document.querySelector("#report-wizard-scope"),
+  reportWizardMode: document.querySelector("#report-wizard-mode"),
+  reportWizardModeHint: document.querySelector("#report-wizard-mode-hint"),
+  reportWizardPeriodMode: document.querySelector("#report-wizard-period-mode"),
+  reportWizardPeriodFields: document.querySelector("#report-wizard-period-fields"),
+  reportWizardPeriodStart: document.querySelector("#report-wizard-period-start"),
+  reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
+  reportWizardDryRun: document.querySelector("#report-wizard-dry-run"),
+  reportWizardStatus: document.querySelector("#report-wizard-status"),
+  reportWizardDownload: document.querySelector("#report-wizard-download"),
+  reportWizardSubmit: document.querySelector("#report-wizard-submit"),
   aiOpenButton: document.querySelector("#ai-open-button"),
   integrationsOpenButton: document.querySelector("#integrations-open-button"),
   newClientButton: document.querySelector("#new-client-button"),
@@ -88,6 +112,8 @@ const els = {
   clientOutputWidgetClose: document.querySelector("#client-output-widget-close"),
   integrationsWidgetOverlay: document.querySelector("#integrations-widget-overlay"),
   integrationsWidgetClose: document.querySelector("#integrations-widget-close"),
+  mappingWidgetOverlay: document.querySelector("#mapping-widget-overlay"),
+  mappingWidgetClose: document.querySelector("#mapping-widget-close"),
   drilldownWidgetOverlay: document.querySelector("#drilldown-widget-overlay"),
   drilldownWidgetClose: document.querySelector("#drilldown-widget-close"),
   drilldownTitle: document.querySelector("#drilldown-title"),
@@ -95,8 +121,68 @@ const els = {
   drilldownCount: document.querySelector("#drilldown-count"),
   drilldownTabs: document.querySelectorAll("[data-drilldown-preset]"),
   drilldownSources: document.querySelector("#drilldown-sources"),
+  drilldownGuidance: document.querySelector("#drilldown-guidance"),
   drilldownTableWrap: document.querySelector("#drilldown-table-wrap"),
+  drilldownRowsHead: document.querySelector("#drilldown-rows-head"),
   drilldownRows: document.querySelector("#drilldown-rows"),
+  buyoutReconciliationOverlay: document.querySelector(
+    "#buyout-reconciliation-overlay",
+  ),
+  buyoutReconciliationClose: document.querySelector(
+    "#buyout-reconciliation-close",
+  ),
+  buyoutReconciliationCount: document.querySelector(
+    "#buyout-reconciliation-count",
+  ),
+  buyoutReconciliationGrid: document.querySelector(
+    "#buyout-reconciliation-grid",
+  ),
+  buyoutReconciliationStatus: document.querySelector(
+    "#buyout-reconciliation-status",
+  ),
+  buyoutReconciliationRows: document.querySelector(
+    "#buyout-reconciliation-rows",
+  ),
+  cogsReconciliationOverlay: document.querySelector(
+    "#cogs-reconciliation-overlay",
+  ),
+  cogsReconciliationClose: document.querySelector(
+    "#cogs-reconciliation-close",
+  ),
+  cogsReconciliationCount: document.querySelector(
+    "#cogs-reconciliation-count",
+  ),
+  cogsReconciliationGrid: document.querySelector(
+    "#cogs-reconciliation-grid",
+  ),
+  cogsReconciliationStatus: document.querySelector(
+    "#cogs-reconciliation-status",
+  ),
+  cogsReconciliationRows: document.querySelector(
+    "#cogs-reconciliation-rows",
+  ),
+  cogsCostIssueRows: document.querySelector("#cogs-cost-issue-rows"),
+  marketplaceExpenseReconciliationOverlay: document.querySelector(
+    "#marketplace-expense-reconciliation-overlay",
+  ),
+  marketplaceExpenseReconciliationClose: document.querySelector(
+    "#marketplace-expense-reconciliation-close",
+  ),
+  marketplaceExpenseReconciliationCount: document.querySelector(
+    "#marketplace-expense-reconciliation-count",
+  ),
+  marketplaceExpenseReconciliationGrid: document.querySelector(
+    "#marketplace-expense-reconciliation-grid",
+  ),
+  marketplaceExpenseReconciliationStatus: document.querySelector(
+    "#marketplace-expense-reconciliation-status",
+  ),
+  marketplaceExpenseReconciliationGroups: document.querySelector(
+    "#marketplace-expense-reconciliation-groups",
+  ),
+  marketplaceExpenseReconciliationRows: document.querySelector(
+    "#marketplace-expense-reconciliation-rows",
+  ),
   reportOnlyControls: document.querySelectorAll(".report-only-control"),
   reportPageSections: document.querySelectorAll(".report-page-section"),
   readinessCard: document.querySelector("#readiness-card"),
@@ -129,6 +215,8 @@ const els = {
   kpiEyebrow: document.querySelector("#kpi-eyebrow"),
   kpiTitle: document.querySelector("#kpi-title"),
   kpiGrid: document.querySelector("#kpi-grid"),
+  onecKpiSection: document.querySelector("#onec-kpi-section"),
+  onecKpiGrid: document.querySelector("#onec-kpi-grid"),
   actionInsightsList: document.querySelector("#action-insights-list"),
   dataTrustStrip: document.querySelector("#data-trust-strip"),
   dataTrustBadge: document.querySelector("#data-trust-badge"),
@@ -149,7 +237,6 @@ const els = {
   taxInputTitle: document.querySelector("#tax-input-title"),
   taxInputCopy: document.querySelector("#tax-input-title")?.nextElementSibling,
   taxInputChart: document.querySelector("#tax-input-chart"),
-  excelLink: document.querySelector("#excel-link"),
   draftPanel: document.querySelector("#draft-panel"),
   draftStatus: document.querySelector("#draft-status"),
   draftRefreshButton: document.querySelector("#draft-refresh-button"),
@@ -180,6 +267,7 @@ const els = {
   sourceRefreshOzonRun: document.querySelector("#source-refresh-ozon-run"),
   sourceRefreshReload: document.querySelector("#source-refresh-reload"),
   mappingServicePanel: document.querySelector("#mapping-service-panel"),
+  mappingServiceTitle: document.querySelector("#mapping-service-title"),
   mappingServiceStatus: document.querySelector("#mapping-service-status"),
   mappingRebuildButton: document.querySelector("#mapping-rebuild-button"),
   mappingExportButton: document.querySelector("#mapping-export-button"),
@@ -268,6 +356,7 @@ const OZON_UNIT_STATUS_OPTIONS = [
   { id: "missing_mapping", label: "Нет связи" },
   { id: "ambiguous_mapping", label: "Несколько вариантов 1С" },
   { id: "missing_cost", label: "Нет себестоимости" },
+  { id: "missing_1c_organization", label: "Не выбрана организация 1С" },
   { id: "missing_1c_commissioner", label: "Нет выручки 1C" },
   { id: "buyout_period_only", label: "Выкуп по периоду" },
 ];
@@ -303,6 +392,7 @@ function init() {
   els.loginForm.addEventListener("submit", onLogin);
   els.logoutButton.addEventListener("click", onLogout);
   els.clientSelect.addEventListener("change", () => selectClient(els.clientSelect.value));
+  els.reportLoadRetryButton.addEventListener("click", retryCurrentReportLoad);
   els.topbarCabinetSelect.addEventListener("change", () =>
     applyTopbarFilter("cabinet"),
   );
@@ -313,7 +403,20 @@ function init() {
     applyTopbarFilter("periodRange"),
   );
   els.clientOutputButton.addEventListener("click", openClientOutputWidget);
-  els.excelLink.addEventListener("click", onExcelLinkClick);
+  els.reportBuildButton.addEventListener("click", onReportBuildButtonClick);
+  els.reportWizardClose.addEventListener("click", closeReportWizard);
+  els.reportWizardOverlay.addEventListener("click", (event) => {
+    if (event.target === els.reportWizardOverlay) {
+      closeReportWizard();
+    }
+  });
+  els.reportWizardMode.addEventListener("change", renderReportWizardSettings);
+  els.reportWizardPeriodMode.addEventListener(
+    "change",
+    renderReportWizardSettings,
+  );
+  els.reportWizardDryRun.addEventListener("change", renderReportWizardSettings);
+  els.reportWizardForm.addEventListener("submit", onReportWizardSubmit);
   els.nextActionButton.addEventListener("click", onNextAction);
   els.nextActionUploadFile.addEventListener("change", () =>
     onMappingFileSelected("next"),
@@ -413,6 +516,12 @@ function init() {
       closeIntegrationsWidget();
     }
   });
+  els.mappingWidgetClose.addEventListener("click", closeMappingWidget);
+  els.mappingWidgetOverlay.addEventListener("click", (event) => {
+    if (event.target === els.mappingWidgetOverlay) {
+      closeMappingWidget();
+    }
+  });
   els.newClientButton.addEventListener("click", openNewClientWidget);
   els.newClientWidgetClose.addEventListener("click", closeNewClientWidget);
   els.newClientWidgetOverlay.addEventListener("click", (event) => {
@@ -425,6 +534,33 @@ function init() {
   els.drilldownWidgetOverlay.addEventListener("click", (event) => {
     if (event.target === els.drilldownWidgetOverlay) {
       closeDrilldownWidget();
+    }
+  });
+  els.buyoutReconciliationClose.addEventListener(
+    "click",
+    closeBuyoutReconciliationWidget,
+  );
+  els.buyoutReconciliationOverlay.addEventListener("click", (event) => {
+    if (event.target === els.buyoutReconciliationOverlay) {
+      closeBuyoutReconciliationWidget();
+    }
+  });
+  els.cogsReconciliationClose.addEventListener(
+    "click",
+    closeCogsReconciliationWidget,
+  );
+  els.cogsReconciliationOverlay.addEventListener("click", (event) => {
+    if (event.target === els.cogsReconciliationOverlay) {
+      closeCogsReconciliationWidget();
+    }
+  });
+  els.marketplaceExpenseReconciliationClose.addEventListener(
+    "click",
+    closeMarketplaceExpenseReconciliationWidget,
+  );
+  els.marketplaceExpenseReconciliationOverlay.addEventListener("click", (event) => {
+    if (event.target === els.marketplaceExpenseReconciliationOverlay) {
+      closeMarketplaceExpenseReconciliationWidget();
     }
   });
   els.drilldownTabs.forEach((button) => {
@@ -666,9 +802,59 @@ function alignOzonDiagnosticsWithReportFlow() {
 }
 
 function renderAiPageHeader(title = "AI-аналитик отчета", subtitle = "") {
+  setTopbarNotice(
+    title,
+    subtitle || "Вопросы по уже рассчитанным фактам WB и 1C.",
+  );
+}
+
+function setTopbarNotice(title, subtitle = "", tone = "") {
+  const resolvedTone = tone || topbarNoticeToneFromText(title);
   els.reportTitle.textContent = title;
-  els.reportSubtitle.textContent =
-    subtitle || "Вопросы по уже рассчитанным фактам WB и 1C.";
+  els.reportSubtitle.textContent = subtitle;
+  els.brandLockup.classList.remove("is-info", "is-ok", "is-warning", "is-blocked");
+  els.brandLockup.classList.add(resolvedTone);
+}
+
+function topbarNoticeToneFromText(title = "") {
+  const value = normalize(title);
+  if (
+    value.includes("ошиб") ||
+    value.includes("нельзя") ||
+    value.includes("не удалось") ||
+    value.includes("заблок")
+  ) {
+    return "is-blocked";
+  }
+  if (value.includes("готов")) {
+    return "is-ok";
+  }
+  if (
+    value.includes("нет доступ") ||
+    value.includes("нужна провер") ||
+    value.includes("не найден")
+  ) {
+    return "is-warning";
+  }
+  return "is-info";
+}
+
+function reportTopbarTone(readiness = {}, refresh = null) {
+  const readinessStatus = normalize(readiness.status);
+  const refreshTone = refresh?.status ? sourceStatusTone(refresh.status) : "";
+  if (
+    ["failed", "blocked"].includes(readinessStatus) ||
+    refreshTone === "is-blocked"
+  ) {
+    return "is-blocked";
+  }
+  if (readinessStatus === "ready" && refreshTone !== "is-warning") {
+    return "is-ok";
+  }
+  if (readinessStatus || refreshTone === "is-warning") {
+    return "is-warning";
+  }
+  return "is-info";
 }
 
 function openAiWidget(options = {}) {
@@ -699,13 +885,189 @@ function openClientOutputWidget() {
     return;
   }
   if (!els.draftStatus.textContent) {
-    els.draftStatus.textContent = "Клиентский вывод еще не подготовлен.";
+    els.draftStatus.textContent = "Отчёт для клиента ещё не подготовлен.";
   }
   window.setTimeout(() => els.draftRefreshButton.focus(), 0);
 }
 
 function closeClientOutputWidget(options = {}) {
   closeWidgetOverlay(els.clientOutputWidgetOverlay, options);
+}
+
+function onReportBuildButtonClick() {
+  if (!state.clientId) {
+    return;
+  }
+  if (!isStaffUser()) {
+    if (state.reportId) {
+      window.location.assign(
+        `/api/reports/${encodeURIComponent(state.reportId)}/export.xlsx`,
+      );
+    }
+    return;
+  }
+  openReportWizard();
+}
+
+function openReportWizard() {
+  if (!state.clientId || !isStaffUser()) {
+    return;
+  }
+  const client = selectedClient();
+  const selectedCabinet = selectedMarketplaceCabinet();
+  els.reportWizardClient.textContent =
+    client?.name || client?.clientId || client?.id || "Клиент не выбран";
+  els.reportWizardMode.value =
+    selectedCabinet && isOzonMarketplaceCabinet(selectedCabinet)
+      ? "ozon-only"
+      : "full";
+  const hasSelectedPeriod = Boolean(
+    els.topbarPeriodStart.value || els.topbarPeriodEnd.value,
+  );
+  els.reportWizardPeriodMode.value = hasSelectedPeriod ? "custom" : "default";
+  els.reportWizardPeriodStart.value = els.topbarPeriodStart.value || "";
+  els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value || "";
+  els.reportWizardDryRun.checked = false;
+  renderReportWizardSettings();
+  renderReportWizardStatus(state.latestSourceRefresh);
+  openWidgetOverlay(els.reportWizardOverlay);
+  window.setTimeout(() => els.reportWizardMode.focus(), 0);
+}
+
+function closeReportWizard(options = {}) {
+  closeWidgetOverlay(els.reportWizardOverlay, options);
+}
+
+function fillReportWizardPeriodFromTopbar() {
+  if (!els.reportWizardPeriodStart.value && els.topbarPeriodStart.value) {
+    els.reportWizardPeriodStart.value = els.topbarPeriodStart.value;
+  }
+  if (!els.reportWizardPeriodEnd.value && els.topbarPeriodEnd.value) {
+    els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value;
+  }
+}
+
+function renderReportWizardSettings() {
+  const mode = els.reportWizardMode.value || "full";
+  const customPeriod = els.reportWizardPeriodMode.value === "custom";
+  if (customPeriod) {
+    fillReportWizardPeriodFromTopbar();
+  }
+  const dryRun = els.reportWizardDryRun.checked;
+  const cabinets = activeMarketplaceCabinets().filter((cabinet) =>
+    mode === "ozon-only"
+      ? isOzonMarketplaceCabinet(cabinet)
+      : !isOzonMarketplaceCabinet(cabinet),
+  );
+  els.reportWizardScope.textContent = cabinets.length
+    ? cabinets.map(marketplaceCabinetLabel).join(", ")
+    : mode === "ozon-only"
+      ? "Активный кабинет Ozon не найден"
+      : "Все активные WB-кабинеты клиента";
+  els.reportWizardModeHint.textContent =
+    mode === "ozon-only"
+      ? "Загрузится служебная витрина Ozon + 1С. Клиентский отчёт и Excel не публикуются."
+      : "Система прочитает активные WB и 1С подключения, проверит данные и безопасно опубликует новый отчёт.";
+  els.reportWizardPeriodFields.hidden = !customPeriod;
+  els.reportWizardPeriodStart.required = customPeriod;
+  els.reportWizardPeriodEnd.required = customPeriod;
+  els.reportWizardSubmit.textContent = dryRun
+    ? "Проверить готовность"
+    : mode === "ozon-only"
+      ? "Запустить диагностику"
+      : "Проверить и сформировать";
+  updateReportWizardDownload();
+}
+
+function updateReportWizardDownload() {
+  const hasReport = Boolean(state.reportId);
+  els.reportWizardDownload.hidden = !hasReport;
+  els.reportWizardDownload.href = hasReport
+    ? `/api/reports/${encodeURIComponent(state.reportId)}/export.xlsx`
+    : "#";
+}
+
+function renderReportWizardStatus(refresh) {
+  if (!els.reportWizardStatus) {
+    return;
+  }
+  const status = normalize(refresh?.status);
+  const active = isActiveSourceRefresh(refresh);
+  els.reportWizardSubmit.disabled = active;
+  const steps = Array.from(
+    els.reportWizardOverlay.querySelectorAll(".report-wizard-steps span"),
+  );
+  const activeStep = active || status === "dry_run_ready" || status === "needs_review"
+    ? 1
+    : refresh?.newReportRunId || status === "report_created"
+      ? 2
+      : 0;
+  steps.forEach((step, index) => {
+    step.classList.toggle("active", index === activeStep);
+    step.classList.toggle("done", index < activeStep);
+  });
+  updateReportWizardDownload();
+  if (!refresh) {
+    els.reportWizardStatus.className = "report-wizard-status";
+    els.reportWizardStatus.textContent =
+      "После запуска здесь появятся проверка источников и ход формирования отчёта.";
+    return;
+  }
+  els.reportWizardStatus.className = `report-wizard-status ${sourceStatusTone(refresh.status)}`;
+  if (active) {
+    els.reportWizardStatus.textContent =
+      `${sourceRefreshStartText({ dryRun: Boolean(refresh.dryRun), mode: refresh.mode || "full" })} ` +
+      `Период: ${sourcePeriodText(refresh)}.`;
+    return;
+  }
+  if (refresh.newReportRunId || status === "report_created") {
+    els.reportWizardStatus.textContent =
+      `Новый отчёт готов. Период: ${sourcePeriodText(refresh)}. Он уже открыт в кабинете.`;
+    return;
+  }
+  if (status === "dry_run_ready") {
+    els.reportWizardStatus.textContent =
+      "Проверка пройдена. Снимите флажок «Только проверить готовность» и запустите формирование отчёта.";
+    return;
+  }
+  els.reportWizardStatus.textContent =
+    `${sourceStatusText(refresh.status)}. ${localizedOperationalMessage(
+      refresh.safeMessage || sourceStatusHint(refresh.status),
+    )}`;
+}
+
+async function onReportWizardSubmit(event) {
+  event.preventDefault();
+  if (!state.clientId || !isStaffUser() || els.reportWizardSubmit.disabled) {
+    return;
+  }
+  const customPeriod = els.reportWizardPeriodMode.value === "custom";
+  const periodStart = customPeriod ? els.reportWizardPeriodStart.value : "";
+  const periodEnd = customPeriod ? els.reportWizardPeriodEnd.value : "";
+  if (customPeriod && (!periodStart || !periodEnd)) {
+    els.reportWizardStatus.className = "report-wizard-status is-warning";
+    els.reportWizardStatus.textContent = "Укажите дату начала и дату конца периода.";
+    return;
+  }
+  if (periodStart && periodEnd && periodStart > periodEnd) {
+    els.reportWizardStatus.className = "report-wizard-status is-warning";
+    els.reportWizardStatus.textContent =
+      "Дата начала не может быть позже даты конца.";
+    return;
+  }
+  els.reportWizardSubmit.disabled = true;
+  const refresh = await runClientSourceRefresh({
+    dryRun: els.reportWizardDryRun.checked,
+    mode: els.reportWizardMode.value || "full",
+    periodStart,
+    periodEnd,
+    origin: "wizard",
+  });
+  if (refresh) {
+    renderReportWizardStatus(refresh);
+  } else {
+    els.reportWizardSubmit.disabled = false;
+  }
 }
 
 function openIntegrationsWidget(options = {}) {
@@ -729,7 +1091,7 @@ function openIntegrationsWidget(options = {}) {
   if (options.reload !== false) {
     renderIntegrationsEmpty(
       "Загружаем интеграции",
-      "Получаем read-only подключения выбранного клиента.",
+      "Получаем подключения выбранного клиента только для чтения.",
     );
     loadIntegrations(currentClientLoadContext());
   }
@@ -802,6 +1164,52 @@ function closeIntegrationsWidget(options = {}) {
     window.history.replaceState({}, "", "/cabinet");
     document.body.classList.remove("integrations-page");
   }
+}
+
+async function openMappingWidget(options = {}) {
+  syncSelectedClientFromControl();
+  openWidgetOverlay(els.mappingWidgetOverlay);
+  els.mappingServicePanel.hidden = false;
+  if (!state.clientId) {
+    els.mappingServiceStatus.textContent =
+      "Выберите клиента, чтобы открыть очередь сопоставления.";
+    return false;
+  }
+  if (!isStaffUser()) {
+    els.mappingServiceStatus.textContent =
+      "Сервис сопоставления доступен только консультанту или администратору.";
+    return false;
+  }
+  if (options.marketplace !== undefined) {
+    els.mappingMarketplaceFilter.value = options.marketplace || "";
+  }
+  if (options.status !== undefined) {
+    els.mappingStatusFilter.value = options.status || "";
+  }
+  if (options.search !== undefined) {
+    els.mappingSearch.value = options.search || "";
+  }
+  const marketplace = els.mappingMarketplaceFilter.value;
+  els.mappingServiceTitle.textContent = marketplace === "wb"
+    ? "Сопоставление WB ↔ 1C"
+    : marketplace === "ozon"
+      ? "Сопоставление Ozon ↔ 1C"
+      : "Сопоставление маркетплейсов ↔ 1C";
+  const context = currentClientLoadContext();
+  await loadMappingItems(context);
+  if (!isCurrentClientLoad(context)) {
+    return false;
+  }
+  if (options.focus !== false) {
+    window.setTimeout(() => {
+      els.mappingMarketplaceFilter.focus();
+    }, 0);
+  }
+  return true;
+}
+
+function closeMappingWidget(options = {}) {
+  closeWidgetOverlay(els.mappingWidgetOverlay, options);
 }
 
 function openNewClientWidget() {
@@ -913,8 +1321,592 @@ function closeDrilldownWidget(options = {}) {
   closeWidgetOverlay(els.drilldownWidgetOverlay, options);
 }
 
+function openBuyoutReconciliationWidget() {
+  if (!state.reportId) {
+    return;
+  }
+  openWidgetOverlay(els.buyoutReconciliationOverlay);
+  loadBuyoutReconciliation();
+}
+
+function closeBuyoutReconciliationWidget(options = {}) {
+  closeWidgetOverlay(els.buyoutReconciliationOverlay, options);
+}
+
+function openCogsReconciliationWidget() {
+  if (!state.reportId) {
+    return;
+  }
+  openWidgetOverlay(els.cogsReconciliationOverlay);
+  loadCogsReconciliation();
+}
+
+function closeCogsReconciliationWidget(options = {}) {
+  closeWidgetOverlay(els.cogsReconciliationOverlay, options);
+}
+
+function openMarketplaceExpenseReconciliationWidget() {
+  if (!state.reportId) {
+    return;
+  }
+  openWidgetOverlay(els.marketplaceExpenseReconciliationOverlay);
+  loadMarketplaceExpenseReconciliation();
+}
+
+function closeMarketplaceExpenseReconciliationWidget(options = {}) {
+  closeWidgetOverlay(els.marketplaceExpenseReconciliationOverlay, options);
+}
+
+async function loadMarketplaceExpenseReconciliation() {
+  const reportId = state.reportId;
+  if (!reportId) {
+    return;
+  }
+  const params = new URLSearchParams({ limit: "1000" });
+  const periodStart = els.topbarPeriodStart.value;
+  const periodEnd = els.topbarPeriodEnd.value;
+  const cabinetId = els.topbarCabinetSelect.value;
+  const companyId = els.filterOrganization?.value || "";
+  if (periodStart) params.set("period_start", periodStart);
+  if (periodEnd) params.set("period_end", periodEnd);
+  if (cabinetId) params.set("wb_cabinet_id", cabinetId);
+  if (companyId) params.set("client_company_id", companyId);
+  const requestKey = `${reportId}:${params.toString()}`;
+  state.marketplaceExpenseReconciliationRequestKey = requestKey;
+  renderMarketplaceExpenseReconciliationStatus(
+    "Собираем расходы WB и документы услуг 1С.",
+  );
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/marketplace-expense-reconciliation?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.marketplaceExpenseReconciliationRequestKey !== requestKey
+    ) {
+      return;
+    }
+    renderMarketplaceExpenseReconciliation(payload || {});
+  } catch (_error) {
+    if (
+      state.reportId === reportId &&
+      state.marketplaceExpenseReconciliationRequestKey === requestKey
+    ) {
+      renderMarketplaceExpenseReconciliationStatus(
+        "Не удалось загрузить сверку расходов. Повторите запрос.",
+      );
+    }
+  }
+}
+
+function renderMarketplaceExpenseReconciliationStatus(message) {
+  els.marketplaceExpenseReconciliationCount.textContent = "";
+  els.marketplaceExpenseReconciliationStatus.textContent = message;
+  renderMetrics(els.marketplaceExpenseReconciliationGrid, []);
+  replaceTableBodyWithMessage(
+    els.marketplaceExpenseReconciliationGroups,
+    8,
+    message,
+  );
+  replaceTableBodyWithMessage(
+    els.marketplaceExpenseReconciliationRows,
+    10,
+    message,
+  );
+}
+
+function marketplaceExpenseStatusLabel(status) {
+  return {
+    matched: "Сверено",
+    mismatch: "Есть расхождения",
+    missing_source: "Не проверено: расходы 1С не загружены",
+    missing_onec_document: "Нет документа 1С",
+    ambiguous_mapping: "Нужна проверка сопоставления",
+    ambiguous_cabinet_allocation: "Нужна проверка сопоставления",
+    missing_cabinet_mapping: "Нужна проверка сопоставления",
+    legacy_rebuild_required: "Нужна пересборка отчёта",
+  }[status] || status || "Не проверено";
+}
+
+function renderMarketplaceExpenseReconciliation(payload = {}) {
+  const kpis = payload.kpis || {};
+  const source = payload.source || {};
+  const groups = asArray(payload.groups);
+  const items = asArray(payload.items);
+  const status = kpis.marketplaceExpenseReconciliationStatus || source.status;
+  els.marketplaceExpenseReconciliationCount.textContent = `${number(
+    items.length,
+  )} строк 1С · ${number(groups.length)} групп`;
+  renderMetrics(els.marketplaceExpenseReconciliationGrid, [
+    [
+      "Расходы WB в P&L",
+      optionalMoney(kpis.wbMarketplacePnlExpenses),
+      "База применённого налогового профиля",
+    ],
+    [
+      "Документные расходы WB",
+      optionalMoney(kpis.wbMarketplaceDocumentExpensesWithVat),
+      "Сумма статей WB с НДС",
+    ],
+    [
+      "Услуги 1С с НДС",
+      optionalMoney(kpis.onecMarketplaceExpensesWithVat),
+      kpis.onecMarketplaceExpensesWithVat == null
+        ? "Источник не загружен"
+        : `Без НДС ${optionalMoney(kpis.onecMarketplaceExpensesWithoutVat)} + НДС ${optionalMoney(kpis.onecMarketplaceVat)}`,
+      kpis.onecMarketplaceExpensesWithVat == null ? "warning" : "",
+    ],
+    [
+      "Дельта 1С − WB",
+      kpis.marketplaceExpenseDeltaWithVat == null
+        ? "Не рассчитано"
+        : signedMoney(kpis.marketplaceExpenseDeltaWithVat),
+      `${marketplaceExpenseStatusLabel(status)} · проблемных групп ${number(
+        kpis.marketplaceExpenseIssueGroups || 0,
+      )}`,
+      status === "matched" ? "ok" : "warning",
+    ],
+  ]);
+  els.marketplaceExpenseReconciliationStatus.textContent =
+    source.message || marketplaceExpenseStatusLabel(status);
+  if (groups.length) {
+    els.marketplaceExpenseReconciliationGroups.replaceChildren(
+      ...groups.map(marketplaceExpenseGroupRowNode),
+    );
+  } else {
+    replaceTableBodyWithMessage(
+      els.marketplaceExpenseReconciliationGroups,
+      8,
+      source.message || "Контрольные группы не рассчитаны.",
+    );
+  }
+  if (items.length) {
+    els.marketplaceExpenseReconciliationRows.replaceChildren(
+      ...items.map(marketplaceExpenseItemRowNode),
+    );
+  } else {
+    replaceTableBodyWithMessage(
+      els.marketplaceExpenseReconciliationRows,
+      10,
+      source.message || "Документы услуг 1С не загружены.",
+    );
+  }
+}
+
+function marketplaceExpenseGroupRowNode(item) {
+  const row = document.createElement("tr");
+  if (item.status !== "matched") row.className = "is-review has-delta";
+  appendTableCells(row, [
+    { value: [item.periodStart, item.periodEnd].filter(Boolean).join(" — ") || "-" },
+    { value: [item.organization, item.cabinet].filter(Boolean).join(" · ") || "-" },
+    { value: item.controlGroupLabel || item.controlGroup || "-", className: "text-wide" },
+    { value: optionalMoney(item.wbAmountWithVat), className: "numeric" },
+    { value: optionalMoney(item.onecAmountWithVat), className: "numeric" },
+    {
+      value: item.delta == null ? "-" : signedMoney(item.delta),
+      className: `numeric ${valueTone(item.delta, { zero: "muted" })}`,
+    },
+    { value: marketplaceExpenseStatusLabel(item.status) },
+    { value: item.message || "-", className: "text-wide" },
+  ]);
+  return row;
+}
+
+function marketplaceExpenseItemRowNode(item) {
+  const row = document.createElement("tr");
+  const itemStatus = item.status || item.matchStatus;
+  if (itemStatus !== "matched") row.className = "is-review";
+  appendTableCells(row, [
+    { value: [item.periodStart, item.periodEnd].filter(Boolean).join(" — ") || "-" },
+    { value: item.documentDate || item.recognitionDate || "-" },
+    { value: [item.documentNumber, item.inputNumber].filter(Boolean).join(" · ") || "-", className: "text-code" },
+    { value: item.serviceName || item.controlGroupLabel || "-", className: "text-wide" },
+    { value: optionalMoney(item.amountWithoutVat), className: "numeric" },
+    { value: optionalMoney(item.vat), className: "numeric" },
+    { value: optionalMoney(item.amountWithVat), className: "numeric" },
+    { value: item.sourceKind || "-" },
+    { value: marketplaceExpenseStatusLabel(itemStatus) },
+    { value: item.nextAction || "-", className: "text-wide" },
+  ]);
+  return row;
+}
+
+async function loadCogsReconciliation() {
+  const reportId = state.reportId;
+  if (!reportId) {
+    return;
+  }
+  const params = new URLSearchParams();
+  const periodStart = els.topbarPeriodStart.value;
+  const periodEnd = els.topbarPeriodEnd.value;
+  const cabinetId = els.topbarCabinetSelect.value;
+  if (periodStart) {
+    params.set("period_start", periodStart);
+  }
+  if (periodEnd) {
+    params.set("period_end", periodEnd);
+  }
+  if (cabinetId) {
+    params.set("wb_cabinet_id", cabinetId);
+  }
+  const requestKey = `${reportId}:${params.toString()}`;
+  state.cogsReconciliationRequestKey = requestKey;
+  renderCogsReconciliationStatus("Собираем сверку себестоимости WB и 1С.");
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/cogs-reconciliation?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.cogsReconciliationRequestKey !== requestKey
+    ) {
+      return;
+    }
+    renderCogsReconciliation(payload || {});
+  } catch (_error) {
+    if (
+      state.reportId === reportId &&
+      state.cogsReconciliationRequestKey === requestKey
+    ) {
+      renderCogsReconciliationStatus(
+        "Не удалось загрузить сверку себестоимости. Повторите запрос.",
+      );
+    }
+  }
+}
+
+function renderCogsReconciliationStatus(message) {
+  els.cogsReconciliationCount.textContent = "";
+  els.cogsReconciliationStatus.textContent = message;
+  renderMetrics(els.cogsReconciliationGrid, []);
+  replaceTableBodyWithMessage(els.cogsReconciliationRows, 11, message);
+  replaceTableBodyWithMessage(els.cogsCostIssueRows, 10, message);
+}
+
+function renderCogsReconciliation(payload = {}) {
+  const summary = payload.summary || {};
+  const items = asArray(payload.items);
+  const costItems = asArray(payload.costItems);
+  const delta = Number(summary.delta || 0);
+  const unexplained = Number(summary.unexplainedDelta || 0);
+  const reviewRows = Number(summary.costReviewRows || 0);
+  els.cogsReconciliationCount.textContent = `${number(items.length)} компонентов`;
+  renderMetrics(els.cogsReconciliationGrid, [
+    [
+      "Товарный P&L WB",
+      optionalMoney(summary.pnlCogs),
+      "Месяц окончания недели WB",
+    ],
+    [
+      "Себестоимость 1С",
+      optionalMoney(summary.onecCogs),
+      "Календарная дата проведения 1С",
+    ],
+    [
+      "Общая разница",
+      signedMoney(delta),
+      "1С календарь − товарный P&L WB",
+      Math.abs(unexplained) <= 1 ? "warning" : "bad",
+    ],
+    [
+      "Переходящие недели",
+      signedMoney(
+        Number(summary.commissionerBoundaryDelta || 0) +
+          Number(summary.buyoutBoundaryDelta || 0),
+      ),
+      "Документ 1С и неделя WB попали в разные месяцы",
+    ],
+    [
+      "Разница совпадающих недель",
+      signedMoney(
+        Number(summary.commissionerSameScopeDelta || 0) +
+          Number(summary.buyoutSameScopeDelta || 0),
+      ),
+      "Цена и допрасходы 1С против себестоимости строк WB",
+    ],
+    [
+      "Закрытие месяца 1С",
+      signedMoney(summary.adjustmentDelta || 0),
+      "Стоимостные корректировки без товарного количества WB",
+    ],
+    [
+      "Не объяснено",
+      signedMoney(unexplained),
+      "Должно быть не более 1 ₽",
+      Math.abs(unexplained) <= 1 ? "ok" : "bad",
+    ],
+    [
+      "Строки к проверке",
+      number(reviewRows),
+      reviewRows
+        ? `${optionalMoney(summary.costReviewCogs)} себестоимости · ${optionalMoney(
+            summary.affectedRevenue,
+          )} выручки`
+        : "Нет строк с fallback себестоимости",
+      reviewRows ? "warning" : "ok",
+    ],
+  ]);
+  els.cogsReconciliationStatus.textContent = payload.supported
+    ? summary.status === "explained"
+      ? "Разница полностью объяснена периодами и документами."
+      : "Разница разложена, но есть строки себестоимости для проверки."
+    : payload.supportMessage ||
+      "Для строк старого отчёта источник себестоимости не сохранён; нужна пересборка.";
+  if (items.length) {
+    els.cogsReconciliationRows.replaceChildren(
+      ...items.map(cogsReconciliationRowNode),
+    );
+  } else {
+    replaceTableBodyWithMessage(
+      els.cogsReconciliationRows,
+      11,
+      "Нет документов себестоимости в выбранном диапазоне.",
+    );
+  }
+  if (costItems.length) {
+    els.cogsCostIssueRows.replaceChildren(...costItems.map(cogsCostIssueRowNode));
+  } else {
+    replaceTableBodyWithMessage(
+      els.cogsCostIssueRows,
+      10,
+      payload.supported
+        ? "Строки себестоимости, требующие проверки, не найдены."
+        : "Источник себестоимости появится после пересборки отчёта.",
+    );
+  }
+}
+
+function cogsReconciliationRowNode(item) {
+  const row = document.createElement("tr");
+  if (item.status === "Проверить стоимость") {
+    row.className = "is-review has-delta";
+  } else if (item.status === "Переходящая неделя") {
+    row.className = "is-review";
+  }
+  appendTableCells(row, [
+    { value: item.documentType || item.component || "-", className: "text-wide" },
+    {
+      value: [item.salesPeriodStart, item.salesPeriodEnd].filter(Boolean).join(" — ") || "-",
+      className: "text-nowrap",
+    },
+    { value: item.onecDocumentDate || "-", className: "text-nowrap" },
+    {
+      value: [item.wbReportIds, item.onecDocuments].filter(Boolean).join(" · ") || "-",
+      className: "text-wide text-code",
+    },
+    { value: optionalMoney(item.pnlCogs), className: "numeric" },
+    { value: optionalMoney(item.onecSameScopeCogs), className: "numeric" },
+    { value: optionalMoney(item.onecCalendarCogs), className: "numeric" },
+    {
+      value: signedMoney(item.sameScopeDelta || 0),
+      className: `numeric ${valueTone(item.sameScopeDelta, { zero: "muted" })}`,
+    },
+    {
+      value: signedMoney(item.boundaryDelta || 0),
+      className: `numeric ${valueTone(item.boundaryDelta, { zero: "muted" })}`,
+    },
+    {
+      value: item.status || "-",
+      badge: true,
+      tone: item.status === "Сходится" ? "ok" : "warning",
+    },
+    { value: `${item.reason || ""} ${item.action || ""}`.trim() || "-", className: "text-wide" },
+  ]);
+  return row;
+}
+
+function cogsCostIssueRowNode(item) {
+  const row = document.createElement("tr");
+  row.className = "is-review";
+  appendTableCells(row, [
+    {
+      value: [item.weekStart, item.weekEnd].filter(Boolean).join(" — ") || "-",
+      className: "text-nowrap",
+    },
+    { value: item.product || item.articleWb || "-", className: "text-wide" },
+    { value: item.article1c || "-", className: "text-code" },
+    { value: number(item.netQuantity || 0), className: "numeric" },
+    { value: optionalMoney(item.cogs), className: "numeric" },
+    { value: optionalMoney(item.unitCost), className: "numeric" },
+    {
+      value: item.costMatchStatus || item.costMethod || "Не сохранён",
+      badge: true,
+      tone: "warning",
+    },
+    {
+      value:
+        [item.costSourcePeriodStart, item.costSourcePeriodEnd]
+          .filter(Boolean)
+          .join(" — ") || "-",
+      className: "text-nowrap",
+    },
+    { value: item.costSourceDocument || "-", className: "text-wide text-code" },
+    { value: item.reason || item.status || "-", className: "text-wide" },
+  ]);
+  return row;
+}
+
+async function loadBuyoutReconciliation() {
+  const reportId = state.reportId;
+  if (!reportId) {
+    return;
+  }
+  const params = new URLSearchParams();
+  const periodStart = els.topbarPeriodStart.value;
+  const periodEnd = els.topbarPeriodEnd.value;
+  const cabinetId = els.topbarCabinetSelect.value;
+  if (periodStart) {
+    params.set("period_start", periodStart);
+  }
+  if (periodEnd) {
+    params.set("period_end", periodEnd);
+  }
+  if (cabinetId) {
+    params.set("wb_cabinet_id", cabinetId);
+  }
+  const requestKey = `${reportId}:${params.toString()}`;
+  state.buyoutReconciliationRequestKey = requestKey;
+  renderBuyoutReconciliationStatus("Загружаем документы выкупов.");
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/buyout-reconciliation?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.buyoutReconciliationRequestKey !== requestKey
+    ) {
+      return;
+    }
+    renderBuyoutReconciliation(payload || {});
+  } catch (_error) {
+    if (
+      state.reportId === reportId &&
+      state.buyoutReconciliationRequestKey === requestKey
+    ) {
+      renderBuyoutReconciliationStatus(
+        "Не удалось загрузить расшифровку выкупов. Повторите запрос.",
+      );
+    }
+  }
+}
+
+function renderBuyoutReconciliationStatus(message) {
+  els.buyoutReconciliationCount.textContent = "";
+  els.buyoutReconciliationStatus.textContent = message;
+  renderMetrics(els.buyoutReconciliationGrid, []);
+  replaceTableBodyWithMessage(els.buyoutReconciliationRows, 10, message);
+}
+
+function renderBuyoutReconciliation(payload = {}) {
+  const summary = payload.summary || {};
+  const rows = asArray(payload.items);
+  const total = Number(payload.total || rows.length || 0);
+  const missingOnecRows = Number(summary.missingOnecRows || 0);
+  const quantityIssueRows = Number(summary.quantityIssueRows || 0);
+  const unverifiedPrimaryRows = Number(summary.unverifiedPrimaryRows || 0);
+  const primaryVerified = summary.primaryDocumentStatus === "verified";
+  els.buyoutReconciliationCount.textContent = total
+    ? `${number(total)} документов`
+    : "Нет документов";
+  renderMetrics(els.buyoutReconciliationGrid, [
+    [
+      "Первичка WB · сумма выкупа",
+      primaryVerified ? optionalMoney(summary.primaryDocumentAmount) : "Не загружена",
+      "Сопоставимая база для накладной 1С",
+      primaryVerified ? "ok" : "warning",
+    ],
+    ["Накладные 1С", optionalMoney(summary.onecNetAmount)],
+    [
+      "Результат сверки первички",
+      primaryVerified && summary.primaryDocumentDelta != null
+        ? signedMoney(summary.primaryDocumentDelta)
+        : "Не проверено",
+      primaryVerified
+        ? "Первичка WB − накладная 1С"
+        : `${number(unverifiedPrimaryRows)} документов без первички WB`,
+      primaryVerified && Math.abs(Number(summary.primaryDocumentDelta || 0)) <= 1
+        ? "ok"
+        : "warning",
+    ],
+    ["Розница WB · справочно", optionalMoney(summary.wbRetailAmount)],
+    [
+      "Разница ценовых баз · справочно",
+      summary.nonComparableDifference == null
+        ? "-"
+        : signedMoney(summary.nonComparableDifference),
+      "Не является расхождением документов",
+      "",
+    ],
+    ["Нет накладной 1С", number(missingOnecRows), "", missingOnecRows ? "bad" : "ok"],
+    [
+      "Проверить количество",
+      number(quantityIssueRows),
+      "",
+      quantityIssueRows ? "warning" : "ok",
+    ],
+  ]);
+  els.buyoutReconciliationStatus.textContent =
+    missingOnecRows || quantityIssueRows
+      ? "Сначала исправьте строки в начале списка: без накладной 1С или с неподтверждённым количеством."
+      : unverifiedPrimaryRows
+        ? "Накладные 1С найдены, но денежная сверка не завершена: загрузите первичные уведомления WB с полем «Сумма выкупа» и пересоберите отчёт."
+        : "Первичные уведомления WB и накладные 1С сверены.";
+  if (!rows.length) {
+    replaceTableBodyWithMessage(
+      els.buyoutReconciliationRows,
+      10,
+      "Выкупы по выбранному периоду и кабинету не найдены.",
+    );
+    return;
+  }
+  els.buyoutReconciliationRows.replaceChildren(
+    ...rows.map(buyoutReconciliationRowNode),
+  );
+}
+
+function buyoutReconciliationRowNode(item) {
+  const row = document.createElement("tr");
+  if (item.missingOnec) {
+    row.className = "is-missing-onec";
+  } else if (item.quantityIssue) {
+    row.className = "is-review has-delta";
+  } else if (item.primaryDocumentStatus !== "verified") {
+    row.className = "is-review";
+  }
+  appendTableCells(row, [
+    { value: item.salesPeriod || "-", className: "text-nowrap" },
+    { value: item.wbReports || "-", className: "text-wide text-code" },
+    { value: item.onecDocumentDate || item.expectedDocumentDate || "-", className: "text-nowrap" },
+    { value: item.onecDocuments || "Не найдена", className: "text-wide text-code" },
+    {
+      value:
+        item.primaryDocumentStatus === "verified"
+          ? optionalMoney(item.primaryDocumentAmount)
+          : "Не загружена",
+      className: "numeric",
+    },
+    { value: optionalMoney(item.onecNetAmount), className: "numeric" },
+    {
+      value:
+        item.primaryDocumentDelta == null
+          ? "-"
+          : signedMoney(item.primaryDocumentDelta),
+      className: `numeric delta ${valueTone(item.primaryDocumentDelta, { zero: "muted" })}`,
+    },
+    { value: optionalMoney(item.wbRetailAmount), className: "numeric" },
+    {
+      value: item.quantityStatus || "-",
+      badge: true,
+      tone: item.missingOnec ? "blocked" : item.quantityIssue ? "warning" : "ok",
+    },
+    { value: item.reason || "-", className: "text-wide" },
+  ]);
+  return row;
+}
+
 async function selectDrilldownPreset(preset = "review") {
   const descriptor = drilldownDescriptor(preset);
+  state.drilldownPreset = descriptor.preset;
   els.drilldownTitle.textContent = descriptor.title;
   els.drilldownSubtitle.textContent = descriptor.subtitle;
   els.drilldownTabs.forEach((button) => {
@@ -926,10 +1918,14 @@ async function selectDrilldownPreset(preset = "review") {
     state.drilldownRequestKey = "";
     els.drilldownTableWrap.hidden = true;
     els.drilldownSources.hidden = false;
+    els.drilldownGuidance.hidden = true;
+    els.drilldownGuidance.replaceChildren();
     renderSourceDrilldown();
     return;
   }
   els.drilldownSources.hidden = true;
+  els.drilldownGuidance.hidden = descriptor.preset !== "missingCost";
+  els.drilldownGuidance.replaceChildren();
   els.drilldownTableWrap.hidden = false;
   await loadDrilldownRows(descriptor.preset);
 }
@@ -948,7 +1944,12 @@ async function loadDrilldownRows(preset) {
     if (state.reportId !== reportId || state.drilldownRequestKey !== requestKey) {
       return;
     }
-    renderDrilldownRows(payload.items || [], payload.total || 0);
+    renderDrilldownRows(
+      payload.items || [],
+      payload.total || 0,
+      preset,
+      payload.costIssueBreakdown || {},
+    );
   } catch (error) {
     if (state.reportId !== reportId || state.drilldownRequestKey !== requestKey) {
       return;
@@ -966,13 +1967,13 @@ function drilldownDescriptor(preset) {
     },
     missingCost: {
       preset: "missingCost",
-      title: "Строки без себестоимости",
-      subtitle: "Товары, где не подтянулась подтвержденная себестоимость из 1С.",
+      title: "Проверка себестоимости 1С",
+      subtitle: "Отдельно показаны строки с временной себестоимостью и товары, где себестоимость действительно не найдена.",
     },
     missingMapping: {
       preset: "missingMapping",
-      title: "Проблемы mapping WB ↔ 1C",
-      subtitle: "Товары без сопоставления WB-1С или с неоднозначным mapping.",
+      title: "Проблемы сопоставления WB ↔ 1C",
+      subtitle: "Товары без связи WB–1С или с неоднозначным сопоставлением.",
     },
     losses: {
       preset: "losses",
@@ -999,9 +2000,14 @@ function drilldownDescriptor(preset) {
 function closeAllWidgets() {
   closeAiWidget({ restoreFocus: false });
   closeClientOutputWidget({ restoreFocus: false });
+  closeReportWizard({ restoreFocus: false });
   closeIntegrationsWidget({ restoreFocus: false });
+  closeMappingWidget({ restoreFocus: false });
   closeNewClientWidget({ restoreFocus: false });
   closeDrilldownWidget({ restoreFocus: false });
+  closeBuyoutReconciliationWidget({ restoreFocus: false });
+  closeCogsReconciliationWidget({ restoreFocus: false });
+  closeMarketplaceExpenseReconciliationWidget({ restoreFocus: false });
   state.activeWidgetOverlay = null;
   restoreWidgetFocus();
 }
@@ -1011,9 +2017,14 @@ function updateWidgetBodyState() {
     "widget-open",
       !els.aiWidgetOverlay.hidden ||
       !els.clientOutputWidgetOverlay.hidden ||
+      !els.reportWizardOverlay.hidden ||
       !els.integrationsWidgetOverlay.hidden ||
+      !els.mappingWidgetOverlay.hidden ||
       !els.newClientWidgetOverlay.hidden ||
-      !els.drilldownWidgetOverlay.hidden,
+      !els.drilldownWidgetOverlay.hidden ||
+      !els.buyoutReconciliationOverlay.hidden ||
+      !els.cogsReconciliationOverlay.hidden ||
+      !els.marketplaceExpenseReconciliationOverlay.hidden,
   );
 }
 
@@ -1042,9 +2053,14 @@ function currentOpenWidgetOverlay() {
   return [
     els.aiWidgetOverlay,
     els.clientOutputWidgetOverlay,
+    els.reportWizardOverlay,
     els.integrationsWidgetOverlay,
+    els.mappingWidgetOverlay,
     els.newClientWidgetOverlay,
     els.drilldownWidgetOverlay,
+    els.buyoutReconciliationOverlay,
+    els.cogsReconciliationOverlay,
+    els.marketplaceExpenseReconciliationOverlay,
   ].find((overlay) => overlay && !overlay.hidden) || null;
 }
 
@@ -1234,18 +2250,29 @@ async function loadReports(context = currentClientLoadContext()) {
   state.reports = payload.items || [];
   if (!state.reports.length) {
     renderFilters(clientScopedFilterOptions());
-    await loadIntegrations(context);
+    await Promise.all([
+      loadIntegrations(context),
+      loadSourceRefreshStatus(context),
+    ]);
+    const keepOzonServiceVitrine = shouldKeepOzonDiagnosticsVisible();
     if (isAiPage()) {
       renderAiPageHeader(
         "Нет доступных отчетов",
         "После импорта отчета AI-аналитик сможет отвечать по расчетной витрине.",
       );
     } else if (isIntegrationsPage()) {
-      setEmptyCabinet();
+      if (keepOzonServiceVitrine) {
+        setOzonServiceCabinetNotice();
+        renderOzonDiagnosticsPayload(state.latestOzonDiagnostics);
+      } else {
+        setEmptyCabinet();
+      }
       openIntegrationsWidget({ focus: false });
+    } else if (keepOzonServiceVitrine) {
+      setOzonServiceCabinetNotice();
+      renderOzonDiagnosticsPayload(state.latestOzonDiagnostics);
     } else {
       setEmptyCabinet();
-      await loadOzonDiagnostics(context);
     }
     return;
   }
@@ -1260,24 +2287,104 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   state.aiThreadId = null;
   state.onecReconciliationLoaded = false;
   resetAiPanel();
-  const [summary, freshness] = await Promise.all([
-    api(`/api/reports/${encodeURIComponent(reportId)}/summary`),
-    api(`/api/reports/${encodeURIComponent(reportId)}/freshness`),
-  ]);
+  els.reportLoadRetryButton.hidden = true;
+  let summary;
+  try {
+    summary = await api(`/api/reports/${encodeURIComponent(reportId)}/summary`);
+  } catch (error) {
+    if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
+      return;
+    }
+    renderReportLoadError();
+    return;
+  }
   if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
     return;
   }
   state.summary = summary;
-  state.freshness = freshness;
+  state.freshness = null;
+  if (normalize(summary.marketplace) === "ozon") {
+    state.latestOzonDiagnostics = summary.ozonDiagnostics || null;
+    renderFilters(summary.options || clientScopedFilterOptions());
+    setOzonDraftNotice(summary);
+    renderOzonDiagnosticsPayload(state.latestOzonDiagnostics);
+    await Promise.allSettled([
+      loadIntegrations(context),
+      loadSourceRefreshStatus(context),
+    ]);
+    configurePageMode();
+    return;
+  }
   renderReport();
   renderFilters(summary.options || {});
   renderOnecReconciliation([], 0, summary.quality || {});
-  await Promise.all([
+  await Promise.allSettled([
+    loadReportFreshness(reportId, context),
     loadReviewRows(state.rowPreset, { ...context, reportId }),
     loadClientDraft({ ...context, reportId }),
     loadIntegrations(context),
+    loadSourceRefreshStatus(context),
   ]);
   configurePageMode();
+}
+
+async function loadReportFreshness(reportId, context = currentClientLoadContext()) {
+  try {
+    const freshness = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/freshness`,
+    );
+    if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
+      return;
+    }
+    state.freshness = freshness;
+    renderReport();
+  } catch (error) {
+    if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
+      return;
+    }
+    state.freshness = null;
+    renderReportFreshnessWarning();
+  }
+}
+
+function renderReportLoadError() {
+  state.summary = null;
+  state.freshness = null;
+  setEmptyCabinet(
+    "Не удалось загрузить отчёт",
+    "Показатели не получены. Повторите запрос; сохранённые данные отчёта не изменялись.",
+  );
+  renderReviewRows([], 0);
+  renderLostSales([]);
+  renderLiquidity([]);
+  els.reportLoadRetryButton.disabled = false;
+  els.reportLoadRetryButton.hidden = false;
+}
+
+function renderReportFreshnessWarning() {
+  const currentSubtitle = els.reportSubtitle.textContent || "";
+  const warning = "Статус свежести источников временно недоступен.";
+  if (!currentSubtitle.includes(warning)) {
+    els.reportSubtitle.textContent = currentSubtitle
+      ? `${currentSubtitle} · ${warning}`
+      : warning;
+  }
+  els.brandLockup.classList.remove("is-info", "is-ok", "is-blocked");
+  els.brandLockup.classList.add("is-warning");
+}
+
+async function retryCurrentReportLoad() {
+  const reportId = state.reportId;
+  if (!reportId || els.reportLoadRetryButton.disabled) {
+    return;
+  }
+  const context = currentClientLoadContext();
+  els.reportLoadRetryButton.disabled = true;
+  setEmptyCabinet(
+    "Загружаем отчёт",
+    "Повторно получаем показатели выбранного клиента.",
+  );
+  await loadReport(reportId, context);
 }
 
 async function loadReviewRows(preset = state.rowPreset, context = currentClientLoadContext()) {
@@ -1404,15 +2511,15 @@ async function loadClientDraft(context = {}) {
       return;
     }
     const status = payload.latest.status === "ready" ? "готов" : "черновик";
-    els.draftStatus.textContent = `Версия v${payload.latest.revision}: ${status}.`;
+    els.draftStatus.textContent = `Версия ${payload.latest.revision}: ${status}.`;
   } catch (error) {
     if (reportId !== state.reportId || !isCurrentClientLoad(context)) {
       return;
     }
     els.draftPanel.hidden = false;
     els.draftStatus.textContent = isStaffUser()
-      ? "Клиентский вывод пока не подготовлен."
-      : "Клиентский вывод готовит консультант. Данные отчета не менялись.";
+      ? "Отчёт для клиента пока не подготовлен."
+      : "Отчёт для клиента готовит консультант. Данные отчета не менялись.";
   }
 }
 
@@ -1424,8 +2531,6 @@ async function loadIntegrations(context = {}) {
   if (!isStaffUser() || !clientId) {
     els.integrationsOpenButton.hidden = true;
     els.integrationsPanel.hidden = false;
-    resetSourceRefreshPanel({ hide: true });
-    resetMappingServicePanel({ hide: true });
     renderIntegrationsEmpty(
       clientId ? "Нет доступа" : "Клиент не выбран",
       clientId
@@ -1445,8 +2550,6 @@ async function loadIntegrations(context = {}) {
     }
     syncIntegrationsEntryPoint();
     els.integrationsPanel.hidden = false;
-    resetSourceRefreshPanel({ hide: true });
-    resetMappingServicePanel({ hide: true });
     renderIntegrationsEmpty(
       "Интеграции не загрузились",
       "Проверьте доступ консультанта и попробуйте обновить страницу.",
@@ -1461,16 +2564,6 @@ async function loadIntegrations(context = {}) {
   state.integrationProviders = payload.providers || [];
   state.integrationItems = payload.items || [];
   renderIntegrationsWithFallback(state.integrationItems);
-  await loadSourceRefreshStatus(context).catch(() => {
-    if (!isCurrentClientLoad(context)) {
-      return;
-    }
-    state.latestSourceRefresh = null;
-    els.sourceRefreshStatus.textContent =
-      "Не удалось загрузить статус обновления источников.";
-    renderSourceRefreshSteps(null);
-    els.sourceRefreshCollections.replaceChildren();
-  });
 }
 
 async function ensureAiThread() {
@@ -1598,7 +2691,7 @@ function renderAiSource(payload) {
     els.aiSourceStatus.classList.add("ok");
   } else {
     els.aiSourceStatus.textContent = isStaffUser()
-      ? "Fallback · расчетная витрина"
+      ? "Резервный ответ · расчётная витрина"
       : "Расчетная витрина";
     els.aiSourceStatus.classList.add("fallback");
   }
@@ -1639,14 +2732,19 @@ function renderReport() {
     summary.latestSourceRefresh ||
     freshness.latestSourceRefresh;
 
-  els.reportTitle.textContent = "Пульт подготовки отчета";
-  els.reportSubtitle.textContent = reportFreshnessSubtitle(
-    summary.meta || {},
-    latestRefresh,
+  els.reviewRowsButton.disabled = false;
+  els.reviewRowsButton.textContent = "Открыть проблемные строки";
+
+  setTopbarNotice(
+    readiness.status === "ready"
+      ? "Пульт подготовки отчета"
+      : "Предварительный отчёт — финансовая проверка не завершена",
+    reportFreshnessSubtitle(summary.meta || {}, latestRefresh),
+    reportTopbarTone(readiness, latestRefresh),
   );
 
   renderReadiness(readiness);
-  updateExcelLink(latestRefresh);
+  updateReportBuildButton(latestRefresh);
   renderNextAction({
     readiness,
     quality: summary.quality || {},
@@ -1736,6 +2834,7 @@ function applyTopbarFilter(kind) {
     const previousOzonParams = state.ozonDiagnosticsParams || "";
     els.filterCabinet.value = els.topbarCabinetSelect.value;
     saveFilterState();
+    loadSourceRefreshStatus(currentClientLoadContext());
     const nextOzonParams = ozonDiagnosticsParams();
     const useOzonWorkingView = shouldUseOzonWorkingView();
     const hasCurrentOzonDiagnostics =
@@ -2013,7 +3112,7 @@ function renderIntegrationMinimalFallbackRow(item) {
   summary.className = "integration-compact-row";
   const role = document.createElement("span");
   role.className = "integration-read-badge integration-role-badge";
-  role.textContent = data.readOnly === false ? "доступ" : "read-only";
+  role.textContent = data.readOnly === false ? "доступ" : "только чтение";
   const access = document.createElement("span");
   access.className = "integration-read-badge";
   access.textContent = data.configured || data.secretHint ? "Доступ сохранен" : "Нужно настроить";
@@ -2113,19 +3212,19 @@ function integrationEmptyCopy() {
   if (state.integrationProviderFilter === "ozon_api") {
     return [
       "Ozon еще не подключен",
-      "В форме выше выбран Ozon Seller API. Заполните Client-Id и API Key, затем сохраните и проверьте.",
+      "В форме выше выбран API кабинета продавца Ozon. Заполните идентификатор клиента и API-ключ, затем сохраните и проверьте.",
     ];
   }
   if (state.integrationProviderFilter === "onec_readonly") {
     return [
       "1C еще не подключена",
-      "В форме выше выбран 1C read-only. Заполните URL, пользователя и пароль.",
+      "В форме выше выбрана 1C только для чтения. Заполните URL, пользователя и пароль.",
     ];
   }
   if (state.integrationProviderFilter === "wb_api") {
     return [
       "WB еще не подключен",
-      "Добавьте кабинет клиента и сохраните read-only WB ключ.",
+      "Добавьте кабинет клиента и сохраните ключ WB только для чтения.",
     ];
   }
   return [
@@ -2138,35 +3237,41 @@ async function loadSourceRefreshStatus(context = {}) {
   const clientId = context.clientId || state.clientId;
   if (!isStaffUser() || !clientId) {
     resetSourceRefreshPanel({ hide: true });
-    resetMappingServicePanel({ hide: true });
     return;
   }
   els.sourceRefreshPanel.hidden = false;
-  els.mappingServicePanel.hidden = false;
-  els.sourceRefreshStatus.textContent = "Проверяем последний refresh...";
+  els.sourceRefreshStatus.textContent = "Проверяем последнее обновление данных...";
   try {
+    const mode = selectedSourceRefreshMode();
+    const modeQuery = mode ? `?mode=${encodeURIComponent(mode)}` : "";
     const payload = await api(
-      `/api/clients/${encodeURIComponent(clientId)}/source-refresh/latest`,
+      `/api/clients/${encodeURIComponent(clientId)}/source-refresh/latest${modeQuery}`,
     );
     if (!isCurrentClientLoad(context)) {
       return;
     }
-    state.latestSourceRefresh = payload.latest || null;
-    renderSourceRefreshControl(state.latestSourceRefresh);
-    await loadMappingItems(context);
+    state.activeSourceRefresh = payload.activeRun || null;
+    state.latestSourceRefreshAttempt = payload.latestAttempt || null;
+    state.latestSourceRefresh = state.activeSourceRefresh || payload.latest || null;
+    renderSourceRefreshControl(
+      state.latestSourceRefresh,
+      state.latestSourceRefreshAttempt,
+    );
     await loadOzonDiagnostics(context);
   } catch (error) {
     if (!isCurrentClientLoad(context)) {
       return;
     }
     state.latestSourceRefresh = null;
+    state.latestSourceRefreshAttempt = null;
+    state.activeSourceRefresh = null;
     state.latestOzonDiagnostics = null;
-    updateExcelLink(null);
+    updateReportBuildButton(null);
+    renderReportWizardStatus(null);
     els.sourceRefreshStatus.textContent =
       "Не удалось загрузить статус обновления источников.";
     renderSourceRefreshSteps(null);
     els.sourceRefreshCollections.replaceChildren();
-    resetMappingServicePanel();
     renderOzonPreview(null, null);
   }
 }
@@ -2299,8 +3404,11 @@ async function rebuildMappingCandidates(context = {}) {
     if (!isCurrentClientLoad(context)) {
       return;
     }
-    els.mappingServiceStatus.textContent =
-      `Кандидаты перестроены: товаров ${payload.items || 0}, кандидатов ${payload.candidates || 0}.`;
+    els.mappingServiceStatus.textContent = [
+      `Автоматически сопоставлено по штрихкоду 1С: ${payload.autoAccepted || 0}.`,
+      `Требует ручного решения: ${payload.remainingReview || 0}.`,
+      `Конфликт с ранее принятой связью: ${payload.currentMappingConflictCount || 0}.`,
+    ].join(" ");
     await loadMappingItems(context);
     await loadSourceRefreshStatus(context);
   } catch (error) {
@@ -2473,7 +3581,10 @@ function renderMappingDetail(item = selectedMappingItem(), message = "") {
   title.textContent = item.title || mappingItemKey(item);
   const meta = document.createElement("span");
   meta.textContent =
-    `${marketplaceLabel(item.marketplace)} · ${mappingItemKey(item)} · ${mappingStatusLabel(item.status)}`;
+    `${marketplaceLabel(item.marketplace)} · ${mappingItemKey(item)} · ${mappingStatusLabel(item.status)}` +
+    (item.currentMapping
+      ? ` · ${mappingCurrentMethodLabel(item.currentMapping.matchMethod)}`
+      : "");
   const hintText = mappingStatusHint(item.status);
   const hint = document.createElement("small");
   hint.className = "muted";
@@ -2659,11 +3770,20 @@ function mappingStatusHint(value) {
     ambiguous:
       "Нашлось несколько товаров 1C. Строка останется в очереди, пока аналитик не выберет вариант.",
     needs_review:
-      "Есть кандидат, но его нужно подтвердить вручную. Система сама решение не принимает.",
+      "Есть слабый или неоднозначный кандидат, поэтому решение остается за аналитиком.",
     missing:
       "Готовой связи нет. Найдите товар 1C вручную или оставьте строку в очереди.",
   };
   return labels[normalize(value)] || "";
+}
+
+function mappingCurrentMethodLabel(value) {
+  const labels = {
+    mapping_service_auto_barcode: "Автоматически по штрихкоду 1С",
+    imported_mapping_file: "Принято из файла",
+    manual_search: "Сопоставлено вручную",
+  };
+  return labels[normalize(value)] || "Сопоставлено вручную";
 }
 
 function mappingItemNeedsAnalyst(value) {
@@ -2691,6 +3811,7 @@ function mappingCandidateSourceLabel(value) {
 function mappingActionLabel(value) {
   const labels = {
     accept: "Принято",
+    auto_accept: "Автоматически принято по штрихкоду 1С",
     reject: "Отклонено",
     revoke: "Отозвано",
     exclude: "Исключено",
@@ -2713,9 +3834,12 @@ async function loadOzonDiagnostics(context = {}) {
   try {
     params = ozonDiagnosticsParams();
     state.ozonDiagnosticsParams = params;
-    diagnostics = await api(
-      `/api/clients/${encodeURIComponent(clientId)}/ozon-diagnostics?${params}`,
-    );
+    const pinnedOzonDraft =
+      normalize(state.summary?.marketplace) === "ozon" && state.reportId;
+    const endpoint = pinnedOzonDraft
+      ? `/api/reports/${encodeURIComponent(state.reportId)}/ozon-diagnostics`
+      : `/api/clients/${encodeURIComponent(clientId)}/ozon-diagnostics`;
+    diagnostics = await api(`${endpoint}?${params}`);
   } catch (error) {
     if (!isCurrentClientLoad(context) || params !== state.ozonDiagnosticsParams) {
       return;
@@ -2794,55 +3918,53 @@ function updateOzonExcelLink(diagnostics = state.latestOzonDiagnostics) {
     els.ozonExcelLink.href = "#";
     return;
   }
-  const params = ozonDiagnosticsExportParams();
-  els.ozonExcelLink.href =
-    `/api/clients/${encodeURIComponent(clientId)}/ozon-diagnostics/export.xlsx` +
-    (params ? `?${params}` : "");
+  if (normalize(state.summary?.marketplace) === "ozon" && state.reportId) {
+    const params = ozonDiagnosticsExportParams();
+    els.ozonExcelLink.href = `/api/reports/${encodeURIComponent(
+      state.reportId,
+    )}/export.xlsx${params ? `?${params}` : ""}`;
+  } else {
+    const params = ozonDiagnosticsExportParams();
+    els.ozonExcelLink.href =
+      `/api/clients/${encodeURIComponent(clientId)}/ozon-diagnostics/export.xlsx` +
+      (params ? `?${params}` : "");
+  }
 }
 
-function updateExcelLink(refresh = state.latestSourceRefresh) {
-  if (!els.excelLink) {
+function updateReportBuildButton(refresh = state.latestSourceRefresh) {
+  if (!els.reportBuildButton) {
     return;
   }
+  const isStaff = isStaffUser();
   const reportId = state.reportId || "";
-  const href = reportId
-    ? `/api/reports/${encodeURIComponent(reportId)}/export.xlsx`
-    : "#";
-  els.excelLink.classList.remove("is-warning", "is-busy");
-  els.excelLink.dataset.excelAction = "download";
-  delete els.excelLink.dataset.newReportId;
-  els.excelLink.href = href;
-  els.excelLink.textContent = "Excel";
-  els.excelLink.dataset.tooltip = "Скачать текущий расчетный Excel-артефакт.";
-  if (!reportId || !isStaffUser()) {
+  els.reportBuildButton.hidden = !state.clientId || (!isStaff && !reportId);
+  els.reportBuildButton.disabled = false;
+  els.reportBuildButton.classList.remove("is-warning", "is-busy");
+  if (!isStaff) {
+    els.reportBuildButton.textContent = "Скачать отчёт";
+    els.reportBuildButton.dataset.tooltip =
+      "Скачать текущий опубликованный Excel-отчёт.";
+    els.reportBuildButton.disabled = !reportId;
     return;
   }
-  const newReportId = refresh?.newReportRunId || "";
-  if (newReportId && newReportId !== reportId) {
-    els.excelLink.href = "#";
-    els.excelLink.textContent = "Открыть новый";
-    els.excelLink.dataset.excelAction = "open-new";
-    els.excelLink.dataset.newReportId = newReportId;
-    els.excelLink.dataset.tooltip =
-      "После обновления источников уже собран новый отчет. Откройте его перед скачиванием Excel.";
-    els.excelLink.classList.add("is-warning");
-    return;
-  }
+  els.reportBuildButton.textContent = "Сформировать отчёт";
+  els.reportBuildButton.dataset.tooltip =
+    "Открыть мастер формирования отчета и выбрать нужные настройки.";
   if (isActiveSourceRefresh(refresh)) {
-    els.excelLink.href = "#";
-    els.excelLink.textContent = excelBusyLabel(refresh);
-    els.excelLink.dataset.excelAction = "status";
-    els.excelLink.dataset.tooltip = excelBusyTooltip(refresh);
-    els.excelLink.classList.add("is-busy");
+    els.reportBuildButton.textContent =
+      normalize(refresh?.mode) === "ozon-only"
+        ? "Диагностика выполняется"
+        : sourceRefreshCreatesReport(refresh?.mode)
+          ? "Отчёт формируется"
+          : "Данные обновляются";
+    els.reportBuildButton.dataset.tooltip = excelBusyTooltip(refresh);
+    els.reportBuildButton.classList.add("is-busy");
     return;
   }
   if (excelNeedsReportRebuild(refresh)) {
-    els.excelLink.href = "#";
-    els.excelLink.textContent = "Пересобрать";
-    els.excelLink.dataset.excelAction = "rebuild";
-    els.excelLink.dataset.tooltip =
-      "Источники свежее текущего Excel. Запустите полное обновление, чтобы скачать актуальный файл.";
-    els.excelLink.classList.add("is-warning");
+    els.reportBuildButton.dataset.tooltip =
+      "Источники свежее текущего отчета. Откройте мастер и сформируйте новый.";
+    els.reportBuildButton.classList.add("is-warning");
   }
 }
 
@@ -2859,39 +3981,19 @@ function reportFreshnessSubtitle(meta, refresh) {
   }
   if (refresh?.periodStart || refresh?.periodEnd) {
     parts.push(
-      `Последний refresh: ${sourcePeriodText(refresh)} (${sourceStatusText(refresh.status)})`,
+      `Последнее обновление данных: ${sourcePeriodText(refresh)} (${sourceStatusText(refresh.status)})`,
+    );
+  }
+  const mappingAutoSync = refresh?.mappingAutoSync;
+  if (mappingAutoSync) {
+    els.sourceRefreshStatus.append(
+      sourceRefreshStatusLine(
+        "Сопоставление 1С",
+        `авто: ${mappingAutoSync.autoAccepted || 0}; вручную: ${mappingAutoSync.remainingReview || 0}; конфликты: ${mappingAutoSync.currentMappingConflictCount || 0}`,
+      ),
     );
   }
   return parts.join(" · ");
-}
-
-async function onExcelLinkClick(event) {
-  const action = els.excelLink?.dataset.excelAction || "download";
-  if (action === "download") {
-    return;
-  }
-  event.preventDefault();
-  if (action === "open-new") {
-    const newReportId = els.excelLink.dataset.newReportId || "";
-    if (newReportId) {
-      els.excelLink.textContent = "Открываем";
-      await loadReport(newReportId, currentClientLoadContext());
-    }
-    return;
-  }
-  openIntegrationsWidget({ focus: false });
-  if (action === "status") {
-    await loadSourceRefreshStatus(currentClientLoadContext());
-  }
-  window.setTimeout(() => els.sourceRefreshFullRun?.focus(), 100);
-}
-
-function excelBusyLabel(refresh) {
-  const status = normalize(refresh?.status);
-  const mode = normalize(refresh?.mode);
-  return status === "rebuilding" || mode === "full"
-    ? "Excel готовится"
-    : "Данные обновляются";
 }
 
 function excelBusyTooltip(refresh) {
@@ -2946,9 +4048,22 @@ function timestampMs(value) {
   return Number.isNaN(time) ? 0 : time;
 }
 
-function renderSourceRefreshControl(refresh) {
+function sourceRefreshCreatesReport(mode) {
+  return ["full", "weekly", "onec-only"].includes(normalize(mode));
+}
+
+function sourceRefreshAppearsStalled(refresh) {
+  if (!refresh?.isStale) {
+    return false;
+  }
+  const recentActivityAt = timestampMs(refresh?.progress?.lastActivityAt);
+  return !recentActivityAt || Date.now() - recentActivityAt > 5 * 60 * 1000;
+}
+
+function renderSourceRefreshControl(refresh, latestAttempt = null) {
   els.sourceRefreshPanel.hidden = false;
-  updateExcelLink(refresh);
+  updateReportBuildButton(refresh);
+  renderReportWizardStatus(refresh);
   renderSourceRefreshSteps(refresh);
   if (!refresh) {
     const title = document.createElement("strong");
@@ -2966,19 +4081,32 @@ function renderSourceRefreshControl(refresh) {
   }
 
   const active = isActiveSourceRefresh(refresh);
+  const appearsStalled = sourceRefreshAppearsStalled(refresh);
+  const createsReport = sourceRefreshCreatesReport(refresh.mode);
+  const isOzonOnly = normalize(refresh.mode) === "ozon-only";
   els.sourceRefreshStatus.replaceChildren(
-    sourceRefreshStatusLine("Статус", sourceStatusText(refresh.status)),
-    sourceRefreshStatusLine("Режим", refresh.mode || "-"),
-    sourceRefreshStatusLine("Период", sourcePeriodText(refresh)),
     sourceRefreshStatusLine(
-      normalize(refresh.mode) === "ozon-only" ? "Диагностика" : "Отчет",
+      "Статус",
+      appearsStalled
+        ? "Нет подтверждённой активности"
+        : sourceStatusText(refresh.status),
+    ),
+    sourceRefreshStatusLine("Режим", sourceRefreshModeText(refresh.mode)),
+    sourceRefreshStatusLine("Период", sourcePeriodText(refresh)),
+    sourceRefreshStatusLine("Прогресс", sourceRefreshProgressText(refresh.progress)),
+    sourceRefreshStatusLine(
+      isOzonOnly ? "Диагностика" : createsReport ? "Отчёт" : "Обновление данных",
       refresh.newReportRunId ||
-        (normalize(refresh.mode) === "ozon-only"
+        (isOzonOnly
           ? active
             ? "готовится"
-            : "готова без отчета"
+            : "готова без отчёта"
+          : !createsReport
+            ? active
+              ? "идёт"
+              : "завершено"
           : active
-            ? "создается"
+            ? "создаётся"
             : "не создан"),
     ),
   );
@@ -2991,7 +4119,15 @@ function renderSourceRefreshControl(refresh) {
     );
   }
   const collections = asArray(refresh.collections);
-  const nodes = [sourceRefreshCompactMessage(refresh)];
+  const nodes = [];
+  if (
+    latestAttempt &&
+    latestAttempt.id !== refresh.id &&
+    normalize(latestAttempt.status) === "blocked_active_refresh"
+  ) {
+    nodes.push(sourceRefreshBlockedAttemptMessage(latestAttempt, refresh));
+  }
+  nodes.push(sourceRefreshCompactMessage(refresh));
   if (collections.length) {
     nodes.push(...collections.map(sourceRefreshCollectionChip));
   } else {
@@ -3000,6 +4136,56 @@ function renderSourceRefreshControl(refresh) {
   els.sourceRefreshCollections.replaceChildren(...nodes);
   setSourceRefreshActiveLock(active);
   scheduleSourceRefreshPolling(refresh);
+}
+
+function sourceRefreshProgressText(progress) {
+  if (!progress) {
+    return "Ожидаем данные";
+  }
+  const parts = [progress.currentSource || "Обновление"];
+  const pages = Number(progress.pagesLoaded || 0);
+  const rows = Number(progress.rowsLoaded || 0);
+  const bytes = Number(progress.bytesWritten || 0);
+  const completedAccounts = Number(progress.wbAccountsCompleted || 0);
+  const totalAccounts = Number(progress.wbAccountsTotal || 0);
+  if (pages) {
+    parts.push(`${number(pages)} страниц WB`);
+  }
+  if (rows) {
+    parts.push(`${number(rows)} строк`);
+  }
+  if (bytes) {
+    parts.push(formatDataSize(bytes));
+  }
+  if (totalAccounts) {
+    parts.push(`${number(completedAccounts)} из ${number(totalAccounts)} кабинетов завершено`);
+  }
+  return parts.join(" · ");
+}
+
+function formatDataSize(bytes) {
+  const value = Math.max(0, Number(bytes || 0));
+  if (value >= 1024 ** 3) {
+    return `${(value / 1024 ** 3).toFixed(1)} ГБ`;
+  }
+  if (value >= 1024 ** 2) {
+    return `${Math.round(value / 1024 ** 2)} МБ`;
+  }
+  if (value >= 1024) {
+    return `${Math.round(value / 1024)} КБ`;
+  }
+  return `${number(value)} Б`;
+}
+
+function sourceRefreshBlockedAttemptMessage(attempt, activeRun) {
+  const node = document.createElement("div");
+  node.className = "source-refresh-compact-status is-warning";
+  const title = document.createElement("strong");
+  title.textContent = `${sourceRefreshModeText(attempt.mode)} не запущен.`;
+  const meta = document.createElement("span");
+  meta.textContent = `Продолжается ${sourceRefreshModeText(activeRun.mode)}; ниже показаны его реальные коллекции и прогресс.`;
+  node.append(title, meta);
+  return node;
 }
 
 function renderSourceRefreshSteps(refresh) {
@@ -3024,6 +4210,7 @@ function renderSourceRefreshSteps(refresh) {
 function sourceRefreshSteps(refresh) {
   const status = normalize(refresh?.status);
   const isOzonOnly = normalize(refresh?.mode) === "ozon-only";
+  const createsReport = sourceRefreshCreatesReport(refresh?.mode);
   const hasSelectedMapping = Boolean(els.sourceRefreshMappingFile?.files?.[0]);
   const isActive = isActiveSourceRefresh(refresh);
   const hasReport = Boolean(refresh?.newReportRunId);
@@ -3063,8 +4250,16 @@ function sourceRefreshSteps(refresh) {
       state: reportCreated || refreshCompleted ? "done" : isActive ? "active" : "pending",
     },
     {
-      label: isOzonOnly ? "Диагностика" : "Отчет",
-      state: reportCreated ? "done" : refreshCompleted ? "active" : "pending",
+      label: isOzonOnly ? "Диагностика" : createsReport ? "Отчёт" : "Готово",
+      state: reportCreated
+        ? "done"
+        : !createsReport && !isActive && status === "needs_review"
+          ? "done"
+          : refreshCompleted
+            ? createsReport
+              ? "active"
+              : "done"
+            : "pending",
     },
   ];
 }
@@ -3084,12 +4279,20 @@ function sourceRefreshCompactMessage(refresh) {
   const node = document.createElement("div");
   node.className = `source-refresh-compact-status ${sourceStatusTone(refresh.status)}`;
   const title = document.createElement("strong");
-  title.textContent =
-    normalize(refresh.status) === "dry_run_ready"
+  const appearsStalled = sourceRefreshAppearsStalled(refresh);
+  title.textContent = appearsStalled
+    ? "Нет подтверждённой активности фонового обновления."
+    : normalize(refresh.status) === "dry_run_ready"
       ? "Готово к полному обновлению. Отчет еще не создан."
-      : refresh.safeMessage || sourceStatusHint(refresh.status);
+      : localizedOperationalMessage(
+          refresh.safeMessage || sourceStatusHint(refresh.status),
+        );
   const meta = document.createElement("span");
-  meta.textContent = sourceRefreshAdvice(refresh.status);
+  meta.textContent = appearsStalled
+    ? "Не запускайте ещё одно обновление: сначала проверьте текущий процесс. Уже сохранённые снимки останутся на месте."
+    : refresh.failureCode?.startsWith("worker_")
+      ? "Повторите обновление: новый run продолжит совместимый checkpoint автоматически."
+      : sourceRefreshAdvice(refresh.status);
   node.append(title, meta);
   return node;
 }
@@ -3098,7 +4301,7 @@ function sourceRefreshCollectionChip(item) {
   const chip = document.createElement("div");
   chip.className = `source-refresh-chip ${sourceStatusTone(item.status)}`;
   const title = document.createElement("strong");
-  title.textContent = item.sourceLabel || item.sourceType || "Источник";
+  title.textContent = sourceLabelText(item);
   const meta = document.createElement("span");
   const requirement = item.required
     ? "обязателен для расчета"
@@ -3109,7 +4312,7 @@ function sourceRefreshCollectionChip(item) {
     sourceStatusText(item.status),
     requirement,
     `${number(item.rowCount || 0)} строк`,
-    item.payload?.message || "",
+    localizedOperationalMessage(item.payload?.message || ""),
   ].filter(Boolean).join(" · ");
   chip.append(title, meta);
   asArray(item.payload?.companyDiagnostics).forEach((diagnostic) => {
@@ -3199,15 +4402,21 @@ function renderOzonPreview(refresh, diagnostics = state.latestOzonDiagnostics) {
     : number(onecSummary.loaded || 0);
 
   if (diagnostics?.latestRun) {
-    els.ozonPreviewSummary.textContent = `Ozon + 1C: ${sourceStatusText(
+    const calculationText = `Расчетный снимок: ${sourceStatusText(
       diagnostics.latestRun.status,
     )}, ${sourcePeriodText(diagnostics.latestRun)}.`;
+    const attempt = diagnostics.latestAttempt;
+    els.ozonPreviewSummary.textContent = attempt
+      ? `${calculationText} Последняя попытка: ${sourceStatusText(
+          attempt.status,
+        )}${attempt.dryRun ? " (проверка)" : ""}.`
+      : calculationText;
   } else if (diagnostics?.message) {
     els.ozonPreviewSummary.textContent = diagnostics.message;
   } else {
     els.ozonPreviewSummary.textContent = refresh
-      ? `Последний refresh: ${sourceStatusText(refresh.status)}, ${sourcePeriodText(refresh)}.`
-      : "Refresh еще не запускался для выбранного клиента.";
+      ? `Последнее обновление данных: ${sourceStatusText(refresh.status)}, ${sourcePeriodText(refresh)}.`
+      : "Обновление данных ещё не запускалось для выбранного клиента.";
   }
   els.ozonPreviewCount.textContent = Number(realizationSummary.rowCount || 0)
     ? `Ozon реализации: ${number(realizationSummary.rowCount || 0)} строк`
@@ -3292,7 +4501,7 @@ function renderOzonPreview(refresh, diagnostics = state.latestOzonDiagnostics) {
   );
   els.ozonMappingEmpty.hidden = mappingCheckRows.length > 0;
   els.ozonMappingEmpty.textContent =
-    ozonMapping.message || "Нужен Ozon catalog: товары, offer_id, SKU и штрихкоды.";
+    ozonMapping.message || "Нужен каталог Ozon: товары, артикул продавца, SKU и штрихкоды.";
   els.ozonMappingRows.replaceChildren(
     ...mappingCheckRows.map((item) => ozonMappingRowNode(item)),
   );
@@ -3346,7 +4555,7 @@ function ozonExpenseSourceCaption(ozonExpenses = {}, totals = {}) {
   if (basis === "ozon_cash_flow_statement") {
     return "денежный контроль Ozon";
   }
-  return "финансы Seller API";
+  return "финансовые данные API продавца";
 }
 
 function ozonExpenseOnecValue(expenseReconciliation = {}) {
@@ -3517,6 +4726,7 @@ function ozonUnitStatusText(status) {
     missing_mapping: "нет связи",
     ambiguous_mapping: "несколько вариантов 1С",
     missing_cost: "нет себестоимости",
+    missing_1c_organization: "не выбрана организация 1С",
     missing_1c_commissioner: "нет выручки 1C",
     buyout_period_only: "выкуп по периоду",
   }[status] || status || "-";
@@ -3541,6 +4751,9 @@ function ozonUnitActionText(item) {
   }
   if (item.qualityStatus === "missing_cost") {
     return "Проверить себестоимость 1C по номенклатуре.";
+  }
+  if (item.qualityStatus === "missing_1c_organization") {
+    return "Выберите организацию 1C.";
   }
   if (item.qualityStatus === "missing_1c_commissioner") {
     return "Закрыть или загрузить отчет комиссионера Ozon в 1C.";
@@ -3583,6 +4796,9 @@ function ozonUnitCostQualityText(item = {}) {
   }
   if (reason === "missing_cost") {
     return "Себестоимость отсутствует; прибыль месяца заблокирована.";
+  }
+  if (reason === "missing_1c_organization") {
+    return "Организация 1C не выбрана; прибыль месяца заблокирована.";
   }
   return "";
 }
@@ -3793,12 +5009,14 @@ function ozonPreviewRowNode(item) {
   ).join(", ");
   const error = item.errorMessage || uniqueTexts(results.map((result) => result.error))[0];
   const cells = [
-    item.sourceLabel || item.sourceType || "Ozon source",
+    sourceLabelText(item),
     sourceStatusText(item.status),
     number(item.rowCount || 0),
-    endpoint || "collector manifest",
+    endpoint || "служебный файл загрузки",
     reportCode || "-",
-    error || sourceStatusHint(item.status, item.required !== false),
+    localizedOperationalMessage(
+      error || sourceStatusHint(item.status, item.required !== false),
+    ),
   ];
   cells.forEach((value, index) => {
     const cell = document.createElement("td");
@@ -3869,14 +5087,17 @@ function appendOzonMappingQueueButton(cell, item) {
 async function openMappingAnalystQueue(item) {
   const query =
     item.offerId || item.sku || item.productId || item.barcode || item.productName || "";
-  els.mappingMarketplaceFilter.value = "ozon";
-  els.mappingStatusFilter.value = "review";
-  els.mappingSearch.value = String(query);
-  els.mappingServicePanel.hidden = false;
+  const opened = await openMappingWidget({
+    marketplace: "ozon",
+    status: "review",
+    search: String(query),
+    focus: false,
+  });
+  if (!opened) {
+    return;
+  }
   els.mappingServiceStatus.textContent = `Ищем ${query || "позицию"} в очереди аналитика...`;
-  els.mappingServicePanel.scrollIntoView?.({ behavior: "smooth", block: "start" });
   const context = currentClientLoadContext();
-  await loadMappingItems(context);
   if (!isCurrentClientLoad(context)) {
     return;
   }
@@ -3945,9 +5166,9 @@ function ozonMappingStatusTone(status) {
 function ozonMappingMethodText(method) {
   return {
     uploaded_mapping_name: "файл сопоставления → 1C",
-    offer_id: "offer_id → артикул 1C",
-    offer_id_code: "offer_id → код 1C",
-    barcode: "barcode → штрихкод 1C",
+    offer_id: "артикул продавца → артикул 1C",
+    offer_id_code: "артикул продавца → код 1C",
+    barcode: "штрихкод → штрихкод 1C",
     sku_as_barcode: "SKU → штрихкод 1C",
   }[method] || method || "-";
 }
@@ -3980,7 +5201,7 @@ function sourceRefreshEmptyDetailsNode(refresh) {
   title.textContent = "Коллекции не записаны";
   const copy = document.createElement("span");
   copy.textContent = refresh
-    ? "Последний refresh есть, но деталей по источникам пока нет."
+    ? "Последнее обновление данных есть, но деталей по источникам пока нет."
     : "После запуска здесь появятся WB, 1C и сопоставление.";
   node.append(title, copy);
   return node;
@@ -4029,8 +5250,11 @@ function resetSourceRefreshPanel(options = {}) {
   window.clearTimeout(state.sourceRefreshPollTimer);
   state.sourceRefreshPollTimer = 0;
   state.latestSourceRefresh = null;
+  state.latestSourceRefreshAttempt = null;
+  state.activeSourceRefresh = null;
   state.latestOzonDiagnostics = null;
-  updateExcelLink(null);
+  updateReportBuildButton(null);
+  renderReportWizardStatus(null);
   els.sourceRefreshStatus.textContent = "Статус еще не загружен.";
   renderSourceRefreshSteps(null);
   els.sourceRefreshCollections.replaceChildren();
@@ -4043,7 +5267,13 @@ function resetSourceRefreshPanel(options = {}) {
   }
 }
 
-async function runClientSourceRefresh({ dryRun, mode = "full" }) {
+async function runClientSourceRefresh({
+  dryRun,
+  mode = "full",
+  periodStart = "",
+  periodEnd = "",
+  origin = "integrations",
+}) {
   const context = currentClientLoadContext();
   const clientId = context.clientId;
   if (!clientId) {
@@ -4051,6 +5281,13 @@ async function runClientSourceRefresh({ dryRun, mode = "full" }) {
   }
   setSourceRefreshButtonsBusy(true);
   els.sourceRefreshStatus.textContent = sourceRefreshStartText({ dryRun, mode });
+  renderReportWizardStatus({
+    status: "queued",
+    mode,
+    dryRun: Boolean(dryRun),
+    periodStart: periodStart || null,
+    periodEnd: periodEnd || null,
+  });
   try {
     const payload = await api(
       `/api/clients/${encodeURIComponent(clientId)}/source-refresh`,
@@ -4059,12 +5296,14 @@ async function runClientSourceRefresh({ dryRun, mode = "full" }) {
         body: JSON.stringify({
           mode,
           dry_run: Boolean(dryRun),
-          reason: sourceRefreshReason({ dryRun, mode }),
+          reason: sourceRefreshReason({ dryRun, mode, origin }),
+          period_start: periodStart || null,
+          period_end: periodEnd || null,
         }),
       },
     );
     if (!isCurrentClientLoad(context)) {
-      return;
+      return null;
     }
     const refresh = payload.latest || null;
     state.latestSourceRefresh = refresh;
@@ -4076,11 +5315,12 @@ async function runClientSourceRefresh({ dryRun, mode = "full" }) {
       );
       await loadReport(refresh.newReportRunId, context);
     }
+    return refresh;
   } catch (error) {
     if (!isCurrentClientLoad(context)) {
-      return;
+      return null;
     }
-    els.sourceRefreshStatus.textContent = integrationErrorMessage(
+    const safeMessage = integrationErrorMessage(
       error,
       dryRun
         ? "Не удалось проверить готовность обновления источников."
@@ -4088,6 +5328,10 @@ async function runClientSourceRefresh({ dryRun, mode = "full" }) {
           ? "Не удалось загрузить служебную витрину Ozon + 1C."
         : "Не удалось запустить полное обновление источников.",
     );
+    els.sourceRefreshStatus.textContent = safeMessage;
+    els.reportWizardStatus.className = "report-wizard-status is-blocked";
+    els.reportWizardStatus.textContent = safeMessage;
+    return null;
   } finally {
     setSourceRefreshButtonsBusy(false);
     if (isCurrentClientLoad(context)) {
@@ -4106,14 +5350,15 @@ function sourceRefreshStartText({ dryRun, mode }) {
   return "Запускаем полное обновление. Это может занять время.";
 }
 
-function sourceRefreshReason({ dryRun, mode }) {
+function sourceRefreshReason({ dryRun, mode, origin = "integrations" }) {
+  const location = origin === "wizard" ? "мастера формирования отчета" : "виджета интеграций";
   if (dryRun) {
-    return "Проверка готовности из виджета интеграций";
+    return `Проверка готовности из ${location}`;
   }
   if (mode === "ozon-only") {
-    return "Ручная загрузка служебной витрины Ozon + 1C без обязательного WB";
+    return `Ручная загрузка служебной витрины Ozon + 1C из ${location}`;
   }
-  return "Ручное полное обновление из виджета интеграций";
+  return `Ручное полное обновление из ${location}`;
 }
 
 function setSourceRefreshButtonsBusy(busy) {
@@ -4240,9 +5485,9 @@ function integrationProviderChoices() {
   const choices = state.integrationProviders.length
     ? state.integrationProviders
     : [
-        { providerBase: "wb_api", label: "Wildberries API" },
-        { providerBase: "onec_readonly", label: "1С read-only" },
-        { providerBase: "ozon_api", label: "Ozon Seller API" },
+        { providerBase: "wb_api", label: "API Wildberries" },
+        { providerBase: "onec_readonly", label: "1С — только чтение" },
+        { providerBase: "ozon_api", label: "API кабинета продавца Ozon" },
       ];
   return choices.filter((item) => item.supportsMultiple !== false);
 }
@@ -4263,7 +5508,7 @@ function syncIntegrationCreatorForm(form) {
   submit.textContent = isWb ? "Сохранить кабинет" : "Создать карточку";
   status.textContent = isWb
     ? "WB-кабинет появится отдельной строкой подключения."
-    : "После создания карточка откроется ниже для ввода read-only доступа.";
+    : "После создания карточка откроется ниже для настройки доступа только для чтения.";
   if (isWb) {
     fillCabinetManagerForm(form);
   }
@@ -4528,16 +5773,16 @@ function renderOzonSecretControls(item) {
   controls.append(
     integrationSecretField({
       name: "ozon_client_id",
-      label: "Client ID",
+      label: "Идентификатор клиента",
       type: "text",
-      placeholder: "Ozon Client ID",
+      placeholder: "Идентификатор клиента Ozon",
       autocomplete: "off",
     }),
     integrationSecretField({
       name: "ozon_api_key",
-      label: "API Key",
+      label: "API-ключ",
       type: "password",
-      placeholder: item.secretHint ? "Новый API Key" : "Ozon API Key",
+      placeholder: item.secretHint ? "Новый API-ключ" : "API-ключ Ozon",
       autocomplete: "new-password",
     }),
   );
@@ -4635,10 +5880,10 @@ function integrationSecretPayload(form, data) {
     const apiKey = String(data.get("ozon_api_key") || "").trim();
     const missing = [];
     if (!clientId) {
-      missing.push("Client ID");
+      missing.push("идентификатор клиента");
     }
     if (!apiKey) {
-      missing.push("API Key");
+      missing.push("API-ключ");
     }
     if (missing.length) {
       return {
@@ -4849,7 +6094,7 @@ function buildIntegrationRows(items) {
     provider: "wb_api",
     providerBase: "wb_api",
     connectionRole: defaultProviderRole("wb_api"),
-    label: "Wildberries API",
+    label: "API Wildberries",
     status: "not_configured",
     configured: false,
     secretHint: "",
@@ -4882,7 +6127,7 @@ function buildIntegrationRows(items) {
       organizationName: companyById.get(cabinet.clientCompanyId) || "",
       wbCabinetId: cabinet.id || "",
       clientCompanyId: cabinet.clientCompanyId || "",
-      label: `Wildberries API · ${cabinet.label || "кабинет"}`,
+      label: `API Wildberries · ${cabinet.label || "кабинет"}`,
       status: "not_configured",
       configured: false,
       secretHint: "",
@@ -5057,7 +6302,7 @@ function integrationTargetMeta(item) {
   } else if (item.providerBase === "onec_readonly") {
     parts.push(item.clientCompanyId ? `ID организации: ${item.clientCompanyId}` : "1С контур");
   } else if (item.providerBase === "ozon_api") {
-    parts.push("Ozon Seller read-only");
+    parts.push("Кабинет продавца Ozon — только чтение");
   } else {
     parts.push(item.clientCompanyId ? `ID подключения: ${item.clientCompanyId}` : "Контур");
   }
@@ -5183,7 +6428,7 @@ async function onIntegrationAction(provider, action, form = null) {
   }
   setIntegrationBusy(form, action, true);
   if (form && action === "check") {
-    setIntegrationFeedback(form, "Проверяем сохраненное read-only подключение...", "info");
+    setIntegrationFeedback(form, "Проверяем сохранённое подключение только для чтения...", "info");
   }
   try {
     const payload = await api(`/api/integrations/${encodeURIComponent(provider)}/${action}`, {
@@ -5247,7 +6492,7 @@ function integrationNoticeForItem(item) {
     return {
       type: "warning",
       text:
-        "Ключ сохранен только как контрольная метка. Для автоматической проверки нужен режим encrypted.",
+        "Ключ сохранён только как контрольная метка. Для автоматической проверки нужно зашифрованное хранение.",
     };
   }
   if (item.configured || item.secretHint) {
@@ -5256,7 +6501,7 @@ function integrationNoticeForItem(item) {
       : "Ключ";
     return {
       type: "success",
-      text: `${accessName} сохранен. Теперь нажмите «Проверить», чтобы убедиться в read-only доступе.`,
+      text: `${accessName} сохранён. Теперь нажмите «Проверить», чтобы убедиться в доступе только для чтения.`,
     };
   }
   return {
@@ -5279,7 +6524,7 @@ function integrationSaveNotice(item) {
     return {
       type: "warning",
       text:
-        "Сохранено как hash-only. Секрет не показывается, но live-проверка требует encrypted-хранение.",
+        "Сохранено как контрольная метка. Секрет не показывается, но проверка подключения требует зашифрованного хранения.",
     };
   }
   return {
@@ -5297,7 +6542,7 @@ function integrationActionNotice(item, action) {
       type: "success",
       text: item.lastCheck?.message
         ? `Проверка прошла: ${item.lastCheck.message}`
-        : "Проверка прошла. Read-only доступ подтвержден.",
+        : "Проверка прошла. Доступ только для чтения подтверждён.",
     };
   }
   if (item.lastCheck?.message) {
@@ -5411,8 +6656,8 @@ function integrationRuntimeIsNewer(item) {
 
 function storageModeText(storageMode) {
   return {
-    encrypted: "encrypted storage",
-    hash_only: "hash-only, нужен повторный ввод",
+    encrypted: "зашифрованное хранение",
+    hash_only: "контрольная метка, нужен повторный ввод",
     none: "не настроено",
   }[storageMode] || storageMode || "не настроено";
 }
@@ -5601,7 +6846,7 @@ function nextAction({ readiness, quality, sourceLoads, refresh }) {
   }
   if (readinessHasCode(readiness, "client_draft_missing")) {
     return {
-      title: "Собрать клиентский вывод",
+      title: "Подготовить отчёт для клиента",
       copy: "Данные готовы к работе, но клиентский текст еще не подготовлен.",
       button: "Открыть вывод",
       action: "clientOutput",
@@ -5612,7 +6857,7 @@ function nextAction({ readiness, quality, sourceLoads, refresh }) {
     return {
       title: "Отправить пакет клиенту",
       copy: "Проверьте финальный вывод и приложите Excel к коммуникации.",
-      button: "Открыть клиентский вывод",
+      button: "Открыть отчёт для клиента",
       action: "clientOutput",
       meta: "Отчет выглядит готовым к передаче.",
     };
@@ -5684,8 +6929,8 @@ function renderCommandChecklist({ readiness, quality, sourceLoads, refresh }) {
       state: missingCost ? "warn" : "ok",
     },
     {
-      label: "Excel и клиентский вывод",
-      value: clientDraftReady ? "Артефакты готовы к работе" : "Нужен клиентский вывод",
+      label: "Excel и отчёт для клиента",
+      value: clientDraftReady ? "Артефакты готовы к работе" : "Нужен отчёт для клиента",
       state: excelReady && clientDraftReady ? "ok" : "warn",
     },
   ];
@@ -5912,7 +7157,7 @@ function renderQuality(quality, sourceLoads, readiness) {
   renderMetrics(els.qualityGrid, [
     ["Строк ОК", `${okRows} из ${total}`],
     ["Без себестоимости", missingCost],
-    ["Маппинг / сопоставление", mapping],
+    ["Сопоставление", mapping],
     ["Сверка WB ↔ 1С", onecIssues],
     ["Неполный период", partialPeriod],
     ["Неполные источники", incomplete],
@@ -5926,10 +7171,62 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
   }
   setKpiHeading();
   const revenue = Number(kpis.revenueWithoutVat ?? kpis.revenue ?? 0);
-  const revenueWithVat = Number(kpis.revenueWithVat ?? revenue);
-  const profit = managementProfitFromKpis(kpis);
-  const profitUnavailable = financialCheckFailed(
-    (state.summary || {}).readiness || {},
+  const revenueWithVat = Number(kpis.revenueWithVat ?? kpis.revenue ?? revenue);
+  const cogs = numberOrNull(kpis.cogs);
+  const costIssueRows = Number(kpis.costIssueRows || 0);
+  const onecRevenueWithVat = numberOrNull(kpis.onecRevenueWithVat);
+  const onecSalesQuantity = numberOrNull(kpis.onecSalesQuantity);
+  const onecCogs = numberOrNull(kpis.onecCogs);
+  const onecCostAdjustmentRows = Number(kpis.onecCostAdjustmentRows || 0);
+  const wbMarketplacePnlExpenses = numberOrNull(
+    kpis.wbMarketplacePnlExpenses,
+  );
+  const onecMarketplaceExpensesWithVat = numberOrNull(
+    kpis.onecMarketplaceExpensesWithVat,
+  );
+  const marketplaceExpenseDeltaWithVat = numberOrNull(
+    kpis.marketplaceExpenseDeltaWithVat,
+  );
+  const marketplaceExpenseStatus =
+    kpis.marketplaceExpenseReconciliationStatus || "missing_source";
+  const marketplaceExpenseIssueGroups = Number(
+    kpis.marketplaceExpenseIssueGroups || 0,
+  );
+  const onecRevenueDocumentCount = Number(kpis.onecRevenueDocumentCount || 0);
+  const onecRevenueCaption =
+    onecRevenueWithVat === null
+      ? "Нет подтверждённых проведённых документов 1С за выбранный период"
+      : `По ${number(onecRevenueDocumentCount)} проведённым документам 1С за календарный период`;
+  const wbDocumentRevenueWithVat = numberOrNull(kpis.wbDocumentRevenueWithVat);
+  const wbCommissionerRevenueWithVat = numberOrNull(
+    kpis.wbCommissionerRevenueWithVat,
+  );
+  const wbBuyoutRetailRevenueWithVat = numberOrNull(
+    kpis.wbBuyoutRetailRevenueWithVat,
+  );
+  const commissionerRevenueDelta = numberOrNull(kpis.commissionerRevenueDelta);
+  const buyoutPrimaryDocumentDelta = numberOrNull(
+    kpis.buyoutPrimaryDocumentDelta,
+  );
+  const buyoutPrimaryDocumentStatus = String(
+    kpis.buyoutPrimaryDocumentStatus || "not_loaded",
+  );
+  const buyoutUnverifiedPrimaryRows = Number(
+    kpis.buyoutUnverifiedPrimaryRows || 0,
+  );
+  const accountingReconciliationDelta = numberOrNull(
+    kpis.accountingReconciliationDelta,
+  );
+  const accountingReconciliationAmount = numberOrNull(
+    kpis.accountingReconciliationOnecAmount,
+  );
+  const accountingReconciliationStatus =
+    kpis.accountingReconciliationStatus || "Не рассчитано";
+  const profitBeforeTax = numberOrNull(
+    kpis.profitBeforeTax ?? kpis.profitManagement,
+  );
+  const profitAfterTax = numberOrNull(
+    kpis.profitAfterTax ?? kpis.profitAfterIncomeTax ?? kpis.profit,
   );
   const returns = Number(kpis.returns || 0);
   const sales = Number(kpis.sales || 0);
@@ -5940,61 +7237,371 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
   );
   const taxCalculated = taxContext.calculated === true;
   const lostSalesCalculated = lostSalesCoverage.calculated === true;
+  const lostSalesPeriod = lostSalesCoveragePeriodText(lostSalesCoverage);
   const netSales = sales - returns;
   const returnRate = sales ? `${Math.round((returns / sales) * 1000) / 10}%` : "-";
   const revenuePerSale = sales ? revenue / sales : 0;
-  const managementMargin = kpis.marginManagement ?? kpis.margin;
+  const managementMargin = kpis.marginManagement;
   const margin =
-    profitUnavailable || managementMargin === null || managementMargin === undefined
+    managementMargin === null || managementMargin === undefined
       ? "-"
       : `${Math.round(Number(managementMargin || 0) * 1000) / 10}%`;
-  const incomeTaxStatus = taxCalculated
-    ? kpis.incomeTaxIncluded
-      ? `Включён: ${money(kpis.incomeTax || 0)}`
-      : "Не распределён по SKU"
-    : "Не рассчитано";
-  renderMetrics(els.kpiGrid, [
-    ["Выручка с НДС · справочно", money(revenueWithVat)],
-    ["Выручка без НДС", money(revenue)],
+  const taxSystem = normalize(taxContext.taxSystem);
+  const isUsn = taxSystem.includes("усн") || taxSystem.includes("упрощ");
+  const revenueTaxRate = Number(taxContext.revenueTaxRate || 0) * 100;
+  const revenueTaxLabel = isUsn
+    ? `Налог УСН${revenueTaxRate ? ` ${number(revenueTaxRate)}%` : ""}`
+    : "Налог с выручки";
+  const managementInputVat = kpis.inputVatMode === "management_assumption";
+  const inputVatLabel = managementInputVat
+    ? "Расчётный входящий НДС"
+    : "Входящий НДС";
+  const vatPayableLabel = managementInputVat
+    ? "Расчётный НДС к уплате"
+    : "НДС к уплате";
+  els.onecKpiSection.hidden = false;
+  const controlMetrics = [
+    [
+      "Единый стандарт WB ↔ 1С",
+      accountingReconciliationDelta === null
+        ? "Не рассчитано"
+        : signedMoney(accountingReconciliationDelta),
+      accountingReconciliationDelta === null
+        ? accountingReconciliationStatus
+        : `Календарь 1С; сумма ${optionalMoney(accountingReconciliationAmount)}. По выкупам — первичка WB.`,
+      accountingReconciliationDelta !== null &&
+      Math.abs(accountingReconciliationDelta) <= 1
+        ? "ok"
+        : "warning",
+      "Единый стандарт использует календарную дату проведения 1С. Отчёт комиссионера сравнивается с retailAmountSum WB, а выкуп — с полем «Сумма выкупа» первичного уведомления WB. Без сохранённой первички выкуп не считается проверенным.",
+    ],
+    [
+      "Выручка 1С с НДС",
+      onecRevenueWithVat === null ? "Не рассчитано" : money(onecRevenueWithVat),
+      onecRevenueWithVat === null
+        ? onecRevenueCaption
+        : `${onecRevenueCaption}: комиссионер ${optionalMoney(
+            kpis.onecCommissionerRevenueWithVat,
+          )} + выкупы ${optionalMoney(
+            kpis.onecBuyoutRevenueWithVat,
+          )} + корректировки ${optionalMoney(kpis.onecOtherRevenueWithVat)}`,
+      onecRevenueWithVat === null ? "warning" : "ok",
+      "Σ поля «Сумма» проведённых документов 1С за календарный период: ОтчетКомиссионера, РасходнаяНакладная по выкупам и отдельные корректировки. Дата — дата проведения документа в 1С.",
+    ],
+    [
+      "Количество продаж 1С, шт",
+      onecSalesQuantity === null ? "Не рассчитано" : number(onecSalesQuantity),
+      onecSalesQuantity === null
+        ? "Нет сохранённых количеств документов 1С"
+        : `Комиссионер нетто ${number(
+            kpis.onecCommissionerQuantity || 0,
+          )} + выкупы ${number(kpis.onecBuyoutQuantity || 0)} + корректировки ${number(
+            kpis.onecOtherQuantity || 0,
+          )}`,
+      onecSalesQuantity === null ? "warning" : "ok",
+      "Календарное количество 1С: чистое количество ОтчетКомиссионера + положительное количество РасходнаяНакладная по выкупу + отдельные количественные корректировки. Дата — фактическая дата проведения в 1С.",
+    ],
+    [
+      "Себестоимость продаж 1С",
+      onecCogs === null ? "Не рассчитано" : money(onecCogs),
+      onecCogs === null
+        ? "Текущий отчёт не содержит себестоимость документов 1С"
+        : `Комиссионер ${optionalMoney(
+            kpis.onecCommissionerCogs,
+          )} + выкупы ${optionalMoney(kpis.onecBuyoutCogs)} + корректировки ${optionalMoney(
+            kpis.onecOtherCogs,
+          )}${
+            onecCostAdjustmentRows
+              ? ` · ${number(onecCostAdjustmentRows)} строк закрытия месяца`
+              : ""
+          }`,
+      onecCogs === null ? "warning" : "ok",
+      "Прямая сумма поля «Себестоимость» регистра Продажи 1С за календарный период. Включает ОтчетКомиссионера, РасходнаяНакладная по выкупам и стоимостные корректировки ЗакрытиеМесяца.",
+      openCogsReconciliationWidget,
+    ],
+    [
+      "Услуги WB по документам 1С",
+      onecMarketplaceExpensesWithVat === null
+        ? "Не загружено"
+        : money(onecMarketplaceExpensesWithVat),
+      onecMarketplaceExpensesWithVat === null
+        ? marketplaceExpenseStatusLabel(marketplaceExpenseStatus)
+        : `Без НДС ${optionalMoney(
+            kpis.onecMarketplaceExpensesWithoutVat,
+          )} + НДС ${optionalMoney(kpis.onecMarketplaceVat)}`,
+      onecMarketplaceExpensesWithVat === null ? "warning" : "info",
+      "Σ проведённых документов услуг WB в 1С. Карточка показывает сумму с НДС; расшифровка отдельно показывает базу без НДС и НДС.",
+      openMarketplaceExpenseReconciliationWidget,
+    ],
+    [
+      "Сверка расходов WB ↔ 1С",
+      marketplaceExpenseDeltaWithVat === null
+        ? marketplaceExpenseStatusLabel(marketplaceExpenseStatus)
+        : signedMoney(marketplaceExpenseDeltaWithVat),
+      marketplaceExpenseDeltaWithVat === null
+        ? "Дельта не подменяется нулём"
+        : `1С − WB · проблемных групп ${number(
+            marketplaceExpenseIssueGroups,
+          )}`,
+      marketplaceExpenseStatus === "matched" ? "ok" : "warning",
+      "Сопоставимая документная сверка с НДС. Статус «Сверено» требует дельту не более 1 ₽ отдельно в каждой контрольной группе.",
+      openMarketplaceExpenseReconciliationWidget,
+    ],
+    [
+      "Выручка WB по документам, с НДС",
+      wbDocumentRevenueWithVat === null
+        ? "Не рассчитано"
+        : money(wbDocumentRevenueWithVat),
+      wbDocumentRevenueWithVat === null
+        ? "Нет подтверждённых документов для сверки"
+        : `Комиссионер ${optionalMoney(
+            wbCommissionerRevenueWithVat,
+          )} + выкупы ${optionalMoney(wbBuyoutRetailRevenueWithVat)}`,
+      wbDocumentRevenueWithVat === null ? "warning" : "info",
+      "Выручка WB по документам = retailAmountSum отчётов комиссионера WB + retailAmountSum уведомлений о выкупе WB. Это полная формула WB-выручки с НДС в документной сверке.",
+    ],
+    [
+      "Сверка комиссионера WB ↔ 1С",
+      commissionerRevenueDelta === null
+        ? "Не рассчитано"
+        : signedMoney(commissionerRevenueDelta),
+      "1С − WB; должна быть 0 ₽ для одинаковых недель продаж",
+      commissionerRevenueDelta !== null && Math.abs(commissionerRevenueDelta) <= 1
+        ? "ok"
+        : "warning",
+      "Σ «ОтчетКомиссионера» 1С − Σ retailAmountSum отчётов комиссионера WB по тем же неделям продаж. Это единственная денежная часть, которая сравнивается напрямую.",
+    ],
+    [
+      "Выкупы: первичка WB ↔ 1С",
+      buyoutPrimaryDocumentStatus === "verified" &&
+      buyoutPrimaryDocumentDelta !== null
+        ? signedMoney(buyoutPrimaryDocumentDelta)
+        : "Не проверено",
+      buyoutPrimaryDocumentStatus === "verified"
+        ? "Сумма выкупа из первички WB − накладная 1С"
+        : `Юнит-экономика рассчитана. Документальная сверка выкупов не завершена${
+            buyoutUnverifiedPrimaryRows
+              ? `: ${number(buyoutUnverifiedPrimaryRows)} документов без первички WB`
+              : ""
+          }.`,
+      buyoutPrimaryDocumentStatus === "verified" &&
+      Math.abs(Number(buyoutPrimaryDocumentDelta || 0)) <= 1
+        ? "ok"
+        : "warning",
+      "Сопоставимая денежная проверка: поле «Сумма выкупа» из первичного уведомления WB − сумма расходной накладной 1С. retailAmountSum, forPaySum и bankPaymentSum являются другими денежными базами и не создают расхождение.",
+      openBuyoutReconciliationWidget,
+    ],
+  ];
+  const profitUsesRevenueWithoutVat = Boolean(kpis.pnlWithoutVat);
+  const profitFormula = profitUsesRevenueWithoutVat
+    ? "Выручка WB без НДС − себестоимость 1С без НДС − расходы WB без НДС. Налоги ещё не вычтены."
+    : "Выручка WB с НДС − себестоимость 1С − расходы WB. Затем отдельно вычитаются исходящий НДС и налог с выручки по профилю 1С.";
+  const marginFormula = profitUsesRevenueWithoutVat
+    ? "Маржинальный доход до налогов ÷ выручка WB без НДС."
+    : "Маржинальный доход до налогов ÷ выручка WB с НДС.";
+  const unitMetrics = [
+    [
+      "Выручка WB по товарным строкам, с НДС",
+      money(revenueWithVat),
+      "База товарного P&L WB; может отличаться от документной сверки",
+      "",
+      "Σ выручки товарных строк финансовой детализации WB с НДС. Используется в товарном P&L, а не как сумма документов комиссионера и выкупов.",
+    ],
+    [
+      "Выручка WB без НДС",
+      money(revenue),
+      profitUsesRevenueWithoutVat
+        ? "База товарного P&L для применённого профиля"
+        : "Справочная выручка после выделения исходящего НДС",
+      "",
+      "Выручка WB с НДС − исходящий НДС по строкам отчёта. Для legacy/УСН прибыль до налогов считается от выручки с НДС; для ОСНО — от сопоставимой базы без НДС.",
+    ],
+    [
+      "Себестоимость товарного P&L WB",
+      cogs === null ? "Не рассчитано" : money(cogs),
+      costIssueRows
+        ? `${number(costIssueRows)} строк требуют проверки себестоимости`
+        : "Стоимость единицы 1С × товарное количество WB",
+      costIssueRows ? "warning" : "",
+      "Себестоимость товарного P&L по неделям продаж WB. reportType=1 использует стоимость ОтчетКомиссионера, reportType=2 — РасходнаяНакладная по выкупу. Этот показатель может отличаться от календарного итога 1С.",
+      openCogsReconciliationWidget,
+    ],
+    [
+      "Расходы WB в товарном P&L",
+      wbMarketplacePnlExpenses === null
+        ? "Не рассчитано"
+        : money(wbMarketplacePnlExpenses),
+      "Комиссия, логистика, хранение, приёмка, продвижение, штрафы и эквайринг",
+      "",
+      "Расходы WB в базе применённого налогового профиля. Для документной сверки с 1С используется отдельная сумма с НДС.",
+      openMarketplaceExpenseReconciliationWidget,
+    ],
     [
       "Маржинальный доход до налогов",
-      profitUnavailable ? "не рассчитано" : money(profit),
+      profitBeforeTax === null ? "Не рассчитано" : money(profitBeforeTax),
+      "",
+      "",
+      profitFormula,
     ],
-    ["Маржа до налогов", margin],
-    ["Исходящий НДС", taxCalculated ? money(kpis.vatOutput || 0) : "Не рассчитано"],
-    ["Входящий НДС", taxCalculated ? money(kpis.vatInput || 0) : "Не рассчитано"],
-    ["НДС к уплате", taxCalculated ? money(kpis.vatPayable || 0) : "Не рассчитано"],
-    ["Налог на доход", incomeTaxStatus],
+    [
+      "Маржа до налогов",
+      margin,
+      "",
+      "",
+      marginFormula,
+    ],
+    [
+      "Исходящий НДС",
+      taxCalculated ? money(kpis.vatOutput || 0) : "Не рассчитано",
+      "",
+      "",
+      "Σ начисленного НДС с реализации по применённому налоговому профилю 1С.",
+    ],
+    [
+      inputVatLabel,
+      taxCalculated ? money(kpis.vatInput || 0) : "Не рассчитано",
+      managementInputVat
+        ? "Управленческое допущение; не подтверждено книгой покупок 1С"
+        : "",
+      managementInputVat ? "warning" : "",
+      managementInputVat
+        ? "Расчётный НДС импорта по разнице себестоимости с НДС и без НДС плюс расчётный НДС услуг WB. Это сценарий юнит-экономики, а не бухгалтерски подтверждённый вычет."
+        : "Σ подтверждённого к вычету НДС по себестоимости и услугам, если профиль 1С разрешает вычет.",
+    ],
+    [
+      vatPayableLabel,
+      taxCalculated ? money(kpis.vatPayable || 0) : "Не рассчитано",
+      managementInputVat
+        ? "Сценарная величина до бухгалтерской сверки"
+        : "",
+      managementInputVat ? "warning" : "",
+      managementInputVat
+        ? "Исходящий НДС − расчётный входящий НДС по управленческому сценарию."
+        : "Исходящий НДС − входящий НДС к вычету.",
+    ],
+    [
+      revenueTaxLabel,
+      taxCalculated ? money(kpis.revenueTax || 0) : "Не рассчитано",
+      "",
+      "",
+      "Налоговая база, заданная применённым профилем 1С, × подтверждённая ставка налога.",
+    ],
+    [
+      "Всего налогов",
+      taxCalculated ? money(kpis.totalTax || 0) : "Не рассчитано",
+      "",
+      "",
+      "НДС к уплате + налог с выручки + налог на прибыль, если он включён в профиль.",
+    ],
+    [
+      "Прибыль после налогов",
+      taxCalculated && profitAfterTax !== null ? money(profitAfterTax) : "Не рассчитано",
+      taxCalculated
+        ? kpis.taxBridgeCalculated
+          ? "Налоговый мост сходится"
+          : "Требуется сверка налогового моста"
+        : "Налоговый профиль не применён",
+      taxCalculated && kpis.taxBridgeCalculated ? "ok" : "warning",
+      "Маржинальный доход до налогов − всего налогов. Карточка доступна только после подтверждения налогового профиля 1С.",
+    ],
     [
       "Недополученный маржинальный доход",
       lostSalesCalculated && lostContribution !== null
         ? money(lostContribution)
         : "Не рассчитано",
+      lostSalesCalculated && lostSalesPeriod
+        ? `За доступный период ${lostSalesPeriod}, без экстраполяции`
+        : lostSalesCoverage.message || "",
+      lostSalesCalculated && lostSalesCoverage.fullCoverage !== true
+        ? "warning"
+        : "",
+      "Оценённые недополученные продажи × маржинальный доход на единицу; показывается только для покрытого периода без экстраполяции.",
     ],
-    ["Продажи, шт", number(sales)],
-    ["Чистые продажи, шт", number(netSales)],
-    ["Возвраты, шт", number(returns)],
-    ["Возвратность", returnRate],
-    ["Выручка / продажа", money(revenuePerSale)],
-    ["Убыточных продаж", lossRows],
-    ["Штрафов без продаж", penaltyOnlyRows],
-  ]);
+    [
+      "Продажи WB до возвратов, шт",
+      number(sales),
+      "",
+      "",
+      "Σ количества продаж из строк WB до вычета возвратов.",
+    ],
+    [
+      "Чистые продажи WB, шт",
+      number(netSales),
+      "",
+      "",
+      "Количество продаж WB − количество возвратов WB.",
+    ],
+    [
+      "Возвраты, шт",
+      number(returns),
+      "",
+      "",
+      "Σ количества возвратов из строк WB за выбранный период.",
+    ],
+    [
+      "Возвратность",
+      returnRate,
+      "",
+      "",
+      "Количество возвратов WB ÷ количество продаж WB до возвратов.",
+    ],
+    [
+      "Выручка / продажа",
+      money(revenuePerSale),
+      "",
+      "",
+      "Выручка WB без НДС ÷ количество продаж WB до возвратов.",
+    ],
+    [
+      "Убыточных продаж",
+      lossRows,
+      "",
+      "",
+      "Количество строк WB, в которых управленческая прибыль после расходов отрицательна.",
+    ],
+    [
+      "Штрафов без продаж",
+      penaltyOnlyRows,
+      "",
+      "",
+      "Количество строк WB с удержанием или штрафом без продажи товара.",
+    ],
+  ];
+  renderMetrics(els.kpiGrid, unitMetrics);
+  renderMetrics(els.onecKpiGrid, controlMetrics);
+}
+
+function lostSalesCoveragePeriodText(coverage = {}) {
+  const periodStart = coverage.calculationPeriodStart || "";
+  const periodEnd = coverage.calculationPeriodEnd || "";
+  if (!periodStart && !periodEnd) {
+    return "";
+  }
+  return [formatCompactDate(periodStart), formatCompactDate(periodEnd)]
+    .filter(Boolean)
+    .join("–");
 }
 
 function renderOzonKpis(diagnostics = state.latestOzonDiagnostics) {
   const payload = diagnostics || {};
+  els.onecKpiSection.hidden = true;
+  renderMetrics(els.onecKpiGrid, []);
   setKpiHeading({
     eyebrow: "Служебная витрина",
     title: "Показатели",
   });
   renderMetrics(
     els.kpiGrid,
-    ozonMartMetricItems(payload.ozonMart || payload.unitRows || {}),
+    ozonMartMetricItems(
+      payload.ozonMart || payload.unitRows || {},
+      payload.reconciliation || {},
+    ),
   );
 }
 
-function ozonMartMetricItems(mart = {}) {
+function ozonMartMetricItems(mart = {}, reconciliation = {}) {
   const totals = mart.totals || {};
+  const reconciliationTotals = mart.reconciliationTotals || {};
   const closedTotals = mart.closedPeriodTotals || {};
   const excludedOpenPeriods = asArray(mart.excludedOpenPeriods);
   const excludedIncompletePeriods = asArray(mart.excludedIncompletePeriods);
@@ -6015,13 +7622,91 @@ function ozonMartMetricItems(mart = {}) {
       : osno
         ? "Управленческая прибыль до НДФЛ"
         : "Прибыль до налогов";
+  const includesAdditionalOnecDocuments =
+    mart.pnlScope === "onec_sales_register_including_additional_documents";
   const profitCaption = excludedPeriodCount
     ? `не рассчитано: исключено периодов ${excludedPeriodCount}`
-    : totals.taxCompleteness || "единая формула Ozon mart";
+    : includesAdditionalOnecDocuments
+      ? "регистр продаж 1C · включая выкупы и дополнительные документы"
+    : `SKU-экономика без выкупов · ${
+        totals.taxCompleteness || "единая формула Ozon mart"
+      }`;
+  const directOnecRevenue = numberOrNull(reconciliationTotals.onecRevenue);
+  const directOnecCogs = numberOrNull(reconciliationTotals.cogs);
+  const hasDirectOnecRevenue =
+    reconciliationTotals.revenueStatus === "available" &&
+    directOnecRevenue !== null;
+  const hasDirectOnecCogs =
+    reconciliationTotals.cogsStatus === "available" && directOnecCogs !== null;
+  const cogsVatCaption = "НДС не выделен: поле «Себестоимость» из 1C";
+  const documentControl = reconciliation.documentControl || {};
+  const documentIssueCount = Number(documentControl.issueCount || 0);
   return [
-    ["Выручка 1C Ozon", optionalMoney(totals.onecRevenue), "закрывающие документы 1C"],
-    ["Себестоимость 1C", optionalMoney(totals.cogs), "по месяцу и номенклатуре"],
-    ["Расходы Ozon", optionalMoney(totals.ozonExpenses), "по месячным документам"],
+    [
+      "Выручка 1C Ozon · факт",
+      optionalMoney(hasDirectOnecRevenue ? directOnecRevenue : totals.onecRevenue),
+      hasDirectOnecRevenue
+        ? "Источник: 1C OData · регистр продаж · включая выкупы"
+        : "SKU / закрывающие документы 1C",
+      hasDirectOnecRevenue ? "ok" : "warning",
+      "Это факт 1С, не API Ozon и не WB: Σ поля «Сумма» регистра продаж 1С по контрагенту Ozon, включая отчёты комиссионера, выкупы и другие проведённые документы.",
+    ],
+    [
+      "Ozon API · ожидается в 1C",
+      optionalMoney(reconciliation.ozonTotalAmount),
+      "Реализация Ozon API + выкупы Ozon API",
+      reconciliation.ozonTotalAmount == null ? "warning" : "info",
+      "Ожидаемая первичка 1С = Σ реализации Ozon API + Σ выкупов Ozon API за выбранный период.",
+      openOzonDocumentControlDetails,
+    ],
+    [
+      "Дельта 1C − Ozon API",
+      reconciliation.deltaAmount == null
+        ? "Не рассчитано"
+        : signedMoney(reconciliation.deltaAmount),
+      "Ненулевая дельта раскрывается по первичным документам ниже",
+      reconciliation.status === "matched" ? "ok" : "warning",
+      "Факт регистра продаж 1С − ожидаемая сумма по API Ozon. Ноль означает, что первичные документы отражены полностью в сопоставимом периоде.",
+      openOzonDocumentControlDetails,
+    ],
+    [
+      "Первичные документы 1C",
+      documentControl.status
+        ? documentIssueCount
+          ? `${number(documentIssueCount)} к исправлению`
+          : "Сходятся"
+        : "Не проверено",
+      `${
+        documentControl.status
+          ? `Нет документа: ${number(
+              documentControl.missingPrimaryCount || 0,
+            )}; не проведён: ${number(
+              documentControl.notPostedCount || 0,
+            )}; не та дата: ${number(
+              documentControl.wrongDateCount || 0,
+            )}; не та сумма: ${number(documentControl.amountMismatchCount || 0)}`
+          : "Нужны Ozon API и 1C за один период"
+      } · Нажмите для расшифровки`,
+      documentControl.status === "matched" ? "ok" : "warning",
+      "Контроль классифицирует проблемы первички: документ отсутствует, не проведён, проведён не той датой или имеет сумму, отличную от Ozon API.",
+      openOzonDocumentControlDetails,
+    ],
+    [
+      "Себестоимость 1C",
+      optionalMoney(hasDirectOnecCogs ? directOnecCogs : totals.cogs),
+      hasDirectOnecCogs
+        ? `регистр продаж 1C · включая выкупы · ${cogsVatCaption}`
+        : `по SKU, месяцу и номенклатуре · ${cogsVatCaption}`,
+      hasDirectOnecCogs ? "ok" : "warning",
+      "Σ поля «Себестоимость» регистра продаж 1С. НДС в текущем источнике отдельно не выделен, поэтому карточка не заявляет сумму с НДС или без НДС.",
+    ],
+    [
+      "Расходы Ozon",
+      optionalMoney(totals.ozonExpenses),
+      "по месячным документам",
+      "",
+      "Σ расходов Ozon из месячных закрывающих документов по статьям маркетплейса.",
+    ],
     [
       canonicalProfitLabel,
       optionalMoney(excludedPeriodCount ? null : canonicalProfit),
@@ -6029,6 +7714,7 @@ function ozonMartMetricItems(mart = {}) {
       canonicalProfit == null || excludedPeriodCount
         ? "warning"
         : metricToneForAmount(canonicalProfit),
+      "Выручка 1С Ozon − себестоимость 1С − расходы Ozon − применимые налоги. Состав зависит от статуса закрытия периода.",
     ],
     [
       "Закрытие периода",
@@ -6043,6 +7729,7 @@ function ozonMartMetricItems(mart = {}) {
           )}`
         : "все месяцы диапазона закрыты в 1C",
       excludedPeriodCount ? "warning" : "ok",
+      "Период закрыт, если все месяцы в выбранном диапазоне имеют подтверждённые закрывающие документы 1С. Незакрытые и неполные месяцы не входят в итог.",
     ],
     [
       "Качество себестоимости",
@@ -6051,23 +7738,34 @@ function ozonMartMetricItems(mart = {}) {
         : costQuality.status === "blocked"
           ? "Заблокировано"
           : "Есть предупреждения",
-      `покрытие выручки ${percent(
-        costQuality.revenueCoveragePct,
-      )}; аномалий ${number(costQuality.anomalyCount || 0)}; влияние ${optionalMoney(
+      `покрытие сопоставленной выручки ${percent(
+        costQuality.eligibleRevenueCoveragePct,
+      )}; покрытие количества ${percent(
+        costQuality.quantityCoveragePct,
+      )}; без связи ${number(costQuality.unmappedQuantity || 0)}; неоднозначно ${number(
+        costQuality.ambiguousQuantity || 0,
+      )}; неизвестная выручка ${number(
+        Number(costQuality.unmappedRevenueRowCount || 0) +
+          Number(costQuality.ambiguousRevenueRowCount || 0),
+      )} строк; аномалий ${number(costQuality.anomalyCount || 0)}; влияние ${optionalMoney(
         costQuality.estimatedImpactAmount,
       )}`,
       costQuality.status === "complete" ? "ok" : "warning",
+      "Покрытие рассчитывается как доля сопоставленной выручки и количества с подтверждённой себестоимостью 1С. Неоднозначные связи и аномалии не считаются качественными строками.",
     ],
     [
       "Налоговый профиль",
       taxProfile.taxSystem || "не найден",
       taxProfile.source || taxProfile.status || "1C",
       taxProfile.status === "ready" ? "ok" : "warning",
+      "Налоговый режим, ставки и правила НДС из подтверждённого профиля организации 1С на период отчёта.",
     ],
   ];
 }
 
-function setKpiHeading({ eyebrow = "", title = "Показатели" } = {}) {
+function setKpiHeading(
+  { eyebrow = "Основной расчёт", title = "Юнит-экономика WB" } = {},
+) {
   if (els.kpiTitle) {
     els.kpiTitle.textContent = title;
   }
@@ -6149,6 +7847,7 @@ function renderDataTrustStatus(summary = {}) {
     return;
   }
   const taxContext = summary.taxContext || {};
+  const taxProfileSync = summary.taxProfileSync || {};
   const coverage = summary.lostSalesCoverage || {};
   const monthly = asArray(summary.monthly);
   const partialMonth = monthly.find((row) => row.isPartial === true);
@@ -6158,26 +7857,64 @@ function renderDataTrustStatus(summary = {}) {
   const onecReady = onecCollections.length > 0 && onecCollections.every((item) =>
     ["loaded", "empty_expected"].includes(normalize(item.status)),
   );
-  const taxReady = taxContext.calculated === true;
+  const taxReady =
+    taxContext.calculated === true && taxProfileSync.reportStatus !== "stale";
+  const liveTaxProfileReady = taxProfileSync.liveStatus === "ready";
+  const reportTaxNotApplied = taxProfileSync.reportStatus === "not_applied";
+  const taxProfileNeedsRebuild =
+    ["not_applied", "confirmed_not_applied", "stale"].includes(
+      normalize(taxProfileSync.reportStatus),
+    );
   const stockReady = coverage.calculated === true;
-  const trustReady = taxReady && stockReady && !partialMonth && onecReady;
+  const stockFullCoverage = coverage.fullCoverage === true;
+  const stockPeriod = lostSalesCoveragePeriodText(coverage);
+  const trustReady =
+    taxReady && stockReady && stockFullCoverage && !partialMonth && onecReady;
+  const taxProfiles = asArray(taxContext.profiles);
+  const taxProfilePeriod = taxProfiles.length
+    ? `${taxProfiles[0].periodStart || "?"} — ${taxProfiles[0].periodEnd || "?"}`
+    : "период не подтверждён";
+  const taxBasis = taxProfileNeedsRebuild
+    ? "профиль требует пересборки"
+    : taxContext.rateBasisKind === "regional_preference"
+    ? taxContext.basisDocument
+      ? `региональная льгота: ${taxContext.basisDocument}`
+      : "ставка подтверждена настройками"
+    : taxContext.calculated === true && taxContext.revenueTaxRate != null
+      ? "ставка подтверждена настройками"
+      : taxContext.rateBasisKind || "источник ставки не указан";
+  const taxMessage = taxReady
+    ? taxContext.message
+    : taxProfileNeedsRebuild
+      ? taxProfileSync.message
+      : taxContext.message || taxProfileSync.message;
   els.dataTrustStrip.classList.toggle("readiness-ready", trustReady);
   els.dataTrustStrip.classList.toggle("readiness-review", !trustReady);
   els.dataTrustBadge.textContent = trustReady ? "Данные подтверждены" : "Есть ограничения";
   renderMetrics(els.dataTrustGrid, [
     [
       "Налоговый профиль",
-      taxReady ? taxContext.taxSystem || "Подтверждён" : "Не подтверждён",
-      taxContext.message || "Налоги не рассчитываются без профиля.",
+      taxReady
+        ? taxContext.taxSystem || "Применён"
+        : liveTaxProfileReady
+          ? "Получен из 1С"
+          : reportTaxNotApplied
+            ? "Не применён к расчёту"
+            : "Не подтверждён",
+      `${taxMessage || "Профиль проверяется."} ${taxBasis}; период ${taxProfilePeriod}.`,
       taxReady ? "ok" : "warning",
     ],
     [
       "История остатков",
-      stockReady
+      stockFullCoverage
         ? "Полное покрытие"
+        : stockReady
+          ? `${number(coverage.coveredDays || 0)} дней рассчитано`
         : `${number(coverage.coveredDays || 0)} из ${number(coverage.totalDays || 0)} дней`,
-      coverage.message || "Недополученный доход не рассчитан.",
-      stockReady ? "ok" : "warning",
+      stockReady && stockPeriod
+        ? `${coverage.message || ""} Период расчёта: ${stockPeriod}.`
+        : coverage.message || "Недополученный доход не рассчитан.",
+      stockFullCoverage ? "ok" : "warning",
     ],
     [
       "Период",
@@ -6211,10 +7948,106 @@ function shouldRenderOzonAnalytics() {
   return !state.reportId && hasOzonMarketplaceContext(state.latestOzonDiagnostics);
 }
 
+function shouldKeepOzonDiagnosticsVisible(
+  diagnostics = state.latestOzonDiagnostics,
+) {
+  return Boolean(
+    shouldRenderOzonAnalytics() &&
+      diagnostics?.latestRun &&
+      normalize(diagnostics?.ozonMart?.status) !== "not_started",
+  );
+}
+
+function setOzonServiceCabinetNotice(
+  diagnostics = state.latestOzonDiagnostics,
+) {
+  setTopbarNotice(
+    "Доступна служебная витрина Ozon + 1C",
+    "Ниже показана служебная витрина Ozon + 1C по последнему расчетному снимку.",
+  );
+  renderOzonPreflightWithoutReport(diagnostics);
+}
+
+function setOzonDraftNotice(summary = state.summary || {}) {
+  const diagnostics = summary.ozonDiagnostics || state.latestOzonDiagnostics || {};
+  const needsReview = normalize(diagnostics.status) !== "ready";
+  setTopbarNotice(
+    needsReview ? "Черновик Ozon — требуется проверка" : "Черновик Ozon готов",
+    "Внутренний отчёт закреплён за конкретным снимком Ozon + 1C и не опубликован клиенту.",
+    needsReview ? "warning" : "ok",
+  );
+  renderOzonPreflightWithoutReport(diagnostics);
+}
+
+function selectedSourceRefreshMode() {
+  const selectedCabinet = selectedMarketplaceCabinet();
+  return selectedCabinet && isOzonMarketplaceCabinet(selectedCabinet)
+    ? "ozon-only"
+    : "";
+}
+
+function renderOzonPreflightWithoutReport(diagnostics = {}) {
+  const mart = diagnostics?.ozonMart || diagnostics?.unitRows || {};
+  const summary = mart.summary || {};
+  const rowCount = Number(mart.rowCount || 0);
+  const readyRows = Number(summary.ready || 0);
+  const missingCost = Number(summary.missingCost || 0);
+  const mappingRows =
+    Number(summary.missingMapping || 0) + Number(summary.ambiguousMapping || 0);
+  const martReady = normalize(mart.status) === "ready";
+  const issueCount = asArray(diagnostics?.issues?.items).length;
+
+  els.reviewRowsButton.disabled = true;
+  els.reviewRowsButton.textContent = "Нужен клиентский отчёт";
+  els.qualityProgressFill.style.width = rowCount
+    ? `${Math.round((readyRows / rowCount) * 100)}%`
+    : "0%";
+  els.qualitySummaryText.textContent =
+    "Контроль перед отправкой пока недоступен: клиентский отчёт не создан. Ниже — проверка служебной витрины Ozon + 1C.";
+  renderMetrics(els.qualityGrid, [
+    [
+      "Клиентский отчёт",
+      "Не создан",
+      "Проверки строк для отправки появятся после создания отчёта.",
+      "warning",
+    ],
+    [
+      "Расчёт Ozon + 1C",
+      martReady ? "Загружен" : "Требует проверки",
+      rowCount ? `${number(rowCount)} товарных строк в служебной витрине.` : "Нет расчетных строк.",
+      martReady ? "ok" : "warning",
+    ],
+    ["Без себестоимости", missingCost, "По SKU Ozon.", missingCost ? "warning" : "ok"],
+    ["Сопоставление", mappingRows, "Строки без надежной пары Ozon ↔ 1C.", mappingRows ? "warning" : "ok"],
+  ]);
+  renderReasons(
+    els.blockingReasons,
+    [],
+    "Клиентский отчёт не создан: отправлять клиенту пока нечего.",
+    "blocker",
+  );
+  renderReasons(
+    els.reviewReasons,
+    [],
+    issueCount
+      ? `${number(issueCount)} ограничений показано в документном контроле Ozon + 1C.`
+      : "Ограничений Ozon в текущем снимке не найдено.",
+    "review",
+  );
+  renderReasons(
+    els.doneReasons,
+    [],
+    rowCount
+      ? "Снимок Ozon + 1C загружен; доступна служебная витрина."
+      : "Снимок Ozon + 1C пока не содержит расчетных строк.",
+    "review",
+  );
+}
+
 function renderOzonAnalytics(diagnostics = state.latestOzonDiagnostics) {
-  setAnalyticsTitles("ozon");
   const payload = diagnostics || {};
   const mart = payload.ozonMart || payload.unitRows || {};
+  setAnalyticsTitles("ozon", mart);
   const rows = asArray(mart.rows);
   const totals = mart.totals || {};
   const summary = mart.summary || {};
@@ -6232,8 +8065,10 @@ function renderOzonAnalytics(diagnostics = state.latestOzonDiagnostics) {
   }
 }
 
-function setAnalyticsTitles(mode) {
+function setAnalyticsTitles(mode, mart = {}) {
   const ozonMode = mode === "ozon";
+  const includesAdditionalOnecDocuments =
+    mart.pnlScope === "onec_sales_register_including_additional_documents";
   document.body.classList.toggle("ozon-analytics-mode", ozonMode);
   if (!ozonMode) {
     resetOzonAnalyticsCardGrids();
@@ -6241,10 +8076,14 @@ function setAnalyticsTitles(mode) {
   els.moneyTrendTitle.textContent = "Динамика денег";
   els.moneyTrendCopy.textContent = "Выручка, прибыль и маржа по месяцам.";
   els.unitPlTitle.textContent = ozonMode
-    ? "Прибыль и расходы Ozon"
-    : "P&L юнит-экономики";
+    ? includesAdditionalOnecDocuments
+      ? "P&L Ozon (включая выкупы)"
+      : "SKU-P&L Ozon (без выкупов)"
+    : "Прибыли и убытки юнит-экономики";
   els.unitPlCopy.textContent = ozonMode
-    ? "Выручка из 1C, себестоимость и расходы Ozon по товарным строкам."
+    ? includesAdditionalOnecDocuments
+      ? "Итоги совпадают с верхними KPI регистра 1C и включают выкупы. Без подтвержденной связи выкупы остаются документным контролем, а не распределяются по SKU. НДС в себестоимости не выделен."
+      : "Только товарные строки реализации/комиссионера: не равен верхним KPI регистра 1C, где есть выкупы. НДС в себестоимости не выделен."
     : "Для ОСНО выручка и расходы показываются без НДС.";
   els.lossDriversTitle.textContent = ozonMode
     ? "Что мешает расчету"
@@ -6305,7 +8144,11 @@ function ozonMoneyTrendRows(diagnostics = {}, mart = {}) {
   if (!rowCount) {
     return [];
   }
-  if (!mart.previewLimited && rows.some(ozonMoneyTrendHasOwnPeriod)) {
+  if (
+    mart.pnlScope !== "onec_sales_register_including_additional_documents" &&
+    !mart.previewLimited &&
+    rows.some(ozonMoneyTrendHasOwnPeriod)
+  ) {
     return ozonMoneyTrendRowsFromItems(rows, diagnostics);
   }
   return [ozonMoneyTrendTotalsRow(diagnostics, mart)];
@@ -6447,19 +8290,33 @@ function renderOzonProfitAndLoss(target, totals = {}, mart = {}) {
   }
   const revenue = Number(totals.onecRevenue || 0);
   const cogs = Number(totals.cogs || 0);
+  const includesAdditionalOnecDocuments =
+    mart.pnlScope === "onec_sales_register_including_additional_documents";
   const hasOzonExpenses = totals.ozonExpenses !== null && totals.ozonExpenses !== undefined;
   const ozonExpenses = hasOzonExpenses ? Number(totals.ozonExpenses || 0) : null;
   const profitValue = totals.profitBeforeTax ?? totals.profit;
   const profit = profitValue == null ? null : Number(profitValue || 0);
   if (!revenue && !cogs && !hasOzonExpenses && profit == null) {
-    renderAnalyticsEmpty(target, "P&L Ozon не рассчитан: нужна 1C-выручка и расходы.");
+    renderAnalyticsEmpty(target, "Прибыли и убытки Ozon не рассчитаны: нужны выручка 1C и расходы.");
     return;
   }
   target.replaceChildren(
     profitAndLossTable(
       [
-        { label: "1C выручка Ozon SKU", amount: revenue, tone: "revenue" },
-        { label: "Себестоимость 1C", amount: -cogs, tone: "expense" },
+        {
+          label: includesAdditionalOnecDocuments
+            ? "1C выручка Ozon (включая выкупы)"
+            : "1C выручка Ozon SKU (без выкупов)",
+          amount: revenue,
+          tone: "revenue",
+        },
+        {
+          label: includesAdditionalOnecDocuments
+            ? "Себестоимость 1C (включая выкупы; НДС не выделен)"
+            : "Себестоимость 1C по SKU (НДС не выделен)",
+          amount: -cogs,
+          tone: "expense",
+        },
         {
           label: "Прямые расходы Ozon по товарам",
           amount: ozonExpenses == null ? null : -ozonExpenses,
@@ -6467,7 +8324,9 @@ function renderOzonProfitAndLoss(target, totals = {}, mart = {}) {
           tone: "expense",
         },
         {
-          label: "Прибыль до налогов",
+          label: includesAdditionalOnecDocuments
+            ? "Прибыль до налогов (включая выкупы)"
+            : "Прибыль до налогов по SKU",
           amount: profit,
           display: profit == null ? "не рассчитано" : null,
           tone: profit == null || profit < 0 ? "negative result" : "profit result",
@@ -6564,8 +8423,8 @@ function ozonArticleAmountText(item = {}) {
 function ozonArticleCardCaption(item = {}) {
   return [
     ozonArticleAttributionLabel(item),
-    item.note || ozonUnitStatusText(item.status),
-    item.sourceLabel,
+    localizedOperationalMessage(item.note || ozonUnitStatusText(item.status)),
+    localizedOperationalMessage(item.sourceLabel),
     item.offerId,
     item.sku,
   ]
@@ -6638,7 +8497,7 @@ function ozonArticleDrilldownNode(mart = {}) {
     label.textContent = item.label || item.articleId || "Статья Ozon";
     if (item.sourceLabel) {
       const source = document.createElement("small");
-      source.textContent = item.sourceLabel;
+      source.textContent = localizedOperationalMessage(item.sourceLabel);
       label.append(source);
     }
 
@@ -6649,7 +8508,7 @@ function ozonArticleDrilldownNode(mart = {}) {
         ozonArticleAttributionLabel(item),
         item.offerId,
         item.sku,
-        item.productName || item.sourceLabel,
+        item.productName || localizedOperationalMessage(item.sourceLabel),
       ]
         .filter(Boolean)
         .join(" · ") || "-";
@@ -6694,16 +8553,16 @@ function ozonExpenseAttributionCopy(mart = {}, summary = {}, totals = {}) {
   const attribution = mart.expenseAttribution || {};
   const status = normalize(attribution.status);
   if (status === "sku_direct") {
-    return "Расходы по SKU из Ozon detail; mutual settlement использован как контроль.";
+    return "Расходы по SKU из детализации Ozon; отчёт о взаиморасчётах использован для контроля.";
   }
   if (status === "mixed_sku_and_period_unattributed") {
-    return "Часть расходов распределена: SKU-detail сохранен, остаток периода распределен по 1C-выручке.";
+    return "Часть расходов распределена: детализация по SKU сохранена, остаток периода распределён по выручке 1C.";
   }
   if (status === "allocated_period_expense") {
-    return "Часть расходов распределена: SKU-detail расходов нет, период распределен по 1C-выручке.";
+    return "Часть расходов распределена: детализации расходов по SKU нет, период распределён по выручке 1C.";
   }
   if (status === "sku_detail_above_period") {
-    return "Расходы по SKU из Ozon detail больше mutual settlement; отрицательный остаток не распределен.";
+    return "Расходы по SKU из детализации Ozon больше отчёта о взаиморасчётах; отрицательный остаток не распределён.";
   }
   if (totals.expenseBasis === "ozon_cash_flow_statement") {
     return "Денежный контроль, без SKU-распределения.";
@@ -6711,14 +8570,14 @@ function ozonExpenseAttributionCopy(mart = {}, summary = {}, totals = {}) {
   if (Number(summary.partialExpenses || 0)) {
     return "Частичные расходы: нужна сверка.";
   }
-  return "Расходы по SKU из Ozon detail.";
+  return "Расходы по SKU из детализации Ozon.";
 }
 
 function ozonArticleAttributionLabel(item = {}) {
   const kind = normalize(item.kind);
   const attributionType = normalize(item.attributionType || item.expenseAttributionType);
   if (kind === "period_expense_control") {
-    return "сверка Ozon detail";
+    return "сверка детализации Ozon";
   }
   if (kind.startsWith("reconciliation_") || normalize(item.group) === "reconciliation") {
     return "сверка 1C/Ozon";
@@ -6785,21 +8644,51 @@ function renderOzonReconciliationAnalytics(target, diagnostics = {}) {
       reconciliation.status === "matched" ? "ok" : "warning",
     ],
     [
-      "Комиссионер 1C",
-      optionalMoney(reconciliation.commissionerAmount),
-      "база SKU-выручки",
+      "Реализация · Ozon API",
+      optionalMoney(reconciliation.ozonCommissionerAmount),
+      "ожидаемая первичка",
     ],
     [
-      "Выкупы",
+      "Отчет комиссионера · 1C",
+      optionalMoney(reconciliation.commissionerAmount),
+      "фактический документ 1C",
+    ],
+    [
+      "Дельта комиссионера · 1C − Ozon",
+      reconciliation.commissionerDeltaAmount == null
+        ? "не рассчитано"
+        : signedMoney(reconciliation.commissionerDeltaAmount),
+      "должна быть 0 ₽",
+      Math.abs(Number(reconciliation.commissionerDeltaAmount || 0)) > 1
+        ? "warning"
+        : "ok",
+    ],
+    [
+      "Выкупы · Ozon API",
       optionalMoney(reconciliation.buyoutAmount ?? buyouts.amount),
       `${number(reconciliation.buyoutQuantity ?? buyouts.quantity ?? 0)} шт`,
     ],
     [
-      "Дельта",
+      "Выкупы · документы 1C",
+      optionalMoney(reconciliation.onecBuyoutAmount),
+      "расходные накладные",
+    ],
+    [
+      "Ожидается в 1C · итого Ozon API",
+      optionalMoney(reconciliation.ozonTotalAmount),
+      "реализация + выкупы",
+    ],
+    [
+      "Факт 1C · регистр продаж",
+      optionalMoney(reconciliation.onecSalesRegisterAmount),
+      "проведённые документы",
+    ],
+    [
+      "Дельта итого · 1C − Ozon API",
       reconciliation.deltaAmount == null
         ? "не рассчитано"
         : signedMoney(reconciliation.deltaAmount),
-      "после выкупов",
+      "раскрывается по первичным документам",
       Math.abs(Number(reconciliation.deltaAmount || 0)) > 1 ? "warning" : "ok",
     ],
     [
@@ -6824,9 +8713,140 @@ function renderOzonReconciliationAnalytics(target, diagnostics = {}) {
     ],
   ]);
   const detailNode = ozonExpenseDetailNode(expenseReconciliation);
+  const documentControlNode = ozonRevenueDocumentControlNode(
+    reconciliation.documentControl || {},
+  );
+  if (documentControlNode) {
+    target.append(documentControlNode);
+  }
   if (detailNode) {
     target.append(detailNode);
   }
+}
+
+function ozonRevenueDocumentControlNode(control = {}) {
+  const rows = asArray(control.rows);
+  if (!rows.length) {
+    return null;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "analytics-detail ozon-document-control";
+
+  const heading = document.createElement("div");
+  heading.className = "analytics-detail-heading";
+  const headingText = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = control.issueCount
+    ? `Первичные документы 1C: ${number(control.issueCount)} к исправлению`
+    : "Первичные документы 1C сходятся";
+  const copy = document.createElement("span");
+  copy.textContent =
+    "Сначала исправьте документ в 1C, затем запустите повторную проверку Ozon + 1C.";
+  headingText.append(title, copy);
+
+  const actions = document.createElement("div");
+  actions.className = "inline-actions";
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.className = "secondary-button";
+  openButton.textContent = "Открыть документы Ozon";
+  openButton.addEventListener("click", () => {
+    selectDetailTab("ozon");
+    els.ozonBuyoutRows?.closest(".ozon-table-section")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.textContent = "Перепроверить после исправления";
+  refreshButton.disabled = !isStaffUser() || !state.clientId;
+  refreshButton.addEventListener("click", () =>
+    runClientSourceRefresh({ dryRun: false, mode: "ozon-only" }),
+  );
+  actions.append(openButton, refreshButton);
+  heading.append(headingText, actions);
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "table-wrap";
+  const table = document.createElement("table");
+  table.className = "products-table data-table ozon-document-control-table";
+  const tableHead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  [
+    "Проверка",
+    "Ozon API",
+    "1C",
+    "Дельта",
+    "Документы 1C",
+    "Проблема",
+    "Что сделать",
+  ].forEach((label) => {
+    const cell = document.createElement("th");
+    cell.textContent = label;
+    headRow.append(cell);
+  });
+  tableHead.append(headRow);
+  const body = document.createElement("tbody");
+  rows.forEach((item) => body.append(ozonDocumentControlRowNode(item)));
+  table.append(tableHead, body);
+  tableWrap.append(table);
+  wrapper.append(heading, tableWrap);
+  return wrapper;
+}
+
+function openOzonDocumentControlDetails() {
+  let target = document.querySelector(".ozon-document-control");
+  if (!target && state.latestOzonDiagnostics) {
+    renderOzonAnalytics(state.latestOzonDiagnostics);
+    target = document.querySelector(".ozon-document-control");
+  }
+  if (!target) {
+    return;
+  }
+  const issueRow = target.querySelector("tr.is-review");
+  target.classList.add("is-focused");
+  issueRow?.classList.add("is-focused");
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (issueRow) {
+    issueRow.tabIndex = -1;
+    window.setTimeout(() => issueRow.focus({ preventScroll: true }), 350);
+  }
+  window.setTimeout(() => {
+    target.classList.remove("is-focused");
+    issueRow?.classList.remove("is-focused");
+  }, 3200);
+}
+
+function ozonDocumentControlRowNode(item = {}) {
+  const row = document.createElement("tr");
+  row.className = item.status === "matched" ? "" : "is-review";
+  appendTableCells(row, [
+    {
+      value: `${item.label || "Документ"} · ${periodRangeText(
+        item.periodStart,
+        item.periodEnd,
+      )}`,
+      className: "text-wide text-strong",
+    },
+    { value: optionalMoney(item.ozonAmount), className: "numeric" },
+    { value: optionalMoney(item.onecAmount), className: "numeric" },
+    {
+      value: item.deltaAmount == null ? "-" : signedMoney(item.deltaAmount),
+      className: "numeric",
+    },
+    {
+      value: asArray(item.documents).join("; ") || "не найден",
+      className: "text-wide",
+    },
+    {
+      value: item.problem || "-",
+      badge: true,
+      tone: item.status === "matched" ? "ok" : "warning",
+    },
+    { value: item.action || "-", className: "text-wide" },
+  ]);
+  return row;
 }
 
 function renderAnalyticsMetricsGrid(target, items) {
@@ -7066,6 +9086,10 @@ function applyAnalyticsActionAttributes(node, action) {
     return;
   }
   node.dataset.analyticsAction = action.name;
+  if (action.name === "missingMapping" && isStaffUser()) {
+    node.setAttribute("aria-haspopup", "dialog");
+    node.setAttribute("aria-controls", "mapping-widget-overlay");
+  }
   if (action.preset !== undefined) {
     node.dataset.rowPreset = action.preset;
   }
@@ -7100,7 +9124,11 @@ function runAnalyticsAction(action, data = {}) {
     return;
   }
   if (action === "missingMapping") {
-    openDrilldownWidget("missingMapping");
+    if (isStaffUser()) {
+      openMappingWidget({ marketplace: "wb", status: "review", search: "" });
+    } else {
+      openDrilldownWidget("missingMapping");
+    }
     return;
   }
   if (action === "onecReconciliationDelta") {
@@ -7228,25 +9256,25 @@ function renderUnitProfitAndLossTable(target, kpis, expenses) {
   if (financialCheckFailed((state.summary || {}).readiness || {})) {
     renderAnalyticsEmpty(
       target,
-      "P&L не рассчитан: финансовая проверка источников и методики не пройдена.",
+      "Прибыли и убытки не рассчитаны: финансовая проверка источников и методики не пройдена.",
     );
     return;
   }
   if (!revenue && !profit && !expenseRows.length) {
-    renderAnalyticsEmpty(target, "Нет данных для P&L.");
+    renderAnalyticsEmpty(target, "Нет данных для расчёта прибылей и убытков.");
     return;
   }
   const unallocated = Math.max(0, revenue - profit - expenseTotal);
   const rows = [
     {
-      label: showRevenueWithVat ? "Выручка без НДС" : "Выручка",
+      label: showRevenueWithVat ? "Выручка WB без НДС" : "Выручка WB",
       amount: revenue,
       tone: "revenue",
     },
     ...(showRevenueWithVat
       ? [
           {
-            label: "Выручка с НДС",
+            label: "Выручка WB по товарным строкам, с НДС",
             amount: revenueWithVat,
             tone: "reference",
             shareDisplay: "справочно",
@@ -7584,6 +9612,9 @@ function taxInputCompletenessLabel(value) {
   if (status === "confirmed") {
     return "Подтверждено";
   }
+  if (status === "management_assumption") {
+    return "Управленческое допущение";
+  }
   if (status === "partial") {
     return "Частично подтверждено";
   }
@@ -7600,6 +9631,9 @@ function taxInputCompletenessClass(value) {
   const status = normalize(value || "");
   if (status === "confirmed") {
     return "matched";
+  }
+  if (status === "management_assumption") {
+    return "warning";
   }
   if (status === "partial" || status === "mismatch") {
     return "warning";
@@ -7627,6 +9661,9 @@ function taxInputCompletenessNote(row) {
   const onecAmount = taxInputDisplayAmount(row.vatInputFrom1c);
   if (status === "confirmed") {
     return "WB и 1С сходятся.";
+  }
+  if (status === "management_assumption") {
+    return "расчёт для юнит-экономики; книга покупок 1С его пока не подтверждает.";
   }
   if (status === "partial" && wbAmount && !onecAmount) {
     return "в WB есть НДС по расходам, в 1С за неделю подтверждение не найдено.";
@@ -8160,9 +10197,29 @@ function liquidityMainDriver(rows) {
 
 function renderMetrics(target, items) {
   target.replaceChildren(
-    ...items.map(([label, value, caption = "", tone = ""]) => {
+    ...items.map(([label, value, caption = "", tone = "", formula = "", action = null]) => {
       const item = document.createElement("div");
-      item.className = `metric ${tone ? `metric-${tone}` : ""}`.trim();
+      item.className = `metric ${tone ? `metric-${tone}` : ""} ${
+        typeof action === "function" ? "metric-action" : ""
+      }`.trim();
+      if (formula) {
+        item.dataset.tooltip = String(formula);
+      }
+      if (typeof action === "function") {
+        item.tabIndex = 0;
+        item.setAttribute("role", "button");
+        item.setAttribute("aria-label", `${label}. Открыть расшифровку.`);
+        item.addEventListener("click", action);
+        item.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            action();
+          }
+        });
+      } else if (formula) {
+        item.tabIndex = 0;
+        item.setAttribute("aria-label", `${label}. Формула: ${formula}`);
+      }
       const labelNode = document.createElement("span");
       labelNode.textContent = label;
       const valueNode = document.createElement("strong");
@@ -8206,6 +10263,11 @@ function renderReasons(target, reasons, emptyText = "Нет задач", tone = 
         count.textContent = `${number(reason.count)} строк`;
         content.append(count);
       }
+      if (Number(reason.affectedRevenue || 0)) {
+        const impact = document.createElement("small");
+        impact.textContent = `Выручка под риском: ${money(reason.affectedRevenue)}`;
+        content.append(impact);
+      }
       const hint = document.createElement("small");
       hint.className = "reason-hint";
       hint.textContent = guide.hint;
@@ -8214,14 +10276,18 @@ function renderReasons(target, reasons, emptyText = "Нет задач", tone = 
       action.className = "reason-action-link";
       action.textContent = guide.label;
       action.addEventListener("click", () => runReasonAction(guide.action));
-      const markDone = document.createElement("button");
-      markDone.type = "button";
-      markDone.className = "reason-action-link task-done-link";
-      markDone.textContent = "Проверено";
-      markDone.addEventListener("click", () => setTaskReviewed(reason, true));
       const actions = document.createElement("div");
       actions.className = "task-card-actions";
-      actions.append(action, markDone);
+      actions.append(action);
+      if (tone !== "blocker") {
+        const markViewed = document.createElement("button");
+        markViewed.type = "button";
+        markViewed.className = "reason-action-link task-done-link";
+        markViewed.textContent = "Отметить просмотренным";
+        markViewed.title = "Отметка не меняет данные и расчетный статус отчёта.";
+        markViewed.addEventListener("click", () => setTaskReviewed(reason, true));
+        actions.append(markViewed);
+      }
       content.append(hint, actions);
       item.append(marker, content);
       return item;
@@ -8237,8 +10303,8 @@ function renderDoneTasks(readiness, openReasons = []) {
     .filter((reason) => isTaskReviewed(reason))
     .forEach((reason) => {
       tasks.push({
-        title: `Проверено: ${reason.message || "задача по отчету"}`,
-        detail: "Отмечено аналитиком. Расчетный статус изменится после пересборки отчета.",
+        title: `Просмотрено: ${reason.message || "задача по отчету"}`,
+        detail: "Локальная отметка не меняет данные. Расчетный статус изменится только после исправления источника и пересборки отчета.",
         reason,
       });
     });
@@ -8251,7 +10317,7 @@ function renderDoneTasks(readiness, openReasons = []) {
   if (!blockers.length) {
     tasks.push({
       title: "Блокеры отправки сняты",
-      detail: "Критических стоп-факторов в readiness нет.",
+      detail: "Критических препятствий для готовности отчёта нет.",
     });
   }
   if (!reviews.length) {
@@ -8263,7 +10329,7 @@ function renderDoneTasks(readiness, openReasons = []) {
   if (readiness.status === "ready") {
     tasks.push({
       title: "Пакет готов клиенту",
-      detail: "Можно открыть клиентский вывод и приложить Excel.",
+      detail: "Можно открыть отчёт для клиента и приложить Excel.",
     });
   }
   if (!tasks.length) {
@@ -8305,7 +10371,9 @@ function taskStatusStorageKey() {
 }
 
 function taskKey(reason) {
-  return normalize([reason?.code, reason?.message].filter(Boolean).join(":"));
+  return reason?.fingerprint || normalize(
+    [reason?.code, reason?.message].filter(Boolean).join(":"),
+  );
 }
 
 function taskStatusMap() {
@@ -8345,6 +10413,9 @@ function setTaskReviewed(reason, reviewed) {
 
 function reasonGuide(reason) {
   const code = normalize(reason.code);
+  if (code === "cogs_reconciliation_failed") {
+    return costReconciliationGuide(reason);
+  }
   const guides = {
     missing_cost: {
       hint: "Расшифровка откроет строки, где не подтянулась подтвержденная себестоимость из 1С.",
@@ -8377,17 +10448,22 @@ function reasonGuide(reason) {
       action: "reviewRows",
     },
     source_load_incomplete: {
-      hint: "Это проблема загрузки: расшифровка покажет статус последнего refresh и источники.",
+      hint: "Это проблема загрузки: расшифровка покажет статус последнего обновления данных и источники.",
       label: "Показать источники",
       action: "sources",
     },
     source_load_failed: {
-      hint: "Источник не загрузился: расшифровка покажет последний refresh и проблемные коллекции.",
+      hint: "Источник не загрузился: расшифровка покажет последнее обновление данных и проблемные наборы.",
       label: "Показать источники",
       action: "sources",
     },
+    source_load_review_required: {
+      hint: "Источник загружен. Перед отправкой отчёта проверьте отмеченные данные — например, сопоставление WB ↔ 1С.",
+      label: "Проверить источник",
+      action: "sources",
+    },
     source_loads_missing: {
-      hint: "Нет lineage загрузок: проверьте последнюю выгрузку источников и пересоберите отчет.",
+      hint: "Нет истории загрузок: проверьте последнюю выгрузку источников и пересоберите отчёт.",
       label: "Показать источники",
       action: "sources",
     },
@@ -8402,13 +10478,13 @@ function reasonGuide(reason) {
       action: "period",
     },
     client_draft_missing: {
-      hint: "Откройте клиентский вывод и подготовьте текст для отправки вместе с Excel.",
-      label: "Открыть клиентский вывод",
+      hint: "Откройте отчёт для клиента и подготовьте его к отправке вместе с Excel.",
+      label: "Открыть отчёт для клиента",
       action: "clientOutput",
     },
     client_draft_not_ready: {
-      hint: "Откройте клиентский вывод, проверьте черновик и доведите его до готового состояния.",
-      label: "Открыть клиентский вывод",
+      hint: "Откройте отчёт для клиента, проверьте черновик и доведите его до готового состояния.",
+      label: "Открыть отчёт для клиента",
       action: "clientOutput",
     },
   };
@@ -8421,13 +10497,33 @@ function reasonGuide(reason) {
   );
 }
 
+function costReconciliationGuide(reason = {}) {
+  const total = Number(reason.count || 0);
+  const requiresReview = Number(reason.costRequiresReviewRows || 0);
+  const absent = Number(reason.costAbsentRows || 0);
+  const breakdown = requiresReview || absent
+    ? `${number(requiresReview)} рассчитаны по ближайшей себестоимости и требуют сверки; ${number(absent)} без действующей себестоимости 1С.`
+    : "Расшифровка разделит временную себестоимость и товары, где стоимостной слой не найден.";
+  return {
+    hint: `${breakdown} Блокер исчезнет только после обновления данных 1С и пересборки отчёта.`,
+    label: total
+      ? `Открыть ${number(total)} строк себестоимости`
+      : "Открыть проверку себестоимости",
+    action: "missingCost",
+  };
+}
+
 function runReasonAction(action) {
   if (action === "missingCost") {
     openDrilldownWidget("missingCost");
     return;
   }
   if (action === "missingMapping") {
-    openDrilldownWidget("missingMapping");
+    if (isStaffUser()) {
+      openMappingWidget({ marketplace: "wb", status: "review", search: "" });
+    } else {
+      openDrilldownWidget("missingMapping");
+    }
     return;
   }
   if (action === "reviewRows") {
@@ -8613,7 +10709,7 @@ function applyRowsFilterMode(mode) {
   setRowsFilterHidden(els.filterScheme, ozonMode);
   setRowsFilterHidden(els.filterLossClass, ozonMode);
   els.filterQuery.placeholder = ozonMode
-    ? "Товар, offer_id, SKU, баркод, 1C"
+    ? "Товар, артикул продавца, SKU, штрихкод, 1C"
     : "Товар, артикул, баркод, nmId";
   if (ozonMode) {
     setOptions(els.filterStatus, OZON_UNIT_STATUS_OPTIONS, "Все статусы Ozon");
@@ -8825,14 +10921,30 @@ function renderFinancialReconciliation(rows, total, kpis = {}, source = {}, peri
   const revenueDelta = kpis.revenueDelta;
   const penaltiesDelta = kpis.penaltiesDelta;
   renderMetrics(els.financialReconciliationGrid, [
-    ["Выручка с НДС · WB", optionalMoney(kpis.revenueWb)],
-    ["Выручка с НДС · 1С", optionalMoney(kpis.revenueOnec)],
     [
-      "Дельта выручки · 1С − WB",
+      "Выручка 1С за календарный период",
+      optionalMoney(kpis.onecCalendarRevenue),
+      `Отчёты комиссионера и выкупы: ${number(kpis.onecCalendarDocumentCount || 0)} документов`,
+      "ok",
+    ],
+    [
+      "1С · отчёты комиссионера",
+      optionalMoney(kpis.onecCalendarCommissionerRevenue),
+    ],
+    [
+      "1С · выкупы по накладным",
+      optionalMoney(kpis.onecCalendarBuyoutRevenue),
+    ],
+    ["Выручка комиссионера · WB", optionalMoney(kpis.revenueWb)],
+    ["Выручка комиссионера · 1С", optionalMoney(kpis.revenueOnec)],
+    [
+      "Дельта выручки комиссионера · 1С − WB",
       revenueDelta == null ? "-" : signedMoney(revenueDelta),
       "Положительная дельта: в 1С больше",
       Math.abs(Number(revenueDelta || 0)) > 1 ? "warning" : "ok",
     ],
+    ["Выкупы · розница WB", optionalMoney(kpis.buyoutRetailWb)],
+    ["Выкупы · накладные 1С в периоде WB", optionalMoney(kpis.buyoutNetOnec)],
     ["Штрафы · WB", optionalMoney(kpis.penaltiesWb)],
     ["Штрафы · 1С", optionalMoney(kpis.penaltiesOnec)],
     [
@@ -8844,7 +10956,7 @@ function renderFinancialReconciliation(rows, total, kpis = {}, source = {}, peri
   ]);
   const periodText = period.start && period.end ? `${period.start} — ${period.end}` : "";
   els.financialReconciliationSource.textContent = source.refreshRunId
-    ? `Период ${periodText}. 1С snapshot ${source.snapshotSetId || source.refreshRunId}; статус ${source.status || "-"}. Дельта всегда 1С − WB.`
+    ? `Календарный период 1С ${periodText}: итог включает отчёты комиссионера, расходные накладные по выкупам и корректировки. Розница WB показана справочно; денежная сверка выкупа требует первичного уведомления WB с полем «Сумма выкупа».`
     : "Источник 1С не найден: суммы 1С оставлены пустыми, а не заменены нулем.";
   renderFinancialReconciliationRows(safeRows, total);
 }
@@ -8866,7 +10978,7 @@ function renderFinancialReconciliationRows(rows, total) {
 function financialReconciliationRowNode(item) {
   const row = document.createElement("tr");
   const status = normalize(item.status);
-  if (status !== "сходится") {
+  if (!["сходится", "справочно"].includes(status)) {
     row.className = "is-review has-delta";
   }
   appendTableCells(row, [
@@ -8894,6 +11006,9 @@ function financialReconciliationStatusTone(status) {
   const value = normalize(status);
   if (value === "сходится") {
     return "status-ok";
+  }
+  if (value === "справочно") {
+    return "neutral";
   }
   if (value.includes("вне периода") || value.includes("только в 1с")) {
     return "status-warning";
@@ -8923,6 +11038,9 @@ function renderOnecReconciliation(rows, total, kpis = {}) {
   const missingOnecRows = Number(
     kpis.missingOnecRows ?? kpis.documentReconciliationMissingOnec ?? 0,
   );
+  const comparableRevenueDelta = Number(
+    kpis.comparableRevenueDelta ?? amountDelta,
+  );
   els.onecReconciliationTechnicalCount.textContent = documentCount
     ? `${number(documentCount)} документов`
     : "Нет документов";
@@ -8931,7 +11049,15 @@ function renderOnecReconciliation(rows, total, kpis = {}) {
     ["ОК", number(okRows)],
     ["К проверке", number(issueRows)],
     ["Дельта количества", number(quantityDelta)],
-    ["Дельта суммы", money(amountDelta)],
+    ["Дельта выручки комиссионера", money(comparableRevenueDelta)],
+    ["Выкупы · розница WB", optionalMoney(kpis.buyoutRetailWb)],
+    ["Выкупы · накладные 1С", optionalMoney(kpis.buyoutNetOnec)],
+    [
+      "Выкупы · первичка WB",
+      kpis.buyoutPrimaryDocumentStatus === "verified"
+        ? optionalMoney(kpis.buyoutPrimaryDocumentAmount)
+        : "Не проверено",
+    ],
     ["Нет факта 1С", number(missingOnecRows)],
   ]);
   renderOnecReconciliationRowsTable(els.onecReconciliationRows, safeRows, total);
@@ -8958,6 +11084,7 @@ function renderOnecReconciliationRowsTable(target, rows, total) {
 
 function onecReconciliationRowNode(item) {
   const row = document.createElement("tr");
+  const isBuyout = normalize(item.documentType) === "уведомление о выкупе";
   row.className = onecReconciliationRowClass(item);
   appendTableCells(row, [
     { value: item.salesPeriod || "-", className: "text-nowrap" },
@@ -8991,10 +11118,14 @@ function onecReconciliationRowNode(item) {
     },
     {
       value:
-        item.amountDelta || item.amountDelta === 0
+        isBuyout
+          ? "Не сравнивается"
+          : item.amountDelta || item.amountDelta === 0
           ? signedMoney(item.amountDelta)
           : "-",
-      className: `numeric delta ${valueTone(item.amountDelta, { zero: "muted" })}`,
+      className: isBuyout
+        ? "numeric muted"
+        : `numeric delta ${valueTone(item.amountDelta, { zero: "muted" })}`,
     },
     {
       value: item.status || "-",
@@ -9012,14 +11143,171 @@ function onecReconciliationRowNode(item) {
 }
 
 function renderDrilldownRowsStatus(message, countText = "Ошибка") {
+  renderDrilldownRowsHeader(state.drilldownPreset);
   els.drilldownCount.textContent = countText;
-  replaceTableBodyWithMessage(els.drilldownRows, 17, message);
+  if (state.drilldownPreset === "missingCost") {
+    renderCostIssueGuidance({}, 0, message);
+  }
+  replaceTableBodyWithMessage(
+    els.drilldownRows,
+    state.drilldownPreset === "missingCost" ? 11 : 17,
+    message,
+  );
 }
 
-function renderDrilldownRows(rows, total) {
+function renderDrilldownRows(rows, total, preset = "review", breakdown = {}) {
   const safeRows = asArray(rows);
+  renderDrilldownRowsHeader(preset);
   els.drilldownCount.textContent = total ? `${total} строк` : "Нет строк";
+  if (preset === "missingCost") {
+    renderCostIssueGuidance(costIssueBreakdown(breakdown, safeRows, total), total);
+    if (!safeRows.length) {
+      replaceTableBodyWithMessage(
+        els.drilldownRows,
+        11,
+        "Строк с проблемой себестоимости по выбранным фильтрам не найдено.",
+      );
+      return;
+    }
+    els.drilldownRows.replaceChildren(...safeRows.map(costIssueRowNode));
+    return;
+  }
+  els.drilldownGuidance.hidden = true;
+  els.drilldownGuidance.replaceChildren();
   renderReportRowsTable(els.drilldownRows, safeRows);
+}
+
+function costIssueBreakdown(breakdown = {}, rows = [], total = 0) {
+  if (
+    breakdown.totalRows !== undefined ||
+    breakdown.requiresReviewRows !== undefined ||
+    breakdown.absentRows !== undefined
+  ) {
+    return breakdown;
+  }
+  const safeRows = asArray(rows);
+  if (safeRows.length < Number(total || 0)) {
+    return { totalRows: Number(total || 0) };
+  }
+  const absentRows = safeRows.filter(
+    (item) => normalize(item.status) === "нет себестоимости 1с",
+  ).length;
+  return {
+    totalRows: Number(total || safeRows.length),
+    requiresReviewRows: safeRows.length - absentRows,
+    absentRows,
+  };
+}
+
+function renderDrilldownRowsHeader(preset) {
+  const labels = preset === "missingCost"
+    ? [
+        "Неделя продажи",
+        "Кабинет",
+        "Товар",
+        "Артикул WB",
+        "Артикул 1С",
+        "Чистое количество",
+        "Себестоимость в расчёте",
+        "Выручка",
+        "Статус",
+        "Почему",
+        "Что делать",
+      ]
+    : [
+        "Месяц 1С",
+        "Документ-отчет",
+        "Отчет WB",
+        "Дата отчета",
+        "Кабинет",
+        "Товар",
+        "Артикул WB",
+        "Артикул 1С",
+        "Баркод",
+        "Схема",
+        "Статус",
+        "Продажи",
+        "Возвраты",
+        "Выручка",
+        "Прибыль",
+        "Маржа",
+        "На шт",
+      ];
+  const row = document.createElement("tr");
+  labels.forEach((label) => {
+    const cell = document.createElement("th");
+    cell.textContent = label;
+    row.append(cell);
+  });
+  els.drilldownRowsHead.replaceChildren(row);
+}
+
+function renderCostIssueGuidance(breakdown = {}, total = 0, statusMessage = "") {
+  const requiresReview = Number(breakdown.requiresReviewRows || 0);
+  const absent = Number(breakdown.absentRows || 0);
+  const totalRows = Number(breakdown.totalRows ?? total ?? 0);
+  const reviewCard = costGuidanceCard(
+    "Себестоимость требует сверки",
+    requiresReview,
+    "В расчёте уже использована ближайшая доступная себестоимость. Загрузите точный недельный слой 1С и пересоберите отчёт.",
+    "review",
+  );
+  const absentCard = costGuidanceCard(
+    "Себестоимость не найдена",
+    absent,
+    "Добавьте или исправьте действующую себестоимость товара в 1С, затем обновите источники и пересоберите отчёт.",
+    absent ? "blocked" : "ok",
+  );
+  const note = document.createElement("p");
+  note.className = "cost-guidance-note";
+  note.textContent = statusMessage || (
+    totalRows
+      ? `Всего ${number(totalRows)} строк. Этот экран работает только на чтение и не исправляет данные 1С.`
+      : "По выбранным фильтрам проблем себестоимости нет."
+  );
+  els.drilldownGuidance.hidden = false;
+  els.drilldownGuidance.replaceChildren(reviewCard, absentCard, note);
+}
+
+function costGuidanceCard(title, count, copy, tone) {
+  const card = document.createElement("article");
+  card.className = `cost-guidance-card is-${tone}`;
+  const heading = document.createElement("strong");
+  heading.textContent = `${title}: ${number(count)}`;
+  const description = document.createElement("p");
+  description.textContent = copy;
+  card.append(heading, description);
+  return card;
+}
+
+function costIssueRowNode(item) {
+  const row = document.createElement("tr");
+  row.className = tableRowClass(item);
+  appendTableCells(row, [
+    { value: item.week || item.month || "-", className: "text-nowrap" },
+    { value: item.cabinet || "-", className: "text-wide" },
+    { value: item.product || "-", className: "text-wide text-strong" },
+    { value: item.articleWb || "-", className: "text-code" },
+    { value: item.article1c || "-", className: "text-code" },
+    { value: number(item.netQty || 0), className: "numeric" },
+    { value: money(item.cost || 0), className: "numeric" },
+    { value: money(item.revenue || 0), className: "numeric" },
+    {
+      value: statusLabel(item.status),
+      badge: true,
+      tone: statusTone(item.status, item.statusReason),
+      title: statusExplanation(item.status, item.statusReason),
+    },
+    { value: item.statusReason || item.status || "-", className: "text-wide" },
+    { value: costIssueAction(item), className: "text-wide cost-next-action" },
+  ]);
+  return row;
+}
+
+function costIssueAction(item) {
+  return normalize(item.status) === "нет себестоимости 1с"
+    ? "Исправить себестоимость товара в 1С → обновить источники → пересобрать отчёт."
+    : "Загрузить точную себестоимость 1С за неделю продажи → пересобрать отчёт.";
 }
 
 function renderSourceDrilldown() {
@@ -9045,13 +11333,15 @@ function renderSourceDrilldown() {
 }
 
 function sourceRefreshNode(refresh) {
-  const card = sourceCard("Последний refresh источников", refresh.status);
+  const card = sourceCard("Последнее обновление источников", refresh.status);
   const message = document.createElement("p");
   message.className = "source-load-message";
-  message.textContent = refresh.safeMessage || sourceStatusHint(refresh.status);
+  message.textContent = localizedOperationalMessage(
+    refresh.safeMessage || sourceStatusHint(refresh.status),
+  );
   const meta = sourceMetaList([
     ["Статус", sourceStatusText(refresh.status)],
-    ["Режим", refresh.mode || "-"],
+    ["Режим", sourceRefreshModeText(refresh.mode)],
     ["Период", sourcePeriodText(refresh)],
     ["Создан", formatDateTime(refresh.createdAt)],
     ["Завершен", formatDateTime(refresh.finishedAt) || "Не завершался"],
@@ -9065,13 +11355,13 @@ function sourceRefreshNode(refresh) {
 }
 
 function sourceLoadNode(item) {
-  const title = item.sourceLabel || item.sourceType || "Источник";
+  const title = sourceLabelText(item);
   const card = sourceCard(title, item.status);
   const message = document.createElement("p");
   message.className = "source-load-message";
   message.textContent = sourceStatusHint(item.status, item.required);
   const meta = sourceMetaList([
-    ["Тип", item.sourceType || "-"],
+    ["Тип", sourceTypeText(item.sourceType)],
     ["Обязательный", item.required === false ? "Нет" : "Да"],
     ["Строк", number(item.rowCount || 0)],
     ["Кабинет", item.wbCabinetId || "Все"],
@@ -9116,8 +11406,8 @@ function sourceEmptyNode(refresh) {
   const message = document.createElement("p");
   message.className = "source-load-message";
   message.textContent = refresh
-    ? "Последний refresh есть, но коллекции источников не записаны."
-    : "По текущему отчету нет lineage загрузок источников.";
+    ? "Последнее обновление данных есть, но наборы источников не записаны."
+    : "По текущему отчёту нет истории загрузки источников.";
   const advice = document.createElement("p");
   advice.className = "source-load-advice";
   advice.textContent =
@@ -9140,6 +11430,90 @@ function sourcePeriodText(item) {
   const start = item.periodStart ? formatDateTime(item.periodStart).split(",")[0] : "";
   const end = item.periodEnd ? formatDateTime(item.periodEnd).split(",")[0] : "";
   return [start, end].filter(Boolean).join(" - ") || "-";
+}
+
+function sourceRefreshModeText(mode) {
+  const value = normalize(mode);
+  return {
+    daily: "ежедневный",
+    full: "полный",
+    "onec-only": "только 1С",
+    "ozon-only": "диагностика Ozon",
+    manual: "ручной",
+  }[value] || (value ? "другой" : "-");
+}
+
+function sourceLabelText(item = {}) {
+  const label = String(item.sourceLabel || "").trim();
+  const labels = {
+    "Marketplace ↔ 1C mapping service": "Сервис сопоставления маркетплейса ↔ 1С",
+    "WB Finance sales report details": "Детализация отчёта о продажах WB",
+    "WB Finance sales report list": "Список отчётов о продажах WB",
+    "WB product cards": "Карточки товаров WB",
+    "WB daily stock history": "Ежедневная история остатков WB",
+    "1С OData metadata": "Метаданные 1С OData",
+    "Ozon financial cash-flow statement": "Движение денежных средств Ozon",
+    "Ozon realization report": "Отчёт Ozon о реализации",
+    "Ozon mutual settlement report": "Отчёт Ozon о взаиморасчётах",
+    "Ozon realization posting report": "Документы реализации Ozon",
+    "Ozon products buyout report": "Отчёт Ozon о выкупах",
+    "Ozon B2B sales JSON": "Продажи Ozon для бизнеса",
+    "Ozon products report": "Отчёт Ozon по товарам",
+    "Ozon stock on warehouses": "Остатки Ozon на складах",
+    "Ozon returns report": "Отчёт Ozon по возвратам",
+  };
+  return labels[label] || label || sourceTypeText(item.sourceType);
+}
+
+function sourceTypeText(sourceType) {
+  const value = normalize(sourceType);
+  return {
+    sku_mapping: "сопоставление товаров",
+    wb_finance_detail: "детализация продаж WB",
+    wb_sales_report_list: "список отчётов WB",
+    wb_product_cards: "карточки товаров WB",
+    wb_stock_history_daily: "ежедневная история остатков WB",
+    onec_odata: "данные 1С OData",
+    onec_odata_metadata: "метаданные 1С OData",
+    ozon_finance_cash_flow: "движение денежных средств Ozon",
+    ozon_realization: "реализация Ozon",
+    ozon_mutual_settlement: "взаиморасчёты Ozon",
+    ozon_realization_posting: "документы реализации Ozon",
+    ozon_products_buyout: "выкупы Ozon",
+    ozon_b2b_sales_json: "продажи Ozon для бизнеса",
+    ozon_products_report: "товары Ozon",
+    ozon_stock_on_warehouses: "остатки Ozon",
+    ozon_returns_report: "возвраты Ozon",
+  }[value] || (value.startsWith("onec_") ? "данные 1С" : "другой источник");
+}
+
+function localizedOperationalMessage(message = "") {
+  return String(message || "")
+    .replaceAll("Refresh не запущен", "Обновление данных не запущено")
+    .replaceAll("Последний refresh", "Последнее обновление данных")
+    .replaceAll("последний refresh", "последнее обновление данных")
+    .replaceAll("Refresh", "Обновление данных")
+    .replaceAll("refresh", "обновление данных")
+    .replaceAll("Read-only", "Только для чтения")
+    .replaceAll("read-only", "только для чтения")
+    .replaceAll("readiness", "готовность отчёта")
+    .replaceAll("source snapshots", "снимки источников")
+    .replaceAll("snapshot", "снимок данных")
+    .replaceAll("lineage", "история загрузки")
+    .replaceAll("Mapping", "Сопоставление")
+    .replaceAll("mapping", "сопоставление")
+    .replaceAll("Fallback", "Резервный вариант")
+    .replaceAll("fallback", "резервный вариант")
+    .replaceAll("daily", "ежедневный")
+    .replaceAll("mutual settlement", "отчёт о взаиморасчётах")
+    .replaceAll("cash-flow", "движение денежных средств")
+    .replaceAll("preview", "предварительный просмотр")
+    .replaceAll("detail", "детализация")
+    .replaceAll("metadata", "метаданные")
+    .replaceAll("hash-only", "контрольная метка")
+    .replaceAll("encrypted", "зашифрованное хранение")
+    .replaceAll("live check", "проверка подключения")
+    .replaceAll("P&L", "прибыли и убытки");
 }
 
 function sourceStatusText(status) {
@@ -9176,7 +11550,7 @@ function sourceStatusText(status) {
     return "Мало места";
   }
   if (value === "blocked_active_refresh") {
-    return "Уже идет refresh";
+    return "Обновление уже выполняется";
   }
   if (value === "needs_configuration") {
     return "Нужна настройка";
@@ -9190,7 +11564,16 @@ function sourceStatusText(status) {
   if (value.includes("fail") || value.includes("error")) {
     return "Ошибка";
   }
-  return status || "Неизвестно";
+  if (value === "partial_source") {
+    return "Данные загружены частично";
+  }
+  if (value === "stale") {
+    return "Данные устарели";
+  }
+  if (value === "skipped_large_snapshot") {
+    return "Сохранено отдельным файлом";
+  }
+  return "Неизвестный статус";
 }
 
 function sourceStatusTone(status) {
@@ -9229,7 +11612,7 @@ function sourceStatusHint(status, required = true) {
     return "Задача поставлена в очередь. Можно закрыть окно, статус продолжит обновляться.";
   }
   if (value === "running") {
-    return "Идет read-only чтение WB, 1С и сопоставления. Страница остается доступной.";
+    return "Идёт чтение WB, 1С и сопоставления без изменения данных. Страница остаётся доступной.";
   }
   if (value === "source_loaded") {
     return "Источники загружены, идет подготовка отчета или сохранение результата.";
@@ -9244,16 +11627,16 @@ function sourceStatusHint(status, required = true) {
     return "Источник проверен: за период нет строк, это допустимо.";
   }
   if (value === "auth_failed") {
-    return "Источник не принял read-only ключ. Нужно проверить роли доступа.";
+    return "Источник не принял ключ только для чтения. Нужно проверить права доступа.";
   }
   if (value === "rate_limited") {
     return "Провайдер ограничил частоту запросов. Повторите позже.";
   }
   if (value === "blocked_low_disk") {
-    return "Refresh не стартовал: на диске меньше свободного места, чем требует лимит для снапшота.";
+    return "Обновление данных не запущено: недостаточно места для снимка данных.";
   }
   if (value === "needs_configuration") {
-    return "Нужно заново проверить настройку read-only подключения.";
+    return "Нужно заново проверить настройку подключения только для чтения.";
   }
   if (value === "needs_review") {
     return "Источник загрузился не полностью или требует ручной проверки.";
@@ -9266,22 +11649,22 @@ function sourceStatusHint(status, required = true) {
       ? "Опциональный источник не загрузился; отчет можно проверить с ограничением."
       : "Обязательный источник не загрузился, отчет нельзя отправлять без проверки.";
   }
-  return "Проверьте последнюю загрузку и при необходимости повторите refresh.";
+  return "Проверьте последнюю загрузку и при необходимости повторите обновление данных.";
 }
 
 function sourceRefreshAdvice(status) {
   const value = normalize(status);
   if (value === "blocked_low_disk") {
-    return "Что сделать: очистить старые source snapshots или расширить диск, затем повторить обновление источников.";
+    return "Что сделать: удалить старые снимки источников или расширить диск, затем повторить обновление данных.";
   }
   if (value === "needs_configuration") {
-    return "Что сделать: открыть интеграции, проверить read-only доступы WB/1С и повторить проверку.";
+    return "Что сделать: открыть интеграции, проверить доступы WB и 1С только для чтения и повторить проверку.";
   }
   if (value === "needs_review") {
     return "Что сделать: посмотреть коллекции ниже, исправить источник или принять ограничение периода.";
   }
   if (value.includes("fail") || value.includes("error")) {
-    return "Что сделать: проверить обязательный источник и повторить refresh после исправления.";
+    return "Что сделать: проверить обязательный источник и повторить обновление данных после исправления.";
   }
   if (value === "report_created") {
     return "Новый отчет готов. Старый опубликованный отчет не менялся до успешной сборки.";
@@ -9341,20 +11724,27 @@ function tableRowClass(item) {
 
 function onecReconciliationRowClass(item) {
   const classes = [];
-  const hasDelta = [
+  const isBuyout = normalize(item.documentType) === "уведомление о выкупе";
+  const comparedDeltas = isBuyout ? [item.quantityDelta] : [
     item.quantityDelta,
     item.amountDelta,
     item.settlementDelta,
     item.salesQuantityDelta,
     item.returnQuantityDelta,
     item.netQuantityDelta,
-  ].some((value) => Math.abs(Number(value || 0)) > 0.0001);
+  ];
+  const hasDelta = comparedDeltas.some(
+    (value) => Math.abs(Number(value || 0)) > 0.0001,
+  );
   const statusText = normalize(item.status);
   const documentText = normalize(item.onecDocuments);
   if (hasDelta) {
     classes.push("has-delta");
   }
-  if (statusText && !["ok", "ок"].includes(statusText)) {
+  if (
+    statusText &&
+    !["ok", "ок", "документ найден", "сверено по количеству"].includes(statusText)
+  ) {
     classes.push("is-review");
   }
   if (!documentText || documentText === "-" || documentText.includes("нет")) {
@@ -9417,7 +11807,7 @@ function statusExplanation(status, reason = "") {
 
 function reconciliationStatusTone(status) {
   const value = normalize(status);
-  if (["ok", "ок"].includes(value)) {
+  if (["ok", "ок", "документ найден", "сверено по количеству"].includes(value)) {
     return "status-ok";
   }
   return statusTone(status);
@@ -9538,7 +11928,12 @@ function renderLostSales(rows, coverage = {}) {
         Number(right.lostRevenue || 0) - Number(left.lostRevenue || 0),
     )
     .slice(0, 30);
-  els.lostSalesCount.textContent = sorted.length ? `${sorted.length} строк` : "Нет строк";
+  const coveragePeriod = lostSalesCoveragePeriodText(coverage);
+  els.lostSalesCount.textContent = sorted.length
+    ? `${sorted.length} строк${coveragePeriod ? ` · ${coveragePeriod}` : ""}`
+    : coveragePeriod
+      ? `Нет строк · ${coveragePeriod}`
+      : "Нет строк";
   if (!sorted.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -9615,7 +12010,7 @@ function hasActiveOnecReconciliationFilters() {
 
 function rowsFilterParams(preset = state.rowPreset) {
   const params = new URLSearchParams();
-  params.set("limit", "50");
+  params.set("limit", preset === "missingCost" ? "1000" : "50");
   const values = {
     query: els.filterQuery.value.trim(),
     status_filter: els.filterStatus.value,
@@ -9645,6 +12040,9 @@ function resetClientScopedState(options = {}) {
   state.reportId = null;
   state.rowsRequestKey = "";
   state.drilldownRequestKey = "";
+  state.drilldownPreset = "review";
+  state.cogsReconciliationRequestKey = "";
+  state.marketplaceExpenseReconciliationRequestKey = "";
   state.onecReconciliationRequestKey = "";
   state.summary = null;
   state.freshness = null;
@@ -9652,14 +12050,18 @@ function resetClientScopedState(options = {}) {
   state.integrationItems = [];
   state.editingIntegrationKey = "";
   state.latestSourceRefresh = null;
+  state.latestSourceRefreshAttempt = null;
+  state.activeSourceRefresh = null;
   state.latestOzonDiagnostics = null;
   state.ozonDiagnosticsParams = "";
   state.mappingItemsRequestKey = "";
-  updateExcelLink(null);
+  updateReportBuildButton(null);
   state.aiThreadId = null;
   state.onecReconciliationLoaded = false;
   state.rowPreset = "";
   els.topbarCabinetSelect.replaceChildren();
+  els.reportLoadRetryButton.hidden = true;
+  els.reportLoadRetryButton.disabled = false;
   els.topbarPeriodStart.value = "";
   els.topbarPeriodEnd.value = "";
   els.rowsFilterForm.reset();
@@ -9672,6 +12074,7 @@ function resetClientScopedState(options = {}) {
   syncIntegrationsEntryPoint();
   els.draftPanel.hidden = true;
   renderMetrics(els.kpiGrid, []);
+  renderMetrics(els.onecKpiGrid, []);
   renderMetrics(els.qualityGrid, []);
   renderReviewRows([], 0);
   renderAnalytics({});
@@ -9682,12 +12085,13 @@ function resetClientScopedState(options = {}) {
 
 function syncIntegrationsEntryPoint() {
   els.integrationsOpenButton.hidden = !(state.clientId && isStaffUser());
+  updateReportBuildButton(state.latestSourceRefresh);
 }
 
 function setEmptyCabinet(title = "Нет доступных отчетов", subtitle = "После импорта отчета здесь появится расчетная витрина.") {
-  els.reportTitle.textContent = title;
-  els.reportSubtitle.textContent = subtitle;
+  setTopbarNotice(title, subtitle);
   renderMetrics(els.kpiGrid, []);
+  renderMetrics(els.onecKpiGrid, []);
   renderMetrics(els.qualityGrid, []);
   renderAnalytics({});
   renderOzonPreview(state.latestSourceRefresh, state.latestOzonDiagnostics);

@@ -18,6 +18,7 @@ from wb_unit_economics.contracts import (
     Marketplace,
     OzonApiSnapshot,
     SalesModel,
+    TaxProfile,
     VatDeductionMode,
     VatMode,
 )
@@ -152,6 +153,82 @@ def test_default_vat_kind_from_onec_is_a_hint_not_a_tax_profile(
     assert "vatDeductionMode" in diagnostic["missingFields"]
 
 
+def test_complete_onec_organization_evidence_derives_2026_osno_profile() -> None:
+    organization = {
+        "Ref_Key": "ORG-OSNO",
+        "ВидСтавкиНДСПоУмолчанию": "Общая",
+        "НДСВключатьВСтоимость": False,
+        "ЮридическоеФизическоеЛицо": "ФизическоеЛицо",
+        "СчетУчетаЛичныхСредствПредпринимателя_Key": "account-guid",
+    }
+    mapping = [
+        AccountOrgMapping(
+            client_id="galustov",
+            seller_account_id="WB-1",
+            organization_id="ORG-OSNO",
+            seller_account_name="Кабинет WB",
+            organization_name="ИП Галустов",
+        )
+    ]
+
+    profiles = tax_profiles_from_account_org_mapping(
+        "galustov",
+        mapping,
+        onec_organization_rows=[organization],
+        special_tax_mode_rows=[],
+        calculation_date=date(2026, 4, 30),
+        special_tax_source_complete=True,
+    )
+    diagnostic = tax_profile_source_diagnostic(
+        "ORG-OSNO",
+        organization=organization,
+        special_tax_mode_rows=[],
+        calculation_date=date(2026, 4, 30),
+        special_tax_source_complete=True,
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].tax_system == "ОСНО"
+    assert profiles[0].vat_rate == Decimal("22")
+    assert profiles[0].vat_mode is VatMode.INCLUDED
+    assert profiles[0].vat_deduction_mode is VatDeductionMode.ALLOWED
+    assert profiles[0].revenue_tax_rate == 0
+    assert profiles[0].income_tax_kind == ""
+    assert profiles[0].valid_from == date(2026, 1, 1)
+    assert profiles[0].source == "Catalog_Организации:derived_osno_2026"
+    assert diagnostic["status"] == "ready"
+    assert diagnostic["oneCHints"]["authoritativeForTaxSystem"] is True
+
+
+def test_onec_organization_does_not_derive_osno_if_special_source_is_incomplete(
+) -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        "galustov",
+        [
+            AccountOrgMapping(
+                client_id="galustov",
+                seller_account_id="WB-1",
+                organization_id="ORG-OSNO",
+                seller_account_name="Кабинет WB",
+                organization_name="ИП Галустов",
+            )
+        ],
+        onec_organization_rows=[
+            {
+                "Ref_Key": "ORG-OSNO",
+                "ВидСтавкиНДСПоУмолчанию": "Общая",
+                "НДСВключатьВСтоимость": False,
+                "ЮридическоеФизическоеЛицо": "ФизическоеЛицо",
+                "СчетУчетаЛичныхСредствПредпринимателя_Key": "account-guid",
+            }
+        ],
+        calculation_date=date(2026, 4, 30),
+        special_tax_source_complete=False,
+    )
+
+    assert profiles == []
+
+
 def test_tax_profiles_require_explicit_rates_in_special_tax_notification() -> None:
     profiles = tax_profiles_from_account_org_mapping(
         "shumeyko-partners",
@@ -177,6 +254,138 @@ def test_tax_profiles_require_explicit_rates_in_special_tax_notification() -> No
     )
 
     assert profiles == []
+
+
+def test_tax_profile_uses_onec_accounting_evidence_and_audited_rate() -> None:
+    organization = {
+        "Ref_Key": "ORG-USN",
+        "НДСВключатьВСтоимость": True,
+    }
+    mapping = [
+        AccountOrgMapping(
+            client_id="shumeyko",
+            seller_account_id="WB-1",
+            organization_id="ORG-USN",
+            seller_account_name="WB cabinet",
+            organization_name="ИП на УСН",
+        )
+    ]
+    rate_anchor = TaxProfile(
+        client_id="shumeyko",
+        organization_id="ORG-USN",
+        tax_system="УСН Доходы",
+        vat_rate=Decimal("5"),
+        vat_mode=VatMode.INCLUDED,
+        vat_deduction_mode=VatDeductionMode.NOT_ALLOWED,
+        revenue_tax_rate=Decimal("0.01"),
+        valid_from=date(2026, 1, 1),
+        source="manual_override",
+    )
+    evidence = {
+        "tax_kind_rows": [
+            {
+                "Ref_Key": "TAX-USN",
+                "Description": "Налог при УСН (доходы)",
+                "DeletionMark": False,
+            }
+        ],
+        "tax_accrual_rows": [
+            {
+                "Ref_Key": "ACCRUAL-1",
+                "Date": "2026-03-31T00:00:00",
+                "Posted": True,
+                "DeletionMark": False,
+                "Организация_Key": "ORG-USN",
+            }
+        ],
+        "tax_accrual_line_rows": [
+            {"Ref_Key": "ACCRUAL-1", "ВидНалога_Key": "TAX-USN"}
+        ],
+        "vat_sales_rows": [
+            {
+                "Period": "2026-03-31T00:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-USN",
+                "СтавкаНДС": "НДС5",
+                "НДС": "100",
+            },
+            {
+                "Period": "2026-04-01T00:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-USN",
+                "СтавкаНДС": "БезНДС",
+                "НДС": "0",
+            },
+        ],
+    }
+
+    profiles = tax_profiles_from_account_org_mapping(
+        "shumeyko",
+        mapping,
+        onec_organization_rows=[organization],
+        rate_anchors=[rate_anchor],
+        calculation_date=date(2026, 6, 30),
+        **evidence,
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].tax_system == "УСН Доходы"
+    assert profiles[0].vat_rate == Decimal("5")
+    assert profiles[0].vat_mode is VatMode.INCLUDED
+    assert profiles[0].vat_deduction_mode is VatDeductionMode.NOT_ALLOWED
+    assert profiles[0].revenue_tax_rate == Decimal("0.01")
+    assert profiles[0].valid_from == date(2026, 1, 1)
+    assert profiles[0].source == "1C:tax_accruals+vat_sales+audited_rate"
+
+
+def test_tax_profile_diagnostic_does_not_guess_missing_usn_rate() -> None:
+    organization = {"Ref_Key": "ORG-USN", "НДСВключатьВСтоимость": True}
+    evidence = {
+        "tax_kind_rows": [
+            {"Ref_Key": "TAX-USN", "Description": "Налог при УСН (доходы)"}
+        ],
+        "tax_accrual_rows": [
+            {
+                "Ref_Key": "ACCRUAL-1",
+                "Date": "2026-03-31T00:00:00",
+                "Posted": True,
+                "Организация_Key": "ORG-USN",
+            }
+        ],
+        "tax_accrual_line_rows": [
+            {"Ref_Key": "ACCRUAL-1", "ВидНалога_Key": "TAX-USN"}
+        ],
+        "vat_sales_rows": [
+            {
+                "Period": "2026-03-31T00:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-USN",
+                "СтавкаНДС": "НДС5",
+                "НДС": "100",
+            }
+        ],
+    }
+
+    diagnostic = tax_profile_source_diagnostic(
+        "ORG-USN",
+        organization=organization,
+        calculation_date=date(2026, 6, 30),
+        **evidence,
+    )
+
+    assert diagnostic["status"] == "missing_authoritative_fields"
+    assert diagnostic["missingFields"] == ["revenueTaxRate"]
+    assert diagnostic["accountingEvidence"] == {
+        "taxSystem": "УСН Доходы",
+        "vatRate": "5",
+        "vatMode": "included",
+        "vatDeductionMode": "not_allowed",
+        "revenueTaxRate": None,
+        "taxAccrualCount": 1,
+        "vatSalesEntryCount": 1,
+        "rateAnchorMatched": False,
+        "rateAnchorConflict": False,
+    }
 
 
 def test_tax_profiles_use_explicit_onec_organization_profile() -> None:

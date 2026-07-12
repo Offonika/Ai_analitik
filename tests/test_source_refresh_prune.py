@@ -65,6 +65,31 @@ def test_prune_source_refresh_keeps_explicitly_protected_snapshot(
     assert not (root / "daily-20260623-001500").exists()
 
 
+def test_prune_source_refresh_apply_fails_closed_when_database_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source_refresh"
+    root.mkdir()
+    snapshot = root / "daily-20260623-001500"
+    _snapshot_dir(snapshot, mtime=1)
+    unavailable_database = tmp_path / "missing-parent" / "database.sqlite3"
+
+    result = _run_prune(
+        root,
+        "--database-url",
+        f"sqlite:///{unavailable_database}",
+        "--daily-keep",
+        "0",
+        "--full-keep",
+        "0",
+        "--apply",
+    )
+
+    assert result.returncode == 2
+    assert "no files were deleted" in result.stderr
+    assert snapshot.exists()
+
+
 def _snapshot_dir(path: Path, *, mtime: int) -> None:
     path.mkdir()
     (path / "payload.json").write_text("{}", encoding="utf-8")

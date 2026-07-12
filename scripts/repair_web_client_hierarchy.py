@@ -10,14 +10,20 @@ import os
 import sys
 from pathlib import Path
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from wb_unit_economics.web import repository
-from wb_unit_economics.web.database import make_engine, make_session_factory
+from wb_unit_economics.web.database import (
+    DB_FIRST_SCHEMA_VERSION,
+    _record_schema_migration,
+    make_engine,
+    make_session_factory,
+)
 from wb_unit_economics.web.models import (
+    ClientCompanyAlias,
     ReportDocumentReconciliationRow,
     ReportLostSalesRow,
     ReportRun,
@@ -75,6 +81,14 @@ def parse_args() -> argparse.Namespace:
             "name, retargeting report rows and tenant integration metadata."
         ),
     )
+    parser.add_argument(
+        "--dedupe-client-companies",
+        action="store_true",
+        help=(
+            "Merge client company aliases linked to the same non-empty 1C "
+            "organization, retargeting all technical references."
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -84,11 +98,15 @@ def main() -> int:
     args = parse_args()
     if args.apply and args.dry_run:
         raise SystemExit("--apply and --dry-run are mutually exclusive")
-    if not args.client_name and not args.dedupe_wb_cabinets:
+    if not args.client_name and not (
+        args.dedupe_wb_cabinets or args.dedupe_client_companies
+    ):
         raise SystemExit(
-            "--client-name is required unless --dedupe-wb-cabinets is used"
+            "--client-name is required unless a dedupe option is used"
         )
     engine = make_engine(args.database_url)
+    if args.dedupe_client_companies:
+        ClientCompanyAlias.__table__.create(engine, checkfirst=True)
     session_factory = make_session_factory(engine)
     with session_factory() as db:
         counts: dict[str, int] = {}
@@ -102,8 +120,38 @@ def main() -> int:
                         client_id=args.client_id,
                     )
                 )
+            if args.dedupe_client_companies:
+                if (
+                    args.apply
+                    and db.bind is not None
+                    and db.bind.dialect.name != "sqlite"
+                ):
+                    db.execute(text("SET LOCAL statement_timeout = 0"))
+                company_counts = (
+                    repository.dedupe_client_companies(
+                        db,
+                        tenant_id=args.tenant_id,
+                        client_id=args.client_id,
+                    )
+                    if args.apply
+                    else repository.preview_client_company_dedupe(
+                        db,
+                        tenant_id=args.tenant_id,
+                        client_id=args.client_id,
+                    )
+                )
+                counts.update(
+                    {
+                        f"company_{key}": value
+                        for key, value in company_counts.items()
+                    }
+                )
             if args.apply:
+                if args.dedupe_client_companies:
+                    repository.ensure_client_company_identity_index(db)
                 db.commit()
+                if args.dedupe_client_companies:
+                    _record_schema_migration(engine, DB_FIRST_SCHEMA_VERSION)
                 action = "APPLIED"
             else:
                 db.rollback()
@@ -300,13 +348,36 @@ def main() -> int:
             ).items():
                 counts[f"dedupe_{key}"] = value
 
+        if args.dedupe_client_companies:
+            if args.apply and db.bind is not None and db.bind.dialect.name != "sqlite":
+                db.execute(text("SET LOCAL statement_timeout = 0"))
+            company_counts = (
+                repository.dedupe_client_companies(
+                    db,
+                    tenant_id=tenant.id,
+                    client_id=client_id,
+                )
+                if args.apply
+                else repository.preview_client_company_dedupe(
+                    db,
+                    tenant_id=tenant.id,
+                    client_id=client_id,
+                )
+            )
+            for key, value in company_counts.items():
+                counts[f"dedupe_company_{key}"] = value
+
         if args.apply:
+            if args.dedupe_client_companies:
+                repository.ensure_client_company_identity_index(db)
             db.commit()
             action = "APPLIED"
         else:
             db.rollback()
             action = "DRY RUN"
 
+    if args.apply and args.dedupe_client_companies:
+        _record_schema_migration(engine, DB_FIRST_SCHEMA_VERSION)
     _print_result(action, args.tenant_id, client_id, counts, name=args.client_name)
     return 0
 

@@ -5,7 +5,10 @@ import sys
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from scripts import rebuild_report_from_sources
 from wb_unit_economics.calculation import build_unit_economics_report
@@ -16,8 +19,17 @@ from wb_unit_economics.contracts import (
     SkuMapping,
     WbSalesReportSummaryRow,
 )
-from wb_unit_economics.streaming_report import build_streamed_unit_economics_report
+from wb_unit_economics.source_integrity import (
+    RawIntegrityError,
+    _canonical_json_list_file_hash,
+    canonical_payload_hash,
+)
+from wb_unit_economics.streaming_report import (
+    build_streamed_unit_economics_report,
+    prepare_streamed_wb_spool,
+)
 from wb_unit_economics.wb_finance import load_wb_finance_snapshots
+from wb_unit_economics.web.source_refresh import _wb_daily_fact_parity
 
 TZ = ZoneInfo("Europe/Moscow")
 
@@ -106,6 +118,7 @@ def test_streamed_report_matches_list_builder_with_weekly_allocations(
         client_id="client",
         account_org_mapping=account_mapping,
     )
+    expected_daily = []
     expected = build_unit_economics_report(
         client_id="client",
         wb_snapshots=wb_snapshots,
@@ -116,6 +129,7 @@ def test_streamed_report_matches_list_builder_with_weekly_allocations(
         generated_at=generated_at,
         report_period_start=date(2026, 6, 10),
         report_period_end=date(2026, 6, 17),
+        daily_facts_sink=expected_daily,
     )
 
     streamed = build_streamed_unit_economics_report(
@@ -134,6 +148,108 @@ def test_streamed_report_matches_list_builder_with_weekly_allocations(
     assert streamed.wb_rows == 2
     assert streamed.bucket_count == 1
     assert streamed.report.model_dump(mode="json") == expected.model_dump(mode="json")
+    assert [item.model_dump(mode="json") for item in streamed.daily_facts] == [
+        item.model_dump(mode="json") for item in expected_daily
+    ]
+    assert len(streamed.daily_facts) == 2
+    assert sum((item.net_revenue for item in streamed.daily_facts), Decimal("0")) == (
+        Decimal("1500.00")
+    )
+    assert sum(item.source_row_count for item in streamed.daily_facts) == 2
+    parity = _wb_daily_fact_parity(
+        {"report": streamed.report, "wb_rows": streamed.wb_rows},
+        streamed.daily_facts,
+    )
+    assert parity["status"] == "aggregate_only"
+
+
+def test_streamed_spool_can_run_in_isolated_process(tmp_path: Path) -> None:
+    wb_dir = _write_wb_export(
+        tmp_path,
+        rows=[
+            {
+                "rrdId": 1,
+                "rrDate": "2026-06-10",
+                "nmId": 101,
+                "vendorCode": "A-1",
+                "docTypeName": "Продажа",
+                "quantity": 1,
+                "retailAmount": "100",
+            }
+        ],
+    )
+    mapping = [
+        AccountOrgMapping(
+            client_id="client",
+            seller_account_id="WB_ACCOUNT_1",
+            organization_id="ORG-1",
+            seller_account_name="Кабинет",
+            organization_name="Организация",
+        )
+    ]
+
+    prepared = prepare_streamed_wb_spool(
+        wb_finance_dir=wb_dir,
+        client_id="client",
+        account_org_mapping=mapping,
+        report_period_start=date(2026, 6, 10),
+        report_period_end=date(2026, 6, 14),
+        stream_cache_dir=tmp_path / "isolated-cache",
+        isolate_process=True,
+    )
+    spool_dir = prepared.spool_dir
+
+    assert prepared.spool.rows_seen == 1
+    assert prepared.spool.rows_in_report_period == 1
+    assert len(prepared.spool.buckets) == 1
+    assert spool_dir.is_dir()
+
+    prepared.cleanup()
+
+    assert not spool_dir.exists()
+
+
+def test_rebuild_blocks_valid_json_changed_after_manifest(tmp_path: Path) -> None:
+    wb_dir = _write_wb_export(
+        tmp_path,
+        rows=[{"rrdId": 1, "rrDate": "2026-06-10", "retailAmount": "100"}],
+    )
+    raw_path = wb_dir / "wb_account_1_finance_page_1.raw.json"
+    raw_path.write_text(
+        json.dumps(
+            [{"rrdId": 1, "rrDate": "2026-06-10", "retailAmount": "999"}]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RawIntegrityError, match="hash"):
+        load_wb_finance_snapshots(
+            wb_dir,
+            client_id="client",
+            account_org_mapping=[],
+        )
+
+
+def test_wb_integrity_hash_streams_canonical_json_across_chunks(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        {
+            "rrdId": index,
+            "nested": {"currency": "₽", "amount": index / 10},
+            "label": f"строка-{index}",
+        }
+        for index in range(20)
+    ]
+    path = tmp_path / "finance.raw.json"
+    path.write_text(
+        json.dumps(rows, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    assert _canonical_json_list_file_hash(path, chunk_size=31) == (
+        canonical_payload_hash(rows)
+    )
 
 
 def test_rebuild_report_cli_accepts_files_stream(
@@ -163,6 +279,29 @@ def test_rebuild_report_cli_accepts_files_stream(
     assert args.stream_cache_dir == Path("data/.cache/wb_stream_rebuild")
     assert args.keep_stream_cache is False
     assert args.draft_only is True
+
+
+def test_rebuild_report_rejects_unlinked_snapshot_lineage() -> None:
+    args = SimpleNamespace(
+        source_snapshot_set_id="composite-snapshot",
+        source_refresh_run_id="",
+        stock_history_refresh_run_id="",
+        wb_stock_history_dir=None,
+    )
+
+    with pytest.raises(ValueError, match="refusing an unlinked report snapshot"):
+        rebuild_report_from_sources._validate_lineage_args(args)
+
+
+def test_rebuild_report_accepts_registered_stock_history_lineage() -> None:
+    args = SimpleNamespace(
+        source_snapshot_set_id="composite-snapshot",
+        source_refresh_run_id="",
+        stock_history_refresh_run_id="stock-refresh-1",
+        wb_stock_history_dir=Path("data/wb_stock_history_daily/snapshot"),
+    )
+
+    rebuild_report_from_sources._validate_lineage_args(args)
 
 
 def test_rebuild_report_cli_builds_audited_explicit_osno_profile(
@@ -226,6 +365,8 @@ def _write_wb_export(tmp_path: Path, *, rows: list[dict[str, object]]) -> Path:
                 "seller_account_id": "WB_ACCOUNT_1",
                 "account_name": "Кабинет",
                 "status": "ok",
+                "row_count": len(rows),
+                "raw_payload_hash": canonical_payload_hash(rows),
                 "output_file": raw_file.name,
             },
             {

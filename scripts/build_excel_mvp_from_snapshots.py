@@ -22,6 +22,7 @@ from wb_unit_economics.mapping import (
     has_onec_marketplace_mapping_files,
     load_onec_rows,
     load_wb_card_flat_rows,
+    merge_sku_mappings_with_current,
 )
 from wb_unit_economics.onec_cost import (
     attach_document_metadata_to_documents,
@@ -156,7 +157,8 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         )
         return 1
 
-    if args.mapping_source == "postgres":
+    supplied_sku_mappings = getattr(args, "sku_mappings", None)
+    if args.mapping_source == "postgres" and supplied_sku_mappings is None:
         sku_mappings = load_sku_mappings_from_postgres(
             target=postgres_target,
             client_id=args.client_id,
@@ -167,7 +169,7 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         onec_barcodes = load_onec_rows(onec_dir, "barcodes")
         onec_nomenclature = load_onec_rows(onec_dir, "nomenclature")
         if has_onec_marketplace_mapping_files(marketplace_mapping_dir):
-            sku_mappings = build_sku_mapping_from_onec_marketplace_files(
+            fallback_sku_mappings = build_sku_mapping_from_onec_marketplace_files(
                 client_id=args.client_id,
                 mapping_dir=marketplace_mapping_dir,
                 nomenclature_rows=onec_nomenclature,
@@ -175,7 +177,7 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
             )
             mapping_source = "1C marketplace mapping export"
         else:
-            sku_mappings = build_sku_mapping_from_articles(
+            fallback_sku_mappings = build_sku_mapping_from_articles(
                 client_id=args.client_id,
                 wb_card_rows=load_wb_card_flat_rows(wb_cards_dir),
                 onec_barcode_rows=onec_barcodes,
@@ -183,6 +185,14 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
                 account_org_mapping=account_mapping,
             )
             mapping_source = "WB cards + 1C article auto-match"
+        if supplied_sku_mappings is not None:
+            sku_mappings = merge_sku_mappings_with_current(
+                fallback_sku_mappings,
+                supplied_sku_mappings,
+            )
+            mapping_source = "mapping service current view + legacy key aliases"
+        else:
+            sku_mappings = fallback_sku_mappings
     if args.cost_source == "postgres":
         cost_snapshots = load_cost_snapshots_from_postgres(
             target=postgres_target,
@@ -205,7 +215,8 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
             )
             cost_note = (
                 "Себестоимость 1С: средневзвешенная по строкам "
-                "ОтчетКомиссионера РВБ/WB в регистре Продажи "
+                "ОтчетКомиссионера и РасходнаяНакладная по выкупам "
+                "РВБ/WB в регистре Продажи "
                 f"({args.sales_cost_amount_field}, {sales_register_dir.name}); "
                 "распределенные допрасходы уже "
                 "включены и отдельно не прибавляются."
@@ -240,13 +251,18 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         reference_dir=onec_dir,
         sales_register_dir=sales_register_dir,
     )
-    tax_profiles = tax_profiles_from_account_org_mapping(
-        args.client_id,
-        account_mapping,
-        onec_organization_rows=_organizations_from_sample(onec_dir),
-        special_tax_mode_rows=_optional_onec_rows(
-            onec_dir, "tax_special_regime_notifications"
-        ),
+    supplied_tax_profiles = getattr(args, "tax_profiles", None)
+    tax_profiles = (
+        list(supplied_tax_profiles)
+        if supplied_tax_profiles is not None
+        else tax_profiles_from_account_org_mapping(
+            args.client_id,
+            account_mapping,
+            onec_organization_rows=_organizations_from_sample(onec_dir),
+            special_tax_mode_rows=_optional_onec_rows(
+                onec_dir, "tax_special_regime_notifications"
+            ),
+        )
     )
     expense_allocation_bases = load_wb_expense_allocation_bases(
         client_id=args.client_id,
@@ -701,15 +717,20 @@ def _latest_onec_opiu_dir(base: Path) -> Path | None:
 def _latest_onec_services_dir(base: Path) -> Path | None:
     if not base.exists():
         return None
-    required_files = (
-        "supplier_receipts.raw.json",
-        "supplier_receipt_expenses.raw.json",
-    )
     candidates = [
         item
         for item in base.iterdir()
         if item.is_dir()
-        and all((item / file_name).exists() for file_name in required_files)
+        and (
+            all(
+                (item / file_name).exists()
+                for file_name in (
+                    "supplier_receipts.raw.json",
+                    "supplier_receipt_expenses.raw.json",
+                )
+            )
+            or (item / "incoming_invoices.raw.json").exists()
+        )
     ]
     if not candidates:
         return None

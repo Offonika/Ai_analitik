@@ -25,6 +25,7 @@ from wb_unit_economics.wb_finance import (
     export_wb_finance_report_id_page,
     extract_next_rrd_id,
     normalize_finance_row,
+    recover_wb_finance_manifest_from_pages,
     resume_wb_finance_export,
 )
 
@@ -83,6 +84,7 @@ def test_normalize_finance_row_maps_new_camel_case_fields() -> None:
         {
             "rrdId": 123,
             "reportId": "777",
+            "reportType": 2,
             "rrDate": "2026-04-10",
             "saleDt": "2026-04-09T00:00:00Z",
             "nmId": 101,
@@ -114,6 +116,7 @@ def test_normalize_finance_row_maps_new_camel_case_fields() -> None:
 
     assert snapshot.wb_document_id == "123"
     assert snapshot.wb_report_id == "777"
+    assert snapshot.report_type == 2
     assert snapshot.period_start == date(2026, 4, 10)
     assert snapshot.nm_id == 101
     assert snapshot.vendor_code == "a-1"
@@ -409,6 +412,93 @@ def test_finance_resume_continues_from_manifest_rrd_id(
     assert manifest["results"][1]["rrd_id_next"] == 20
     assert manifest["resume"]["previous_result_count"] == 1
     assert list(tmp_path.glob("manifest.before-resume-*.json"))
+
+
+def test_finance_export_checkpoints_each_page_before_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_page(*_args, **kwargs) -> WbFinancePageResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt
+        output_path = tmp_path / "wb_account_1_finance_page_1.raw.json"
+        output_path.write_text(json.dumps([{"rrdId": 10}]), encoding="utf-8")
+        return WbFinancePageResult(
+            seller_account_id="WB_ACCOUNT_1",
+            account_name="First cabinet",
+            page_index=kwargs["page_index"],
+            ok=True,
+            status="ok",
+            row_count=1,
+            rrd_id_start=kwargs["rrd_id"],
+            rrd_id_next=10,
+            output_path=output_path,
+            raw_payload_hash="hash",
+            status_code=200,
+        )
+
+    monkeypatch.setattr(wb_finance, "export_wb_finance_page", fake_page)
+    monkeypatch.setattr(wb_finance.time, "sleep", lambda _seconds: None)
+    settings = WbFinanceSettings(
+        accounts=(
+            WbFinanceSellerAccount(
+                "WB_ACCOUNT_1", "First cabinet", "test-key"
+            ),
+        )
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        export_wb_finance(
+            settings,
+            tmp_path,
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            max_pages=2,
+            request_delay_seconds=0,
+        )
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["checkpoint_status"] == "running"
+    assert len(manifest["results"]) == 1
+    assert manifest["results"][0]["rrd_id_next"] == 10
+
+
+def test_finance_manifest_can_be_recovered_from_page_files(tmp_path: Path) -> None:
+    (tmp_path / "wb_account_1_finance_page_1.raw.json").write_text(
+        json.dumps([{"rrdId": 10}, {"rrdId": 11}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "wb_account_1_finance_page_2.raw.json").write_text(
+        json.dumps([{"rrdId": 20}]),
+        encoding="utf-8",
+    )
+    settings = WbFinanceSettings(
+        accounts=(
+            WbFinanceSellerAccount(
+                "WB_ACCOUNT_1", "First cabinet", "test-key"
+            ),
+        )
+    )
+
+    results = recover_wb_finance_manifest_from_pages(
+        settings,
+        tmp_path,
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+    )
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    result_cursors = [
+        (item.row_count, item.rrd_id_start, item.rrd_id_next)
+        for item in results
+    ]
+    assert result_cursors == [(2, 0, 11), (1, 11, 20)]
+    assert manifest["checkpoint_status"] == "recovered_interrupted"
+    assert len(manifest["results"]) == 2
 
 
 def test_finance_resume_skips_completed_manifest(

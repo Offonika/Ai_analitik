@@ -6,7 +6,7 @@ audience: ["engineering", "consultant"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-07-08"
+updated_at: "2026-07-12"
 ---
 
 # Excel MVP changelog
@@ -15,6 +15,13 @@ updated_at: "2026-07-08"
 в `docs/specs/wb-unit-economics-excel-mvp-implementation.md`; этот файл нужен,
 чтобы не перегружать implementation spec длинной хроникой.
 
+- 2026-07-12 — added the audited Galustov management input-VAT scenario:
+  import cost difference, WB services at 22/122 without penalties, actual
+  purchase-book priority, explicit API/UI labels and a persistent review task.
+- 2026-07-12 — split calendar 1C accounting KPIs from the WB product P&L:
+  calendar quantity and COGS now include `ОтчетКомиссионера`, buyout
+  `РасходнаяНакладная` and month-close cost adjustments, while `reportType=1`
+  and `reportType=2` receive separate document-specific unit-cost layers.
 - 2026-07-08 — changed `sku_mapping` source of truth from 1C marketplace
   extension/export to the project-owned marketplace/1C mapping service; old
   1C extension/TXT sources are candidate import or emergency fallback only.

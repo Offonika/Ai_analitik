@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import run_source_refresh
 from scripts.run_source_refresh import _settings_from_args
@@ -89,7 +90,7 @@ def test_run_source_refresh_cli_skips_startup_backfill(monkeypatch) -> None:
         def __init__(self, _settings) -> None:
             return None
 
-        def run(self, *_args, **_kwargs):
+        def enqueue(self, *_args, **_kwargs):
             return {
                 "id": "source_refresh_test",
                 "status": "blocked_low_disk",
@@ -128,6 +129,195 @@ def test_run_source_refresh_cli_skips_startup_backfill(monkeypatch) -> None:
 
     assert run_source_refresh.main() == 0
     assert calls == [{"run_backfill": False}]
+
+
+def test_run_source_refresh_cli_executes_existing_worker_run(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    refresh_run = SimpleNamespace(id="source_refresh_test")
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            return None
+
+        def get(self, _model, run_id):
+            assert run_id == refresh_run.id
+            return refresh_run
+
+    class _Service:
+        def __init__(self, _settings) -> None:
+            return None
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_source_refresh.py",
+            "--run-id",
+            "source_refresh_test",
+            "--worker-id",
+            "systemd:source_refresh_test",
+        ],
+    )
+    monkeypatch.setattr(run_source_refresh, "make_engine", lambda _url: object())
+    monkeypatch.setattr(run_source_refresh, "init_db", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        run_source_refresh,
+        "make_session_factory",
+        lambda _engine: _Session,
+    )
+    monkeypatch.setattr(run_source_refresh, "SourceRefreshService", _Service)
+    monkeypatch.setattr(
+        run_source_refresh,
+        "claim_run_by_id",
+        lambda _db, *, refresh_run_id, worker_id: (
+            calls.append({"run_id": refresh_run_id, "worker_id": worker_id})
+            or refresh_run
+        ),
+    )
+    monkeypatch.setattr(
+        run_source_refresh,
+        "process_run",
+        lambda _factory, _service, refresh_run_id, *, heartbeat_seconds: calls.append(
+            {
+                "processed_run_id": refresh_run_id,
+                "heartbeat_seconds": heartbeat_seconds,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        run_source_refresh.repository,
+        "source_refresh_run_payload",
+        lambda _run: {
+            "id": refresh_run.id,
+            "status": "blocked_low_disk",
+            "mode": "full",
+            "snapshotSetId": "full-test",
+            "periodStart": "2026-03-01",
+            "periodEnd": "2026-07-10",
+            "collections": [],
+        },
+    )
+
+    assert run_source_refresh.main() == 0
+    assert calls[0] == {
+        "run_id": "source_refresh_test",
+        "worker_id": "systemd:source_refresh_test",
+    }
+    assert calls[1] == {
+        "processed_run_id": "source_refresh_test",
+        "heartbeat_seconds": 30,
+    }
+
+
+def test_run_source_refresh_cli_keeps_heartbeat_for_long_direct_run(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    refresh_run = SimpleNamespace(id="source_refresh_managed")
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            return None
+
+        def get(self, _model, run_id):
+            assert run_id == refresh_run.id
+            return refresh_run
+
+    class _Service:
+        def __init__(self, _settings) -> None:
+            return None
+
+        def enqueue(self, *_args, **_kwargs):
+            return {
+                "id": refresh_run.id,
+                "status": "queued",
+                "mode": "daily",
+                "snapshotSetId": "daily-managed",
+                "periodStart": "2026-07-10",
+                "periodEnd": "2026-07-11",
+                "collections": [],
+            }
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_source_refresh.py",
+            "--tenant",
+            "shumeyko",
+            "--mode",
+            "daily",
+            "--database-url",
+            "sqlite:///:memory:",
+        ],
+    )
+    monkeypatch.setattr(run_source_refresh, "make_engine", lambda _url: object())
+    monkeypatch.setattr(run_source_refresh, "init_db", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        run_source_refresh,
+        "make_session_factory",
+        lambda _engine: _Session,
+    )
+    monkeypatch.setattr(run_source_refresh, "SourceRefreshService", _Service)
+
+    def claim_run(_db, *, refresh_run_id, worker_id):
+        calls.append(
+            {
+                "claim": refresh_run_id,
+                "worker_id": worker_id,
+            }
+        )
+        return refresh_run
+
+    def run_with_heartbeat(
+        _factory,
+        _service,
+        refresh_run_id,
+        *,
+        heartbeat_seconds,
+    ):
+        calls.append(
+            {
+                "process": refresh_run_id,
+                "heartbeat_seconds": heartbeat_seconds,
+            }
+        )
+
+    monkeypatch.setattr(run_source_refresh, "claim_run_by_id", claim_run)
+    monkeypatch.setattr(run_source_refresh, "process_run", run_with_heartbeat)
+    monkeypatch.setattr(
+        run_source_refresh.repository,
+        "source_refresh_run_payload",
+        lambda _run: {
+            "id": refresh_run.id,
+            "status": "needs_review",
+            "mode": "daily",
+            "snapshotSetId": "daily-managed",
+            "periodStart": "2026-07-10",
+            "periodEnd": "2026-07-11",
+            "collections": [],
+        },
+    )
+
+    assert run_source_refresh.main() == 0
+    assert calls[0]["claim"] == refresh_run.id
+    assert str(calls[0]["worker_id"]).startswith("cli:")
+    assert calls[1] == {
+        "process": refresh_run.id,
+        "heartbeat_seconds": 30,
+    }
 
 
 def test_run_source_refresh_cli_reports_missing_source_report_without_run(

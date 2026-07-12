@@ -113,6 +113,13 @@ documents:
     audience: ["engineering", "operations"]
     source_of_truth: true
     summary: "Accepted spec для source_refresh guards, provider registry, collector contract и dry-run retention CLI."
+  - path: "docs/specs/source-refresh-database-retention.md"
+    title: "Source refresh: ретенция PostgreSQL и освобождение диска"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    summary: "Accepted spec пакетной очистки raw snapshot rows с защитой report lineage и безопасной оптимизацией индекса."
   - path: "docs/specs/marketplace-unit-economics-ozon-integration.md"
     title: "Marketplace unit economics: Ozon integration"
     doc_type: "spec"

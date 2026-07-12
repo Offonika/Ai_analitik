@@ -20,7 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from wb_unit_economics.web.database import make_engine, make_session_factory
-from wb_unit_economics.web.models import ReportRun, SourceRefreshRun
+from wb_unit_economics.web.models import ReportRun, SourceLoad, SourceRefreshRun
 from wb_unit_economics.web.settings import WebSettings
 
 
@@ -44,7 +44,7 @@ def main() -> int:
     else:
         print("Need to free GiB: 0.00")
 
-    protected = _protected_snapshot_reasons(
+    protected, missing_report_lineage = _protected_snapshot_reasons(
         source_root,
         database_url=args.database_url or os.getenv("SHUMEYKO_DATABASE_URL") or "",
         daily_keep=args.daily_keep,
@@ -52,6 +52,8 @@ def main() -> int:
         extra_protected=set(args.protect_snapshot_set),
     )
     reclaimable_bytes = _print_source_refresh_snapshots(source_root, protected)
+    for path in missing_report_lineage:
+        print(f"Missing report lineage raw directory: {path}")
     reclaimable_gb = reclaimable_bytes / (1024**3)
     print(
         "Potential free after source_refresh prune GiB: "
@@ -65,8 +67,12 @@ def main() -> int:
     else:
         print("Still needed after source_refresh prune GiB: 0.00")
     _print_scan_roots(scan_roots, top=args.top)
-    print("Health: low_disk" if min_free_gb > free_gb else "Health: ok")
-    return 1 if min_free_gb > free_gb else 0
+    unhealthy = min_free_gb > free_gb or bool(missing_report_lineage)
+    if missing_report_lineage:
+        print("Health: missing_report_lineage")
+    else:
+        print("Health: low_disk" if min_free_gb > free_gb else "Health: ok")
+    return 1 if unhealthy else 0
 
 
 def _print_source_refresh_snapshots(
@@ -136,9 +142,10 @@ def _protected_snapshot_reasons(
     daily_keep: int,
     full_keep: int,
     extra_protected: set[str] | None = None,
-) -> dict[str, set[str]]:
+) -> tuple[dict[str, set[str]], list[str]]:
     snapshots = _snapshot_dirs(source_root)
     protected: dict[str, set[str]] = defaultdict(set)
+    missing_report_lineage: list[str] = []
     for name in sorted(extra_protected or set()):
         if name:
             protected[name].add("explicit protection")
@@ -147,9 +154,13 @@ def _protected_snapshot_reasons(
     for path in _latest_by_prefix(snapshots, "full-", full_keep):
         protected[path.name].add("full retention")
     if database_url:
-        for name, reason in _protected_from_database(database_url).items():
+        database_protected, missing_report_lineage = _protected_from_database(
+            database_url,
+            source_root=source_root,
+        )
+        for name, reason in database_protected.items():
             protected[name].add(reason)
-    return protected
+    return protected, missing_report_lineage
 
 
 def _latest_by_prefix(candidates: list[Path], prefix: str, limit: int) -> list[Path]:
@@ -158,19 +169,59 @@ def _latest_by_prefix(candidates: list[Path], prefix: str, limit: int) -> list[P
     ]
 
 
-def _protected_from_database(database_url: str) -> dict[str, str]:
+def _protected_from_database(
+    database_url: str,
+    *,
+    source_root: Path,
+) -> tuple[dict[str, str], list[str]]:
     protected: dict[str, str] = {}
+    missing_report_lineage: list[str] = []
     try:
         engine = make_engine(database_url)
         session_factory = make_session_factory(engine)
         with session_factory() as db:
+            report_filter = ReportRun.publication_status.in_({"draft", "published"})
             for value in db.scalars(
                 select(ReportRun.source_snapshot_set_id).where(
-                    ReportRun.publication_status == "published",
+                    report_filter,
                     ReportRun.source_snapshot_set_id != "",
                 )
             ):
-                protected[str(value)] = "published report"
+                protected[str(value)] = "draft or published report"
+            report_run_ids = {
+                str(value)
+                for value in db.scalars(
+                    select(SourceLoad.source_refresh_run_id)
+                    .join(ReportRun, ReportRun.id == SourceLoad.report_run_id)
+                    .where(
+                        report_filter,
+                        SourceLoad.source_refresh_run_id.is_not(None),
+                    )
+                )
+                if value
+            }
+            pending = list(report_run_ids)
+            visited: set[str] = set()
+            while pending:
+                run_id = pending.pop()
+                if run_id in visited:
+                    continue
+                visited.add(run_id)
+                run = db.get(SourceRefreshRun, run_id)
+                if run is None:
+                    continue
+                if run.snapshot_set_id:
+                    protected[run.snapshot_set_id] = "report source load"
+                root_path = (
+                    Path(run.root_dir).resolve()
+                    if run.root_dir
+                    else source_root / run.snapshot_set_id
+                )
+                protected[root_path.name] = "report source load"
+                if not root_path.is_dir():
+                    missing_report_lineage.append(f"{run.id}: {root_path}")
+                if run.base_source_refresh_run_id:
+                    pending.append(run.base_source_refresh_run_id)
             for run in db.scalars(
                 select(SourceRefreshRun).where(SourceRefreshRun.finished_at.is_(None))
             ):
@@ -181,7 +232,7 @@ def _protected_from_database(database_url: str) -> dict[str, str]:
             f"Database protection read failed: {exc.__class__.__name__}",
             file=sys.stderr,
         )
-    return protected
+    return protected, sorted(set(missing_report_lineage))
 
 
 def _directory_size(path: Path) -> int:
@@ -224,3 +275,4 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    missing_report_lineage: list[str] = []

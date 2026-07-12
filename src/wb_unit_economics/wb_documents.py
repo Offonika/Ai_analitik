@@ -7,11 +7,15 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile, ZipFile
 from zoneinfo import ZoneInfo
 
 import httpx
+from openpyxl import load_workbook
 
 from wb_unit_economics.wb_finance import WbFinanceSellerAccount, WbFinanceSettings
 
@@ -254,6 +258,41 @@ def export_wb_documents(
     return results
 
 
+def load_wb_document_export_results(
+    output_dir: Path,
+) -> list[WbDocumentExportResult]:
+    """Restore safe provider results from an immutable documents snapshot."""
+    manifest_path = output_dir / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Unexpected WB documents manifest payload")
+    rows = payload.get("provider_results", payload.get("results", []))
+    if not isinstance(rows, list):
+        raise ValueError("Unexpected WB documents manifest results")
+    results: list[WbDocumentExportResult] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("seller_account_id"):
+            continue
+        results.append(
+            WbDocumentExportResult(
+                seller_account_id=str(row["seller_account_id"]),
+                account_name=str(row.get("account_name") or ""),
+                ok=bool(row.get("ok")),
+                status=str(row.get("status") or "error"),
+                row_count=int(row.get("row_count") or 0),
+                downloaded_count=int(row.get("downloaded_count") or 0),
+                output_file=str(row.get("output_file") or ""),
+                status_code=(
+                    int(row["status_code"])
+                    if row.get("status_code") is not None
+                    else None
+                ),
+                error=str(row.get("error") or ""),
+            )
+        )
+    return results
+
+
 def default_wb_documents_output_dir(now: datetime | None = None) -> Path:
     timestamp = (now or datetime.now(tz=MOSCOW_TZ)).strftime("%Y%m%dT%H%M%S")
     return Path("data/wb_documents") / timestamp
@@ -303,7 +342,8 @@ def _download_selected_documents(
         if not service_name or not extensions:
             continue
         extension = str(extensions[0])
-        content, metadata, _status_code = client.download_document(
+        content, metadata, _status_code = _download_document_with_retry(
+            client,
             service_name=service_name,
             extension=extension,
         )
@@ -319,9 +359,103 @@ def _download_selected_documents(
             "sha256": hashlib.sha256(content).hexdigest(),
             "size_bytes": len(content),
             "extension": extension,
+            "summary": _redeem_notification_summary(
+                content,
+                extension=extension,
+                service_name=service_name,
+            ),
         }
         time.sleep(0.2)
     return result
+
+
+def _download_document_with_retry(
+    client: WbDocumentsClient,
+    *,
+    service_name: str,
+    extension: str,
+) -> tuple[bytes, dict[str, Any], int]:
+    for attempt in range(4):
+        try:
+            return client.download_document(
+                service_name=service_name,
+                extension=extension,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 429 or attempt == 3:
+                raise
+            retry_after = exc.response.headers.get("Retry-After", "")
+            try:
+                delay = max(1.0, float(retry_after))
+            except ValueError:
+                delay = 10.0
+            time.sleep(delay)
+    raise RuntimeError("WB document download retry exhausted")
+
+
+def _redeem_notification_summary(
+    content: bytes,
+    *,
+    extension: str,
+    service_name: str,
+) -> dict[str, Any]:
+    report_id_match = re.search(r"redeem-notification-(\d+)", service_name)
+    base: dict[str, Any] = {
+        "reportId": report_id_match.group(1) if report_id_match else "",
+        "status": "unsupported",
+        "quantity": None,
+        "purchaseAmount": None,
+        "vatAmount": None,
+    }
+    if extension.casefold() != "zip":
+        return base
+    try:
+        with ZipFile(BytesIO(content)) as archive:
+            workbook_name = next(
+                (
+                    name
+                    for name in archive.namelist()
+                    if name.casefold().endswith(".xlsx")
+                ),
+                "",
+            )
+            if not workbook_name:
+                return {**base, "status": "xlsx_missing"}
+            workbook = load_workbook(
+                BytesIO(archive.read(workbook_name)),
+                read_only=True,
+                data_only=True,
+            )
+            worksheet = workbook.active
+            for values in worksheet.iter_rows(values_only=True):
+                populated = [value for value in values if value not in (None, "")]
+                if not populated or not str(populated[0]).strip().casefold().startswith(
+                    "итого"
+                ):
+                    continue
+                if len(populated) < 3:
+                    return {**base, "status": "total_row_incomplete"}
+                return {
+                    **base,
+                    "status": "parsed",
+                    "quantity": _decimal_text(populated[1]),
+                    "purchaseAmount": _decimal_text(populated[2]),
+                    "vatAmount": (
+                        _decimal_text(populated[4])
+                        if len(populated) > 4
+                        and str(populated[4]).strip() not in {"-", "–", "—"}
+                        else None
+                    ),
+                    "workbookName": Path(workbook_name).name,
+                }
+            return {**base, "status": "total_row_missing"}
+    except (BadZipFile, InvalidOperation, OSError, ValueError):
+        return {**base, "status": "parse_error"}
+
+
+def _decimal_text(value: Any) -> str:
+    normalized = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
+    return format(Decimal(normalized), "f")
 
 
 def _document_matches_keywords(

@@ -21,10 +21,12 @@ from scripts.export_report_artifacts import (
     DEFAULT_EXCEL,
     export_report_artifacts,
 )
-from wb_unit_economics.calculation import build_unit_economics_report
+from wb_unit_economics.calculation import build_unit_economics_report, week_bounds
 from wb_unit_economics.config import tax_profiles_from_account_org_mapping
 from wb_unit_economics.contracts import (
     AccountOrgMapping,
+    InputVatPolicy,
+    MarketplaceFinanceDailyFact,
     TaxProfile,
     VatDeductionMode,
     VatMode,
@@ -35,6 +37,7 @@ from wb_unit_economics.mapping import (
     has_onec_marketplace_mapping_files,
     load_onec_rows,
     load_wb_card_flat_rows,
+    merge_sku_mappings_with_current,
 )
 from wb_unit_economics.onec_cost import (
     extract_gross_profit_document_rows,
@@ -49,7 +52,10 @@ from wb_unit_economics.postgres_finance import (
     load_wb_finance_snapshots_from_postgres,
 )
 from wb_unit_economics.report_marts import build_report_marts
-from wb_unit_economics.streaming_report import build_streamed_unit_economics_report
+from wb_unit_economics.streaming_report import (
+    build_streamed_unit_economics_from_spool,
+    prepare_streamed_wb_spool,
+)
 from wb_unit_economics.wb_expenses import load_wb_expense_allocation_bases
 from wb_unit_economics.wb_finance import (
     load_wb_finance_snapshots,
@@ -63,11 +69,32 @@ from wb_unit_economics.web.settings import WebSettings
 
 def main() -> int:
     args = parse_args()
+    _validate_lineage_args(args)
     settings = _settings(args)
-    build = build_db_first_payload(args)
     engine = make_engine(settings.database_url)
     init_db(engine)
     session_factory = make_session_factory(engine)
+    source_tax_profiles: list[TaxProfile] | None = None
+    source_input_vat_policies: list[InputVatPolicy] | None = None
+    if args.source_refresh_run_id:
+        with session_factory() as db:
+            refresh_run = db.get(SourceRefreshRun, args.source_refresh_run_id)
+            if refresh_run is None:
+                raise ValueError(
+                    f"source refresh not found: {args.source_refresh_run_id}"
+                )
+            source_tax_profiles = repository.tax_profiles_for_source_refresh(
+                db,
+                refresh_run,
+            )
+            source_input_vat_policies = (
+                repository.input_vat_policies_for_source_refresh(db, refresh_run)
+            )
+    build = build_db_first_payload(
+        args,
+        tax_profiles=source_tax_profiles,
+        input_vat_policies=source_input_vat_policies,
+    )
     records = []
     with session_factory() as db:
         report = repository.save_report_marts(
@@ -89,6 +116,43 @@ def main() -> int:
                     f"source refresh not found: {args.source_refresh_run_id}"
                 )
             repository.replace_source_loads_from_refresh(db, report, refresh_run)
+        if args.stock_history_refresh_run_id:
+            stock_refresh_run = db.get(
+                SourceRefreshRun,
+                args.stock_history_refresh_run_id,
+            )
+            if stock_refresh_run is None:
+                raise ValueError(
+                    "stock history source refresh not found: "
+                    f"{args.stock_history_refresh_run_id}"
+                )
+            stock_collections = [
+                item
+                for item in stock_refresh_run.collections
+                if item.source_type == "wb_stock_history_daily"
+            ]
+            if not stock_collections:
+                raise ValueError(
+                    "stock history source refresh has no wb_stock_history_daily "
+                    "collection"
+                )
+            build_path = args.wb_stock_history_dir.resolve()
+            source_paths = {
+                Path(item.raw_path).resolve()
+                for item in stock_collections
+                if item.raw_path
+            }
+            if source_paths != {build_path}:
+                raise ValueError(
+                    "stock history build path does not match registered source "
+                    "refresh path"
+                )
+            repository.replace_report_source_load_from_refresh(
+                db,
+                report,
+                stock_refresh_run,
+                source_type="wb_stock_history_daily",
+            )
         if args.export_all:
             records = export_report_artifacts(
                 repository.report_full_payload(db, report),
@@ -129,6 +193,7 @@ def build_db_first_payload(
     args: argparse.Namespace,
     *,
     tax_profiles: list[TaxProfile] | None = None,
+    input_vat_policies: list[InputVatPolicy] | None = None,
 ) -> dict:
     wb_finance_dir = args.wb_finance_dir or excel_mvp._latest_dir(
         Path("data/wb_finance")
@@ -200,6 +265,11 @@ def build_db_first_payload(
         account_mapping,
         source_profiles=source_tax_profiles,
     )
+    confirmed_input_vat_org_ids = _confirmed_input_vat_org_ids(
+        onec_dir,
+        period_start=report_period_start,
+        period_end=report_period_end,
+    )
     postgres_target = default_postgres_target(
         database=args.postgres_db_name,
         host=args.postgres_host,
@@ -222,8 +292,23 @@ def build_db_first_payload(
         wb_snapshots = []
     if args.wb_finance_source != "files-stream" and not wb_snapshots:
         raise SystemExit("No WB Finance rows found.")
+    prepared_stream = (
+        prepare_streamed_wb_spool(
+            wb_finance_dir=wb_finance_dir,
+            client_id=args.client_id,
+            account_org_mapping=account_mapping,
+            report_period_start=report_period_start,
+            report_period_end=report_period_end,
+            stream_cache_dir=args.stream_cache_dir,
+            keep_stream_cache=args.keep_stream_cache,
+            isolate_process=True,
+        )
+        if args.wb_finance_source == "files-stream"
+        else None
+    )
 
-    if args.mapping_source == "postgres":
+    supplied_sku_mappings = getattr(args, "sku_mappings", None)
+    if args.mapping_source == "postgres" and supplied_sku_mappings is None:
         sku_mappings = load_sku_mappings_from_postgres(
             target=postgres_target,
             client_id=args.client_id,
@@ -233,20 +318,28 @@ def build_db_first_payload(
         onec_barcodes = load_onec_rows(onec_dir, "barcodes")
         onec_nomenclature = load_onec_rows(onec_dir, "nomenclature")
         if has_onec_marketplace_mapping_files(args.onec_marketplace_mapping_dir):
-            sku_mappings = build_sku_mapping_from_onec_marketplace_files(
+            fallback_sku_mappings = build_sku_mapping_from_onec_marketplace_files(
                 client_id=args.client_id,
                 mapping_dir=args.onec_marketplace_mapping_dir,
                 nomenclature_rows=onec_nomenclature,
                 account_org_mapping=account_mapping,
             )
         else:
-            sku_mappings = build_sku_mapping_from_articles(
+            fallback_sku_mappings = build_sku_mapping_from_articles(
                 client_id=args.client_id,
                 wb_card_rows=load_wb_card_flat_rows(wb_cards_dir),
                 onec_barcode_rows=onec_barcodes,
                 nomenclature_rows=onec_nomenclature,
                 account_org_mapping=account_mapping,
             )
+        sku_mappings = (
+            merge_sku_mappings_with_current(
+                fallback_sku_mappings,
+                supplied_sku_mappings,
+            )
+            if supplied_sku_mappings is not None
+            else fallback_sku_mappings
+        )
 
     if args.cost_source == "postgres":
         cost_snapshots = load_cost_snapshots_from_postgres(
@@ -265,6 +358,8 @@ def build_db_first_payload(
             reference_dir=onec_dir,
             amount_field=sales_cost_amount_field,
             marketplace_counterparties_only=True,
+            input_vat_policies=input_vat_policies or [],
+            confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
         )
     else:
         cost_snapshots = load_provisional_cost_snapshots(
@@ -303,9 +398,12 @@ def build_db_first_payload(
     )
     generated_at = datetime.now(tz=excel_mvp.MOSCOW_TZ)
     if args.wb_finance_source == "files-stream":
-        streamed = build_streamed_unit_economics_report(
+        if prepared_stream is None:
+            raise RuntimeError("streamed WB spool was not prepared")
+        wb_source_row_count = prepared_stream.spool.rows_seen
+        streamed = build_streamed_unit_economics_from_spool(
+            prepared=prepared_stream,
             client_id=args.client_id,
-            wb_finance_dir=wb_finance_dir,
             cost_snapshots=cost_snapshots,
             sku_mappings=sku_mappings,
             account_org_mapping=account_mapping,
@@ -313,15 +411,21 @@ def build_db_first_payload(
             expense_allocation_bases=expense_allocation_bases,
             onec_marketplace_service_rows=marketplace_service_rows,
             tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
+            confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
             generated_at=generated_at,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
-            stream_cache_dir=args.stream_cache_dir,
-            keep_stream_cache=args.keep_stream_cache,
+            collect_daily_facts=bool(
+                getattr(args, "marketplace_daily_facts_enabled", True)
+            ),
         )
         report = streamed.report
         wb_row_count = streamed.wb_rows
+        wb_report_period_row_count = streamed.wb_rows
+        daily_facts = streamed.daily_facts
     else:
+        daily_facts: list[MarketplaceFinanceDailyFact] = []
         report = build_unit_economics_report(
             client_id=args.client_id,
             wb_snapshots=wb_snapshots,
@@ -332,11 +436,22 @@ def build_db_first_payload(
             expense_allocation_bases=expense_allocation_bases,
             onec_marketplace_service_rows=marketplace_service_rows,
             tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
+            confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
             generated_at=generated_at,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
+            daily_facts_sink=daily_facts,
         )
         wb_row_count = len(wb_snapshots)
+        wb_source_row_count = len(wb_snapshots)
+        wb_report_period_row_count = sum(
+            1
+            for item in wb_snapshots
+            if report_period_start
+            <= week_bounds(item.period_start)[1]
+            <= report_period_end
+        )
     marts = build_report_marts(
         report,
         cost_snapshots=cost_snapshots,
@@ -356,10 +471,42 @@ def build_db_first_payload(
     return {
         "payload": marts.to_dashboard_payload(),
         "report": report,
+        "daily_facts": daily_facts,
         "wb_rows": wb_row_count,
+        "wb_source_rows": wb_source_row_count,
+        "wb_report_period_rows": wb_report_period_row_count,
         "cost_candidates": len(cost_snapshots),
         "sku_mappings": len(sku_mappings),
     }
+
+
+def _confirmed_input_vat_org_ids(
+    onec_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> set[str]:
+    """Return organizations with active purchase-book records in report scope."""
+    result: set[str] = set()
+    for row in load_onec_rows(onec_dir, "vat_purchase_book"):
+        active = str(row.get("Active", "true")).strip().casefold()
+        if active in {"false", "0", "no", "нет"}:
+            continue
+        organization_id = str(row.get("Организация_Key") or "").strip()
+        try:
+            vat_amount = Decimal(str(row.get("НДС") or "0"))
+        except (ArithmeticError, ValueError):
+            continue
+        if vat_amount == 0:
+            continue
+        period_text = str(row.get("Period") or "")[:10]
+        try:
+            period = date.fromisoformat(period_text)
+        except ValueError:
+            continue
+        if organization_id and period_start <= period <= period_end:
+            result.add(organization_id)
+    return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -450,6 +597,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--source-refresh-run-id", default="")
     parser.add_argument(
+        "--stock-history-refresh-run-id",
+        default="",
+        help=(
+            "Registered source refresh containing the exact wb_stock_history_daily "
+            "snapshot passed via --wb-stock-history-dir."
+        ),
+    )
+    parser.add_argument(
         "--tax-system",
         default="",
         help="Audited explicit tax system for every mapped 1C organization.",
@@ -492,6 +647,22 @@ def parse_args() -> argparse.Namespace:
         help="Compatibility flag; draft-only is already the safe default.",
     )
     return parser.parse_args()
+
+
+def _validate_lineage_args(args: argparse.Namespace) -> None:
+    if args.stock_history_refresh_run_id and args.wb_stock_history_dir is None:
+        raise ValueError(
+            "--stock-history-refresh-run-id requires --wb-stock-history-dir"
+        )
+    if (
+        args.source_snapshot_set_id
+        and not args.source_refresh_run_id
+        and not args.stock_history_refresh_run_id
+    ):
+        raise ValueError(
+            "--source-snapshot-set-id requires --source-refresh-run-id or "
+            "--stock-history-refresh-run-id; refusing an unlinked report snapshot"
+        )
 
 
 def _tax_profiles_for_rebuild(
@@ -584,6 +755,21 @@ def _validate_marts(payload: dict) -> None:
         raise ValueError(
             "ReportMarts validation failed: unreliable rows look reliable."
         )
+    coverage = payload.get("lostSalesCoverage") or {}
+    if coverage.get("calculationContextVersion") == "lost-sales-filter-v1":
+        lost_sales = payload.get("lostSales") or []
+        missing_context = [
+            item.get("id")
+            for item in lost_sales
+            if not isinstance(item.get("calculationContext"), dict)
+            or item["calculationContext"].get("version")
+            != "lost-sales-filter-v1"
+        ]
+        if missing_context:
+            raise ValueError(
+                "ReportMarts validation failed: lost-sales calculation context "
+                "is missing."
+            )
 
 
 if __name__ == "__main__":

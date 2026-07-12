@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -48,6 +49,7 @@ from wb_unit_economics.web.models import ReportRun, SourceRefreshRun, User
 from wb_unit_economics.web.refresh import (
     AutoRefreshBusyError,
     AutoRefreshDisabledError,
+    AutoRefreshUnavailableError,
     OnecAutoRefreshService,
 )
 from wb_unit_economics.web.settings import WebSettings
@@ -56,11 +58,42 @@ from wb_unit_economics.web.source_refresh import (
     SourceRefreshConfigError,
     SourceRefreshDisabledError,
     SourceRefreshService,
+    source_refresh_progress_payload,
+)
+from wb_unit_economics.web.source_refresh_worker import (
+    SourceRefreshWorkerLaunchError,
+    enqueue_source_refresh_worker,
+    production_source_refresh_worker_launcher,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
+WEB_BUILD_ID = "20260712-marketplace-expense-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+REPORT_ENDPOINT_SLOW_SECONDS = 5.0
+logger = logging.getLogger(__name__)
+
+
+def _log_report_endpoint_timing(
+    *,
+    endpoint: str,
+    report_id: str,
+    started_at: float,
+    outcome: str,
+) -> None:
+    duration_seconds = time.perf_counter() - started_at
+    log = (
+        logger.warning
+        if duration_seconds > REPORT_ENDPOINT_SLOW_SECONDS
+        else logger.info
+    )
+    log(
+        "report_endpoint_timing endpoint=%s report_id=%s outcome=%s duration_ms=%.1f",
+        endpoint,
+        report_id,
+        outcome,
+        duration_seconds * 1000,
+    )
 
 
 class LoginRequest(BaseModel):
@@ -132,6 +165,30 @@ class TaxProfileOverrideCreateRequest(BaseModel):
     )
     revenue_tax_rate: Decimal = Field(ge=0, le=1)
     income_tax_kind: str = Field(default="", max_length=120)
+    valid_from: date
+    valid_to: date | None = None
+    reason: str = Field(min_length=1, max_length=2000)
+    rate_basis_kind: str = Field(default="", max_length=120)
+    basis_document: str = Field(default="", max_length=1000)
+    source_object_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class TaxRateBasisConfirmRequest(BaseModel):
+    rate_basis_kind: str = Field(pattern="^regional_preference$")
+    basis_document: str = Field(min_length=1, max_length=1000)
+    source_object_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+class InputVatPolicyCreateRequest(BaseModel):
+    mode: str = Field(pattern="^(accounting_fact|management_assumption)$")
+    product_vat_basis: str = Field(
+        default="sales_cost_difference",
+        pattern="^sales_cost_difference$",
+    )
+    service_vat_basis: str = Field(
+        default="wb_gross_22_122",
+        pattern="^wb_gross_22_122$",
+    )
     valid_from: date
     valid_to: date | None = None
     reason: str = Field(min_length=1, max_length=2000)
@@ -240,7 +297,11 @@ def create_app(
         )
         init_db(engine, run_backfill=False)
         session_factory = make_session_factory(engine)
-    refresh_service = auto_refresh_service or OnecAutoRefreshService(runtime_settings)
+    worker_launcher = production_source_refresh_worker_launcher(runtime_settings)
+    refresh_service = auto_refresh_service or OnecAutoRefreshService(
+        runtime_settings,
+        worker_launcher=worker_launcher,
+    )
     source_refresh_service = getattr(refresh_service, "source_refresh_service", None)
     if source_refresh_service is None:
         source_refresh_service = SourceRefreshService(runtime_settings)
@@ -251,6 +312,7 @@ def create_app(
     app.state.analyst = analyst
     app.state.auto_refresh_service = refresh_service
     app.state.source_refresh_service = source_refresh_service
+    app.state.source_refresh_worker_launcher = worker_launcher
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")
@@ -294,24 +356,40 @@ def create_app(
             .where(*refresh_conditions)
             .order_by(SourceRefreshRun.created_at.desc())
         )
+        active_refresh = db.scalar(
+            select(SourceRefreshRun)
+            .where(
+                *refresh_conditions,
+                SourceRefreshRun.status.in_(repository.ACTIVE_SOURCE_REFRESH_STATUSES),
+                SourceRefreshRun.finished_at.is_(None),
+            )
+            .order_by(SourceRefreshRun.created_at.desc())
+        )
         latest_completed_refresh = db.scalar(
             select(SourceRefreshRun)
             .where(
                 *refresh_conditions,
                 SourceRefreshRun.finished_at.is_not(None),
+                SourceRefreshRun.status != "blocked_active_refresh",
             )
             .order_by(
                 SourceRefreshRun.finished_at.desc(),
                 SourceRefreshRun.created_at.desc(),
             )
         )
-        health_refresh = latest_completed_refresh or latest_refresh
+        displayed_refresh = active_refresh or latest_refresh
         degraded_statuses = {
             "failed",
             "needs_configuration",
             "blocked_active_refresh",
             "blocked_low_disk",
         }
+        health_refresh = (
+            latest_completed_refresh
+            if latest_completed_refresh is not None
+            and latest_completed_refresh.status in degraded_statuses
+            else active_refresh or latest_completed_refresh or latest_refresh
+        )
         health_status = (
             "degraded"
             if health_refresh is not None and health_refresh.status in degraded_statuses
@@ -319,24 +397,30 @@ def create_app(
         )
         return {
             "status": health_status,
+            "backendBuildId": WEB_BUILD_ID,
+            "staticBuildId": WEB_BUILD_ID,
             "databaseType": bind.dialect.name,
             "schemaVersion": schema_version(bind),
             "sourceRefreshTenantId": health_tenant_id,
             "latestPublishedReportId": latest_report.id if latest_report else "",
-            "latestSourceRefreshStatus": latest_refresh.status
-            if latest_refresh
+            "latestSourceRefreshStatus": displayed_refresh.status
+            if displayed_refresh
             else "",
-            "latestSourceRefreshRunId": latest_refresh.id if latest_refresh else "",
-            "latestSourceRefreshMode": latest_refresh.mode if latest_refresh else "",
+            "latestSourceRefreshRunId": displayed_refresh.id
+            if displayed_refresh
+            else "",
+            "latestSourceRefreshMode": displayed_refresh.mode
+            if displayed_refresh
+            else "",
             "latestSourceRefreshCreatedAt": (
-                latest_refresh.created_at.isoformat() if latest_refresh else ""
+                displayed_refresh.created_at.isoformat() if displayed_refresh else ""
             ),
-            "latestSourceRefreshActive": (
-                latest_refresh.status in repository.ACTIVE_SOURCE_REFRESH_STATUSES
-                and latest_refresh.finished_at is None
-            )
-            if latest_refresh
-            else False,
+            "latestSourceRefreshActive": active_refresh is not None,
+            "latestSourceRefreshHeartbeatAt": (
+                active_refresh.heartbeat_at.isoformat()
+                if active_refresh is not None and active_refresh.heartbeat_at
+                else ""
+            ),
             "latestCompletedSourceRefreshStatus": (
                 latest_completed_refresh.status if latest_completed_refresh else ""
             ),
@@ -466,6 +550,7 @@ def create_app(
         client_id: str,
         current: CurrentUser,
         db: DbSession,
+        mode: str | None = None,
     ) -> dict[str, Any]:
         tenant_id, resolved_client_id = _resolve_client_tenant_or_400(
             db,
@@ -473,14 +558,52 @@ def create_app(
             client_id=client_id,
         )
         _require_staff_or_403(current, tenant_id)
-        return {
-            "latest": repository.latest_source_refresh_payload(
-                db,
-                tenant_id=tenant_id,
-                client_id=resolved_client_id,
-                include_sensitive=False,
+        if mode and mode not in {"daily", "weekly", "full", "onec-only", "ozon-only"}:
+            raise HTTPException(
+                status_code=400,
+                detail="unsupported source refresh mode",
             )
-        }
+        payload = repository.source_refresh_status_payload(
+            db,
+            tenant_id=tenant_id,
+            client_id=resolved_client_id,
+            mode=mode,
+            include_sensitive=False,
+        )
+        for key in ("latest", "activeRun", "latestAttempt", "latestCompleted"):
+            item = payload.get(key)
+            if not item or not item.get("id"):
+                continue
+            refresh_run = db.get(SourceRefreshRun, item["id"])
+            if refresh_run is not None:
+                item["progress"] = source_refresh_progress_payload(
+                    refresh_run,
+                    source_root=runtime_settings.source_refresh_root_path,
+                )
+        return payload
+
+    @app.get("/api/reports/{report_id}/ozon-diagnostics")
+    def report_ozon_diagnostics(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        limit: int = 50,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_staff_or_403(current, report.tenant_id)
+        if report.lineage_type != repository.OZON_DRAFT_LINEAGE_TYPE:
+            raise HTTPException(status_code=404, detail="Ozon draft not found")
+        return repository.ozon_draft_diagnostics_payload(
+            db,
+            report,
+            limit=limit,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+        )
 
     @app.get("/api/clients/{client_id}/ozon-diagnostics")
     def client_ozon_diagnostics(
@@ -887,7 +1010,6 @@ def create_app(
     def run_client_source_refresh(
         client_id: str,
         payload: SourceRefreshRequest,
-        background_tasks: BackgroundTasks,
         current: CurrentUser,
         db: DbSession,
     ) -> dict[str, Any]:
@@ -898,9 +1020,9 @@ def create_app(
         )
         _require_staff_or_403(current, tenant_id)
         reason = payload.reason.strip() or (
-            "Ручная проверка готовности source refresh"
+            "Ручная проверка готовности обновления источников"
             if payload.dry_run
-            else "Ручной full source refresh из web-кабинета"
+            else "Ручное полное обновление источников из веб-кабинета"
         )
         try:
             if payload.dry_run:
@@ -919,8 +1041,10 @@ def create_app(
                     resume_from_run_id=payload.resume_from_run_id,
                 )
             else:
-                refresh_payload = app.state.source_refresh_service.enqueue(
+                refresh_payload = enqueue_source_refresh_worker(
                     db,
+                    source_refresh_service=app.state.source_refresh_service,
+                    worker_launcher=app.state.source_refresh_worker_launcher,
                     tenant_id=tenant_id,
                     client_id=resolved_client_id,
                     mode=payload.mode,
@@ -938,16 +1062,17 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except SourceRefreshConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except SourceRefreshWorkerLaunchError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Не удалось запустить отдельный процесс обновления. "
+                    "Источники не изменялись."
+                ),
+            ) from exc
         db.commit()
-        if not payload.dry_run and refresh_payload.get("finishedAt") is None:
-            background_tasks.add_task(
-                _run_source_refresh_background,
-                app.state.session_factory,
-                app.state.source_refresh_service,
-                refresh_payload["id"],
-            )
         refresh_run = db.get(SourceRefreshRun, refresh_payload["id"])
-        return {
+        response = {
             "latest": repository.source_refresh_run_payload(
                 refresh_run,
                 include_sensitive=False,
@@ -955,6 +1080,12 @@ def create_app(
             if refresh_run is not None
             else refresh_payload,
         }
+        if refresh_run is not None:
+            response["latest"]["progress"] = source_refresh_progress_payload(
+                refresh_run,
+                source_root=runtime_settings.source_refresh_root_path,
+            )
+        return response
 
     @app.patch("/api/clients/{client_id}/cabinets/{cabinet_id}")
     def update_client_cabinet(
@@ -1052,6 +1183,9 @@ def create_app(
                 valid_from=payload.valid_from,
                 valid_to=payload.valid_to,
                 reason=payload.reason,
+                rate_basis_kind=payload.rate_basis_kind,
+                basis_document=payload.basis_document,
+                source_object_ids=payload.source_object_ids,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1095,6 +1229,118 @@ def create_app(
             "overrideId": override.id,
             "client": repository.client_payload(db, current, client),
         }
+
+    @app.patch(
+        "/api/clients/{client_id}/companies/{company_id}/tax-profile-overrides/"
+        "{override_id}/rate-basis"
+    )
+    def confirm_client_company_tax_rate_basis(
+        client_id: str,
+        company_id: str,
+        override_id: str,
+        payload: TaxRateBasisConfirmRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            override = repository.confirm_tax_rate_basis(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+                override_id=override_id,
+                rate_basis_kind=payload.rate_basis_kind,
+                basis_document=payload.basis_document,
+                source_object_ids=payload.source_object_ids,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {"overrideId": override.id, "status": "confirmed"}
+
+    @app.get(
+        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies"
+    )
+    def list_client_company_input_vat_policies(
+        client_id: str,
+        company_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            items = repository.list_input_vat_policies(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        return {"items": [repository.input_vat_policy_payload(item) for item in items]}
+
+    @app.post(
+        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies"
+    )
+    def create_client_company_input_vat_policy(
+        client_id: str,
+        company_id: str,
+        payload: InputVatPolicyCreateRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            policy = repository.create_input_vat_policy(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+                mode=payload.mode,
+                product_vat_basis=payload.product_vat_basis,
+                service_vat_basis=payload.service_vat_basis,
+                valid_from=payload.valid_from,
+                valid_to=payload.valid_to,
+                reason=payload.reason,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {"item": repository.input_vat_policy_payload(policy)}
+
+    @app.patch(
+        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies/"
+        "{policy_id}/disable"
+    )
+    def disable_client_company_input_vat_policy(
+        client_id: str,
+        company_id: str,
+        policy_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            policy = repository.disable_input_vat_policy(
+                db,
+                user=current,
+                client_id=client_id,
+                company_id=company_id,
+                policy_id=policy_id,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        db.commit()
+        return {"item": repository.input_vat_policy_payload(policy)}
 
     @app.get("/api/admin/users")
     def admin_users(current: CurrentUser, db: DbSession) -> dict[str, Any]:
@@ -1389,7 +1635,7 @@ def create_app(
                 status="check_failed",
                 message=(
                     "Секрет сохранен в режиме, который нельзя использовать для "
-                    "live-check. Сохраните ключ заново после настройки "
+                    "проверки подключения. Сохраните ключ заново после настройки "
                     "SHUMEYKO_INTEGRATION_SECRET_KEY."
                 ),
                 payload={
@@ -1495,6 +1741,7 @@ def create_app(
         report_id: str, current: CurrentUser, db: DbSession
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
+        started_at = time.perf_counter()
         repository.audit(
             db,
             action="report_viewed",
@@ -1504,22 +1751,59 @@ def create_app(
             entity_id=report.id,
         )
         db.commit()
-        return repository.report_summary_payload(
-            db,
-            report,
-            include_staff_readiness=_include_staff_readiness(current, report.tenant_id),
+        try:
+            payload = repository.report_summary_payload(
+                db,
+                report,
+                include_staff_readiness=_include_staff_readiness(
+                    current, report.tenant_id
+                ),
+            )
+        except Exception:
+            _log_report_endpoint_timing(
+                endpoint="summary",
+                report_id=report.id,
+                started_at=started_at,
+                outcome="error",
+            )
+            raise
+        _log_report_endpoint_timing(
+            endpoint="summary",
+            report_id=report.id,
+            started_at=started_at,
+            outcome="ok",
         )
+        return payload
 
     @app.get("/api/reports/{report_id}/freshness")
     def report_freshness(
         report_id: str, current: CurrentUser, db: DbSession
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
-        return repository.report_freshness_payload(
-            db,
-            report,
-            include_staff_readiness=_include_staff_readiness(current, report.tenant_id),
+        started_at = time.perf_counter()
+        try:
+            payload = repository.report_freshness_payload(
+                db,
+                report,
+                include_staff_readiness=_include_staff_readiness(
+                    current, report.tenant_id
+                ),
+            )
+        except Exception:
+            _log_report_endpoint_timing(
+                endpoint="freshness",
+                report_id=report.id,
+                started_at=started_at,
+                outcome="error",
+            )
+            raise
+        _log_report_endpoint_timing(
+            endpoint="freshness",
+            report_id=report.id,
+            started_at=started_at,
+            outcome="ok",
         )
+        return payload
 
     @app.post("/api/reports/{report_id}/publish-with-tasks")
     def publish_report_with_tasks(
@@ -1890,6 +2174,9 @@ def create_app(
         period_start: date | None = None,
         period_end: date | None = None,
         control_type: str = "",
+        wb_cabinet_id: str = "",
+        client_company_id: str = "",
+        document_type: str = "",
         delta_only: bool = False,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
@@ -1900,7 +2187,80 @@ def create_app(
             period_start=period_start,
             period_end=period_end,
             control_type=control_type,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+            document_type=document_type,
             delta_only=delta_only,
+        )
+
+    @app.get("/api/reports/{report_id}/buyout-reconciliation")
+    def report_buyout_reconciliation(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+        client_company_id: str = "",
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        return repository.query_buyout_reconciliation(
+            db,
+            report,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+        )
+
+    @app.get("/api/reports/{report_id}/cogs-reconciliation")
+    def report_cogs_reconciliation(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+        client_company_id: str = "",
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        return repository.query_cogs_reconciliation(
+            db,
+            report,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+        )
+
+    @app.get("/api/reports/{report_id}/marketplace-expense-reconciliation")
+    def report_marketplace_expense_reconciliation(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
+        client_company_id: str = "",
+        control_group: str = "",
+        status: str = "",
+        delta_only: bool = False,
+        limit: int = 250,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        return repository.query_marketplace_expense_reconciliation(
+            db,
+            report,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+            control_group=control_group,
+            status=status,
+            delta_only=delta_only,
+            limit=min(max(limit, 1), 1000),
+            offset=max(offset, 0),
         )
 
     @app.get("/api/reports/{report_id}/sku/{sku}")
@@ -1915,9 +2275,57 @@ def create_app(
 
     @app.get("/api/reports/{report_id}/export.xlsx")
     def export_excel(
-        report_id: str, current: CurrentUser, db: DbSession
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        period_start: date | None = None,
+        period_end: date | None = None,
+        wb_cabinet_id: str = "",
     ) -> FileResponse:
         report = _require_report_or_404(db, current, report_id)
+        if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
+            _require_staff_or_403(current, report.tenant_id)
+            diagnostics = repository.ozon_draft_diagnostics_payload(
+                db,
+                report,
+                limit=repository.OZON_PNL_MAX_SOURCE_ROWS,
+                preview_max_rows=repository.OZON_PNL_MAX_SOURCE_ROWS,
+                period_start=period_start,
+                period_end=period_end,
+                wb_cabinet_id=wb_cabinet_id,
+            )
+            output_dir = (
+                runtime_settings.export_root_path
+                / "ozon_drafts"
+                / _safe_path_segment(report.client_id)
+            ).resolve()
+            allowed = runtime_settings.export_root_path.resolve()
+            if output_dir != allowed and allowed not in output_dir.parents:
+                raise HTTPException(
+                    status_code=400,
+                    detail="export path is outside reports",
+                )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{_safe_path_segment(report.id)}.xlsx"
+            path = output_dir / filename
+            write_ozon_diagnostics_excel(diagnostics, path)
+            repository.audit(
+                db,
+                action="ozon_draft_excel_exported",
+                user=current,
+                tenant_id=report.tenant_id,
+                entity_type="report_run",
+                entity_id=report.id,
+            )
+            db.commit()
+            return FileResponse(
+                path,
+                media_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                filename=f"ozon_unit_economics_{report.period_start:%Y%m%d}_"
+                f"{report.period_end:%Y%m%d}.xlsx",
+            )
         export_report = report
         path = _report_excel_export_path(db, export_report, runtime_settings)
         if not report.is_current:
@@ -2046,6 +2454,8 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AutoRefreshBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AutoRefreshUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         db.commit()
         return result
 
@@ -2183,7 +2593,7 @@ def create_app(
             title="Вопрос принят",
             message=(
                 "AI-аналитик работает только с расчетной витриной "
-                "и read-only инструментами."
+                "и инструментами только для чтения."
             ),
             status="running",
         )
@@ -2322,47 +2732,6 @@ def create_app(
         )
 
     return app
-
-
-def _run_source_refresh_background(
-    session_factory: sessionmaker[Session],
-    source_refresh_service: SourceRefreshService,
-    refresh_run_id: str,
-) -> None:
-    with session_factory() as db:
-        try:
-            source_refresh_service.run_existing(db, refresh_run_id)
-            db.commit()
-        except Exception as exc:
-            try:
-                db.rollback()
-            except Exception:
-                return
-            refresh_run = db.get(SourceRefreshRun, refresh_run_id)
-            if refresh_run is None or refresh_run.finished_at is not None:
-                return
-            repository.update_source_refresh_run(
-                db,
-                refresh_run,
-                status="failed",
-                error_message=(
-                    f"{exc.__class__.__name__}: background source refresh failed"
-                ),
-                finished_at=security.utcnow(),
-            )
-            repository.audit(
-                db,
-                action="source_refresh_failed",
-                user=None,
-                tenant_id=refresh_run.tenant_id,
-                entity_type="source_refresh_run",
-                entity_id=refresh_run.id,
-                payload={
-                    "mode": refresh_run.mode,
-                    "errorType": exc.__class__.__name__,
-                },
-            )
-            db.commit()
 
 
 def get_db(request: Request):
@@ -2646,7 +3015,7 @@ def _reject_client_report_recommendations(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "Финансовая проверка не пройдена. Клиентские рекомендации "
-                "заблокированы до подтверждения P&L."
+                "заблокированы до подтверждения расчёта прибылей и убытков."
             ),
         )
 
@@ -2663,7 +3032,9 @@ def _run_mapping_upload_refresh(
     report: ReportRun,
     file_name: str,
 ) -> dict[str, Any]:
-    reason = f"Автоматическая пересборка после загрузки mapping WB ↔ 1C: {file_name}"
+    reason = (
+        f"Автоматическая пересборка после загрузки сопоставления WB ↔ 1C: {file_name}"
+    )
     try:
         payload = app.state.auto_refresh_service.run(
             db,
@@ -2679,6 +3050,12 @@ def _run_mapping_upload_refresh(
     except AutoRefreshBusyError as exc:
         return {
             "status": "busy",
+            "safeMessage": str(exc),
+        }
+    except AutoRefreshUnavailableError as exc:
+        return {
+            "status": "failed",
+            "reviewStatus": "needs_review",
             "safeMessage": str(exc),
         }
     return payload

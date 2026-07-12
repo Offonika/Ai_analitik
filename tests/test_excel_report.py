@@ -554,18 +554,19 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
     assert service_reconciliation["A1"].value == "Контрольный блок сверки услуг"
     check_rows = {
         (row[0].value, row[1].value, row[2].value): row
-        for row in service_reconciliation.iter_rows(min_row=3, max_col=9)
+        for row in service_reconciliation.iter_rows(min_row=3, max_col=10)
         if row[2].value
     }
     combined_check = check_rows[
         (
             "2026-04-06",
             "Организация Минзифа",
-            "Комиссия + Логистика + Хранение + Эквайринг",
+            "Комиссия + Логистика + Хранение + Приемка + Эквайринг + Прочие услуги WB",
         )
     ]
     assert combined_check[3].value == 185
-    assert combined_check[4].value == 185
+    assert combined_check[4].value == 195
+    assert combined_check[9].value == "Есть расхождения"
     assert service_reconciliation.tables
     service_breakdown = workbook["Расшифровка услуг 1С"]
     assert service_breakdown["E2"].value == "УПД-1"
@@ -895,6 +896,11 @@ def test_onec_monthly_reconciliation_uses_actual_document_date(tmp_path) -> None
                 week_start=date(2026, 4, 27),
                 week_end=date(2026, 5, 3),
                 is_partial_week=False,
+                document_report=(
+                    "Отчет комиссионера · 27.04.2026-03.05.2026 · "
+                    "закрытие 03.05.2026"
+                ),
+                wb_report_id="SUMMARY-BORDER",
                 nm_id=101,
                 vendor_code="A-1",
                 barcode="111",
@@ -1037,6 +1043,14 @@ def test_onec_monthly_reconciliation_uses_actual_document_date(tmp_path) -> None
     )
 
     workbook = load_workbook(output, data_only=True)
+    unit_sheet = workbook["Юнит экономика"]
+    unit_headers = [cell.value for cell in unit_sheet[1]]
+    accounting_date_column = unit_headers.index("Учетная дата 1С") + 1
+    accounting_source_column = unit_headers.index("Источник учетной даты") + 1
+    assert unit_sheet.cell(2, accounting_date_column).value == "2026-04-30"
+    assert unit_sheet.cell(2, accounting_source_column).value == (
+        "onec_document_date"
+    )
     products = workbook["Товары по отчетам 1С"]
     assert products["A2"].value == "2026-04-30"
 
@@ -1120,7 +1134,7 @@ def test_buyout_return_quantity_is_diagnostic_when_invoice_sales_match() -> None
         organization_labels=None,
     )
 
-    assert row["status"] == "Документ найден"
+    assert row["status"] == "Сверено по количеству"
     assert row["expected_quantity"] == Decimal("195")
     assert row["onec_quantity"] == Decimal("195")
     assert row["quantity_delta"] == Decimal("0")

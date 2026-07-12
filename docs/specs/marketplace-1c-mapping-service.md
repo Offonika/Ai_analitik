@@ -13,7 +13,7 @@ contracts: [sku_mapping, sku_mapping_snapshot, ozon_sku_mapping]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md, docs/specs/marketplace-unit-economics-ozon-integration.md]
 supersedes: [docs/specs/onec-marketplace-mapping-http-service.md, docs/specs/onec-marketplace-mapping-client-extension.md]
 rollout_required: true
-updated_at: "2026-07-10"
+updated_at: "2026-07-11"
 ---
 
 # Goal
@@ -46,6 +46,8 @@ read-only источниками справочников и фактов, а р
   проверки;
 - автоматические кандидаты по артикулу, barcode, offer id, SKU, названию и
   нормализованным признакам;
+- автоматическое принятие единственного точного barcode-кандидата из живого
+  read-only снимка 1С для еще не сопоставленного товара;
 - ручные действия оператора: принять связь, отклонить кандидата, снять связь,
   исключить товар из расчета;
 - журнал решений с пользователем, причиной, временем и предыдущим статусом;
@@ -84,6 +86,12 @@ read-only источниками справочников и фактов, а р
 - связь из файла имеет приоритет над автоматическим кандидатом, а ручное
   решение оператора имеет приоритет над обоими сценариями;
 - слабое совпадение не превращается в расчетную связь без явного accept;
+- единственный логический товар 1С по точному штрихкоду с `confidence=1` и
+  `matchCount=1` считается уже подтвержденным первичным источником и принимается
+  системой без повторного ручного подтверждения;
+- автоматическое принятие никогда не заменяет ручную, файловую или ранее
+  принятую связь; расхождение с живым точным штрихкодом попадает в отдельный
+  staff-only счетчик конфликтов;
 - если один marketplace item ведет к нескольким 1С товарам, статус
   `ambiguous`, а не автоматический выбор первого варианта.
 
@@ -104,7 +112,7 @@ read-only источниками справочников и фактов, а р
 - читать или возвращать `.env`, tokens, passwords, API keys, connection strings;
 - логировать raw request/response bodies с клиентскими товарами;
 - писать во внешние системы;
-- скрыто менять accepted mapping при source refresh;
+- скрыто заменять существующий accepted mapping при source refresh;
 - подставлять `missing` cost или mapping как ноль.
 
 # Data Model
@@ -174,7 +182,7 @@ Append-only журнал действий.
 - `client_id`;
 - `marketplace_item_id`;
 - `onec_item_id`, если действие относится к конкретному кандидату;
-- `action`: `accept`, `reject`, `revoke`, `exclude`, `restore`;
+- `action`: `accept`, `auto_accept`, `reject`, `revoke`, `exclude`, `restore`;
 - `reason`;
 - `created_by`;
 - `created_at`;
@@ -215,7 +223,10 @@ Append-only журнал действий.
 - `GET /api/clients/{client_id}/mapping/items/{item_id}/history` - история
   решений;
 - `POST /api/clients/{client_id}/mapping/rebuild-candidates` - пересчитать
-  кандидатов из текущих read-only snapshots;
+  кандидатов из текущих read-only snapshots и идемпотентно применить
+  единственные точные barcode-связи. Ответ содержит `autoAccepted`,
+  `remainingReview`, `currentMappingConflictCount`, `affectedReportItems` и
+  `reportRebuildRequired`;
 - `GET /api/clients/{client_id}/mapping/export/sku-mapping` - безопасный
   экспорт текущего
   `sku_mapping` для расчетчика.
@@ -263,7 +274,8 @@ Append-only журнал действий.
 
 - по умолчанию открывать очередь аналитика со статусами `needs_review`,
   `ambiguous` и `missing`; нерешенная строка остается в очереди до явного
-  ручного решения, автоматический выбор кандидата запрещен;
+  ручного решения. Автоматический выбор запрещен для слабых и неоднозначных
+  кандидатов, но не для единственного точного штрихкода живой 1С;
 - из строки `missing_mapping` или `ambiguous_mapping` отчета давать прямой
   переход к соответствующей карточке очереди без изменения данных;
 - показывать способ и уверенность каждого кандидата понятными подписями,
@@ -286,7 +298,7 @@ Append-only журнал действий.
 - WB: `nm_id`, `vendor_code`, `barcode`;
 - Ozon: `offer_id`, `product_id`, `sku`, `sku_fbs`, `sku_fbo`, `barcode`;
 - `onec_item_id`, `onec_article`, `onec_characteristic` - из accepted 1С item;
-- `match_method`: `mapping_service_manual`, `mapping_service_auto`,
+- `match_method`: `mapping_service_manual`, `mapping_service_auto_barcode`,
   `mapping_service_imported`, `mapping_service_excluded`;
 - `confidence`: `1` для ручного accept, рассчитанная уверенность для авто;
 - `status`: `matched`, `missing`, `ambiguous`, `excluded`;
@@ -357,6 +369,21 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
   статусов, а не напрямую из `ИС_Маркетплейс`.
 - Source refresh может пересчитать кандидатов из read-only snapshots и не
   перетирает manual accepted decisions.
+- Единственный точный barcode-кандидат автоматически становится current mapping
+  с методом `mapping_service_auto_barcode`, решением `auto_accept` и audit;
+  повторный rebuild не создает дубликатов.
+- Если новые auto-связи затрагивают текущий отчет, `onec-only` создает новый
+  staff-only draft из защищенного WB-base и свежих 1С/mapping/налогов; current и
+  published не переключаются. При отсутствии пригодного WB-base используется
+  полный read-only refresh через worker.
+- `sku_mapping` SourceLoad конкретного отчета получает `loaded`, если в строках
+  этого отчета больше нет mapping-проблем, даже когда общая очередь содержит
+  товары без продаж.
+- Для legacy Excel-контура старый файл используется только как набор точных
+  `nm_id`/barcode alias. Решения `mapping_service_auto_barcode`, manual и
+  excluded переопределяют товар для всех его alias; проекция
+  `imported_mapping_file` не заменяет более точную исходную строку того же
+  файла. Налоговые профили и current mapping передаются builder-у из PostgreSQL.
 - Старые TXT/TSV/CSV и 1С extension responses принимают однозначные связи как
   current mapping, а конфликтные строки оставляют для ручной проверки.
 - Отчет явно показывает `missing_mapping`, `ambiguous_mapping` и `excluded`.
@@ -368,8 +395,9 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
   candidate и decision.
 - API tests: tenant access, staff-only writes, list filters, candidate search,
   accept, reject, revoke, exclude, history, `409` conflicts.
-- Mapping tests: barcode/article/offer/SKU/name candidates, ambiguous
-  candidates, missing mapping, excluded mapping, manual priority over auto.
+- Mapping tests: exact unique barcode auto-accept, multiple barcode candidates,
+  weak article, missing candidate, rejected candidate, excluded item,
+  idempotency, audit, existing mapping priority and conflict counter.
 - Source refresh tests: rebuild candidates does not overwrite manual accepted
   decisions; stale mapping health is visible.
 - Report tests: `sku_mapping` export feeds existing calculation and preserves
@@ -407,3 +435,6 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
 - 2026-07-10 - made unresolved marketplace/1C links an explicit analyst queue,
   added direct navigation from Ozon problem rows and kept every candidate
   selection manual and auditable.
+- 2026-07-11 - accepted system `auto_accept` for the only exact barcode from
+  live read-only 1C, protected existing accepted mappings, added conflict and
+  report-impact counters, and kept all weaker/ambiguous candidates manual.

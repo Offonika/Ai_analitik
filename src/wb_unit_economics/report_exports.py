@@ -23,6 +23,35 @@ EXPORT_SHEETS = {
     "taxInputReconciliation": "Сверка входящего НДС",
 }
 
+FULL_EXCEL_SHEETS: list[tuple[str, str]] = [
+    ("Дашборд", "dashboard"),
+    ("Сводка", "summary"),
+    ("Сводка по организациям", "organizationSummary"),
+    ("Сводка по кабинетам WB", "cabinetSummary"),
+    ("Юнит экономика", "unitRows"),
+    ("Ликвидность МД", "liquidityRows"),
+    ("Товары", "productSummary"),
+    ("Динамика", "monthly"),
+    ("Сводный отчет WB", "wbReportSummary"),
+    ("WB поля отчета", "unitRows"),
+    ("Сверка по отчетам WB", "documentReconciliation"),
+    ("Сверка с 1С", "reconciliationMonthly"),
+    ("Сверка документов 1С", "documentReconciliation"),
+    ("Сверка с 1С ОПиУ", "reconciliationMonthly"),
+    ("Валовая прибыль 1С", "reconciliationMonthly"),
+    ("Сверка услуг WB", "expenses"),
+    ("Расшифровка услуг 1С", "documentReconciliation"),
+    ("Распределение расходов", "expenses"),
+    ("Товары по отчетам 1С", "documentReconciliation"),
+    ("Расходы WB", "expenses"),
+    ("Возвраты", "returns"),
+    ("Упущенные продажи", "lostSales"),
+    ("Себестоимость 1С", "costRows"),
+    ("Маппинг", "mappingRows"),
+    ("Ошибки данных", "errorRows"),
+    ("Сверка входящего НДС", "taxInputReconciliation"),
+]
+
 OZON_EXPORT_SHEETS = {
     "ozonSummaryRows": "Сводная Ozon",
     "ozonUnitRows": "Юнит экономика Ozon",
@@ -34,6 +63,8 @@ OZON_EXPORT_SHEETS = {
 SHEET_COLUMNS: dict[str, list[str]] = {
     "unitRows": [
         "week",
+        "accountingPeriodDate",
+        "accountingPeriodSource",
         "month",
         "documentReport",
         "wbReportId",
@@ -59,8 +90,12 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "vatInput",
         "vatInputFromWb",
         "vatInputFrom1c",
+        "vatInputFromImportScenario",
+        "vatInputFromWbScenario",
         "vatInputDifference",
         "vatInputCompleteness",
+        "inputVatMode",
+        "vatInputConfirmed",
         "vatPayable",
         "revenueWithoutVat",
         "cost",
@@ -262,11 +297,16 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "costQualityStatus",
         "revenueCoveragePct",
         "quantityCoveragePct",
+        "unmappedRevenueRowCount",
+        "ambiguousRevenueRowCount",
         "missingCostCount",
         "anomalyCount",
         "insufficientHistoryCount",
         "estimatedCostImpact",
         "materialityThresholdAmount",
+        "materialityThresholdMode",
+        "materialityThresholdMinAmount",
+        "materialityThresholdMaxAmount",
         "martAverageUnitCost",
         "direct1cAverageUnitCost",
         "direct1cDeviationPct",
@@ -399,6 +439,8 @@ SHEET_COLUMNS: dict[str, list[str]] = {
 
 COLUMN_LABELS = {
     "week": "Неделя",
+    "accountingPeriodDate": "Учетная дата 1С",
+    "accountingPeriodSource": "Источник учетной даты",
     "month": "Месяц",
     "status": "Статус",
     "documentReport": "Документ-отчет",
@@ -426,8 +468,12 @@ COLUMN_LABELS = {
     "vatInput": "Входящий НДС",
     "vatInputFromWb": "НДС входящий WB",
     "vatInputFrom1c": "НДС входящий 1С",
+    "vatInputFromImportScenario": "Расчётный НДС импорта",
+    "vatInputFromWbScenario": "Расчётный НДС услуг WB",
     "vatInputDifference": "Расхождение НДС",
     "vatInputCompleteness": "Полнота НДС",
+    "inputVatMode": "Режим входящего НДС",
+    "vatInputConfirmed": "Входящий НДС подтверждён",
     "vatPayable": "НДС к уплате",
     "revenueWithoutVat": "Выручка без НДС",
     "cost": "Себестоимость 1С",
@@ -570,10 +616,15 @@ COLUMN_LABELS = {
     "costQualityReason": "Причина качества себестоимости",
     "revenueCoveragePct": "Покрытие себестоимостью по выручке",
     "quantityCoveragePct": "Покрытие себестоимостью по количеству",
+    "unmappedRevenueRowCount": "Строк выручки без сопоставления",
+    "ambiguousRevenueRowCount": "Строк выручки с неоднозначным сопоставлением",
     "missingCostCount": "Строк без себестоимости",
     "anomalyCount": "Аномальных SKU",
     "insufficientHistoryCount": "SKU с недостаточной историей",
     "materialityThresholdAmount": "Порог существенности",
+    "materialityThresholdMode": "Режим порога существенности",
+    "materialityThresholdMinAmount": "Минимальный месячный порог",
+    "materialityThresholdMaxAmount": "Максимальный месячный порог",
     "martAverageUnitCost": "Средняя стоимость mart",
     "direct1cAverageUnitCost": "Средняя стоимость регистра 1С",
     "direct1cDeviationPct": "Отклонение mart от регистра 1С",
@@ -635,6 +686,9 @@ STATUS_LABELS = {
     "task_timeout": "Истекло время ожидания задачи",
     "db_first_report_marts": "DB-first витрины отчета",
     "insufficient_history": "Недостаточно истории",
+    "partial_provider_window_no_extrapolation": (
+        "Доступный период WB, без экстраполяции"
+    ),
     "unit_cost_outlier": "Аномальная стоимость",
     "nonpositive_unit_cost": "Неположительная стоимость",
     "missing_cost": "Нет себестоимости",
@@ -767,19 +821,162 @@ def artifact_record(path: Path, status: str = "ready") -> dict[str, Any]:
     }
 
 
+def _aggregate_unit_rows(
+    rows: list[dict[str, Any]],
+    group_fields: tuple[tuple[str, str], ...],
+) -> list[dict[str, Any]]:
+    totals: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        key = tuple(str(row.get(source) or "") for source, _label in group_fields)
+        target = totals.setdefault(
+            key,
+            {label: key[index] for index, (_source, label) in enumerate(group_fields)},
+        )
+        for source, label in (
+            ("sales", "Продажи, шт"),
+            ("returns", "Возвраты, шт"),
+            ("revenue", "Выручка с НДС"),
+            ("revenueWithoutVat", "Выручка без НДС"),
+            ("profitBeforeTax", "Прибыль до налогов"),
+            ("profit", "Прибыль после налогов"),
+        ):
+            target[label] = float(target.get(label) or 0) + float(row.get(source) or 0)
+    return list(totals.values())
+
+
+def _dashboard_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    kpis = summary.get("kpis") or {}
+    tax_context = summary.get("taxContext") or {}
+    readiness = summary.get("readiness") or {}
+    labels = (
+        ("Выручка с НДС", "revenueWithVat"),
+        ("Выручка без НДС", "revenueWithoutVat"),
+        ("Исходящий НДС", "vatOutput"),
+        ("Налог УСН", "revenueTax"),
+        ("Всего налогов", "totalTax"),
+        ("Прибыль до налогов", "profitBeforeTax"),
+        ("Прибыль после налогов", "profitAfterTax"),
+    )
+    rows = [
+        {"Показатель": label, "Значение": kpis.get(key)} for label, key in labels
+    ]
+    rows.extend(
+        [
+            {
+                "Показатель": "Налоговый профиль",
+                "Значение": tax_context.get("taxSystem") or "Не подтверждён",
+                "Комментарий": tax_context.get("message") or "",
+            },
+            {
+                "Показатель": "Налоговый мост",
+                "Значение": (
+                    "Сходится" if kpis.get("taxBridgeCalculated") else "Не подтверждён"
+                ),
+            },
+            {
+                "Показатель": "Готовность",
+                "Значение": readiness.get("status") or "needs_review",
+                "Комментарий": readiness.get("nextAction") or "",
+            },
+        ]
+    )
+    return rows
+
+
+def _full_excel_rows(
+    summary: dict[str, Any],
+    sheet_name: str,
+    source_key: str,
+) -> list[dict[str, Any]]:
+    unit_rows = [dict(item) for item in _safe_rows(summary.get("unitRows"))]
+    if source_key in summary:
+        rows = [dict(item) for item in _safe_rows(summary.get(source_key))]
+    elif source_key in {"dashboard", "summary"}:
+        rows = _dashboard_rows(summary)
+    elif source_key == "organizationSummary":
+        rows = _aggregate_unit_rows(unit_rows, (("organization", "Организация 1С"),))
+    elif source_key == "cabinetSummary":
+        rows = _aggregate_unit_rows(unit_rows, (("cabinet", "Кабинет WB"),))
+    elif source_key == "productSummary":
+        rows = _aggregate_unit_rows(
+            unit_rows,
+            (
+                ("product", "Товар"),
+                ("articleWb", "Артикул WB"),
+                ("article1c", "Артикул 1С"),
+            ),
+        )
+    elif source_key == "wbReportSummary":
+        rows = _aggregate_unit_rows(
+            unit_rows,
+            (("wbReportId", "ID отчёта WB"), ("documentReport", "Отчёт WB")),
+        )
+    elif source_key == "costRows":
+        rows = [
+            {
+                "Товар": row.get("product"),
+                "Организация 1С": row.get("organization"),
+                "Артикул 1С": row.get("article1c"),
+                "Штрихкод": row.get("barcode"),
+                "Себестоимость 1С": row.get("cost"),
+                "Статус": row.get("status"),
+                "Причина": row.get("statusReason"),
+            }
+            for row in unit_rows
+        ]
+    elif source_key == "mappingRows":
+        rows = [
+            {
+                "Товар": row.get("product"),
+                "Кабинет WB": row.get("cabinet"),
+                "Организация 1С": row.get("organization"),
+                "Артикул WB": row.get("articleWb"),
+                "Артикул 1С": row.get("article1c"),
+                "Штрихкод": row.get("barcode"),
+                "Статус": row.get("status"),
+                "Причина": row.get("statusReason"),
+            }
+            for row in unit_rows
+        ]
+    elif source_key == "errorRows":
+        rows = [row for row in unit_rows if str(row.get("status") or "") != "ОК"]
+    else:
+        rows = []
+    if sheet_name == "Упущенные продажи":
+        coverage = summary.get("lostSalesCoverage")
+        if isinstance(coverage, dict) and coverage.get("calculated") is not True:
+            message = coverage.get("message") or (
+                "Не рассчитано: история остатков покрывает "
+                f"{coverage.get('coveredDays', 0)} из "
+                f"{coverage.get('totalDays', 0)} дней"
+            )
+            rows.insert(0, {"product": message, "sourceStatus": "insufficient_history"})
+        elif isinstance(coverage, dict) and coverage.get("fullCoverage") is not True:
+            rows.insert(
+                0,
+                {
+                    "product": coverage.get("message")
+                    or "Расчёт выполнен только за доступный период истории остатков.",
+                    "sourceStatus": "partial_provider_window_no_extrapolation",
+                },
+            )
+    return rows
+
+
 def write_excel_from_marts(summary: dict[str, Any], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
     readme = workbook.active
     readme.title = "README"
     _write_readme(readme, summary)
-    for key, sheet_name in EXPORT_SHEETS.items():
+    for sheet_name, key in FULL_EXCEL_SHEETS:
         _write_rows_sheet(
             workbook.create_sheet(sheet_name),
-            summary.get(key, []),
+            _full_excel_rows(summary, sheet_name, key),
             sheet_key=key,
         )
     _write_methodology(workbook.create_sheet("Методика"), summary)
+    workbook.active = workbook.sheetnames.index("Дашборд")
     workbook.save(output_path)
     return output_path
 
@@ -868,6 +1065,12 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "costQualityStatus": quality_status,
                 "revenueCoveragePct": cost_quality.get("revenueCoveragePct"),
                 "quantityCoveragePct": cost_quality.get("quantityCoveragePct"),
+                "unmappedRevenueRowCount": cost_quality.get(
+                    "unmappedRevenueRowCount"
+                ),
+                "ambiguousRevenueRowCount": cost_quality.get(
+                    "ambiguousRevenueRowCount"
+                ),
                 "missingCostCount": cost_quality.get("missingCostCount"),
                 "anomalyCount": cost_quality.get("anomalyCount"),
                 "insufficientHistoryCount": cost_quality.get(
@@ -876,6 +1079,15 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "estimatedCostImpact": cost_quality.get("estimatedImpactAmount"),
                 "materialityThresholdAmount": cost_quality.get(
                     "materialityThresholdAmount"
+                ),
+                "materialityThresholdMode": cost_quality.get(
+                    "materialityThresholdMode"
+                ),
+                "materialityThresholdMinAmount": cost_quality.get(
+                    "materialityThresholdMinAmount"
+                ),
+                "materialityThresholdMaxAmount": cost_quality.get(
+                    "materialityThresholdMaxAmount"
                 ),
                 "martAverageUnitCost": cost_quality.get("martAverageUnitCost"),
                 "direct1cAverageUnitCost": cost_quality.get(
@@ -934,22 +1146,35 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
         )
     closed_totals = mart.get("closedPeriodTotals") or {}
     tax_rows = (
-        ("vat_output", "Исходящий НДС", "vatOutput"),
-        ("vat_input", "Входящий НДС", "vatInput"),
-        ("vat_payable", "НДС к уплате", "vatPayable"),
-        ("revenue_tax", "Налог с выручки", "revenueTax"),
-        ("income_tax", "НДФЛ / налог на доход", "incomeTax"),
-        ("profit_after_tax", "Прибыль после налогов", "profitAfterTax"),
+        ("vat_output", "Исходящий НДС", "vatOutput", "tax_bridge", None),
+        ("vat_input", "Входящий НДС", "vatInput", "tax_bridge", None),
+        ("vat_payable", "НДС к уплате", "vatPayable", "tax", "expense"),
+        ("revenue_tax", "Налог с выручки", "revenueTax", "tax", "expense"),
+        ("income_tax", "НДФЛ / налог на доход", "incomeTax", "tax", "expense"),
+        (
+            "profit_after_tax",
+            "Прибыль после налогов",
+            "profitAfterTax",
+            "result",
+            "result",
+        ),
     )
-    for article_id, label, field in tax_rows:
+    for article_id, label, field, group, effect_kind in tax_rows:
         value = totals.get(field)
+        effect = (
+            -value
+            if effect_kind == "expense" and value is not None
+            else value
+            if effect_kind == "result"
+            else None
+        )
         rows.append(
             {
                 "articleId": article_id,
                 "label": label,
-                "group": "tax",
+                "group": group,
                 "amount": value,
-                "effectAmount": value,
+                "effectAmount": effect,
                 "status": "ready" if value is not None else "needs_review",
                 "taxSystem": totals.get("taxSystem") or "",
                 "taxProfileSource": totals.get("taxProfileSource") or "missing",

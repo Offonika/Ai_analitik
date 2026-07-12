@@ -8,6 +8,7 @@ from tests.fixtures import CLIENT_ID, account_org_mapping, wb_snapshots
 from wb_unit_economics.calculation import build_unit_economics_report
 from wb_unit_economics.contracts import (
     DataQualityStatus,
+    InputVatPolicy,
     MappingStatus,
     OnecUnfCostSnapshot,
     SkuMapping,
@@ -206,7 +207,127 @@ def test_extract_sales_register_cost_candidates_without_vat_field() -> None:
     )
 
 
-def test_sales_register_cost_uses_only_rwb_commissioner_report_rows() -> None:
+def test_sales_cost_difference_becomes_audited_management_input_vat() -> None:
+    policy = InputVatPolicy(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        mode="management_assumption",
+        valid_from=date(2026, 3, 1),
+        reason="Unit economics scenario",
+    )
+
+    costs = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=sales_rows(),
+        amount_field="СебестоимостьБезНДС",
+        input_vat_policies=[policy],
+        loaded_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+
+    assert len(costs) == 1
+    assert costs[0].cost_value == Decimal("112")
+    assert costs[0].input_vat_value == Decimal("10")
+    assert costs[0].input_vat_source == (
+        "management_assumption:sales_cost_difference"
+    )
+
+
+def test_input_vat_policy_period_and_organization_are_isolated() -> None:
+    future_policy = InputVatPolicy(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        mode="management_assumption",
+        valid_from=date(2026, 5, 1),
+        reason="Future scenario",
+    )
+    other_org_policy = future_policy.model_copy(
+        update={
+            "organization_id": "1C_ORG_2",
+            "valid_from": date(2026, 3, 1),
+        }
+    )
+
+    costs = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=sales_rows(),
+        amount_field="СебестоимостьБезНДС",
+        input_vat_policies=[future_policy, other_org_policy],
+        loaded_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+
+    assert costs[0].input_vat_value is None
+    assert costs[0].input_vat_source == ""
+
+    closing_day_policy = future_policy.model_copy(
+        update={"valid_from": date(2026, 4, 12)}
+    )
+    closing_week_costs = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=sales_rows(),
+        amount_field="СебестоимостьБезНДС",
+        input_vat_policies=[closing_day_policy],
+        loaded_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+    assert closing_week_costs[0].input_vat_value == Decimal("10")
+
+
+def test_purchase_book_confirmation_overrides_management_scenario() -> None:
+    policy = InputVatPolicy(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        mode="management_assumption",
+        valid_from=date(2026, 3, 1),
+        reason="Unit economics scenario",
+    )
+
+    costs = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=sales_rows(),
+        amount_field="СебестоимостьБезНДС",
+        input_vat_policies=[policy],
+        confirmed_input_vat_org_ids={"1C_ORG_1"},
+        loaded_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+
+    assert costs[0].input_vat_value == Decimal("10")
+    assert costs[0].input_vat_source == (
+        "onec_purchase_book_confirmed_cost_difference"
+    )
+
+
+def test_invalid_or_incomplete_cost_difference_is_not_silently_used() -> None:
+    policy = InputVatPolicy(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        mode="management_assumption",
+        valid_from=date(2026, 3, 1),
+        reason="Unit economics scenario",
+    )
+    negative_rows = sales_rows()
+    for row in negative_rows[0]["RecordSet"]:
+        if Decimal(str(row["СебестоимостьБезНДС"])) > 0:
+            row["Себестоимость"] = "1"
+    incomplete_rows = sales_rows()
+    incomplete_rows[0]["RecordSet"][2].pop("СебестоимостьБезНДС")
+
+    negative = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=negative_rows,
+        amount_field="СебестоимостьБезНДС",
+        input_vat_policies=[policy],
+    )
+    incomplete = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=incomplete_rows,
+        amount_field="СебестоимостьБезНДС",
+        input_vat_policies=[policy],
+    )
+
+    assert negative[0].input_vat_value is None
+    assert incomplete[0].input_vat_value is None
+
+
+def test_sales_register_cost_excludes_non_marketplace_sales_documents() -> None:
     costs = extract_sales_register_cost_snapshots(
         client_id=CLIENT_ID,
         sales_rows=[
@@ -256,6 +377,98 @@ def test_sales_register_cost_uses_only_rwb_commissioner_report_rows() -> None:
     assert len(costs) == 1
     assert costs[0].cost_value == Decimal("100")
     assert costs[0].raw_payload_hash != ""
+
+
+def test_sales_register_cost_keeps_commissioner_and_buyout_layers_separate() -> None:
+    costs = extract_sales_register_cost_snapshots(
+        client_id=CLIENT_ID,
+        sales_rows=[
+            {
+                "Recorder": "DOC-COMMISSIONER",
+                "Recorder_Type": "StandardODATA.Document_ОтчетКомиссионера",
+                "RecordSet": [
+                    {
+                        "Active": True,
+                        "Period": "2026-04-12T00:00:00",
+                        "Организация_Key": "1C_ORG_1",
+                        "Контрагент_Key": "RWB",
+                        "Документ": "DOC-COMMISSIONER",
+                        "Документ_Type": "StandardODATA.Document_ОтчетКомиссионера",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "2",
+                        "Себестоимость": "200",
+                    }
+                ],
+            },
+            {
+                "Recorder": "DOC-BUYOUT",
+                "Recorder_Type": "StandardODATA.Document_РасходнаяНакладная",
+                "RecordSet": [
+                    {
+                        "Active": True,
+                        "Period": "2026-04-12T00:00:00",
+                        "Организация_Key": "1C_ORG_1",
+                        "Контрагент_Key": "RWB",
+                        "Документ": "DOC-BUYOUT",
+                        "Документ_Type": "StandardODATA.Document_РасходнаяНакладная",
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "1",
+                        "Себестоимость": "80",
+                    }
+                ],
+            },
+        ],
+        marketplace_counterparties_only=True,
+        loaded_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+
+    by_kind = {item.source_document_kind: item for item in costs}
+    assert set(by_kind) == {"commissioner_report", "buyout_notice"}
+    assert by_kind["commissioner_report"].cost_value == Decimal("100")
+    assert by_kind["buyout_notice"].cost_value == Decimal("80")
+
+    mapping = SkuMapping(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        organization_id="1C_ORG_1",
+        nm_id=101,
+        vendor_code="A-1",
+        barcode="",
+        onec_item_id="ITEM-1",
+        onec_article="ITEM-1",
+        match_method="fixture",
+        confidence="1",
+        status=MappingStatus.MATCHED,
+        updated_by="fixture",
+        updated_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+    commissioner = wb_snapshots()[0].model_copy(
+        update={"report_type": 1, "quantity": Decimal("2")}
+    )
+    buyout = wb_snapshots()[0].model_copy(
+        update={
+            "wb_document_id": "buyout-row",
+            "wb_report_id": "buyout-report",
+            "report_type": 2,
+            "quantity": Decimal("1"),
+            "raw_payload_hash": "buyout-row-hash",
+        }
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[commissioner, buyout],
+        cost_snapshots=costs,
+        sku_mappings=[mapping],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+    rows = {row.document_report.split(" · ", maxsplit=1)[0]: row for row in report.rows}
+    assert rows["Отчет комиссионера"].cogs_from_1c_with_extra_costs == Decimal(
+        "200.00"
+    )
+    assert rows["Уведомление о выкупе"].cogs_from_1c_with_extra_costs == Decimal(
+        "80.00"
+    )
 
 
 def test_sales_register_cost_does_not_mix_amount_only_other_documents() -> None:

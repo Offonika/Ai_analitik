@@ -26,6 +26,7 @@ def load_onec_marketplace_service_rows(
         if sales_register_dir
         else set()
     )
+    require_confirmed_marketplace_pair = sales_register_dir is not None
     receipts_by_key = {
         _text(row.get("Ref_Key")): row
         for row in receipts
@@ -43,14 +44,20 @@ def load_onec_marketplace_service_rows(
             _text(receipt.get("Организация_Key")),
             _text(receipt.get("Контрагент_Key")),
         )
-        if marketplace_pairs and pair not in marketplace_pairs:
+        if require_confirmed_marketplace_pair and pair not in marketplace_pairs:
             continue
         document_date = _required_date(receipt.get("Date"))
         week_start, week_end = _service_week_bounds(document_date)
         service_name = _service_name(expense, nomenclature_names)
-        amount = _decimal(expense.get("Сумма"))
+        raw_amount = _decimal(expense.get("Сумма"))
         vat = _decimal(expense.get("СуммаНДС"))
-        total = _decimal(expense.get("Всего")) or amount
+        raw_total = _decimal(expense.get("Всего"))
+        amount, total, amount_includes_vat = _normalized_service_amounts(
+            raw_amount,
+            vat,
+            raw_total,
+            amount_includes_vat=bool(receipt.get("СуммаВключаетНДС")),
+        )
         result.append(
             OnecMarketplaceServiceRow(
                 client_id=client_id,
@@ -69,11 +76,13 @@ def load_onec_marketplace_service_rows(
                 amount=amount,
                 vat=vat,
                 total=total,
-                amount_includes_vat=bool(receipt.get("СуммаВключаетНДС")),
+                amount_includes_vat=amount_includes_vat,
                 vat_included_in_cost=bool(receipt.get("НДСВключатьВСтоимость")),
                 include_expenses_in_cost=bool(
                     receipt.get("ВключатьРасходыВСебестоимость")
                 ),
+                source_kind="supplier_receipt_expenses",
+                match_status="matched_marketplace_pair",
                 source_row_hash=raw_payload_hash(
                     {
                         "receipt": receipt.get("Ref_Key"),
@@ -82,6 +91,13 @@ def load_onec_marketplace_service_rows(
                     }
                 ),
             )
+        )
+    if not result:
+        result = _incoming_invoice_marketplace_service_rows(
+            _read_odata_rows(export_dir / "incoming_invoices.raw.json"),
+            client_id=client_id,
+            marketplace_pairs=marketplace_pairs,
+            nomenclature_names=nomenclature_names,
         )
     return sorted(
         result,
@@ -94,6 +110,93 @@ def load_onec_marketplace_service_rows(
             row.service_name,
         ),
     )
+
+
+def _incoming_invoice_marketplace_service_rows(
+    receipts: Iterable[Mapping[str, Any]],
+    *,
+    client_id: str,
+    marketplace_pairs: set[tuple[str, str]],
+    nomenclature_names: Mapping[str, str],
+) -> list[OnecMarketplaceServiceRow]:
+    """Parse the UNF `ПриходнаяНакладная.Расходы` fallback without mixing vendors."""
+
+    result: list[OnecMarketplaceServiceRow] = []
+    for receipt in receipts:
+        if not _is_posted(receipt) or bool(receipt.get("DeletionMark")):
+            continue
+        pair = (
+            _text(receipt.get("Организация_Key")),
+            _text(receipt.get("Контрагент_Key")),
+        )
+        if not marketplace_pairs or pair not in marketplace_pairs:
+            continue
+        document_date = _required_date(receipt.get("Date"))
+        input_date = _date_or_none(receipt.get("ДатаВходящегоДокумента"))
+        week_start, week_end = _service_week_bounds(document_date)
+        expense_rows = receipt.get("Расходы")
+        if not isinstance(expense_rows, list):
+            continue
+        for expense in expense_rows:
+            if not isinstance(expense, Mapping):
+                continue
+            service_name = _service_name(expense, nomenclature_names)
+            raw_amount = _decimal(expense.get("Сумма"))
+            vat = _decimal(expense.get("СуммаНДС"))
+            raw_total = _decimal(expense.get("Всего"))
+            amount, total, amount_includes_vat = _normalized_service_amounts(
+                raw_amount,
+                vat,
+                raw_total,
+                amount_includes_vat=False,
+            )
+            result.append(
+                OnecMarketplaceServiceRow(
+                    client_id=client_id,
+                    organization_id=pair[0],
+                    counterparty_id=pair[1],
+                    document_id=_text(receipt.get("Ref_Key")),
+                    document_number=_text(receipt.get("Number")),
+                    input_number=_text(receipt.get("НомерВходящегоДокумента")),
+                    document_comment=_text(receipt.get("Комментарий")),
+                    document_date=document_date,
+                    input_date=input_date,
+                    week_start=week_start,
+                    week_end=week_end,
+                    service_category=classify_marketplace_service(service_name),
+                    service_name=service_name,
+                    amount=amount,
+                    vat=vat,
+                    total=total,
+                    amount_includes_vat=amount_includes_vat,
+                    source_kind="incoming_invoice_expenses",
+                    match_status="matched_marketplace_pair",
+                    source_row_hash=raw_payload_hash(
+                        {
+                            "receipt": receipt.get("Ref_Key"),
+                            "line": expense.get("LineNumber"),
+                            "payload": expense,
+                        }
+                    ),
+                )
+            )
+    return result
+
+
+def _normalized_service_amounts(
+    amount: Decimal,
+    vat: Decimal,
+    total: Decimal,
+    *,
+    amount_includes_vat: bool,
+) -> tuple[Decimal, Decimal, bool]:
+    """Return a reproducible (without VAT, with VAT, includes VAT) triple."""
+
+    if total == 0 and (amount != 0 or vat != 0):
+        total = amount if amount_includes_vat else amount + vat
+    inferred_includes_vat = amount_includes_vat or (vat != 0 and total == amount)
+    amount_without_vat = amount - vat if inferred_includes_vat else amount
+    return amount_without_vat, total, inferred_includes_vat
 
 
 def classify_marketplace_service(service_name: str) -> str:

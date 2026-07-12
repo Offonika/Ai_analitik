@@ -316,7 +316,13 @@ def _sheet_data_rows(workbook: Any, sheet_name: str) -> int | None:
         return max(0, int(sheet.max_row or 0) - 1)
     data_rows = 0
     for row in sheet.iter_rows(min_row=header_row + 1, values_only=True):
-        if any(cell not in (None, "") for cell in row):
+        if sheet_name == "Упущенные продажи":
+            # The exported sheet may prepend a visible coverage warning with an
+            # empty cabinet.  It is metadata, not a persisted lost-sales row.
+            is_data_row = bool(row and row[0] not in (None, ""))
+        else:
+            is_data_row = any(cell not in (None, "") for cell in row)
+        if is_data_row:
             data_rows += 1
     return data_rows
 

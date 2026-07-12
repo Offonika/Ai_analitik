@@ -24,7 +24,7 @@ depends_on:
   - docs/specs/wb-unit-economics-db-first-report-marts.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-10"
+updated_at: "2026-07-12"
 ---
 
 # Goal
@@ -126,6 +126,7 @@ payload `tenant_integrations` сохраняются совместимыми.
 - `wb_product_cards`;
 - `wb_finance_detail`;
 - `wb_sales_report_list`;
+- `wb_redeem_notifications`;
 - `onec_odata`.
 
 После реализации `docs/specs/marketplace-1c-mapping-service.md` `sku_mapping`
@@ -139,8 +140,18 @@ TXT/TSV/CSV upload остается только emergency fallback и импо�
 
 - `daily`: mapping, WB product cards, WB finance, 1C OData;
 - `weekly` и `full`: mapping, WB product cards, WB finance, WB report list,
-  1C OData;
+  optional WB primary redeem notifications, 1C OData;
 - `onec-only`: mapping, 1C OData.
+
+`onec-only` без `source_report_run_id` остается source-only загрузкой. Если
+указан исходный отчет, режим обязан создать новый immutable staff draft: новый
+1С/mapping/tax snapshot объединяется с последним полным WB snapshot того же
+клиента, который покрывает весь период отчета, имеет загруженные обязательные
+WB-коллекции и физически существует. Зависимость фиксируется полем
+`base_source_refresh_run_id`; `SourceLoad` нового draft сохраняет исходный run
+для каждой коллекции, а `source_snapshot_set_id` является детерминированным
+composite hash. Если подходящего WB snapshot нет, web auto-refresh выбирает
+`full` вместо `onec-only`. Ни один из режимов не публикует draft автоматически.
 
 Новые провайдеры можно сохранять и проверять read-only через registry, но они не
 попадают в расчет без отдельного accepted spec для collector, lineage и формул.
@@ -206,24 +217,76 @@ staff draft, но блокирует публикацию и закрытие д
 сохраняет прежнюю совместимость, новое `publication_required` явно отделяет
 барьер построения от барьера публикации.
 
+## Lineage-aware retention
+
+Retention защищает source-refresh каталоги, на которые ссылаются `SourceLoad`
+draft/published отчетов, активные runs и рекурсивные
+`base_source_refresh_run_id`. Ссылка считается по фактическому `root_dir` и
+`snapshot_set_id`, поэтому legacy report с пустым `source_snapshot_set_id`, но
+валидным `SourceLoad.source_refresh_run_id`, также защищен. Если PostgreSQL
+недоступен, `prune_source_refresh.py --apply` завершается до удаления; dry-run
+показывает ошибку. Storage audit возвращает ошибку `missing_report_lineage`,
+если защищенный DB run указывает на отсутствующий каталог.
+
+## WB finance pagination and resume
+
+WB finance также сохраняется постранично. После каждой успешно прочитанной
+страницы атомарно обновляется `wb_finance/manifest.json` с границами периода,
+последним `rrd_id`, числом и хешами страниц. При аварийной остановке manifest
+может быть восстановлен только из уже сохраненных immutable page-файлов; их
+целостность повторно проверяется по хешам.
+
+Следующий совместимый `source_refresh_run` получает новый `snapshot_set_id`,
+копирует или hard-link-ит подтвержденные WB-страницы в новый snapshot и
+продолжает чтение с последнего `rrd_id`. Полностью завершенный WB checkpoint
+переиспользуется без повторного внешнего запроса. Отсутствующий, поврежденный
+или несовместимый manifest не считается нулевым источником: WB читается заново,
+а частичный результат остается `partial_source` и блокирует публикацию.
+
 # Staff Refresh Control UX
 
 Для нового клиента нельзя зависеть от уже опубликованного отчета: у такого
-клиента может еще не быть `report_run`, поэтому сервис сопоставления, импорт
-кандидатов и первый `full` refresh должны быть доступны из staff-only раздела
-`Интеграции`.
+клиента может еще не быть `report_run`, поэтому импорт кандидатов и первый
+`full` refresh доступны в staff-only блоке `Данные и расчёт` на главной странице.
+Сам интерактивный сервис сопоставления открывается отдельным виджетом из основной
+очереди `Что разобрать первым`, когда в контуре уже есть позиции, требующие
+решения. `Интеграции` используются только для настройки подключений.
 
 Требования:
 
-- `consultant/admin` видит в модальном окне интеграций отдельный блок
-  `Обновление данных`;
+- `consultant/admin` видит на главной странице перед KPI отдельный блок
+  `Данные и расчёт`, который загружается независимо от окна интеграций;
 - блок показывает последний `source_refresh` выбранного клиента: статус, режим,
   период, safe-сообщение, новый report id и статусы коллекций без raw payloads,
   секретов и connection strings;
-- staff может открыть сервис сопоставления, пересчитать кандидатов и
-  импортировать TXT/TSV/CSV mapping WB ↔ 1C на уровне клиента через fallback
-  endpoint; импорт сохраняется в `SHUMEYKO_SOURCE_REFRESH_MAPPING_DIR`, audit
-  пишет только имя и размер файла;
+- production web только создает immutable run со статусом `queued` и запускает
+  отдельный systemd worker `shumeiko-source-refresh-worker@<run_id>`; рестарт
+  web не прерывает WB/1С чтение, а worker выполняет существующий run вне cgroup
+  web с `MemoryHigh=2G`, `MemoryMax=3G` и `MemorySwapMax=1G`; при давлении
+  памяти systemd-oomd завершает этот фоновый worker раньше SSH, PostgreSQL и
+  системных служб, а `ExecStopPost` сохраняет управляемый статус ошибки;
+- это правило распространяется на основной source-refresh API, совместимую
+  кнопку дозагрузки 1С, AI-команду, автоматическую пересборку после загрузки
+  сопоставления и production daily/weekly CLI. Синхронный
+  `SourceRefreshService.run(dry_run=false)` внутри web запрещен;
+- run хранит `worker_id`, `heartbeat_at`, `failure_code` и `blocked_by_run_id`.
+  Heartbeat обновляется не реже чем раз в 30 секунд; watchdog раз в минуту
+  завершает worker без heartbeat за 5 минут и только после остановки процесса
+  переводит run в `failed`, не удаляя snapshots и collections;
+- API сохраняет совместимое поле `latest` и отдельно возвращает `activeRun`,
+  `latestAttempt` и `latestCompleted`. Заблокированная попытка остается в
+  истории, но не подменяет прогресс реально активного run;
+- safe API дополняет run агрегированным `progress`: этап, текущий источник,
+  число WB-страниц/строк, записанный объем и завершенные кабинеты. Данные
+  читаются из атомарного manifest без публикации account ids и raw payloads;
+- если более поздняя автоматическая попытка получила `blocked_active_refresh`,
+  блок продолжает показывать реально активный refresh, а после его завершения —
+  результат содержательного запуска, а не технически заблокированную попытку;
+- staff открывает сервис сопоставления из карточки `Сопоставление WB ↔ 1C` в
+  `Что разобрать первым`, пересчитывает кандидатов и принимает ручные решения в
+  отдельном виджете; импорт TXT/TSV/CSV mapping WB ↔ 1C на уровне клиента
+  остается fallback-действием блока обновления данных, сохраняется в
+  `SHUMEYKO_SOURCE_REFRESH_MAPPING_DIR`, а audit пишет только имя и размер файла;
 - staff может запустить dry-run через `/api/clients/{client_id}/source-refresh`
   с `dry_run=true`, чтобы проверить конфигурацию без внешних WB/1C чтений;
 - staff может запустить явный `full` refresh через тот же endpoint с
@@ -243,8 +306,9 @@ staff draft, но блокирует публикацию и закрытие д
 
 - последние `daily-*` директории, default `3`;
 - последние `full-*` директории, default `2`;
-- snapshot ids published report runs из БД, если передан database URL;
-- незавершенные refresh runs из БД.
+- snapshot ids draft/published report runs и их `SourceLoad` lineage из БД;
+- незавершенные refresh runs, рекурсивные composite bases и последний успешный
+  полный WB snapshot каждого клиента.
 
 Скрипт не трогает `.env`, `reports`, `data/web`, PostgreSQL и любые пути вне
 `source_refresh_root`.
@@ -256,6 +320,94 @@ staff draft, но блокирует публикацию и закрытие д
 default `2`. Директории active runs, successful runs, published report
 snapshots, symlinks и пути вне `source_refresh_root` не удаляются. Ошибка
 cleanup не меняет статус refresh и не должна скрывать исходную ошибку.
+
+## File-authoritative marketplace facts
+
+WB Finance и Ozon всегда сначала сохраняют immutable raw-файлы и manifest.
+Настройка `SOURCE_REFRESH_RAW_DB_MODE` принимает `legacy` или `files_only`.
+Режим `legacy` временно сохраняет прежние `source_snapshot_rows` для теневого
+сравнения. В `files_only` marketplace raw rows не создаются, а collection
+получает `rowPersistence.status=file_authoritative`.
+
+При включенном `MARKETPLACE_DAILY_FACTS_ENABLED` расчет после нормализации и
+строкочувствительных распределений атомарно заменяет текущее окно таблицы
+`marketplace_finance_daily_facts`. Ее grain:
+
+`tenant/client/marketplace/cabinet/organization/day/report/document/product/`
+`sales_model/operation_group`.
+
+Витрина хранит только типизированные измерения, аддитивные финансовые меры,
+`source_row_count`, общий digest row hashes, partial-source status,
+`source_snapshot_set_id` и methodology version. Она не заменяет immutable raw
+snapshot для воспроизводимости и не меняет публичный web API.
+
+Замена выполняется через staging/load-id и всегда охватывает полный заявленный
+интервал `period_start..period_end`, включая пустой хвост. До promotion staging
+проверяются grain/count/digest; delete+promotion выполняются одной транзакцией.
+Отдельная persisted parity повторно читает рабочую таблицу и сравнивает ее с
+отфильтрованными generated facts.
+
+Staging digest считается потоково в том же canonical JSON формате, что и
+целостный список, без создания дополнительных полных копий многомиллионной
+витрины в памяти. Удаление временной загрузки выполняется ограниченными batch,
+чтобы не упираться в statement timeout после успешного promotion.
+
+Calculation parity разделена на два независимых контроля: legacy DB rows против
+file-stream report и generated daily facts против persisted daily facts. Первый
+сравнивает по stable business grain все строки отчета, KPI, document
+reconciliation, налоги, статусы качества, source counts и hashes. Aggregate-only
+сверка не может выставить `calculationParity.status=matched`; полный результат
+сохраняется отдельным JSON-артефактом и в additive collection payload.
+
+Aggregate parity дневной витрины требует точного совпадения количества и всех
+денежных показателей, включая себестоимость. Перед сохранением дневных фактов
+копеечный residual себестоимости детерминированно распределяется внутри того же
+report grain, поэтому сумма дневной витрины должна совпадать с отчетом без
+допуска. Поле `roundingTolerance.cogs` сохраняется для совместимости со значением
+`0.00`; любая ненулевая дельта блокирует promotion.
+
+При composite rebuild, который обновляет только 1С, общий raw-integrity verifier
+проверяет WB finance и WB report-list в базовом refresh run. Отсутствие collection
+в техническом child run не считается отсутствием raw-источника, но повреждение
+файлов базового run по-прежнему блокирует rebuild.
+
+При resume immutable snapshot каталог первичных документов WB переносится целиком,
+включая вложенные подписанные архивы и account manifests, через hard link с
+безопасным fallback на копирование. Повторный run использует сохраненные provider
+results и не обращается к Documents API повторно.
+
+Ozon параллельно материализует текущие типизированные
+`marketplace_operation_facts` с уникальным source/business key. До перевода
+всех Ozon diagnostics на эти facts production остается в `legacy`; переключение
+на `files_only` выполняется только после parity-check на одном snapshot и
+отдельного включения `SOURCE_REFRESH_OZON_FILES_ONLY_ENABLED`. Общий
+`SOURCE_REFRESH_RAW_DB_MODE=files_only` без этого флага переключает WB, но не
+прекращает совместимую raw-запись Ozon.
+
+Typed Ozon grain не зависит от позиции строки и включает cabinet/source type,
+operation, posting, product и service key. Service lines и partial-source status
+хранятся типизированно; promotion выполняется атомарно через staging. Raw Ozon
+можно отключить только после typed parity для всех источников, используемых P&L
+и diagnostics.
+
+Поддерживаемый file-authoritative контур включает
+`ozon_finance_cash_flow`, `ozon_realization`, `ozon_realization_posting`,
+`ozon_mutual_settlement`, `ozon_products_buyout`, `ozon_b2b_sales_json` и
+`ozon_products_report`. Асинхронные ответы создания/опроса отчета проверяются
+по hash как raw-файлы, но не входят в collection data row count и typed facts.
+
+`typedParity.status=matched` требует одновременно verified raw integrity,
+полного source-row coverage, совпадения file normalization с legacy DB rows,
+совпадения staged/persisted typed facts и полной legacy/typed сверки публичной
+Ozon diagnostics/P&L. Последняя выполняется по всем строкам snapshot, денежные
+поля сравниваются после рабочего округления, а preview-строки сортируются по
+stable business grain; физический SQL-порядок и технические row ids не являются
+grain. Артефакт сохраняет только digests, статусы секций и пути расхождений.
+
+Cash-flow сохраняется typed summary и service lines по категориям и операциям;
+mutual-settlement сохраняет документные строки, а buyout/B2B разворачивают
+вложенные `products`, `invoices` и `operations`. Повторная материализация того
+же snapshot атомарно заменяет текущие facts и не увеличивает их число.
 
 # Acceptance Criteria
 
@@ -274,9 +426,23 @@ cleanup не меняет статус refresh и не должна скрыва
   `data/onec_marketplace_mapping` не считается самостоятельным blocker.
 - `/api/clients/{client_id}/source-refresh` staff-only запускает dry-run или
   `full` refresh и возвращает safe payload последнего run.
-- UI раздела `Интеграции` содержит блок `Обновление данных` с переходом в
-  сервис сопоставления, fallback upload mapping, dry-run, full refresh и
-  статусом коллекций.
+- production `full` из web продолжает выполняться после рестарта web-сервиса;
+  повторный worker не может одновременно забрать уже выполняющийся run.
+- full-refresh не выполняется через FastAPI `BackgroundTasks`; health и статика
+  отвечают во время пересборки, а PostgreSQL-транзакция завершается перед
+  файловой сборкой и экспортом артефактов.
+- stale worker получает `failed` с сохранением коллекций; повтор запускается
+  новым immutable run с `resume_mode=auto`.
+- production daily/weekly после создания run запускают тот же systemd worker;
+  fallback `cli:<pid>:<run_id>` разрешен только для SQLite/dev. Watchdog может
+  завершить legacy CLI run лишь после подтверждения, что указанный PID больше
+  не существует;
+- активный WB manifest отражается в safe `progress` без account ids, имен
+  кабинетов, путей и raw payloads.
+- UI главной страницы перед KPI содержит `Данные и расчёт` с fallback upload
+  mapping, dry-run, full refresh и статусом коллекций; раздел `Интеграции`
+  содержит только настройки подключений, а интерактивный mapping service вынесен
+  в отдельный виджет основной очереди `Что разобрать первым`.
 - `prune_source_refresh.py` dry-run ничего не удаляет.
 - Автоочистка failed snapshots сохраняет минимум два последних failed runs и
   не выходит за direct children `source_refresh_root`.
@@ -284,6 +450,9 @@ cleanup не меняет статус refresh и не должна скрыва
 - Тесты, ruff, docs validators и no-secrets validators проходят.
 - Таймаут тяжелой 1С страницы уменьшает batch без потери уже сохраненных
   страниц; следующий совместимый run продолжает с checkpoint без дублей.
+- Аварийная остановка WB после любой страницы сохраняет manifest; следующий
+  совместимый run продолжает с последнего `rrd_id` без повторной загрузки уже
+  подтвержденных страниц.
 - `commissioner_reports=partial_source/failed` блокирует публикацию, а
   optional `stock_movements` не превращается в ноль и не блокирует отчет при
   подтвержденной обязательной себестоимости.
@@ -300,6 +469,27 @@ cleanup не меняет статус refresh и не должна скрыва
 
 # Changelog
 
+- 2026-07-12: lowered the independent worker memory ceiling to 3 GiB, limited
+  worker swap to 1 GiB and enabled systemd-oomd preference so a heavy refresh
+  fails safely instead of exhausting the whole server and breaking SSH.
+- 2026-07-12: added exact cent-level WB COGS reconciliation, streaming staging
+  digest, batched staging cleanup and base-run raw verification for composite
+  rebuilds.
+- 2026-07-11: unified web, compatible 1C, AI, mapping-upload and scheduled
+  refresh submission through queued systemd workers; added conservative stale
+  legacy CLI recovery without deleting immutable data.
+- 2026-07-11: moved production web refresh execution to an independent systemd
+  worker, added worker heartbeat/watchdog, separated active run from latest
+  attempt and protected immutable checkpoints during recovery.
+- 2026-07-11: made the staff refresh status prefer the real active run and skip
+  later `blocked_active_refresh` timer attempts when selecting the visible result.
+- 2026-07-11: moved source-refresh status and controls from `Интеграции` to the
+  main `Данные и расчёт` panel and decoupled its loading from integration cards.
+- 2026-07-11: moved the interactive mapping queue out of `Интеграции` into a
+  separate widget opened from `Что разобрать первым`; integrations retain the
+  client-level fallback upload and source-refresh controls.
+- 2026-07-11: added atomic WB finance page checkpoints, manifest recovery and
+  immutable cross-run resume without duplicate downloads.
 - 2026-07-10: added adaptive 1C OData batches, immutable per-page checkpoints,
   cross-run resume lineage and publication-required source semantics.
 - 2026-07-10: added fail-fast 1C EDMX metadata guard, runtime integration

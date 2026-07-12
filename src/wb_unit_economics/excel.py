@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
 from calendar import monthrange
 from collections import Counter, defaultdict
@@ -178,8 +179,12 @@ def _display_week_start(week_start: date, report_period_start: date) -> date:
 
 
 def _row_month_start(row: object, report_period_start: date) -> date:
-    closing_date = getattr(row, "week_end", None) or _display_week_start(
-        row.week_start, report_period_start
+    closing_date = (
+        getattr(row, "accounting_period_date", None)
+        or getattr(row, "week_end", None)
+        or _display_week_start(
+            row.week_start, report_period_start
+        )
     )
     return _month_start(closing_date)
 
@@ -442,6 +447,11 @@ def build_excel_report(
         gross_profit_rows = list(onec_gross_profit_rows)
         sales_report_summary_rows = list(wb_sales_report_summary_rows)
         marketplace_service_rows = list(onec_marketplace_service_rows)
+        _apply_accounting_period_dates(
+            report,
+            gross_profit_rows,
+            sales_report_summary_rows,
+        )
         labels = account_labels or {}
         org_labels = organization_labels or {}
         onec_document_dates = _resolved_onec_document_dates_by_package(
@@ -1492,6 +1502,8 @@ def _write_unit_economics(
         "НДС входящий 1С",
         "Расхождение НДС",
         "Полнота НДС",
+        "Учетная дата 1С",
+        "Источник учетной даты",
     ]
     sheet.write_row(0, 0, headers, formats["header"])
     source_rows = report.rows
@@ -1586,6 +1598,14 @@ def _write_unit_economics(
         sheet.write_number(idx, 49, float(row.vat_input_from_1c), formats["money"])
         sheet.write_number(idx, 50, float(row.vat_input_difference), formats["money"])
         sheet.write(idx, 51, row.vat_input_completeness)
+        sheet.write(
+            idx,
+            52,
+            row.accounting_period_date.isoformat()
+            if row.accounting_period_date
+            else "",
+        )
+        sheet.write(idx, 53, row.accounting_period_source)
     row_count = len(report_rows)
     _add_table(sheet, headers, row_count)
     sheet.freeze_panes(1, 8)
@@ -1595,7 +1615,7 @@ def _write_unit_economics(
     sheet.set_column(6, 6, 34)
     sheet.set_column(7, 11, 16)
     sheet.set_column(12, 40, 15)
-    sheet.set_column(44, 51, 24)
+    sheet.set_column(44, 53, 24)
     sheet.set_column(36, 36, 28)
     sheet.set_column(37, 40, 60)
     _apply_unit_economics_conditional_formatting(
@@ -2838,6 +2858,81 @@ def _document_reconciliation_actuals(
     return non_zero_document_rows or rows
 
 
+def _apply_accounting_period_dates(
+    report: UnitEconomicsReport,
+    onec_gross_profit_rows: Iterable[OnecGrossProfitDocumentRow],
+    wb_sales_report_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
+) -> None:
+    """Attach the posted 1C document date to WB P&L rows.
+
+    The operational WB week remains unchanged. When the matching posted 1C
+    document is unavailable or resolves to several dates, the legacy week-end
+    assignment is retained explicitly instead of being presented as confirmed
+    1C synchronization.
+    """
+
+    onec_index = _index_onec_document_rows(onec_gross_profit_rows)
+    weekly_summaries = _weekly_summary_rows_by_type(wb_sales_report_summary_rows)
+    resolved: dict[tuple[str, str, date, str], tuple[date, str]] = {}
+    for expected in report.onec_report_reconciliation_rows:
+        summaries = weekly_summaries.get(
+            (
+                expected.seller_account_id,
+                expected.week_start,
+                expected.document_label,
+            ),
+            [],
+        )
+        actuals = _document_reconciliation_actuals(
+            _match_onec_document_rows(expected, onec_index, summaries)
+        )
+        dates = sorted({actual.document_date for actual in actuals})
+        if len(dates) == 1:
+            accounting_date = dates[0]
+            source = "onec_document_date"
+        elif dates:
+            accounting_date = expected.week_end
+            source = "onec_document_date_ambiguous"
+        else:
+            accounting_date = expected.week_end
+            source = "wb_week_end_fallback"
+        resolved[
+            (
+                expected.seller_account_id,
+                expected.organization_id,
+                expected.week_start,
+                expected.document_label,
+            )
+        ] = (accounting_date, source)
+
+    for row in report.rows:
+        document_label = _unit_row_document_label(row.document_report)
+        accounting_date, source = resolved.get(
+            (
+                row.seller_account_id,
+                row.organization_id,
+                row.week_start,
+                document_label,
+            ),
+            (row.week_end, "wb_week_end_fallback"),
+        )
+        row.accounting_period_date = accounting_date
+        row.accounting_period_source = source
+        row.document_report = re.sub(
+            r"закрытие\s+\d{2}\.\d{2}\.\d{4}",
+            f"закрытие {accounting_date:%d.%m.%Y}",
+            row.document_report,
+        )
+
+
+def _unit_row_document_label(document_report: str) -> str:
+    if "Уведомление о выкупе" in document_report:
+        return "Уведомление о выкупе"
+    if "Отчет комиссионера" in document_report:
+        return "Отчет комиссионера"
+    return ""
+
+
 def _document_reconciliation_row(
     expected: object,
     actuals: list[OnecGrossProfitDocumentRow],
@@ -2984,6 +3079,11 @@ def _document_reconciliation_row(
         "settlement_delta": settlement_delta,
         "onec_vat": _sum_onec_document_field(actuals, "vat") if actuals else None,
         "onec_cogs": _sum_onec_document_field(actuals, "cogs") if actuals else None,
+        "onec_cogs_without_vat": _sum_onec_document_field(
+            actuals, "cogs_without_vat"
+        )
+        if actuals
+        else None,
         "onec_gross_profit": _sum_onec_document_field(actuals, "gross_profit")
         if actuals
         else None,
@@ -3008,6 +3108,13 @@ def _unmatched_onec_document_row(
         comment = (
             "В 1С есть отрицательная приходная накладная/корректировка. "
             "Она выведена отдельно и не считается обычным лишним WB-документом."
+        )
+    elif _is_onec_cost_adjustment(actual):
+        status = "Корректировка себестоимости 1С"
+        document_label = "Корректировка себестоимости 1С"
+        comment = (
+            "Стоимостное движение 1С без количества и выручки. Оно относится "
+            "к закрытию месяца и входит только в календарную себестоимость 1С."
         )
     return {
         "status": status,
@@ -3060,6 +3167,7 @@ def _unmatched_onec_document_row(
         "settlement_delta": None,
         "onec_vat": actual.vat,
         "onec_cogs": actual.cogs,
+        "onec_cogs_without_vat": actual.cogs_without_vat,
         "onec_gross_profit": actual.gross_profit,
         "onec_source_rows": actual.source_row_count,
         "comment": comment,
@@ -3136,6 +3244,14 @@ def _is_onec_correction_document(row: OnecGrossProfitDocumentRow) -> bool:
     )
 
 
+def _is_onec_cost_adjustment(row: OnecGrossProfitDocumentRow) -> bool:
+    return bool(
+        row.quantity == 0
+        and row.revenue == 0
+        and (row.cogs != 0 or row.cogs_without_vat != 0)
+    )
+
+
 def _sum_onec_document_field(
     rows: Iterable[OnecGrossProfitDocumentRow],
     field_name: str,
@@ -3207,7 +3323,7 @@ def _document_reconciliation_status(
         if is_buyout_document:
             if return_quantity_delta is not None and return_quantity_delta != 0:
                 return (
-                    "Документ найден",
+                    "Сверено по количеству",
                     "Расходная накладная 1С по уведомлению о выкупе найдена. "
                     "Количество продаж WB совпало с расходной накладной 1С. "
                     "Возвраты WB из выкупного отчета показаны справочно: в "
@@ -4044,6 +4160,7 @@ def _write_marketplace_service_reconciliation(
         "Разница 1С - детализация",
         "Разница 1С - сводный",
         "Комментарий",
+        "Статус",
     ]
     headers = [
         "Неделя",
@@ -4132,6 +4249,7 @@ def _write_marketplace_service_reconciliation(
                 idx, 6, float(row["onec"] - row["detail"]), formats["money"]
             )
             sheet.write(idx, 8, row["comment"])
+            sheet.write(idx, 9, row["status"])
     else:
         sheet.write_row(2, 0, ["planned_input", "Сверочные строки не загружены."])
     detail_header_row = max(len(check_rows), 1) + 4
@@ -4235,6 +4353,10 @@ def _write_onec_service_breakdown(
         "Сумма включает НДС",
         "НДС включать в стоимость",
         "Расходы включать в себестоимость",
+        "Источник",
+        "Статус сопоставления",
+        "Контрольная группа",
+        "База сверки",
     ]
     sheet.write_row(0, 0, headers, formats["header"])
     for idx, row in enumerate(service_rows, start=1):
@@ -4258,13 +4380,17 @@ def _write_onec_service_breakdown(
         sheet.write(idx, 13, _yes_no(row.amount_includes_vat))
         sheet.write(idx, 14, _yes_no(row.vat_included_in_cost))
         sheet.write(idx, 15, _yes_no(row.include_expenses_in_cost))
+        sheet.write(idx, 16, row.source_kind)
+        sheet.write(idx, 17, row.match_status)
+        sheet.write(idx, 18, _marketplace_service_control_group(row.service_category))
+        sheet.write(idx, 19, "Документная сумма с НДС")
     if not service_rows:
         sheet.write_row(1, 0, ["planned_input", "УПД услуг 1С не загружены."])
     _add_table(sheet, headers, len(service_rows) or 1)
     sheet.set_column(0, 2, 22)
     sheet.set_column(3, 6, 16)
     sheet.set_column(7, 9, 30)
-    sheet.set_column(10, 15, 18)
+    sheet.set_column(10, 19, 18)
 
 
 def _write_expense_allocation(
@@ -4643,7 +4769,7 @@ def _write_lost_sales(
         start_row=table_start,
         start_col=0,
         headers=headers,
-        rows=rows,
+        rows=[row[:19] for row in rows],
         money_columns={14, 15, 16},
     )
     if not rows:
@@ -4731,6 +4857,27 @@ def _load_stock_history(
             report.report_period_end.toordinal() + 1,
         )
     }
+    manifest_period_start = _iso_date_or_none(manifest.get("period_start"))
+    manifest_period_end = _iso_date_or_none(manifest.get("period_end"))
+    calculation_period_start = max(
+        report.report_period_start,
+        manifest_period_start or report.report_period_start,
+    )
+    calculation_period_end = min(
+        report.report_period_end,
+        manifest_period_end or report.report_period_end,
+    )
+    calculation_dates = (
+        {
+            date.fromordinal(day)
+            for day in range(
+                calculation_period_start.toordinal(),
+                calculation_period_end.toordinal() + 1,
+            )
+        }
+        if calculation_period_start <= calculation_period_end
+        else set()
+    )
     expected_accounts = {
         row.seller_account_id for row in report.rows if row.seller_account_id
     }
@@ -4799,13 +4946,7 @@ def _load_stock_history(
                         stock_by_date[current_date] += _decimal_from_stock_cell(
                             csv_row.get(header)
                         )
-    manifest_period_matches = (
-        str(manifest.get("period_start") or "")
-        == report.report_period_start.isoformat()
-        and str(manifest.get("period_end") or "")
-        == report.report_period_end.isoformat()
-        and str(manifest.get("stock_type") or "").casefold() == "wb"
-    )
+    manifest_is_wb = str(manifest.get("stock_type") or "").casefold() == "wb"
     accounts: list[dict[str, object]] = []
     for seller_account_id in sorted(expected_accounts):
         source_result = result_by_account.get(seller_account_id, {})
@@ -4813,28 +4954,53 @@ def _load_stock_history(
         source_status = str(source_result.get("status") or "not_loaded")
         if source_status == "access_error":
             source_status = "missing_scope"
-        complete = (
-            manifest_period_matches
+        provider_window_calculated = (
+            manifest_is_wb
             and source_status == "ok"
-            and covered_dates == expected_dates
+            and bool(calculation_dates)
+            and covered_dates == calculation_dates
+        )
+        full_coverage = bool(
+            provider_window_calculated and calculation_dates == expected_dates
         )
         accounts.append(
             {
                 "seller_account_id": seller_account_id,
-                "status": "complete" if complete else source_status,
+                "status": (
+                    "complete"
+                    if full_coverage
+                    else "partial_provider_window"
+                    if provider_window_calculated
+                    else source_status
+                ),
                 "covered_days": len(covered_dates),
                 "total_days": len(expected_dates),
-                "calculated": complete,
+                "calculated": provider_window_calculated,
+                "provider_window_calculated": provider_window_calculated,
+                "full_coverage": full_coverage,
+                "calculation_period_start": calculation_period_start.isoformat(),
+                "calculation_period_end": calculation_period_end.isoformat(),
+                "extrapolated": False,
             }
         )
-    calculated = bool(accounts) and all(
-        bool(item["calculated"]) for item in accounts
+    provider_window_calculated = bool(accounts) and all(
+        bool(item["provider_window_calculated"]) for item in accounts
     )
+    full_coverage = provider_window_calculated and all(
+        bool(item["full_coverage"]) for item in accounts
+    )
+    calculated = provider_window_calculated
     covered_days = min(
         (int(item["covered_days"]) for item in accounts),
         default=0,
     )
-    status = "complete" if calculated else "incomplete"
+    status = (
+        "complete"
+        if full_coverage
+        else "partial_provider_window"
+        if provider_window_calculated
+        else "incomplete"
+    )
     if not products and not any(
         str(item.get("status") or "") in {"access_error", "missing_scope"}
         for item in result_by_account.values()
@@ -4843,6 +5009,22 @@ def _load_stock_history(
     return {
         "status": status,
         "calculated": calculated,
+        "full_coverage": full_coverage,
+        "calculation_period_start": (
+            calculation_period_start.isoformat()
+            if provider_window_calculated
+            else None
+        ),
+        "calculation_period_end": (
+            calculation_period_end.isoformat()
+            if provider_window_calculated
+            else None
+        ),
+        "calculation_dates": (
+            tuple(sorted(calculation_dates)) if provider_window_calculated else ()
+        ),
+        "provider_window_calculated": provider_window_calculated,
+        "extrapolated": False,
         "source_label": f"WB STOCK_HISTORY_DAILY_CSV: {stock_history_dir.name}",
         "path": str(stock_history_dir),
         "period_start": manifest.get("period_start"),
@@ -4854,7 +5036,12 @@ def _load_stock_history(
         "accounts": accounts,
         "message": (
             "Покрытие истории остатков полное."
-            if calculated
+            if full_coverage
+            else (
+                "Рассчитано за доступный период: история остатков покрывает "
+                f"{covered_days} из {len(expected_dates)} дней, без экстраполяции."
+            )
+            if provider_window_calculated
             else (
                 "Не рассчитано: история остатков покрывает "
                 f"{covered_days} из {len(expected_dates)} дней."
@@ -4862,6 +5049,13 @@ def _load_stock_history(
         ),
         "products": products,
     }
+
+
+def _iso_date_or_none(value: object) -> date | None:
+    try:
+        return date.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
 
 
 def _load_onec_stock_by_warehouse(
@@ -5213,7 +5407,15 @@ def _lost_sales_rows(
         key = _stock_product_key(row.seller_account_id, row.nm_id, row.vendor_code)
         grouped[key].append(row)
 
-    period_days = (report.report_period_end - report.report_period_start).days + 1
+    calculation_dates = stock_history.get("calculation_dates")
+    if not isinstance(calculation_dates, (list, tuple)) or not calculation_dates:
+        return []
+    stock_dates = [item for item in calculation_dates if isinstance(item, date)]
+    if not stock_dates:
+        return []
+    calculation_period_start = min(stock_dates)
+    calculation_period_end = max(stock_dates)
+    period_days = len(stock_dates)
     result: list[tuple[object, ...]] = []
     for key, unit_rows in grouped.items():
         stock_product = _find_stock_product(products, key)
@@ -5222,18 +5424,15 @@ def _lost_sales_rows(
         stock_by_date = stock_product.get("stock_by_date", {})
         if not isinstance(stock_by_date, Mapping):
             continue
-        stock_dates = [
-            date.fromordinal(day)
-            for day in range(
-                report.report_period_start.toordinal(),
-                report.report_period_end.toordinal() + 1,
-            )
-        ]
         if any(item not in stock_by_date for item in stock_dates):
             continue
         stock_values = [stock_by_date[item] for item in stock_dates]
         zero_stock_days = sum(1 for value in stock_values if value <= 0)
-        totals = _totals(unit_rows)
+        totals = _lost_sales_period_totals(
+            unit_rows,
+            period_start=calculation_period_start,
+            period_end=calculation_period_end,
+        )
         sales_quantity = totals["sales_quantity"]
         net_revenue = totals["net_revenue"]
         contribution_margin_before_tax = totals["gross_profit"]
@@ -5309,6 +5508,11 @@ def _lost_sales_rows(
                     onec_stock_quantity=onec_stock_quantity,
                 ),
                 _lost_sales_source_status(onec_stock_quantity),
+                _lost_sales_calculation_context(
+                    unit_rows,
+                    stock_dates=stock_dates,
+                    stock_by_date=stock_by_date,
+                ),
             )
         )
     return sorted(
@@ -5316,6 +5520,81 @@ def _lost_sales_rows(
         key=lambda row: (row[15], row[14], row[13]),
         reverse=True,
     )
+
+
+def _lost_sales_period_totals(
+    rows: Iterable[object],
+    *,
+    period_start: date,
+    period_end: date,
+) -> dict[str, Decimal]:
+    totals = {
+        "sales_quantity": Decimal("0"),
+        "net_revenue": Decimal("0"),
+        "gross_profit": Decimal("0"),
+    }
+    for row in rows:
+        row_start = max(getattr(row, "week_start", period_start), period_start)
+        row_end = min(getattr(row, "week_end", period_end), period_end)
+        if row_start > row_end:
+            continue
+        source_start = getattr(row, "week_start", row_start)
+        source_end = getattr(row, "week_end", row_end)
+        source_days = max(1, (source_end - source_start).days + 1)
+        overlap_days = (row_end - row_start).days + 1
+        weight = Decimal(overlap_days) / Decimal(source_days)
+        totals["sales_quantity"] += (
+            getattr(row, "sales_quantity", Decimal("0")) * weight
+        )
+        totals["net_revenue"] += getattr(row, "net_revenue", Decimal("0")) * weight
+        totals["gross_profit"] += getattr(row, "gross_profit", Decimal("0")) * weight
+    return totals
+
+
+def _lost_sales_calculation_context(
+    rows: Iterable[object],
+    *,
+    stock_dates: Iterable[date],
+    stock_by_date: Mapping[date, object],
+) -> dict[str, object]:
+    dates = sorted(stock_dates)
+    finance_periods = []
+    for row in sorted(
+        rows,
+        key=lambda item: (
+            getattr(item, "week_start", date.min),
+            getattr(item, "week_end", date.min),
+            str(getattr(item, "document_report", "")),
+        ),
+    ):
+        period_start = getattr(row, "week_start", None)
+        period_end = getattr(row, "week_end", None)
+        if not isinstance(period_start, date) or not isinstance(period_end, date):
+            continue
+        finance_periods.append(
+            {
+                "periodStart": period_start.isoformat(),
+                "periodEnd": period_end.isoformat(),
+                "salesQuantity": str(
+                    Decimal(str(getattr(row, "sales_quantity", Decimal("0"))))
+                ),
+                "netRevenue": str(
+                    Decimal(str(getattr(row, "net_revenue", Decimal("0"))))
+                ),
+                "contributionMargin": str(
+                    Decimal(str(getattr(row, "gross_profit", Decimal("0"))))
+                ),
+            }
+        )
+    return {
+        "version": "lost-sales-filter-v1",
+        "providerPeriodStart": dates[0].isoformat() if dates else None,
+        "providerPeriodEnd": dates[-1].isoformat() if dates else None,
+        "stockByDate": {
+            item.isoformat(): str(Decimal(str(stock_by_date[item]))) for item in dates
+        },
+        "financePeriods": finance_periods,
+    }
 
 
 def _stock_product_key(
@@ -6200,8 +6479,15 @@ def _service_check_rows(
             "Сверяется отдельной статьей.",
         ),
         (
-            "Комиссия + Логистика + Хранение + Эквайринг",
-            ("Комиссия WB", "Логистика", "Хранение", "Эквайринг"),
+            "Комиссия + Логистика + Хранение + Приемка + Эквайринг + Прочие услуги WB",
+            (
+                "Комиссия WB",
+                "Логистика",
+                "Хранение",
+                "Приемка",
+                "Эквайринг",
+                "Прочие услуги WB",
+            ),
             (
                 "1С может относить часть WB-услуг в комиссионное "
                 "вознаграждение, поэтому блок сверяется суммарно."
@@ -6232,9 +6518,30 @@ def _service_check_rows(
                     "detail": _sum_categories(detail_totals, week, label, categories),
                     "summary": summary,
                     "comment": check_comment,
+                    "status": (
+                        "Сверено"
+                        if abs(
+                            _sum_categories(onec_totals, week, label, categories)
+                            - _sum_categories(detail_totals, week, label, categories)
+                        )
+                        <= Decimal("1")
+                        else "Есть расхождения"
+                    ),
                 }
             )
     return rows
+
+
+def _marketplace_service_control_group(category: str) -> str:
+    normalized = category.strip().casefold()
+    if "продвиж" in normalized:
+        return "WB Продвижение"
+    if any(marker in normalized for marker in ("штраф", "пен", "доплат")):
+        return "Штрафы/доплаты"
+    return (
+        "Комиссия + Логистика + Хранение + Приемка + Эквайринг + "
+        "Прочие услуги WB"
+    )
 
 
 def _sum_categories(
