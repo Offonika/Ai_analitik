@@ -1488,6 +1488,10 @@ def _marketplace_finance_daily_facts(
         tuple[object, ...],
         list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
     ] = defaultdict(list)
+    gross_profit_by_report_grain: dict[
+        tuple[object, ...],
+        list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
+    ] = defaultdict(list)
     for key in sorted(grouped, key=lambda item: tuple(str(value) for value in item)):
         (
             client_id,
@@ -1535,6 +1539,7 @@ def _marketplace_finance_daily_facts(
             penalties_and_holdbacks=money(Decimal(bucket["penalties_and_holdbacks"])),
             acquiring=money(Decimal(bucket["acquiring"])),
             cogs=money(Decimal(bucket["cogs"])),
+            gross_profit=money(Decimal(bucket.get("gross_profit", Decimal("0")))),
             vat_input_from_marketplace=money(
                 Decimal(bucket["vat_input_from_marketplace"])
             ),
@@ -1569,26 +1574,45 @@ def _marketplace_finance_daily_facts(
                 len(facts) - 1,
             )
         )
+        gross_profit_by_report_grain[report_grain].append(
+            (
+                fact,
+                Decimal(bucket.get("gross_profit", Decimal("0"))),
+                len(facts) - 1,
+            )
+        )
 
-    _reconcile_daily_cogs_to_report_grain(cogs_by_report_grain)
+    _reconcile_daily_money_to_report_grain(
+        cogs_by_report_grain,
+        field_name="cogs",
+    )
+    _reconcile_daily_money_to_report_grain(
+        gross_profit_by_report_grain,
+        field_name="gross_profit",
+    )
     return facts
 
 
-def _reconcile_daily_cogs_to_report_grain(
+def _reconcile_daily_money_to_report_grain(
     grouped: dict[
         tuple[object, ...],
         list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
     ],
+    *,
+    field_name: str,
 ) -> None:
-    """Keep daily COGS cents equal to the report grain after rounding."""
+    """Keep daily monetary cents equal to the final report grain."""
     cent = Decimal("0.01")
     for report_grain in sorted(
         grouped,
         key=lambda item: tuple(str(value) for value in item),
     ):
         entries = grouped[report_grain]
-        target = money(sum((raw_cogs for _, raw_cogs, _ in entries), Decimal("0")))
-        current = sum((fact.cogs for fact, _, _ in entries), Decimal("0"))
+        target = money(sum((raw_value for _, raw_value, _ in entries), Decimal("0")))
+        current = sum(
+            (getattr(fact, field_name) for fact, _, _ in entries),
+            Decimal("0"),
+        )
         difference = target - current
         if difference == 0:
             continue
@@ -1596,12 +1620,16 @@ def _reconcile_daily_cogs_to_report_grain(
         remaining = int(abs(difference) / cent)
         candidates = sorted(
             entries,
-            key=lambda item: (item[1] - item[0].cogs, item[2]),
+            key=lambda item: (item[1] - getattr(item[0], field_name), item[2]),
             reverse=difference > 0,
         )
         for index in range(remaining):
             fact = candidates[index % len(candidates)][0]
-            fact.cogs = money(fact.cogs + step)
+            setattr(
+                fact,
+                field_name,
+                money(getattr(fact, field_name) + step),
+            )
 
 
 def build_unit_economics_report(
@@ -1830,7 +1858,7 @@ def build_unit_economics_report(
         service_vat_for_pnl = (
             accounting_service_input_vat if without_vat_pnl else Decimal("0")
         )
-        gross_profit = (
+        calculated_gross_profit = (
             revenue_for_pnl
             - snapshot.wb_commission
             - snapshot.logistics
@@ -1841,6 +1869,12 @@ def build_unit_economics_report(
             - snapshot.acquiring
             + service_vat_for_pnl
             - cogs
+        )
+        gross_profit = (
+            snapshot.precomputed_gross_profit
+            if snapshot.preallocated_finance
+            and snapshot.precomputed_gross_profit is not None
+            else calculated_gross_profit
         )
         key = (
             snapshot.client_id,
@@ -2157,6 +2191,7 @@ def build_unit_economics_report(
                     "penalties_and_holdbacks": Decimal("0"),
                     "acquiring": Decimal("0"),
                     "cogs": Decimal("0"),
+                    "gross_profit": Decimal("0"),
                     "vat_input_from_marketplace": Decimal("0"),
                     "vat_input_from_1c": Decimal("0"),
                     "accounting_service_input_vat": Decimal("0"),
@@ -2183,6 +2218,7 @@ def build_unit_economics_report(
             daily_bucket["penalties_and_holdbacks"] += snapshot.penalties_and_holdbacks
             daily_bucket["acquiring"] += snapshot.acquiring
             daily_bucket["cogs"] += cogs
+            daily_bucket["gross_profit"] += gross_profit
             daily_bucket["vat_input_from_marketplace"] += vat_input_allocation.from_wb
             daily_bucket["vat_input_from_1c"] += vat_input_allocation.from_1c
             daily_bucket["accounting_service_input_vat"] += accounting_service_input_vat

@@ -4426,6 +4426,7 @@ def replace_marketplace_finance_daily_facts(
                 "penalties_and_holdbacks": fact.penalties_and_holdbacks,
                 "acquiring": fact.acquiring,
                 "cogs": fact.cogs,
+                "gross_profit": fact.gross_profit,
                 "vat_input_from_marketplace": fact.vat_input_from_marketplace,
                 "vat_input_from_1c": fact.vat_input_from_1c,
                 "accounting_service_input_vat": fact.accounting_service_input_vat,

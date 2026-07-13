@@ -1396,6 +1396,7 @@ def test_daily_fact_rebuild_uses_preallocated_financial_values() -> None:
             storage=Decimal("30"),
             marketplace_promotion=Decimal("20"),
             cogs=Decimal("12.34"),
+            gross_profit=Decimal("22.13"),
             vat_input_from_1c=Decimal("3"),
             accounting_service_input_vat=Decimal("2.50"),
             spp_discount=Decimal("25"),
@@ -1411,6 +1412,7 @@ def test_daily_fact_rebuild_uses_preallocated_financial_values() -> None:
             storage=Decimal("70"),
             marketplace_promotion=Decimal("80"),
             cogs=Decimal("56.78"),
+            gross_profit=Decimal("-117.31"),
             vat_input_from_1c=Decimal("7"),
             accounting_service_input_vat=Decimal("7.50"),
             spp_discount=Decimal("75"),
@@ -1994,7 +1996,7 @@ def test_custom_report_period_controls_status_and_partial_weeks() -> None:
     assert report.rows[0].is_partial_week is True
 
 
-def test_daily_fact_cogs_cents_reconcile_to_weekly_report_grain() -> None:
+def test_daily_fact_money_cents_reconcile_to_weekly_report_grain() -> None:
     grouped: dict[tuple[object, ...], dict[str, object]] = {}
     for fact_date in (date(2026, 3, 2), date(2026, 3, 3)):
         key = (
@@ -2025,6 +2027,7 @@ def test_daily_fact_cogs_cents_reconcile_to_weekly_report_grain() -> None:
             "penalties_and_holdbacks": Decimal("0"),
             "acquiring": Decimal("0"),
             "cogs": Decimal("1.005"),
+            "gross_profit": Decimal("2.005"),
             "vat_input_from_marketplace": Decimal("0"),
             "vat_input_from_1c": Decimal("0"),
             "source_row_count": 1,
@@ -2039,3 +2042,8 @@ def test_daily_fact_cogs_cents_reconcile_to_weekly_report_grain() -> None:
 
     assert [fact.cogs for fact in facts] == [Decimal("1.00"), Decimal("1.01")]
     assert sum((fact.cogs for fact in facts), Decimal("0")) == Decimal("2.01")
+    assert [fact.gross_profit for fact in facts] == [
+        Decimal("2.00"),
+        Decimal("2.01"),
+    ]
+    assert sum((fact.gross_profit for fact in facts), Decimal("0")) == Decimal("4.01")

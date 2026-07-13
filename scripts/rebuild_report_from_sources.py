@@ -546,6 +546,7 @@ def _wb_snapshots_from_daily_facts(
                 source_row_count=max(1, int(fact.source_row_count)),
                 preallocated_finance=True,
                 precomputed_cogs=fact.cogs,
+                precomputed_gross_profit=fact.gross_profit,
                 precomputed_vat_input_from_1c=fact.vat_input_from_1c,
                 precomputed_accounting_service_input_vat=(
                     fact.accounting_service_input_vat

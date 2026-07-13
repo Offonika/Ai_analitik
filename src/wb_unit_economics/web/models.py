@@ -1142,6 +1142,9 @@ class MarketplaceFinanceDailyFact(Base):
         Numeric(20, 2), nullable=False, default=0
     )
     cogs: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    gross_profit: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
     vat_input_from_marketplace: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )

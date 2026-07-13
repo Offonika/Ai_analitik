@@ -182,6 +182,7 @@ class WbApiSnapshot(ProjectModel):
     source_row_count: int = Field(default=1, ge=1)
     preallocated_finance: bool = False
     precomputed_cogs: Decimal | None = None
+    precomputed_gross_profit: Decimal | None = None
     precomputed_vat_input_from_1c: Decimal | None = None
     precomputed_accounting_service_input_vat: Decimal | None = None
     precomputed_spp_discount: Decimal | None = None
@@ -199,6 +200,7 @@ class WbApiSnapshot(ProjectModel):
         "vat_input_from_wb",
         "advertising",
         "precomputed_cogs",
+        "precomputed_gross_profit",
         "precomputed_vat_input_from_1c",
         "precomputed_accounting_service_input_vat",
         "precomputed_spp_discount",
@@ -245,6 +247,7 @@ class MarketplaceFinanceDailyFact(ProjectModel):
     penalties_and_holdbacks: Decimal = Decimal("0")
     acquiring: Decimal = Decimal("0")
     cogs: Decimal = Decimal("0")
+    gross_profit: Decimal = Decimal("0")
     vat_input_from_marketplace: Decimal = Decimal("0")
     vat_input_from_1c: Decimal = Decimal("0")
     accounting_service_input_vat: Decimal = Decimal("0")
@@ -268,6 +271,7 @@ class MarketplaceFinanceDailyFact(ProjectModel):
         "penalties_and_holdbacks",
         "acquiring",
         "cogs",
+        "gross_profit",
         "vat_input_from_marketplace",
         "vat_input_from_1c",
         "accounting_service_input_vat",

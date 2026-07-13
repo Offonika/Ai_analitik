@@ -7012,9 +7012,6 @@ function setDateBounds(input, min, max) {
 
 function renderReadiness(readiness) {
   const financialFailure = financialCheckFailed(readiness);
-  els.overviewTitle.textContent = financialFailure
-    ? "Финансовая проверка не пройдена"
-    : readinessHeadline(readiness.status);
   els.readinessLabel.textContent = financialFailure
     ? "Финансовая проверка не пройдена"
     : readiness.label || "Статус не рассчитан";
@@ -7028,16 +7025,6 @@ function renderReadiness(readiness) {
   } else {
     els.readinessCard.classList.add("readiness-review");
   }
-}
-
-function readinessHeadline(status) {
-  if (status === "ready") {
-    return "Отчет готов к отправке";
-  }
-  if (["failed", "blocked"].includes(status)) {
-    return "Нельзя отправлять клиенту";
-  }
-  return "Нужна проверка перед отправкой";
 }
 
 function renderNextAction({ readiness, quality, sourceLoads, refresh }) {
@@ -7058,6 +7045,9 @@ function renderNextAction({ readiness, quality, sourceLoads, refresh }) {
 }
 
 function decisionHeadline(readiness, action) {
+  if (financialCheckFailed(readiness)) {
+    return "Финансовая проверка не пройдена";
+  }
   if (readiness.status === "ready") {
     return "Отчет готов к отправке";
   }
@@ -7067,12 +7057,23 @@ function decisionHeadline(readiness, action) {
   return `Нужна проверка: ${action.title}`;
 }
 
+function readinessSignals({ readiness, quality, sourceLoads, refresh }) {
+  return {
+    sourceProblems: nonOkSourceCount(sourceLoads, refresh),
+    mappingProblems:
+      Number(quality.mappingRows || 0) > 0 ||
+      refreshHasCollectionStatus(refresh, "stale", ["mapping", "sku_mapping", "сопостав"]),
+    missingCost: Number(quality.missingCostRows || 0) > 0,
+  };
+}
+
 function nextAction({ readiness, quality, sourceLoads, refresh }) {
-  const sourceProblems = nonOkSourceCount(sourceLoads, refresh);
-  const mappingProblems =
-    Number(quality.mappingRows || 0) > 0 ||
-    refreshHasCollectionStatus(refresh, "stale", ["mapping", "sku_mapping", "сопостав"]);
-  const missingCost = Number(quality.missingCostRows || 0) > 0;
+  const { sourceProblems, mappingProblems, missingCost } = readinessSignals({
+    readiness,
+    quality,
+    sourceLoads,
+    refresh,
+  });
   const periodNotice = preliminaryPeriodNotice(readiness, quality);
   if (["failed", "blocked"].includes(readiness.status)) {
     return {
@@ -7211,11 +7212,12 @@ function onNextAction() {
 
 function renderCommandChecklist({ readiness, quality, sourceLoads, refresh }) {
   const readinessStatus = readiness.status || "";
-  const sourceProblems = nonOkSourceCount(sourceLoads, refresh);
-  const mappingProblems =
-    Number(quality.mappingRows || 0) > 0 ||
-    refreshHasCollectionStatus(refresh, "stale", ["mapping", "sku_mapping", "сопостав"]);
-  const missingCost = Number(quality.missingCostRows || 0) > 0;
+  const { sourceProblems, mappingProblems, missingCost } = readinessSignals({
+    readiness,
+    quality,
+    sourceLoads,
+    refresh,
+  });
   const clientDraftReady = !readinessHasCode(readiness, "client_draft_missing");
   const excelReady = Boolean(state.reportId);
   const checklist = [

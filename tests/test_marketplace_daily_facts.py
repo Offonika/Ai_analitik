@@ -312,6 +312,7 @@ def test_daily_facts_recreate_wb_snapshot_grain_and_source_count() -> None:
             "storage": Decimal("4.50"),
             "marketplace_promotion": Decimal("3.25"),
             "cogs": Decimal("10.50"),
+            "gross_profit": Decimal("20.75"),
             "vat_input_from_1c": Decimal("2.25"),
             "accounting_service_input_vat": Decimal("1.50"),
             "spp_discount": Decimal("1.75"),
@@ -327,6 +328,7 @@ def test_daily_facts_recreate_wb_snapshot_grain_and_source_count() -> None:
     assert snapshots[0].wb_promotion == Decimal("3.25")
     assert snapshots[0].preallocated_finance is True
     assert snapshots[0].precomputed_cogs == Decimal("10.50")
+    assert snapshots[0].precomputed_gross_profit == Decimal("20.75")
     assert snapshots[0].precomputed_vat_input_from_1c == Decimal("2.25")
     assert snapshots[0].precomputed_accounting_service_input_vat == Decimal("1.50")
     assert snapshots[0].precomputed_spp_discount == Decimal("1.75")

@@ -466,6 +466,7 @@ def _ensure_marketplace_finance_daily_fact_columns(engine: Engine) -> None:
     column_specs = {
         "spp_discount": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
         "accounting_service_input_vat": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "gross_profit": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
     }
     missing = [
         (column, definition)

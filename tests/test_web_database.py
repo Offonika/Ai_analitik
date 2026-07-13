@@ -93,4 +93,8 @@ def test_daily_fact_preallocated_fields_migration_is_idempotent(
         item["name"]
         for item in inspect(engine).get_columns("marketplace_finance_daily_facts")
     }
-    assert {"spp_discount", "accounting_service_input_vat"}.issubset(columns)
+    assert {
+        "spp_discount",
+        "accounting_service_input_vat",
+        "gross_profit",
+    }.issubset(columns)
