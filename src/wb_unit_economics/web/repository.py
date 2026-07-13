@@ -12579,17 +12579,37 @@ def apply_wb_buyout_primary_documents(
     source_runs: Iterable[SourceRefreshRun] = (),
 ) -> dict[str, int]:
     """Attach persisted WB redeem-notification totals to an immutable report mart."""
-    run_ids = {refresh_run.id, *(item.id for item in source_runs)}
+    runs_by_id = {item.id: item for item in source_runs}
+    runs_by_id[refresh_run.id] = refresh_run
+    ordered_runs = sorted(
+        (
+            item
+            for item in runs_by_id.values()
+            if any(
+                collection.source_type == "wb_redeem_notifications"
+                for collection in item.collections
+            )
+        ),
+        key=lambda item: (
+            (
+                item.created_at.replace(tzinfo=UTC)
+                if item.created_at.tzinfo is None
+                else item.created_at.astimezone(UTC)
+            ),
+            item.id,
+        ),
+        reverse=True,
+    )
     source_rows = list(
         db.scalars(
             select(SourceSnapshotRow).where(
-                SourceSnapshotRow.refresh_run_id.in_(run_ids),
+                SourceSnapshotRow.refresh_run_id.in_(runs_by_id),
                 SourceSnapshotRow.source_type == "wb_redeem_notifications",
             )
         )
     )
-    by_key: dict[tuple[str, str], SourceSnapshotRow] = {}
-    by_report_id: dict[str, list[SourceSnapshotRow]] = {}
+    by_run_key: dict[tuple[str, str, str], SourceSnapshotRow] = {}
+    by_run_report_id: dict[tuple[str, str], list[SourceSnapshotRow]] = {}
     for source_row in source_rows:
         payload = source_row.row_payload or {}
         report_id = _normalized_document_number(payload.get("reportId"))
@@ -12598,8 +12618,10 @@ def apply_wb_buyout_primary_documents(
         cabinet_id = str(
             source_row.wb_cabinet_id or payload.get("wbCabinetId") or ""
         ).strip()
-        by_key[(cabinet_id, report_id)] = source_row
-        by_report_id.setdefault(report_id, []).append(source_row)
+        by_run_key[(source_row.refresh_run_id, cabinet_id, report_id)] = source_row
+        by_run_report_id.setdefault(
+            (source_row.refresh_run_id, report_id), []
+        ).append(source_row)
 
     rows = list(
         db.scalars(
@@ -12615,10 +12637,28 @@ def apply_wb_buyout_primary_documents(
         report_id = _normalized_document_number(
             row.weekly_buyout_report_id or row.summary_report_id
         )
-        source_row = by_key.get((row.wb_cabinet_id, report_id))
-        if source_row is None:
-            candidates = by_report_id.get(report_id, [])
-            source_row = candidates[0] if len(candidates) == 1 else None
+        row_period_end = row.sales_period_end or row.expected_document_date
+        applicable_runs = [
+            run
+            for run in ordered_runs
+            if row_period_end is None
+            or (
+                (run.source_window_start or run.period_start) <= row_period_end
+                <= (run.source_window_end or run.period_end)
+            )
+        ]
+        source_row = None
+        if applicable_runs:
+            # Only the newest overlay covering the document period is allowed
+            # to answer. Absence in that overlay is a real missing document and
+            # must not be hidden by stale primary data from the full base.
+            source_run = applicable_runs[0]
+            source_row = by_run_key.get(
+                (source_run.id, row.wb_cabinet_id, report_id)
+            )
+            if source_row is None:
+                candidates = by_run_report_id.get((source_run.id, report_id), [])
+                source_row = candidates[0] if len(candidates) == 1 else None
         if source_row is None:
             row.buyout_primary_document_id = report_id
             row.buyout_primary_document_status = "not_loaded"

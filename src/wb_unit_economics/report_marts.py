@@ -20,8 +20,8 @@ from wb_unit_economics.contracts import (
 from wb_unit_economics.excel import (
     REPORT_STATUS_LABELS,
     _account_label,
-    _apply_accounting_period_dates,
     _analysis_period_note,
+    _apply_accounting_period_dates,
     _client_unit_rows,
     _cost_article_lookup,
     _cost_method_lookup,

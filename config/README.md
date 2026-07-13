@@ -52,12 +52,12 @@ GUID-настройки сверки `1С ОПиУ` можно вынести в
 идентификаторы счетов выручки, себестоимости, НДС, РВБ-услуг и структурной
 единицы. Если файл не задан, Excel помечает ОПиУ-сверку как `pilot defaults`.
 
-Быстрая staff-пересборка управляется двумя non-secret параметрами:
+Быстрая staff-пересборка управляется non-secret параметрами:
 
 - `SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_ENABLED=false` — feature flag; включать
   только после миграции и shadow parity с последним `full`;
 - `SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_WINDOW_DAYS=28` — календарное окно WB,
   которое incremental загружает и атомарно заменяет в daily facts.
 
-Режим также требует `MARKETPLACE_DAILY_FACTS_ENABLED=true` и
-`DB_FIRST_REPORTS_ENABLED=true`.
+Режим также требует `SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true` и
+`SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`.

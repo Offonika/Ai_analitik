@@ -160,8 +160,8 @@ TXT/TSV/CSV upload остается только emergency fallback и импо�
 
 `daily` остается source-only обновлением и не создает отчет. `incremental`
 доступен только при `SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_ENABLED=true` и
-`MARKETPLACE_DAILY_FACTS_ENABLED=true`, а сборка выполняется только при
-`DB_FIRST_REPORTS_ENABLED=true`. Отчетный период incremental начинается
+`SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true`, а сборка выполняется только при
+`SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`. Отчетный период incremental начинается
 с даты начала текущего опубликованного отчета и заканчивается вчерашним днем;
 отдельные `source_window_start/source_window_end` фиксируют фактически повторно
 прочитанные последние `28` дней. Ozon в incremental не входит и продолжает
@@ -370,7 +370,7 @@ WB Finance и Ozon всегда сначала сохраняют immutable raw-
 сравнения. В `files_only` marketplace raw rows не создаются, а collection
 получает `rowPersistence.status=file_authoritative`.
 
-При включенном `MARKETPLACE_DAILY_FACTS_ENABLED` расчет после нормализации и
+При включенном `SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED` расчет после нормализации и
 строкочувствительных распределений атомарно заменяет текущее окно таблицы
 `marketplace_finance_daily_facts`. Ее grain:
 

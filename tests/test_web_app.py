@@ -2654,6 +2654,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Последнее обновление данных" in app_js.text
     assert "sourceRefreshModeText" in app_js.text
     assert 'daily: "ежедневный"' in app_js.text
+    assert 'incremental: "последние 28 дней"' in app_js.text
+    assert "sourceRefreshAutoOpenRunId" in app_js.text
+    assert 'mode: "incremental"' in app_js.text
     assert "sourceRefreshNewReport" not in app_js.text
     assert "sourceRefreshIssueSummary" not in app_js.text
     assert "/mapping-file" in app_js.text
@@ -5649,6 +5652,61 @@ def test_buyout_reconciliation_uses_persisted_wb_primary_document(
     assert body["items"][0]["primaryDocumentQuantity"] == 62.0
     assert body["items"][0]["primaryDocumentDelta"] == 0.0
     assert "совпадают" in body["items"][0]["reason"]
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        base_refresh = db.query(SourceRefreshRun).filter_by(
+            snapshot_set_id="buyout-primary-test"
+        ).one()
+        overlay = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="buyout-primary-overlay",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=report.period_start,
+            source_window_end=report.period_end,
+            reason="new overlay without stale primary document",
+            enforce_active_check=False,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            overlay,
+            source_type="wb_redeem_notifications",
+            source_label="WB primary redeem notifications",
+            required=False,
+            status="empty_expected",
+            row_count=0,
+        )
+        daily_without_primary = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="daily-without-primary-source",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="daily facts only",
+            enforce_active_check=False,
+        )
+        missing_scope = repository.apply_wb_buyout_primary_documents(
+            db,
+            report,
+            overlay,
+            source_runs=[base_refresh, daily_without_primary],
+        )
+        db.commit()
+
+    assert missing_scope["verifiedRows"] == 0
+    assert missing_scope["notLoadedRows"] == 1
+    updated = client.get("/api/reports/report-1/buyout-reconciliation").json()
+    assert updated["summary"]["primaryDocumentStatus"] == "not_loaded"
 
 
 def test_login_report_filters_and_export(tmp_path: Path) -> None:

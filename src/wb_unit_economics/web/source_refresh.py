@@ -494,23 +494,23 @@ class SourceRefreshService:
                 )
             if not self.settings.marketplace_daily_facts_enabled and not dry_run:
                 raise SourceRefreshConfigError(
-                    "incremental requires MARKETPLACE_DAILY_FACTS_ENABLED=true"
+                    "incremental requires "
+                    "SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true"
                 )
             if not self.settings.db_first_reports_enabled and not dry_run:
                 raise SourceRefreshConfigError(
-                    "incremental requires DB_FIRST_REPORTS_ENABLED=true"
+                    "incremental requires SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true"
                 )
-            if source_report is None:
-                source_report = db.scalar(
-                    select(ReportRun)
-                    .where(
-                        ReportRun.tenant_id == tenant_id,
-                        ReportRun.client_id == resolved_client_id,
-                        ReportRun.publication_status == "published",
-                        ReportRun.is_current.is_(True),
-                    )
-                    .order_by(ReportRun.generated_at.desc())
+            source_report = db.scalar(
+                select(ReportRun)
+                .where(
+                    ReportRun.tenant_id == tenant_id,
+                    ReportRun.client_id == resolved_client_id,
+                    ReportRun.publication_status == "published",
+                    ReportRun.is_current.is_(True),
                 )
+                .order_by(ReportRun.generated_at.desc())
+            )
             if source_report is None:
                 raise SourceRefreshConfigError(
                     "incremental requires the current published report"

@@ -4526,6 +4526,20 @@ def test_incremental_snapshot_set_hash_includes_source_snapshots(
             reason="current",
             enforce_active_check=False,
         )
+        overlay = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="overlay-run",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            reason="overlay",
+            enforce_active_check=False,
+        )
         repository.add_source_refresh_collection(
             db,
             base,
@@ -4546,14 +4560,26 @@ def test_incremental_snapshot_set_hash_includes_source_snapshots(
             snapshot_hash="onec-hash-v1",
             row_count=1,
         )
+        repository.add_source_refresh_collection(
+            db,
+            overlay,
+            source_type="wb_finance_detail",
+            source_label="WB overlay",
+            required=True,
+            status="loaded",
+            snapshot_hash="overlay-hash",
+            row_count=1,
+        )
         first = service._report_snapshot_set_id(
             current,
             base_refresh_run=base,
+            contributing_runs=[base, overlay, current],
         )
         onec.snapshot_hash = "onec-hash-v2"
         second = service._report_snapshot_set_id(
             current,
             base_refresh_run=base,
+            contributing_runs=[base, overlay, current],
         )
 
     assert first.startswith("composite-")

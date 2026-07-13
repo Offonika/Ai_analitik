@@ -34,6 +34,7 @@ const state = {
   mappingCandidates: [],
   mappingHistory: [],
   sourceRefreshPollTimer: 0,
+  sourceRefreshAutoOpenRunId: "",
   aiThreadId: null,
   aiBusy: false,
   onecReconciliationLoaded: false,
@@ -3269,6 +3270,20 @@ async function loadSourceRefreshStatus(context = {}) {
       state.latestSourceRefresh,
       state.latestSourceRefreshAttempt,
     );
+    const completedRefresh =
+      state.latestSourceRefresh?.id === state.sourceRefreshAutoOpenRunId
+        ? state.latestSourceRefresh
+        : state.latestSourceRefreshAttempt?.id === state.sourceRefreshAutoOpenRunId
+          ? state.latestSourceRefreshAttempt
+          : null;
+    if (completedRefresh?.newReportRunId) {
+      state.sourceRefreshAutoOpenRunId = "";
+      await loadReport(completedRefresh.newReportRunId, context);
+      return;
+    }
+    if (completedRefresh?.finishedAt && !completedRefresh?.newReportRunId) {
+      state.sourceRefreshAutoOpenRunId = "";
+    }
     await loadOzonDiagnostics(context);
   } catch (error) {
     if (!isCurrentClientLoad(context)) {
@@ -5294,6 +5309,7 @@ function resetSourceRefreshPanel(options = {}) {
   state.latestSourceRefresh = null;
   state.latestSourceRefreshAttempt = null;
   state.activeSourceRefresh = null;
+  state.sourceRefreshAutoOpenRunId = "";
   state.latestOzonDiagnostics = null;
   updateReportBuildButton(null);
   renderReportWizardStatus(null);
@@ -5348,10 +5364,14 @@ async function runClientSourceRefresh({
       return null;
     }
     const refresh = payload.latest || null;
+    if (!dryRun && mode === "incremental" && refresh?.id) {
+      state.sourceRefreshAutoOpenRunId = refresh.id;
+    }
     state.latestSourceRefresh = refresh;
     renderSourceRefreshControl(refresh);
     await loadOzonDiagnostics(context);
     if (refresh?.newReportRunId) {
+      state.sourceRefreshAutoOpenRunId = "";
       els.sourceRefreshStatus.append(
         sourceRefreshStatusLine("Открываем", refresh.newReportRunId),
       );
