@@ -7,14 +7,24 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "operations"]
 source_of_truth: true
+truth_scope: report-publication
+truth_priority: 100
 related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
 related_tests: [tests/test_report_marts.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
 contracts: [unit_economics_report, report_marts, report_artifacts]
-depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
+depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation]
+related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. DB-first marts, exports и публикационный контур
+реализованы и покрыты целевыми тестами, но полный production rollout и все
+acceptance criteria не перепроверяются в рамках документационной
+синхронизации. Для `implemented` нужна отдельная доказательная матрица.
 
 # Goal
 

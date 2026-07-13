@@ -7,14 +7,23 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "operations"]
 source_of_truth: true
+truth_scope: ozon
+truth_priority: 100
 related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py, src/wb_unit_economics/marketplace.py, src/wb_unit_economics/contracts.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/providers.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/app.js]
 related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_contracts.py, tests/test_provider_registry.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_sku_mapping, marketplace_api_snapshot, unit_economics_report]
-depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
+depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-12"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. Read-only collector, marts, mapping и web diagnostics
+реализованы и имеют целевые тесты, но полный mixed-report acceptance и
+production rollout не доказываются только changelog. Непроверенные критерии
+остаются основанием не повышать spec до `implemented`.
 
 # Goal
 

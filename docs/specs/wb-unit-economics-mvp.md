@@ -7,13 +7,15 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: true
+truth_scope: product-scope
+truth_priority: 100
 related_code: []
 related_tests: [scripts/validate_specs.py, scripts/validate_docs_manifest.py, scripts/validate_llm_docs.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
 depends_on: []
 supersedes: []
 rollout_required: false
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
 
 # Назначение
@@ -72,7 +74,8 @@ product brief не хранит токены и не разрешает запи
 - автономные финансовые, юридические или кадровые решения;
 - хранение production-токенов, webhook URL, приватных выгрузок или клиентских
   персональных данных в Git;
-- подключение других маркетплейсов на первом этапе;
+- подключение маркетплейсов, кроме принятых read-only контуров WB и Ozon, без
+  отдельного accepted implementation spec;
 - рекламная аналитика, если заказчик отдельно не подтвердит ее в scope;
 - SLA промышленной эксплуатации без отдельного implementation spec.
 
@@ -82,6 +85,11 @@ product brief не хранит токены и не разрешает запи
 `docs/specs/wb-unit-economics-excel-mvp-implementation.md`, web-кабинет — в
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`, а DB-first
 публикация — в `docs/specs/wb-unit-economics-db-first-report-marts.md`.
+Сопоставление маркетплейсов и 1С определяет
+`docs/specs/marketplace-1c-mapping-service.md`, регулярное обновление источников —
+`docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md`,
+Ozon — `docs/specs/marketplace-unit-economics-ozon-integration.md`, а ретенцию
+raw lineage — `docs/specs/source-refresh-database-retention.md`.
 
 Внешние технические источники, которые нужно использовать при финальном
 implementation spec:
@@ -566,9 +574,11 @@ Excel MVP можно считать принятым, если:
 - ручная сборка Excel стала узким местом;
 - заказчик подтвердил роли и права доступа.
 
-# Discovery Questions
+# Исторические discovery-вопросы
 
-Перед оценкой разработки нужно согласовать:
+Ниже сохранен исходный discovery-чеклист. Реализованные ответы определяются
+implementation specs и текущим `report_run`; пункты нельзя трактовать как
+признак отсутствия уже работающего Excel/web/Ozon-контура:
 
 - подтвердить 1 клиента и список кабинетов WB в пилоте;
 - подтвердить первый `report_period`; полный 2 квартал может быть коммерческим
@@ -614,18 +624,16 @@ Excel MVP можно считать принятым, если:
 - permission tests по tenant boundary;
 - audit tests для загрузки, расчета и экспорта.
 
-# Rollout
+# Текущее состояние rollout
 
-Рекомендуемый порядок согласования:
+Текущий репозиторий уже содержит Excel calculation/export, DB-first report
+marts, авторизованный web-кабинет, собственный mapping service, source refresh и
+добавочный read-only Ozon-контур. Каждый новый расчет остается immutable staff
+draft до отдельной проверки и публикации; статический документ не назначает
+текущий `report_id`.
 
-1. Утвердить этот draft как рамку ТЗ.
-2. Провести discovery по WB API, 1С УНФ, методике себестоимости и расходам.
-3. Подготовить implementation spec для Excel MVP.
-4. Собрать обезличенные fixtures или тестовый доступ клиента.
-5. Реализовать ingestion, mapping, calculation и Excel export.
-6. Провести приемку на одном клиенте и одном периоде.
-7. После 2–3 циклов отчетности решить, нужен ли кабинет консультанта или сразу
-   клиентская web-витрина.
+Следующие изменения выполняются только через отдельный accepted spec или
+расширение действующего contour spec:
 
 Отдельный accepted spec нужен для:
 
@@ -638,6 +646,10 @@ Excel MVP можно считать принятым, если:
 
 # Changelog
 
+- 2026-07-13 — synchronized the accepted product brief with the implemented
+  Excel, DB-first, web, mapping, source-refresh and read-only Ozon contours;
+  moved the original pre-implementation discovery and rollout sequence into
+  historical context.
 - 2026-06-24 — clarified that report period is controlled by business/report_run
   parameters, while WB/1C source coverage is tracked separately.
 - 2026-06-24 — product framing renamed to `AI-аналитик отчетов`; Shumeyko WB/1C

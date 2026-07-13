@@ -6,10 +6,15 @@ audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-11"
+updated_at: "2026-07-13"
 ---
 
 # Назначение
+
+> **Статус draft.** Unit-файлы и команды проверяются локально, но полный цикл
+> установки timers и production refresh не запускается только ради проверки
+> документации. После отдельного операционного smoke runbook можно повысить до
+> `active`.
 
 Этот runbook описывает безопасное расписание `source refresh` для web-кабинета
 Shumeyko. Расписание запускает только read-only CLI

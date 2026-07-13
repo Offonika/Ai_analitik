@@ -6,8 +6,8 @@ audience: ["consultant", "engineering", "client"]
 status: "draft"
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-12"
-updated_at: "2026-07-11"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-13"
+updated_at: "2026-07-13"
 ---
 
 # Формулы расчета показателей WB/1C

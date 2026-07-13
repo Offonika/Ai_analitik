@@ -425,6 +425,71 @@
         </section>
 
         <section
+          class="decision-support-grid report-page-section"
+          aria-label="Подготовка и проверки"
+        >
+          <section
+            class="panel preflight-panel report-page-section"
+            aria-labelledby="preflight-title"
+          >
+            <div class="preflight-header">
+              <div>
+                <p class="eyebrow">Контроль перед отправкой</p>
+                <h2 id="preflight-title">Что проверить в отчете</h2>
+                <p id="quality-summary-text" class="preflight-summary">
+                  Загружаем качество строк и список проверок.
+                </p>
+              </div>
+              <button id="review-rows-button" type="button">Открыть проблемные строки</button>
+            </div>
+            <div class="quality-progress" aria-label="Доля строк OK">
+              <span id="quality-progress-fill"></span>
+            </div>
+            <div class="preflight-layout">
+              <aside class="quality-diagnostics" aria-labelledby="quality-title">
+                <div>
+                  <p class="eyebrow">Диагностика</p>
+                  <h3 id="quality-title">Качество данных</h3>
+                </div>
+                <div id="quality-grid" class="metric-grid quality-grid"></div>
+              </aside>
+              <div class="task-board" aria-label="Канбан исправления данных">
+                <section class="task-column task-column-blocked" aria-labelledby="blocking-title">
+                  <div class="task-column-heading">
+                    <span class="reason-step">1</span>
+                    <div>
+                      <h3 id="blocking-title">Исправить сейчас</h3>
+                      <p>Блокеры отправки и ошибки источников</p>
+                    </div>
+                  </div>
+                  <ul id="blocking-reasons" class="reason-list task-list"></ul>
+                </section>
+                <section class="task-column task-column-review" aria-labelledby="review-title">
+                  <div class="task-column-heading">
+                    <span class="reason-step">2</span>
+                    <div>
+                      <h3 id="review-title">В работе у аналитика</h3>
+                      <p>Проверки по данным и корректности строк</p>
+                    </div>
+                  </div>
+                  <ul id="review-reasons" class="reason-list task-list"></ul>
+                </section>
+                <section class="task-column task-column-done" aria-labelledby="done-title">
+                  <div class="task-column-heading">
+                    <span class="reason-step">3</span>
+                    <div>
+                      <h3 id="done-title">Готово к отправке</h3>
+                      <p>Что уже закрыто в текущей витрине</p>
+                    </div>
+                  </div>
+                  <ul id="done-reasons" class="reason-list task-list"></ul>
+                </section>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section
           id="analytics-panel"
           class="panel full-width analytics-panel report-page-section"
           aria-labelledby="analytics-title"
@@ -592,71 +657,6 @@
               </div>
             </section>
           </div>
-        </section>
-
-        <section
-          class="decision-support-grid report-page-section"
-          aria-label="Подготовка и проверки"
-        >
-          <section
-            class="panel preflight-panel report-page-section"
-            aria-labelledby="preflight-title"
-          >
-            <div class="preflight-header">
-              <div>
-                <p class="eyebrow">Контроль перед отправкой</p>
-                <h2 id="preflight-title">Что проверить в отчете</h2>
-                <p id="quality-summary-text" class="preflight-summary">
-                  Загружаем качество строк и список проверок.
-                </p>
-              </div>
-              <button id="review-rows-button" type="button">Открыть проблемные строки</button>
-            </div>
-            <div class="quality-progress" aria-label="Доля строк OK">
-              <span id="quality-progress-fill"></span>
-            </div>
-            <div class="preflight-layout">
-              <aside class="quality-diagnostics" aria-labelledby="quality-title">
-                <div>
-                  <p class="eyebrow">Диагностика</p>
-                  <h3 id="quality-title">Качество данных</h3>
-                </div>
-                <div id="quality-grid" class="metric-grid quality-grid"></div>
-              </aside>
-              <div class="task-board" aria-label="Канбан исправления данных">
-                <section class="task-column task-column-blocked" aria-labelledby="blocking-title">
-                  <div class="task-column-heading">
-                    <span class="reason-step">1</span>
-                    <div>
-                      <h3 id="blocking-title">Исправить сейчас</h3>
-                      <p>Блокеры отправки и ошибки источников</p>
-                    </div>
-                  </div>
-                  <ul id="blocking-reasons" class="reason-list task-list"></ul>
-                </section>
-                <section class="task-column task-column-review" aria-labelledby="review-title">
-                  <div class="task-column-heading">
-                    <span class="reason-step">2</span>
-                    <div>
-                      <h3 id="review-title">В работе у аналитика</h3>
-                      <p>Проверки по данным и корректности строк</p>
-                    </div>
-                  </div>
-                  <ul id="review-reasons" class="reason-list task-list"></ul>
-                </section>
-                <section class="task-column task-column-done" aria-labelledby="done-title">
-                  <div class="task-column-heading">
-                    <span class="reason-step">3</span>
-                    <div>
-                      <h3 id="done-title">Готово к отправке</h3>
-                      <p>Что уже закрыто в текущей витрине</p>
-                    </div>
-                  </div>
-                  <ul id="done-reasons" class="reason-list task-list"></ul>
-                </section>
-              </div>
-            </div>
-          </section>
         </section>
 
         <section

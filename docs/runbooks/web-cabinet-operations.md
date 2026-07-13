@@ -5,10 +5,15 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-01"
+updated_at: "2026-07-13"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
+
+> **Статус draft.** Команды используются как рабочая эксплуатационная база, но
+> полный end-to-end прогон всех privileged production-команд в рамках
+> документационной синхронизации не выполнялся. Повышать runbook до `active`
+> можно только после отдельной безопасной проверки полного сценария.
 
 Кабинет `shumeiko.offonika.ru` работает как read-only продукт:
 HTML-оболочка открывается публично, но данные отчета, Excel export, AI-чат и

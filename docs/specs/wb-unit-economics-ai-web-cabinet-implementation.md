@@ -7,14 +7,24 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "operations"]
 source_of_truth: true
+truth_scope: web-cabinet
+truth_priority: 100
 related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
 related_tests: [tests/test_web_app.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
-depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/marketplace-1c-mapping-service.md]
+depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
+related_specs: [docs/specs/marketplace-1c-mapping-service.md]
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-11"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. FastAPI/web UI и основной contract test suite
+существуют, changelog фиксирует production-изменения, но это не заменяет полную
+проверку всех acceptance criteria, browser scenarios и live deployment smoke.
+До отдельной доказательной матрицы spec не переводится в `implemented`.
 
 # Goal
 
@@ -501,8 +511,11 @@ UI readiness behavior:
   coverage for either the report period or the explicitly displayed common
   provider window. `lostSalesCoverage` exposes `fullCoverage`,
   `calculationPeriodStart`, `calculationPeriodEnd` and `extrapolated=false`;
-- `Аналитика` appears after `Показатели` and before the readiness command
-  board; v1 renders embedded dependency-free visualizations from
+- `Контроль перед отправкой` appears after `Показатели` and Ozon diagnostics,
+  immediately before `Аналитика`, so line-quality blockers and the problem-row
+  action are visible before financial interpretation; `Аналитика` remains
+  before the readiness command board. v1 renders embedded dependency-free
+  visualizations from
   `summary.monthly`, `summary.expenses`, `summary.lostSales`,
   `summary.liquidityRows` and `summary.kpis`: grouped column charts for money
   dynamics, a P&L-style unit economics table, horizontal bars for top losses
@@ -1108,6 +1121,8 @@ Large-report loading:
 
 # Changelog
 
+- 2026-07-13: v2.31 moved the full preflight quality-control panel above
+  `Аналитика`, preserving its diagnostics, task board and problem-row action.
 - 2026-07-11: v2.30 introduced canonical client-company aliases, a hard
   company/WB-cabinet integrity gate and report-scoped tax-profile readiness.
 - 2026-07-11: v2.29 made lost-sales coverage and estimates follow the selected

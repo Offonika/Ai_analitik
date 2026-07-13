@@ -7,6 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "agent"]
 source_of_truth: true
+truth_scope: development-workflow
+truth_priority: 100
 related_code:
   - scripts/ai_git_publish.py
   - scripts/check_git_safety.py
@@ -18,8 +20,15 @@ depends_on:
   - AGENTS.md
 supersedes: []
 rollout_required: false
-updated_at: "2026-07-01"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. CLI, safety-check и pre-commit hook существуют, но
+у spec нет отдельного `related_tests` набора, а commit/push не выполняются ради
+проверки документации. До появления контрактных тестов workflow не переводится
+в `implemented`.
 
 # Goal
 

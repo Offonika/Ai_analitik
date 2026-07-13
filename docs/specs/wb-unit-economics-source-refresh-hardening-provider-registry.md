@@ -7,6 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "operations"]
 source_of_truth: true
+truth_scope: source-refresh
+truth_priority: 100
 related_code:
   - src/wb_unit_economics/web/app.py
   - src/wb_unit_economics/web/source_refresh.py
@@ -22,10 +24,18 @@ contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics
 depends_on:
   - docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
   - docs/specs/wb-unit-economics-db-first-report-marts.md
+  - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-12"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. Worker, provider registry, guards и retention CLI
+реализованы, однако безопасный документационный прогон не запускает полный
+production refresh, watchdog и recovery. Для `implemented` требуется отдельная
+матрица acceptance criteria с локальными тестами и live evidence.
 
 # Goal
 

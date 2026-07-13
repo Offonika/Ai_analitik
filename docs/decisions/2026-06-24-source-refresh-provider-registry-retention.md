@@ -5,7 +5,9 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: accepted
 source_of_truth: true
-updated_at: "2026-06-24"
+truth_scope: source-refresh
+truth_priority: 80
+updated_at: "2026-07-13"
 ---
 
 # Context

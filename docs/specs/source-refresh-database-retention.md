@@ -7,6 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "operations"]
 source_of_truth: true
+truth_scope: source-retention
+truth_priority: 100
 related_code:
   - scripts/prune_source_refresh_database.py
   - scripts/prune_source_refresh.py
@@ -20,8 +22,15 @@ depends_on:
   - docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-12"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. Dry-run-first CLI, maintenance safety и связанные
+тесты существуют, но destructive apply/repack и восстановление из off-host
+backup намеренно не выполняются ради документационной проверки. До отдельного
+операционного smoke spec не повышается до `implemented`.
 
 # Цель
 

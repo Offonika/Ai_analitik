@@ -5,8 +5,10 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: accepted
 source_of_truth: true
+truth_scope: tax-methodology
+truth_priority: 100
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
 
 # Налоговые профили, ОСНО и прибыль до НДФЛ

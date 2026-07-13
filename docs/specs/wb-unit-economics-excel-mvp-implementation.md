@@ -7,6 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering"]
 source_of_truth: true
+truth_scope: excel-methodology
+truth_priority: 100
 related_code:
   - pyproject.toml
   - src/wb_unit_economics/contracts.py
@@ -51,11 +53,20 @@ contracts:
   - ai_analysis_summary
 depends_on:
   - workspace-shumeyko-partners-wb-unit-economics-mvp
+related_specs:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: false
-updated_at: "2026-07-12"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. Расчетный код, Excel builder и перечисленные тесты
+существуют, однако полный набор acceptance criteria, включая все live/source и
+клиентские сверки, не подтверждается одной локальной тестовой командой. До
+отдельной матрицы «критерий → тест или runtime evidence» повышать spec до
+`implemented` нельзя.
 
 # Назначение
 

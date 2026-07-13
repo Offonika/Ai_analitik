@@ -5,12 +5,14 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: active
 source_of_truth: true
-updated_at: "2026-06-18"
+truth_scope: configuration
+truth_priority: 100
+updated_at: "2026-07-13"
 ---
 
 # Config
 
-Здесь будут храниться настройки пилота без секретов:
+Здесь хранятся и документируются настройки пилота без секретов:
 
 - список кабинетов;
 - период отчета;

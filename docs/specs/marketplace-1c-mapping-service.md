@@ -7,13 +7,16 @@ status: implemented
 owner: "engineering"
 audience: ["engineering", "consultant", "operations"]
 source_of_truth: true
+truth_scope: mapping
+truth_priority: 100
 related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/mapping_service.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/source_refresh.py, scripts/check_source_refresh_preflight.py, sql/web_cabinet_schema.sql]
 related_tests: [tests/test_mapping_service.py, tests/test_source_refresh.py, tests/test_source_refresh_preflight.py, tests/test_web_app.py]
 contracts: [sku_mapping, sku_mapping_snapshot, ozon_sku_mapping]
-depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md, docs/specs/marketplace-unit-economics-ozon-integration.md]
+depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
+related_specs: [docs/specs/marketplace-unit-economics-ozon-integration.md]
 supersedes: [docs/specs/onec-marketplace-mapping-http-service.md, docs/specs/onec-marketplace-mapping-client-extension.md]
 rollout_required: true
-updated_at: "2026-07-11"
+updated_at: "2026-07-13"
 ---
 
 # Goal

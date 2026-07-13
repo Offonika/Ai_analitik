@@ -2346,6 +2346,18 @@ def test_login_remember_me_extends_session_cookie(tmp_path: Path) -> None:
     assert "Max-Age=172800" in response.headers["set-cookie"]
 
 
+def test_preflight_panel_appears_before_analytics(tmp_path: Path) -> None:
+    cabinet = make_client(tmp_path).get("/cabinet")
+
+    assert cabinet.status_code == 200
+    assert cabinet.text.index('id="ozon-diagnostics-panel"') < cabinet.text.index(
+        'id="analytics-panel"'
+    )
+    assert cabinet.text.index('id="analytics-panel"') < cabinet.text.index(
+        'id="readiness-card"'
+    )
+
+
 def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
@@ -2462,8 +2474,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert "Excel Ozon" in cabinet.text
-    assert "styles.css?v=20260712-marketplace-expense-v1" in cabinet.text
-    assert "app.js?v=20260712-marketplace-expense-v1" in cabinet.text
+    assert "styles.css?v=20260713-ux-quickwins-v1" in cabinet.text
+    assert "app.js?v=20260713-ux-quickwins-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -2483,6 +2495,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
         'id="ozon-diagnostics-panel"'
     )
     assert cabinet.text.index('id="ozon-diagnostics-panel"') < cabinet.text.index(
+        'id="preflight-title"'
+    )
+    assert cabinet.text.index('id="preflight-title"') < cabinet.text.index(
         'id="analytics-panel"'
     )
     assert 'id="liquidity-summary"' in cabinet.text
@@ -2544,9 +2559,6 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Смарт-процесс подготовки" not in cabinet.text
     assert cabinet.text.index('id="kpi-title"') < cabinet.text.index(
         'id="readiness-card"'
-    )
-    assert cabinet.text.index('id="readiness-card"') < cabinet.text.index(
-        'id="preflight-title"'
     )
     assert cabinet.text.index('id="quality-title"') < cabinet.text.index(
         'id="blocking-title"'
