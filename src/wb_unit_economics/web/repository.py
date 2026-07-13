@@ -16823,7 +16823,7 @@ def _financial_integrity_blockers(
         blockers.append(
             _readiness_reason(
                 "cogs_reconciliation_failed",
-                "Себестоимость без НДС не подтверждена.",
+                "Себестоимость 1С не подтверждена.",
                 missing_cost_count,
                 affected_revenue=float(affected_revenue),
                 costRequiresReviewRows=int(stats.get("cost_requires_review_rows") or 0),
@@ -17145,10 +17145,13 @@ def query_report_rows(
         )
     statement = select(ReportUnitRow).where(*conditions)
     total = _count_rows(db, *conditions)
+    order_column = (
+        func.abs(ReportUnitRow.revenue).desc()
+        if preset == "missingCost"
+        else ReportUnitRow.profit.asc()
+    )
     rows = list(
-        db.scalars(
-            statement.order_by(ReportUnitRow.profit.asc()).offset(offset).limit(limit)
-        )
+        db.scalars(statement.order_by(order_column).offset(offset).limit(limit))
     )
     stats = _row_stats_for_conditions(db, *conditions)
     requested_lost_sales_start = period_start
@@ -17277,8 +17280,45 @@ def query_report_rows(
             "requiresReviewRows": int(stats["cost_requires_review_rows"]),
             "absentRows": int(stats["cost_absent_rows"]),
             "affectedRevenue": float(stats["missing_cost_affected_revenue"]),
+            "byReason": _missing_cost_reason_breakdown(db, *conditions),
         }
     return payload
+
+
+def _missing_cost_reason_breakdown(db: Session, *conditions: Any) -> list[dict[str, Any]]:
+    """Split the "требует сверки" bucket by the actual root cause.
+
+    `status_reason` already encodes the distinct root cause (nearest-week
+    substitution, provisional cost, cost without VAT, etc. — see
+    `_status_reason()` in excel.py), so grouping by it lets the UI show
+    which causes dominate instead of one opaque count.
+    """
+    reason_expr = func.coalesce(
+        func.nullif(func.trim(func.coalesce(ReportUnitRow.status_reason, "")), ""),
+        ReportUnitRow.status,
+    )
+    statement = (
+        select(
+            reason_expr.label("reason"),
+            func.count().label("row_count"),
+            func.coalesce(func.sum(ReportUnitRow.revenue), 0).label(
+                "affected_revenue"
+            ),
+        )
+        .where(*conditions)
+        .group_by(reason_expr)
+        .order_by(func.count().desc(), reason_expr.asc())
+    )
+    rows = db.execute(statement).mappings().all()
+    return [
+        {
+            "reason": as_text(row["reason"]),
+            "rows": int(row["row_count"] or 0),
+            "affectedRevenue": float(row["affected_revenue"] or 0),
+        }
+        for row in rows
+        if as_text(row["reason"])
+    ]
 
 
 def _marketplace_expense_context_supported(report: ReportRun) -> bool:

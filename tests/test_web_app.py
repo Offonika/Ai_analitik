@@ -6246,6 +6246,21 @@ def test_missing_cost_drilldown_separates_review_and_absent_cost(
         "requiresReviewRows": 1,
         "absentRows": 1,
         "affectedRevenue": 40000.0,
+        "byReason": [
+            {
+                "reason": "Нет действующей себестоимости 1С",
+                "rows": 1,
+                "affectedRevenue": 20000.0,
+            },
+            {
+                "reason": (
+                    "Себестоимость взята из ближайшей доступной недели 1С; "
+                    "нужна сверка после закрытия месяца"
+                ),
+                "rows": 1,
+                "affectedRevenue": 20000.0,
+            },
+        ],
     }
 
 

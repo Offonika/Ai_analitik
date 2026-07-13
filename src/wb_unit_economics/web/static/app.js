@@ -11241,7 +11241,7 @@ function renderDrilldownRowsStatus(message, countText = "Ошибка") {
   }
   replaceTableBodyWithMessage(
     els.drilldownRows,
-    state.drilldownPreset === "missingCost" ? 11 : 17,
+    state.drilldownPreset === "missingCost" ? 12 : 17,
     message,
   );
 }
@@ -11255,7 +11255,7 @@ function renderDrilldownRows(rows, total, preset = "review", breakdown = {}) {
     if (!safeRows.length) {
       replaceTableBodyWithMessage(
         els.drilldownRows,
-        11,
+        12,
         "Строк с проблемой себестоимости по выбранным фильтрам не найдено.",
       );
       return;
@@ -11302,6 +11302,7 @@ function renderDrilldownRowsHeader(preset) {
         "Себестоимость в расчёте",
         "Выручка",
         "Статус",
+        "Себестоимость 1С за неделю",
         "Почему",
         "Что делать",
       ]
@@ -11359,8 +11360,32 @@ function renderCostIssueGuidance(breakdown = {}, total = 0, statusMessage = "") 
       ? `Всего ${number(totalRows)} строк. Этот экран работает только на чтение и не исправляет данные 1С.`
       : "По выбранным фильтрам проблем себестоимости нет."
   );
+  const nodes = [reviewCard, absentCard, note];
+  const byReasonNode = costIssueByReasonNode(breakdown.byReason);
+  if (byReasonNode) {
+    nodes.push(byReasonNode);
+  }
   els.drilldownGuidance.hidden = false;
-  els.drilldownGuidance.replaceChildren(reviewCard, absentCard, note);
+  els.drilldownGuidance.replaceChildren(...nodes);
+}
+
+function costIssueByReasonNode(byReason) {
+  const entries = asArray(byReason).filter((entry) => Number(entry.rows || 0) > 0);
+  if (entries.length < 2) {
+    return null;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "cost-guidance-breakdown";
+  const heading = document.createElement("strong");
+  heading.textContent = "Из чего складываются строки выше:";
+  const list = document.createElement("ul");
+  entries.forEach((entry) => {
+    const item = document.createElement("li");
+    item.textContent = `${entry.reason} — ${number(entry.rows)} строк`;
+    list.append(item);
+  });
+  wrap.append(heading, list);
+  return wrap;
 }
 
 function costGuidanceCard(title, count, copy, tone) {
@@ -11392,16 +11417,38 @@ function costIssueRowNode(item) {
       tone: statusTone(item.status, item.statusReason),
       title: statusExplanation(item.status, item.statusReason),
     },
+    { value: costSourcePeriodLabel(item), className: "text-nowrap" },
     { value: item.statusReason || item.status || "-", className: "text-wide" },
     { value: costIssueAction(item), className: "text-wide cost-next-action" },
   ]);
   return row;
 }
 
+function costSourcePeriodLabel(item) {
+  const start = item.costSourcePeriodStart;
+  const end = item.costSourcePeriodEnd;
+  if (!start && !end) {
+    return "-";
+  }
+  return [start, end].filter(Boolean).join(" — ");
+}
+
 function costIssueAction(item) {
-  return normalize(item.status) === "нет себестоимости 1с"
-    ? "Исправить себестоимость товара в 1С → обновить источники → пересобрать отчёт."
-    : "Загрузить точную себестоимость 1С за неделю продажи → пересобрать отчёт.";
+  if (normalize(item.status) === "нет себестоимости 1с") {
+    return "Исправить себестоимость товара в 1С → обновить источники → пересобрать отчёт.";
+  }
+  const matchStatus = normalize(item.costMatchStatus);
+  if (matchStatus === "cross_kind") {
+    return "Себестоимость подставлена из документа другого типа — проверить сопоставление документа в 1С → пересобрать отчёт.";
+  }
+  const reason = normalize(item.statusReason);
+  if (reason.includes("предварительно")) {
+    return "Сверить предварительную себестоимость из приходов 1С с регистром продаж → пересобрать отчёт.";
+  }
+  if (reason.includes("без ндс")) {
+    return "Согласовать с бухгалтерией себестоимость без НДС → пересобрать отчёт.";
+  }
+  return "Загрузить точную себестоимость 1С за неделю продажи → пересобрать отчёт.";
 }
 
 function renderSourceDrilldown() {

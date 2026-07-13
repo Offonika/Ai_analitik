@@ -2918,6 +2918,25 @@ button.action-insight-card {
   margin-top: 0;
 }
 
+.cost-guidance-breakdown {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 14px;
+}
+
+.cost-guidance-breakdown strong {
+  font-size: 13px;
+}
+
+.cost-guidance-breakdown ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .cost-next-action {
   min-width: 270px;
   color: var(--text);
