@@ -10807,6 +10807,9 @@ function ozonRowsCountText(rows, allRows, rowCount) {
   return `${number(rows.length)}${previewText} строк`;
 }
 
+const STATUS_COLUMN_TOOLTIP =
+  "Зелёный — строка готова к отчёту. Жёлтый — нужна проверка: сопоставление, документ или неполные данные. Красный — блокирует отправку: нет себестоимости, ошибка или строка исключена.";
+
 function renderReportRowsHeader(mode) {
   if (!els.reviewRowsHead) {
     return;
@@ -10852,6 +10855,9 @@ function renderReportRowsHeader(mode) {
   headers.forEach((label) => {
     const cell = document.createElement("th");
     cell.textContent = label;
+    if (label === "Статус") {
+      cell.dataset.tooltip = STATUS_COLUMN_TOOLTIP;
+    }
     row.append(cell);
   });
   els.reviewRowsHead.replaceChildren(row);
@@ -11237,6 +11243,9 @@ function renderDrilldownRowsHeader(preset) {
   labels.forEach((label) => {
     const cell = document.createElement("th");
     cell.textContent = label;
+    if (label === "Статус") {
+      cell.dataset.tooltip = STATUS_COLUMN_TOOLTIP;
+    }
     row.append(cell);
   });
   els.drilldownRowsHead.replaceChildren(row);
