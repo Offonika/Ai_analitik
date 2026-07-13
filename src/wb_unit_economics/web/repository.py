@@ -17285,7 +17285,9 @@ def query_report_rows(
     return payload
 
 
-def _missing_cost_reason_breakdown(db: Session, *conditions: Any) -> list[dict[str, Any]]:
+def _missing_cost_reason_breakdown(
+    db: Session, *conditions: Any
+) -> list[dict[str, Any]]:
     """Split the "требует сверки" bucket by the actual root cause.
 
     `status_reason` already encodes the distinct root cause (nearest-week
