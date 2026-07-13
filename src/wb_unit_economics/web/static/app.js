@@ -92,7 +92,7 @@ const els = {
   reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
   reportWizardDryRun: document.querySelector("#report-wizard-dry-run"),
   reportWizardStatus: document.querySelector("#report-wizard-status"),
-  reportWizardDownload: document.querySelector("#report-wizard-download"),
+  reportDownloadButton: document.querySelector("#report-download-button"),
   reportWizardSubmit: document.querySelector("#report-wizard-submit"),
   aiOpenButton: document.querySelector("#ai-open-button"),
   reconciliationOpenButton: document.querySelector(
@@ -313,7 +313,6 @@ const els = {
   ozonTab: document.querySelector("#detail-tab-ozon"),
   ozonPreviewSummary: document.querySelector("#ozon-preview-summary"),
   ozonPreviewCount: document.querySelector("#ozon-preview-count"),
-  ozonExcelLink: document.querySelector("#ozon-excel-link"),
   ozonPreviewGrid: document.querySelector("#ozon-preview-grid"),
   ozonVitrineStatus: document.querySelector("#ozon-vitrine-status"),
   ozonIssuesPanel: document.querySelector("#ozon-issues-panel"),
@@ -969,15 +968,7 @@ function renderReportWizardSettings() {
     : mode === "ozon-only"
       ? "Запустить диагностику"
       : "Проверить и сформировать";
-  updateReportWizardDownload();
-}
-
-function updateReportWizardDownload() {
-  const hasReport = Boolean(state.reportId);
-  els.reportWizardDownload.hidden = !hasReport;
-  els.reportWizardDownload.href = hasReport
-    ? `/api/reports/${encodeURIComponent(state.reportId)}/export.xlsx`
-    : "#";
+  updateReportDownloadControl();
 }
 
 function renderReportWizardStatus(refresh) {
@@ -999,7 +990,7 @@ function renderReportWizardStatus(refresh) {
     step.classList.toggle("active", index === activeStep);
     step.classList.toggle("done", index < activeStep);
   });
-  updateReportWizardDownload();
+  updateReportDownloadControl();
   if (!refresh) {
     els.reportWizardStatus.className = "report-wizard-status";
     els.reportWizardStatus.textContent =
@@ -2755,6 +2746,7 @@ function renderReport() {
 
   renderReadiness(readiness);
   updateReportBuildButton(latestRefresh);
+  updateReportDownloadControl();
   renderNextAction({
     readiness,
     quality: summary.quality || {},
@@ -3852,7 +3844,7 @@ async function loadOzonDiagnostics(context = {}) {
   const clientId = context.clientId || state.clientId;
   if (!isStaffUser() || !clientId) {
     state.latestOzonDiagnostics = null;
-    updateOzonExcelLink(null);
+    updateReportDownloadControl();
     renderOzonPreview(state.latestSourceRefresh, null);
     return;
   }
@@ -3876,7 +3868,7 @@ async function loadOzonDiagnostics(context = {}) {
       message: "Не удалось загрузить Ozon-диагностику.",
       collections: [],
     };
-    updateOzonExcelLink(null);
+    updateReportDownloadControl();
     renderOzonPreview(state.latestSourceRefresh, state.latestOzonDiagnostics);
     if (shouldRenderOzonAnalytics()) {
       renderOzonKpis(state.latestOzonDiagnostics);
@@ -3893,7 +3885,7 @@ async function loadOzonDiagnostics(context = {}) {
 
 function renderOzonDiagnosticsPayload(diagnostics = state.latestOzonDiagnostics) {
   try {
-    updateOzonExcelLink(diagnostics);
+    updateReportDownloadControl();
     renderOzonPreview(state.latestSourceRefresh, diagnostics);
     if (shouldRenderOzonAnalytics()) {
       renderOzonKpis(diagnostics);
@@ -3934,28 +3926,49 @@ function ozonDiagnosticsExportParams() {
   return params.toString();
 }
 
-function updateOzonExcelLink(diagnostics = state.latestOzonDiagnostics) {
-  if (!els.ozonExcelLink) {
-    return;
+function reportDownloadContext() {
+  if (!state.clientId) {
+    return { href: "#", visible: false };
   }
-  const clientId = state.clientId;
-  const hasExport = Boolean(isStaffUser() && clientId && diagnostics?.latestRun);
-  els.ozonExcelLink.hidden = !hasExport;
+  const isOzonReport =
+    normalize(state.summary?.marketplace) === "ozon" && Boolean(state.reportId);
+  if (state.reportId) {
+    if (isOzonReport) {
+      if (!isStaffUser()) {
+        return { href: "#", visible: false };
+      }
+      const params = ozonDiagnosticsExportParams();
+      return {
+        visible: true,
+        href: `/api/reports/${encodeURIComponent(state.reportId)}/export.xlsx${params ? `?${params}` : ""}`,
+      };
+    }
+    return {
+      visible: isStaffUser(),
+      href: `/api/reports/${encodeURIComponent(state.reportId)}/export.xlsx`,
+    };
+  }
+  const diagnostics = state.latestOzonDiagnostics;
+  const hasExport = Boolean(isStaffUser() && diagnostics?.latestRun);
   if (!hasExport) {
-    els.ozonExcelLink.href = "#";
+    return { href: "#", visible: false };
+  }
+  const params = ozonDiagnosticsExportParams();
+  return {
+    visible: true,
+    href:
+      `/api/clients/${encodeURIComponent(state.clientId)}/ozon-diagnostics/export.xlsx` +
+      (params ? `?${params}` : ""),
+  };
+}
+
+function updateReportDownloadControl() {
+  if (!els.reportDownloadButton) {
     return;
   }
-  if (normalize(state.summary?.marketplace) === "ozon" && state.reportId) {
-    const params = ozonDiagnosticsExportParams();
-    els.ozonExcelLink.href = `/api/reports/${encodeURIComponent(
-      state.reportId,
-    )}/export.xlsx${params ? `?${params}` : ""}`;
-  } else {
-    const params = ozonDiagnosticsExportParams();
-    els.ozonExcelLink.href =
-      `/api/clients/${encodeURIComponent(clientId)}/ozon-diagnostics/export.xlsx` +
-      (params ? `?${params}` : "");
-  }
+  const { href, visible } = reportDownloadContext();
+  els.reportDownloadButton.hidden = !visible;
+  els.reportDownloadButton.href = visible ? href : "#";
 }
 
 function updateReportBuildButton(refresh = state.latestSourceRefresh) {
@@ -12141,6 +12154,7 @@ function resetClientScopedState(options = {}) {
   state.ozonDiagnosticsParams = "";
   state.mappingItemsRequestKey = "";
   updateReportBuildButton(null);
+  updateReportDownloadControl();
   state.aiThreadId = null;
   state.onecReconciliationLoaded = false;
   state.rowPreset = "";
@@ -12171,6 +12185,7 @@ function resetClientScopedState(options = {}) {
 function syncIntegrationsEntryPoint() {
   els.integrationsOpenButton.hidden = !(state.clientId && isStaffUser());
   updateReportBuildButton(state.latestSourceRefresh);
+  updateReportDownloadControl();
 }
 
 function setEmptyCabinet(title = "Нет доступных отчетов", subtitle = "После импорта отчета здесь появится расчетная витрина.") {

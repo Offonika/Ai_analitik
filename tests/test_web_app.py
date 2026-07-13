@@ -2424,7 +2424,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="report-wizard-period-end"' in cabinet.text
     assert 'id="report-wizard-dry-run"' in cabinet.text
     assert "Сформировать отчёт" in cabinet.text
-    assert "Скачать текущий Excel" in cabinet.text
+    assert 'id="report-download-button"' in cabinet.text
+    assert "Скачать Excel" in cabinet.text
     assert "Кабинет МП" in cabinet.text
     assert 'aria-label="Фильтр по кабинету маркетплейса"' in cabinet.text
     assert "Дата начала" in cabinet.text
@@ -2671,7 +2672,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Черновик Ozon — требуется проверка" in app_js.text
     assert "Доступна служебная витрина Ozon + 1C" in app_js.text
     assert "/ozon-diagnostics/export.xlsx" in app_js.text
-    assert "updateOzonExcelLink" in app_js.text
+    assert "reportDownloadContext" in app_js.text
+    assert "updateReportDownloadControl" in app_js.text
     assert "Статьи экономики Ozon" in app_js.text
     assert "Расходы по SKU из детализации Ozon" in app_js.text
     assert "Часть расходов распределена" in app_js.text
