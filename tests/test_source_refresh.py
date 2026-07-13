@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import date, datetime, timedelta
@@ -13,12 +14,14 @@ from cryptography.fernet import Fernet
 from openpyxl import Workbook
 from sqlalchemy.exc import OperationalError
 
+from wb_unit_economics.contracts import MarketplaceFinanceDailyFact
 from wb_unit_economics.onec_odata import (
     OnecODataMetadataCheckResult,
     OnecSampleExportResult,
 )
 from wb_unit_economics.ozon import OzonPageResult
 from wb_unit_economics.wb_content import WbProductCardsPageResult
+from wb_unit_economics.wb_documents import WbDocumentExportResult
 from wb_unit_economics.wb_finance import (
     WbFinancePageResult,
     WbFinanceSellerAccount,
@@ -29,11 +32,14 @@ from wb_unit_economics.wb_stocks import WbStockExportResult
 from wb_unit_economics.web import integrations, repository, source_refresh
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
 from wb_unit_economics.web.models import (
+    MarketplaceOperationFact,
     OrganizationTaxProfile,
+    OrganizationTaxProfileOverride,
     ReportArtifact,
     ReportRun,
     SourceLoad,
     SourceRefreshCollection,
+    SourceRefreshRun,
     SourceSnapshotRow,
     TenantIntegration,
     WbCabinet,
@@ -48,12 +54,245 @@ from wb_unit_economics.web.source_refresh import (
     SourceRefreshService,
     _collect_wb_stock_history,
     _is_ozon_report_control_result,
+    _onec_financial_table_quality,
     _ozon_collection_status,
     _page_limit_exhausted,
     _persist_onec_rows,
     _read_ozon_rows,
     _safe_error,
 )
+
+
+def test_onec_commissioner_headers_without_financial_tables_are_partial(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "commissioner_reports.raw.json"
+    output_path.write_text(
+        json.dumps({"value": [{"Ref_Key": "report-1", "Number": "1"}]}),
+        encoding="utf-8",
+    )
+    quality = _onec_financial_table_quality(
+        OnecSampleExportResult(
+            sample_id="commissioner_reports",
+            collection_name="Document_ОтчетКомиссионера",
+            ok=True,
+            row_count=1,
+            output_path=output_path,
+            detail_mode="financial_tables",
+        )
+    )
+
+    assert quality == {
+        "status": "partial_source",
+        "code": "commissioner_financial_tables_missing",
+        "headerRows": 1,
+        "rowsWithTables": 0,
+        "financialLineCount": 0,
+    }
+
+
+def test_onec_commissioner_financial_tables_are_loaded(tmp_path: Path) -> None:
+    output_path = tmp_path / "commissioner_reports.raw.json"
+    output_path.write_text(
+        json.dumps(
+            {
+                "value": [
+                    {
+                        "Ref_Key": "report-1",
+                        "Организация_Key": "organization-1",
+                        "Запасы": [{"Номенклатура_Key": "item-1", "Всего": 100}],
+                        "ЗапасыВозвраты": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    quality = _onec_financial_table_quality(
+        OnecSampleExportResult(
+            sample_id="commissioner_reports",
+            collection_name="Document_ОтчетКомиссионера",
+            ok=True,
+            row_count=1,
+            output_path=output_path,
+            detail_mode="financial_tables",
+        )
+    )
+
+    assert quality["status"] == "loaded"
+    assert quality["financialLineCount"] == 1
+
+
+def test_onec_commissioner_without_organization_is_partial(tmp_path: Path) -> None:
+    output_path = tmp_path / "commissioner_reports.raw.json"
+    output_path.write_text(
+        json.dumps(
+            {
+                "value": [
+                    {
+                        "Ref_Key": "report-1",
+                        "Запасы": [{"Номенклатура_Key": "item-1", "Всего": 100}],
+                        "ЗапасыВозвраты": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    quality = _onec_financial_table_quality(
+        OnecSampleExportResult(
+            sample_id="commissioner_reports",
+            collection_name="Document_ОтчетКомиссионера",
+            ok=True,
+            row_count=1,
+            output_path=output_path,
+            detail_mode="financial_tables",
+        )
+    )
+
+    assert quality["status"] == "partial_source"
+    assert quality["code"] == "commissioner_organization_missing"
+
+
+def test_incomplete_commissioner_tables_cannot_create_ozon_draft(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="incomplete-commissioner",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            user=user,
+            source_report=report,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="onec_commissioner_reports",
+            source_label="Document_ОтчетКомиссионера",
+            required=False,
+            publication_required=True,
+            status="partial_source",
+            row_count=3,
+            payload={
+                "dataQuality": {
+                    "status": "partial_source",
+                    "code": "commissioner_financial_tables_missing",
+                }
+            },
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            status="needs_review",
+            finished_at=datetime.now(),
+        )
+
+        with pytest.raises(ValueError, match="complete 1C commissioner"):
+            repository.materialize_ozon_draft_report(db, refresh_run, user=user)
+
+        assert refresh_run.new_report_run_id is None
+
+
+def test_redeem_notifications_collection_persists_primary_amount(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    output_dir = settings.source_refresh_root_path / "full-redeem-notifications-test"
+    output_dir = output_dir / "wb_redeem_notifications"
+    account_dir = output_dir / "WB_ACCOUNT_1"
+    account_dir.mkdir(parents=True)
+    manifest_path = account_dir / "documents_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "serviceName": "redeem-notification-685214500",
+                    "name": "Уведомление о выкупе №685214500",
+                    "category": "Уведомление о выкупе",
+                    "creationTime": "2026-04-13T15:52:40Z",
+                    "download": {
+                        "sha256": "document-hash",
+                        "summary": {
+                            "reportId": "685214500",
+                            "status": "parsed",
+                            "quantity": "62",
+                            "purchaseAmount": "51532.81",
+                            "vatAmount": "9292.80",
+                        },
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "manifest.json").write_text(
+        json.dumps({"results": []}), encoding="utf-8"
+    )
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-redeem-notifications-test",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            user=user,
+            source_report=report,
+            reason="test",
+        )
+        service = SourceRefreshService(settings)
+        collection = service._record_wb_redeem_notifications(
+            db,
+            refresh_run,
+            output_dir,
+            [
+                WbDocumentExportResult(
+                    seller_account_id="WB_ACCOUNT_1",
+                    account_name="Кабинет 1",
+                    ok=True,
+                    status="ok",
+                    row_count=1,
+                    downloaded_count=1,
+                    output_file="WB_ACCOUNT_1/documents_manifest.json",
+                    status_code=200,
+                )
+            ],
+            wb_cabinet_ids={"WB_ACCOUNT_1": "cabinet-1"},
+        )
+        source_row = (
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).one()
+        )
+
+    assert collection.status == "loaded"
+    assert collection.row_count == 1
+    assert collection.payload["parsedDocuments"] == 1
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    assert source_row.source_row_id == "685214500"
+    assert source_row.wb_cabinet_id == "cabinet-1"
+    assert source_row.row_payload["purchaseAmount"] == "51532.81"
+    assert source_row.row_payload["quantity"] == "62"
 
 
 def test_stock_history_collection_records_two_cabinets_and_missing_scope(
@@ -70,10 +309,7 @@ def test_stock_history_collection_records_two_cabinets_and_missing_scope(
     with ZipFile(zip_path, "w") as archive:
         archive.writestr(
             "stock.csv",
-            (
-                "NmID,VendorCode,01.03.2026,02.03.2026,03.03.2026\n"
-                "101,A-1,3,0,2\n"
-            ),
+            ("NmID,VendorCode,01.03.2026,02.03.2026,03.03.2026\n101,A-1,3,0,2\n"),
         )
 
     with session_factory() as db:
@@ -138,11 +374,17 @@ def test_stock_history_collection_records_two_cabinets_and_missing_scope(
 
 def test_stock_history_collector_keeps_report_period_and_provider_window(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
     )
     seen: dict[str, date] = {}
+    monkeypatch.setattr(
+        source_refresh,
+        "_moscow_today",
+        lambda: date(2026, 7, 11),
+    )
 
     def fake_exporter(_settings, output_dir: Path, **kwargs):
         seen["period_start"] = kwargs["period_start"]
@@ -224,26 +466,45 @@ def test_stock_history_collector_keeps_report_period_and_provider_window(
         )
 
     assert seen == {
-        "period_start": date(2026, 4, 10),
+        "period_start": date(2026, 4, 11),
         "period_end": date(2026, 7, 10),
     }
     assert result.collection is not None
     assert result.collection.payload["periodStart"] == "2026-03-01"
-    assert result.collection.payload["actualPeriodStart"] == "2026-04-10"
-    assert result.collection.payload["accounts"][0]["coveredDays"] == 92
+    assert result.collection.payload["actualPeriodStart"] == "2026-04-11"
+    assert result.collection.payload["accounts"][0]["coveredDays"] == 91
     assert result.collection.payload["accounts"][0]["totalDays"] == 132
     assert result.collection.payload["accounts"][0]["status"] == (
         "partial_provider_window"
     )
+    assert result.collection.status == "loaded"
+    assert result.collection.payload["calculated"] is True
+    assert result.collection.payload["providerWindowCalculated"] is True
+    assert result.collection.payload["fullCoverage"] is False
+    assert result.collection.payload["accounts"][0]["calculated"] is True
+    assert result.collection.payload["accounts"][0]["providerWindowCalculated"] is True
+    assert result.collection.payload["accounts"][0]["fullCoverage"] is False
+    assert result.collection.payload["calculationPeriodStart"] == "2026-04-11"
+    assert result.collection.payload["calculationPeriodEnd"] == "2026-07-10"
+    assert (
+        result.collection.payload["calculationContextVersion"] == "lost-sales-filter-v1"
+    )
+    assert result.collection.payload["extrapolated"] is False
 
 
 def test_stock_history_collector_marks_three_month_period_complete(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
     )
     seen: dict[str, date] = {}
+    monkeypatch.setattr(
+        source_refresh,
+        "_moscow_today",
+        lambda: date(2026, 7, 10),
+    )
 
     def fake_exporter(_settings, output_dir: Path, **kwargs):
         seen["period_start"] = kwargs["period_start"]
@@ -333,6 +594,83 @@ def test_stock_history_collector_marks_three_month_period_complete(
     assert result.collection.payload["accounts"][0]["coveredDays"] == 92
     assert result.collection.payload["accounts"][0]["totalDays"] == 92
     assert result.collection.payload["accounts"][0]["calculated"] is True
+    assert result.collection.payload["accounts"][0]["fullCoverage"] is True
+    assert result.collection.payload["fullCoverage"] is True
+
+
+def test_stock_history_collector_skips_period_outside_current_provider_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    monkeypatch.setattr(
+        source_refresh,
+        "_moscow_today",
+        lambda: date(2026, 7, 11),
+    )
+
+    def unexpected_exporter(*_args, **_kwargs):
+        raise AssertionError("WB exporter must not receive an out-of-window period")
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="old-stock-provider-window-test",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 3, 31),
+            user=user,
+            source_report=report,
+            reason="test",
+        )
+        service = SourceRefreshService(
+            settings,
+            wb_stock_history_exporter=unexpected_exporter,
+        )
+        result = _collect_wb_stock_history(
+            service,
+            CollectorContext(
+                db=db,
+                refresh_run=refresh_run,
+                credentials=SourceCredentials(
+                    wb_settings=WbFinanceSettings(
+                        accounts=(
+                            WbFinanceSellerAccount(
+                                seller_account_id="WB_ACCOUNT_1",
+                                account_name="Кабинет 1",
+                                api_key="test-key",
+                            ),
+                        )
+                    ),
+                    onec_settings=None,
+                    ozon_settings=None,
+                    wb_cabinet_ids={"WB_ACCOUNT_1": "cabinet-1"},
+                    ozon_cabinet_ids={},
+                    issues=(),
+                ),
+                root_dir=tmp_path / "old-snapshot",
+                period_start=date(2026, 3, 1),
+                period_end=date(2026, 3, 31),
+                mode="full",
+            ),
+        )
+
+    assert result.collection is not None
+    assert result.collection.status == "needs_review"
+    assert result.collection.payload["actualPeriodStart"] is None
+    assert result.collection.payload["actualPeriodEnd"] is None
+    assert result.collection.payload["accounts"][0]["status"] == (
+        "outside_provider_window"
+    )
+    assert result.collection.payload["accounts"][0]["coveredDays"] == 0
+    assert result.collection.payload["accounts"][0]["calculated"] is False
 
 
 def minimal_payload() -> dict:
@@ -533,6 +871,130 @@ def test_source_refresh_auto_resume_creates_new_immutable_lineage(
     assert (previous_root / "onec").is_dir()
 
 
+def test_source_refresh_auto_resume_accepts_wb_finance_checkpoint(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    period_start = date(2026, 4, 1)
+    period_end = date(2026, 4, 30)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        previous = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-partial-wb-april",
+            period_start=period_start,
+            period_end=period_end,
+            user=user,
+            source_report=report,
+            reason="partial WB",
+        )
+        previous_root = settings.source_refresh_root_path / previous.snapshot_set_id
+        checkpoint_dir = previous_root / "wb_finance"
+        checkpoint_dir.mkdir(parents=True)
+        (checkpoint_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        repository.add_source_refresh_collection(
+            db,
+            previous,
+            source_type="wb_finance_detail",
+            source_label="WB finance detail",
+            required=True,
+            status="partial_source",
+            row_count=800_000,
+            raw_path=str(checkpoint_dir),
+            payload={"retryable": True},
+        )
+        repository.update_source_refresh_run(
+            db,
+            previous,
+            status="failed",
+            root_dir=str(previous_root),
+            started_at=datetime(2026, 7, 10, 10, 0),
+            finished_at=datetime(2026, 7, 10, 10, 5),
+        )
+        db.commit()
+
+        payload = SourceRefreshService(settings).enqueue(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="full",
+            user=user,
+            source_report=report,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        current = db.get(source_refresh.SourceRefreshRun, payload["id"])
+
+    assert payload["id"] != previous.id
+    assert payload["resumedFromRunId"] == previous.id
+    assert current is not None
+    assert current.resumed_from_run_id == previous.id
+    assert (previous_root / "wb_finance" / "manifest.json").is_file()
+
+
+def test_copy_resume_directory_preserves_nested_document_tree(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    nested = source / "WB_ACCOUNT_1" / "documents"
+    nested.mkdir(parents=True)
+    (source / "manifest.json").write_text("{}", encoding="utf-8")
+    (nested / "notice.zip").write_bytes(b"primary-document")
+
+    destination = tmp_path / "destination"
+    source_refresh._copy_resume_directory(source, destination)
+
+    assert (destination / "manifest.json").read_text(encoding="utf-8") == "{}"
+    copied_document = destination / "WB_ACCOUNT_1" / "documents" / "notice.zip"
+    assert copied_document.read_bytes() == b"primary-document"
+
+
+def test_daily_fact_parity_requires_exact_reconciled_cogs() -> None:
+    money_fields = {
+        "quantity": Decimal("1"),
+        "net_revenue": Decimal("100"),
+        "wb_commission": Decimal("10"),
+        "logistics": Decimal("5"),
+        "storage": Decimal("1"),
+        "acceptance": Decimal("1"),
+        "marketplace_promotion": Decimal("1"),
+        "penalties_and_holdbacks": Decimal("1"),
+        "acquiring": Decimal("1"),
+        "vat_input_from_marketplace": Decimal("1"),
+        "vat_input_from_1c": Decimal("1"),
+    }
+    daily = SimpleNamespace(
+        **money_fields,
+        cogs=Decimal("50.00"),
+        source_row_count=1,
+    )
+    report_row = SimpleNamespace(
+        **money_fields,
+        wb_promotion=money_fields["marketplace_promotion"],
+        vat_input_from_wb=money_fields["vat_input_from_marketplace"],
+        cogs_from_1c_with_extra_costs=Decimal("50.00"),
+    )
+    build = {"report": SimpleNamespace(rows=[report_row]), "wb_rows": 1}
+
+    parity = source_refresh._wb_daily_fact_parity(build, [daily])
+
+    assert parity["differences"] == {}
+    assert parity["roundingTolerance"] == {"cogs": "0.00"}
+
+    daily.cogs = Decimal("50.01")
+    with pytest.raises(
+        source_refresh.SourceRefreshConfigError,
+        match="daily facts parity mismatch: cogs",
+    ):
+        source_refresh._wb_daily_fact_parity(build, [daily])
+
+
 def test_snapshot_batch_is_1000_rows_and_unknown_transaction_is_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -568,9 +1030,7 @@ def test_snapshot_batch_is_1000_rows_and_unknown_transaction_is_not_retried(
     assert commits == [True]
 
     commit_failure_inserts: list[list[dict[str, object]]] = []
-    commit_failure_batch = [
-        {"row_number": index} for index in range(2001, 3001)
-    ]
+    commit_failure_batch = [{"row_number": index} for index in range(2001, 3001)]
 
     def fail_commit():
         raise OperationalError("COMMIT", {}, ConnectionError())
@@ -936,7 +1396,7 @@ def test_source_refresh_uses_encrypted_tenant_credentials_and_creates_report(
     )
     assert any(
         item.source_type == "onec_commissioner_reports"
-        and item.payload.get("detailMode") == "header_only"
+        and item.payload.get("detailMode") == "financial_tables"
         for item in refresh_collections
     )
 
@@ -996,6 +1456,322 @@ def test_source_refresh_keeps_large_wb_raw_files_without_database_duplication(
     assert persisted_count == 0
 
 
+def test_source_refresh_files_only_skips_all_wb_raw_rows(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_raw_db_mode = "files_only"
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=_fake_wb_finance_exporter(seen),
+            wb_report_list_exporter=_fake_report_list_exporter(seen),
+            wb_product_cards_exporter=_fake_wb_product_cards_exporter(seen),
+            onec_exporter=_fake_onec_exporter(seen),
+            workbook_builder=_fake_workbook_builder,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            mode="full",
+            user=user,
+            source_report=report,
+        )
+        db.commit()
+        collections = (
+            db.query(SourceRefreshCollection)
+            .filter_by(refresh_run_id=payload["id"])
+            .all()
+        )
+        wb_rows = (
+            db.query(SourceSnapshotRow)
+            .filter(
+                SourceSnapshotRow.refresh_run_id == payload["id"],
+                SourceSnapshotRow.source_type.in_(
+                    {
+                        "wb_finance_detail",
+                        "wb_sales_report_list",
+                        "wb_product_cards",
+                    }
+                ),
+            )
+            .count()
+        )
+
+    assert wb_rows == 0
+    wb_collections = [
+        item
+        for item in collections
+        if item.source_type
+        in {"wb_finance_detail", "wb_sales_report_list", "wb_product_cards"}
+    ]
+    assert wb_collections
+    assert all(
+        item.payload["rowPersistence"]["status"] == "file_authoritative"
+        for item in wb_collections
+    )
+
+
+def test_daily_refresh_materializes_daily_facts_when_enabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    seen: dict[str, object] = {}
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.marketplace_daily_facts_enabled = True
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=_fake_wb_finance_exporter(seen),
+            wb_product_cards_exporter=_fake_wb_product_cards_exporter(seen),
+            onec_exporter=_fake_onec_exporter(seen),
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+
+        def materialize(_db, refresh_run, **paths):
+            seen["daily_facts_run_id"] = refresh_run.id
+            seen["daily_facts_wb_dir"] = paths["wb_finance_dir"]
+
+        monkeypatch.setattr(service, "_materialize_wb_daily_facts", materialize)
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            user=user,
+            source_report=report,
+        )
+
+    assert payload["status"] == "needs_review"
+    assert seen["daily_facts_run_id"] == payload["id"]
+    assert Path(seen["daily_facts_wb_dir"]).name == "wb_finance"
+
+
+def test_incremental_refresh_uses_28_day_window_and_requires_full_base(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = True
+    monkeypatch.setattr(
+        source_refresh,
+        "_incremental_yesterday",
+        lambda: date(2026, 6, 17),
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = service._create_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="incremental test",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 2),
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+        assert isinstance(refresh_run, SourceRefreshRun)
+        assert refresh_run.source_window_start == date(2026, 5, 21)
+        assert refresh_run.source_window_end == date(2026, 6, 17)
+        assert refresh_run.period_start == report.period_start
+        assert refresh_run.period_end == date(2026, 6, 17)
+
+        payload = service._execute_run(db, refresh_run, user=user)
+
+    assert payload["status"] == "needs_full_refresh"
+    assert payload["failureCode"] == "incremental_base_unavailable"
+
+
+def test_incremental_refresh_requires_db_first_reports(tmp_path: Path) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = False
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        with pytest.raises(
+            source_refresh.SourceRefreshConfigError,
+            match="DB_FIRST_REPORTS_ENABLED",
+        ):
+            service._create_refresh_run(
+                db,
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                mode="incremental",
+                credential_source="tenant",
+                dry_run=False,
+                user=user,
+                source_report=report,
+                reason="incremental test",
+                period_start=report.period_start,
+                period_end=date(2026, 6, 17),
+                resume_mode="never",
+                resume_from_run_id=None,
+            )
+
+
+def test_incremental_refresh_reuses_valid_full_daily_facts_base(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = True
+    monkeypatch.setattr(
+        source_refresh,
+        "_incremental_yesterday",
+        lambda: date(2026, 6, 17),
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base_root = settings.source_refresh_root_path / "full-incremental-base"
+        finance_dir = base_root / "wb_finance"
+        finance_dir.mkdir(parents=True)
+        (finance_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "seller_account_id": "WB_ACCOUNT_9",
+                            "status": "no_data",
+                            "page_index": 1,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-incremental-base",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="full base",
+        )
+        repository.update_source_refresh_run(
+            db,
+            base,
+            status="report_created",
+            root_dir=str(base_root),
+            finished_at=datetime.now().astimezone(),
+        )
+        finance_collection = repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            snapshot_hash="wb-base-hash",
+            raw_path=str(finance_dir),
+            payload={
+                "sourceCoverageStart": report.period_start.isoformat(),
+                "sourceCoverageEnd": report.period_end.isoformat(),
+                "dailyFacts": {
+                    "status": "materialized",
+                    "parity": {"status": "aggregate_only"},
+                    "persistedParity": {"status": "matched"},
+                }
+            },
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_product_cards",
+            source_label="WB cards",
+            required=True,
+            status="loaded",
+            snapshot_hash="cards-base-hash",
+        )
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            base,
+            [
+                MarketplaceFinanceDailyFact(
+                    client_id=report.client_id,
+                    seller_account_id="WB_ACCOUNT_9",
+                    organization_id="1C_ORG_1",
+                    fact_date=report.period_start,
+                    marketplace_report_id="WB-BASE",
+                    document_kind="commissioner_report",
+                    source_row_count=1,
+                    source_hash_digest="base-fact-hash",
+                    methodology_version=source_refresh.METHODOLOGY_VERSION,
+                )
+            ],
+            marketplace="wb",
+        )
+        db.commit()
+
+        service = SourceRefreshService(settings)
+        refresh_run = service._create_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="incremental",
+            period_start=None,
+            period_end=None,
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+        finance_collection.payload = {
+            **finance_collection.payload,
+            "sourceCoverageStart": (
+                report.period_start + timedelta(days=1)
+            ).isoformat(),
+        }
+        coverage_issue = service._daily_facts_coverage_issue(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            period_start=report.period_start,
+            period_end=report.period_start,
+        )
+
+    assert isinstance(refresh_run, SourceRefreshRun)
+    assert refresh_run.mode == "incremental"
+    assert refresh_run.base_source_refresh_run_id == base.id
+    assert coverage_issue == (
+        f"daily_facts_coverage_gap:{report.period_start.isoformat()}"
+    )
+
+
 def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
@@ -1040,9 +1816,7 @@ def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
 
         _persist_onec_rows(db, collection, result)
         persisted_count = (
-            db.query(SourceSnapshotRow)
-            .filter_by(collection_id=collection.id)
-            .count()
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).count()
         )
 
     assert persisted_count == 0
@@ -1052,6 +1826,96 @@ def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
         "byteSize": ONEC_DATABASE_ROW_PERSIST_MAX_BYTES + 1,
         "rawFilesAuthoritative": True,
     }
+
+
+def test_large_commissioner_snapshot_persists_compact_financial_rows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    output_path = tmp_path / "commissioner-reports.raw.json"
+    output_path.write_text(
+        json.dumps(
+            {
+                "value": [
+                    {
+                        "Ref_Key": "report-1",
+                        "Date": "2026-04-30T12:00:00",
+                        "Number": "НФНФ-000011",
+                        "Комментарий": "Ozon, отчет 123",
+                        "Организация_Key": "organization-1",
+                        "Контрагент_Key": "ozon-counterparty",
+                        "Запасы": [
+                            {
+                                "Номенклатура_Key": "item-1",
+                                "Количество": 2,
+                                "Всего": 300,
+                                "СуммаНДС": 50,
+                                "НенужноеПоле": "не сохранять",
+                            }
+                        ],
+                        "ЗапасыВозвраты": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(source_refresh, "ONEC_DATABASE_ROW_PERSIST_MAX_BYTES", 1)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="large-commissioner-test",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            user=user,
+            source_report=report,
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="onec_commissioner_reports",
+            source_label="Document_ОтчетКомиссионера",
+            required=False,
+            publication_required=True,
+            status="loaded",
+            row_count=1,
+            raw_path=str(output_path),
+        )
+        result = OnecSampleExportResult(
+            sample_id="commissioner_reports",
+            collection_name="Document_ОтчетКомиссионера",
+            ok=True,
+            row_count=1,
+            output_path=output_path,
+        )
+
+        _persist_onec_rows(db, collection, result)
+        persisted = (
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).one()
+        )
+
+    assert collection.payload["rowPersistence"]["status"] == (
+        "compacted_large_snapshot"
+    )
+    assert collection.payload["rowPersistence"]["persistedDocumentRows"] == 1
+    assert persisted.row_payload["Запасы"][0] == {
+        "Номенклатура_Key": "item-1",
+        "Количество": 2,
+        "Всего": 300,
+        "СуммаНДС": 50,
+    }
+    assert "НенужноеПоле" not in persisted.row_payload["Запасы"][0]
 
 
 def test_source_refresh_collects_optional_ozon_finance_without_blocking_wb(
@@ -1122,7 +1986,335 @@ def test_source_refresh_collects_optional_ozon_finance_without_blocking_wb(
     assert ozon_rows[0].row_payload["offer_id"] == "A-1"
 
 
-def test_source_refresh_ozon_only_skips_wb_and_does_not_publish_report(
+def test_ozon_realization_files_only_uses_typed_operation_facts(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_raw_db_mode = "files_only"
+    settings.marketplace_daily_facts_enabled = True
+    settings.source_refresh_ozon_files_only_enabled = True
+    output_dir = Path(settings.source_refresh_root) / "run" / "ozon_realization"
+    output_dir.mkdir(parents=True)
+    output_path = output_dir / "realization.raw.json"
+    output_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "operation_id": "operation-1",
+                        "date": "2026-07-05",
+                        "items": [
+                            {
+                                "product_id": "product-1",
+                                "offer_id": "offer-1",
+                                "sku": "sku-1",
+                                "quantity": 2,
+                                "sale_amount": 500,
+                                "commission": 50,
+                                "logistics": 20,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    raw_payload = json.loads(output_path.read_text(encoding="utf-8"))
+    raw_hash = hashlib.sha256(
+        json.dumps(
+            raw_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    (output_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "sourceType": "ozon_realization",
+                        "sellerAccountId": "OZON_ACCOUNT_1",
+                        "accountName": "Ozon",
+                        "pageIndex": 1,
+                        "status": "ok",
+                        "ok": True,
+                        "rowCount": 1,
+                        "statusCode": 200,
+                        "sourceEndpoint": "/v1/finance/realization",
+                        "rawPayloadHash": raw_hash,
+                        "outputFile": output_path.name,
+                        "reportCode": "",
+                        "error": "",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="ozon-files-only",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 31),
+            user=user,
+            source_report=report,
+            reason="test",
+        )
+        service = SourceRefreshService(settings)
+        service._record_ozon_results(
+            db,
+            refresh_run,
+            output_dir,
+            [
+                OzonPageResult(
+                    source_type="ozon_realization",
+                    seller_account_id="OZON_ACCOUNT_1",
+                    account_name="Ozon",
+                    page_index=1,
+                    ok=True,
+                    status="ok",
+                    row_count=1,
+                    raw_payload_hash=raw_hash,
+                    output_path=output_path,
+                    status_code=200,
+                    source_endpoint="/v1/finance/realization",
+                )
+            ],
+            source_type="ozon_realization",
+            source_label="Ozon realization",
+            ozon_cabinet_ids={"OZON_ACCOUNT_1": "ozon-cabinet"},
+        )
+        db.commit()
+        collection = (
+            db.query(SourceRefreshCollection)
+            .filter_by(
+                refresh_run_id=refresh_run.id,
+                source_type="ozon_realization",
+            )
+            .one()
+        )
+        raw_count = (
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).count()
+        )
+        facts = (
+            db.query(MarketplaceOperationFact)
+            .filter_by(source_refresh_run_id=refresh_run.id)
+            .all()
+        )
+        adapted = repository._ozon_realization_source_rows(
+            db,
+            tenant_id=refresh_run.tenant_id,
+            refresh_run=refresh_run,
+            limit=50,
+        )
+
+    assert collection.payload["rowPersistence"]["status"] == "file_authoritative"
+    assert collection.payload["typedParity"]["status"] == "matched"
+    assert raw_count == 0
+    assert len(facts) == 3
+    assert {item.service_key for item in facts} == {
+        "product",
+        "commission",
+        "logistics",
+    }
+    product_fact = next(item for item in facts if item.service_key == "product")
+    assert product_fact.amount == Decimal("500.00")
+    assert adapted[0].row_payload["commission"] == Decimal("50.00")
+    assert adapted[0].row_payload["logistics"] == Decimal("20.00")
+    assert adapted[0].row_payload["offer_id"] == "offer-1"
+
+
+def test_ozon_typed_keys_do_not_depend_on_source_row_order(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    first_rows = [
+        {"operation_id": "op-1", "product_id": "p-1", "amount": 10},
+        {"operation_id": "op-2", "product_id": "p-2", "amount": 20},
+    ]
+    first_path.write_text(json.dumps(first_rows), encoding="utf-8")
+    second_path.write_text(json.dumps(list(reversed(first_rows))), encoding="utf-8")
+
+    def result(path: Path) -> OzonPageResult:
+        return OzonPageResult(
+            source_type="ozon_finance_cash_flow",
+            seller_account_id="seller",
+            account_name="Ozon",
+            page_index=1,
+            ok=True,
+            status="ok",
+            row_count=2,
+            raw_payload_hash="hash",
+            output_path=path,
+            source_endpoint="/finance",
+        )
+
+    first_keys = {
+        item["source_key"]
+        for item in source_refresh._iter_ozon_operation_facts(
+            [result(first_path)],
+            ozon_cabinet_ids={"seller": "cabinet"},
+        )
+    }
+    second_keys = {
+        item["source_key"]
+        for item in source_refresh._iter_ozon_operation_facts(
+            [result(second_path)],
+            ozon_cabinet_ids={"seller": "cabinet"},
+        )
+    }
+
+    assert first_keys == second_keys
+
+
+def test_ozon_typed_fallback_keys_use_payload_not_row_position(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "first-anonymous.json"
+    second_path = tmp_path / "second-anonymous.json"
+    rows = [
+        {"operation_type": "service-a", "amount": 10},
+        {"operation_type": "service-b", "amount": 20},
+    ]
+    first_path.write_text(json.dumps(rows), encoding="utf-8")
+    second_path.write_text(json.dumps(list(reversed(rows))), encoding="utf-8")
+
+    def result(path: Path) -> OzonPageResult:
+        return OzonPageResult(
+            source_type="ozon_mutual_settlement_file",
+            seller_account_id="seller",
+            account_name="Ozon",
+            page_index=1,
+            ok=True,
+            status="ok",
+            row_count=2,
+            raw_payload_hash="hash",
+            output_path=path,
+            source_endpoint="report_file",
+        )
+
+    first_keys = {
+        item["source_key"]
+        for item in source_refresh._iter_ozon_operation_facts(
+            [result(first_path)],
+            ozon_cabinet_ids={"seller": "cabinet"},
+        )
+    }
+    second_keys = {
+        item["source_key"]
+        for item in source_refresh._iter_ozon_operation_facts(
+            [result(second_path)],
+            ozon_cabinet_ids={"seller": "cabinet"},
+        )
+    }
+
+    assert first_keys == second_keys
+
+
+def test_ozon_typed_cash_flow_flattens_period_rows(tmp_path: Path) -> None:
+    path = tmp_path / "cash-flow.json"
+    path.write_text(
+        json.dumps(
+            {
+                "result": {
+                    "cash_flows": [
+                        {
+                            "period": "2026-06-01",
+                            "orders_amount": 100,
+                            "returns_amount": 10,
+                            "commission_amount": 5,
+                        },
+                        {
+                            "period": "2026-07-01",
+                            "orders_amount": 200,
+                            "returns_amount": 20,
+                            "commission_amount": 10,
+                        },
+                    ],
+                    "details": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = OzonPageResult(
+        source_type="ozon_finance_cash_flow",
+        seller_account_id="seller",
+        account_name="Ozon",
+        page_index=1,
+        ok=True,
+        status="ok",
+        row_count=2,
+        raw_payload_hash="hash",
+        output_path=path,
+        source_endpoint="/v1/finance/cash-flow-statement/list",
+    )
+
+    facts = list(
+        source_refresh._iter_ozon_operation_facts(
+            [result],
+            ozon_cabinet_ids={"seller": "cabinet"},
+        )
+    )
+
+    assert len(facts) == 2
+    assert len({item["source_key"] for item in facts}) == 2
+    assert sum((item["amount"] for item in facts), Decimal("0")) == Decimal("270")
+
+
+def test_ozon_typed_realization_reads_nested_sale_amount(tmp_path: Path) -> None:
+    path = tmp_path / "realization-nested.json"
+    path.write_text(
+        json.dumps(
+            {
+                "result": {
+                    "rows": [
+                        {
+                            "item": {"offer_id": "offer-1", "sku": "sku-1"},
+                            "delivery_commission": {"quantity": 2, "amount": 1000},
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = OzonPageResult(
+        source_type="ozon_realization",
+        seller_account_id="seller",
+        account_name="Ozon",
+        page_index=1,
+        ok=True,
+        status="ok",
+        row_count=1,
+        raw_payload_hash="hash",
+        output_path=path,
+        source_endpoint="/v2/finance/realization",
+    )
+
+    facts = list(
+        source_refresh._iter_ozon_operation_facts(
+            [result],
+            ozon_cabinet_ids={"seller": "cabinet"},
+        )
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["quantity"] == Decimal("2")
+    assert facts[0]["amount"] == Decimal("1000")
+
+
+def test_source_refresh_ozon_only_skips_wb_and_creates_staff_draft(
     tmp_path: Path,
 ) -> None:
     seen: dict[str, object] = {}
@@ -1200,6 +2392,13 @@ def test_source_refresh_ozon_only_skips_wb_and_does_not_publish_report(
             user=user,
             source_report=report,
         )
+        refresh_run = db.get(SourceRefreshRun, payload["id"])
+        assert refresh_run is not None
+        repeated_draft = repository.materialize_ozon_draft_report(
+            db,
+            refresh_run,
+            user=user,
+        )
         reports = db.query(ReportRun).filter_by(tenant_id="shumeyko").all()
         ozon_collection = (
             db.query(SourceRefreshCollection)
@@ -1229,8 +2428,13 @@ def test_source_refresh_ozon_only_skips_wb_and_does_not_publish_report(
         }
 
     assert payload["status"] == "needs_review"
-    assert payload["newReportRunId"] is None
-    assert [item.id for item in reports] == ["report-1"]
+    assert payload["newReportRunId"].startswith("ozon_draft_")
+    draft = next(item for item in reports if item.id == payload["newReportRunId"])
+    assert draft.publication_status == "draft"
+    assert draft.is_current is False
+    assert draft.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE
+    assert repeated_draft.id == draft.id
+    assert {item.id for item in reports} == {"report-1", draft.id}
     assert seen["ozon_client_id"] == "ozon-client"
     assert "wb_api_key" not in seen
     assert ozon_collection.required is True
@@ -1301,6 +2505,13 @@ def test_ozon_report_control_results_are_not_product_rows() -> None:
         OzonPageResult(
             source_type="ozon_products_report_file",
             source_endpoint="report_file",
+            **base,
+        )
+    )
+    assert _is_ozon_report_control_result(
+        OzonPageResult(
+            source_type="ozon_mutual_settlement",
+            source_endpoint="/v1/finance/mutual-settlement",
             **base,
         )
     )
@@ -1571,15 +2782,22 @@ def test_source_refresh_db_first_branch_keeps_staff_draft_and_artifact(
     )
     settings.db_first_reports_enabled = True
 
-    def fake_build_db_first_payload(args, *, tax_profiles=None):
+    def fake_build_db_first_payload(
+        args,
+        *,
+        tax_profiles=None,
+        input_vat_policies=None,
+    ):
         seen["builder_used"] = True
         assert args.wb_finance_dir is not None
         assert args.onec_dir is not None
         assert args.wb_finance_source == "files-stream"
         assert args.keep_stream_cache is False
+        assert args.sku_mappings is not None
         assert tax_profiles is not None
         assert len(tax_profiles) == 1
         assert tax_profiles[0].source == "manual_override"
+        assert input_vat_policies == []
         seen["tax_profile_source"] = tax_profiles[0].source
         return {"payload": minimal_payload()}
 
@@ -1688,8 +2906,14 @@ def test_source_refresh_db_first_post_build_failure_does_not_publish_report(
     )
     settings.db_first_reports_enabled = True
 
-    def fake_build_db_first_payload(_args, *, tax_profiles=None):
+    def fake_build_db_first_payload(
+        _args,
+        *,
+        tax_profiles=None,
+        input_vat_policies=None,
+    ):
         assert tax_profiles is not None
+        assert input_vat_policies == []
         return {"payload": minimal_payload()}
 
     monkeypatch.setattr(
@@ -1813,6 +3037,302 @@ def test_source_refresh_tax_profiles_do_not_inherit_previous_run(
     assert profiles == []
 
 
+def test_source_refresh_derives_osno_for_exact_company_name_match(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .first()
+        )
+        assert company is not None
+        company.onec_organization_id = ""
+        company.display_name = "Организация из 1С"
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="derived-osno-test",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            user=user,
+            source_report=report,
+            reason="derived OSNO test",
+        )
+        organization_collection = repository.add_source_refresh_collection(
+            db,
+            run,
+            source_type="onec_organizations",
+            source_label="Catalog_Организации",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            organization_collection,
+            row_number=1,
+            raw_payload_hash="organization-hash",
+            row_payload={
+                "Ref_Key": "ORG-OSNO",
+                "Description": "Организация из 1С",
+                "ВидСтавкиНДСПоУмолчанию": "Общая",
+                "НДСВключатьВСтоимость": False,
+                "ЮридическоеФизическоеЛицо": "ФизическоеЛицо",
+                "СчетУчетаЛичныхСредствПредпринимателя_Key": "account-guid",
+            },
+            source_row_id="ORG-OSNO",
+        )
+        repository.add_source_refresh_collection(
+            db,
+            run,
+            source_type="onec_tax_special_regime_notifications",
+            source_label="Document_УведомлениеОСпецрежимахНалогообложения",
+            required=False,
+            status="empty_expected",
+            row_count=0,
+        )
+
+        tax_collection = repository.sync_organization_tax_profiles(db, run, user=user)
+        profile = db.query(OrganizationTaxProfile).one()
+
+    assert company.onec_organization_id == "ORG-OSNO"
+    assert tax_collection.status == "loaded"
+    assert tax_collection.payload["profileCount"] == 1
+    assert tax_collection.payload["missingProfileCount"] == 0
+    assert tax_collection.payload["specialTaxSourceComplete"] is True
+    assert profile.tax_system == "ОСНО"
+    assert profile.vat_rate == Decimal("22")
+    assert profile.vat_deduction_mode == "allowed"
+    assert profile.revenue_tax_rate == 0
+    assert profile.source == "Catalog_Организации:derived_osno_2026"
+
+
+def test_source_refresh_does_not_link_single_organization_with_different_name(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .first()
+        )
+        assert company is not None
+        company.onec_organization_id = ""
+        company.display_name = "Организация заказчика"
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="mismatched-single-organization",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            user=user,
+            source_report=report,
+            reason="single organization must not be guessed",
+        )
+        organization_collection = repository.add_source_refresh_collection(
+            db,
+            run,
+            source_type="onec_organizations",
+            source_label="Catalog_Организации",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            organization_collection,
+            row_number=1,
+            raw_payload_hash="mismatched-organization-hash",
+            row_payload={
+                "Ref_Key": "ORG-OTHER",
+                "Description": "Другая организация из 1С",
+            },
+            source_row_id="ORG-OTHER",
+        )
+
+        tax_collection = repository.sync_organization_tax_profiles(db, run, user=user)
+        profile_count = db.query(OrganizationTaxProfile).count()
+
+    assert company.onec_organization_id == ""
+    assert profile_count == 0
+    assert tax_collection.payload["autoLinkedCompanyCount"] == 0
+
+
+def test_source_refresh_builds_usn_profile_from_accounting_evidence(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .first()
+        )
+        assert company is not None
+        company.onec_organization_id = "ORG-USN"
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="usn-accounting-evidence",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 30),
+            user=user,
+            source_report=report,
+            reason="USN accounting evidence test",
+        )
+
+        def add_rows(source_type: str, rows: list[dict[str, object]]) -> None:
+            collection = repository.add_source_refresh_collection(
+                db,
+                run,
+                source_type=source_type,
+                source_label=source_type,
+                required=False,
+                status="loaded" if rows else "empty_expected",
+                row_count=len(rows),
+            )
+            for index, payload in enumerate(rows, 1):
+                repository.add_source_snapshot_row(
+                    db,
+                    collection,
+                    row_number=index,
+                    raw_payload_hash=f"{source_type}-{index}",
+                    row_payload=payload,
+                )
+
+        add_rows(
+            "onec_organizations",
+            [{"Ref_Key": "ORG-USN", "НДСВключатьВСтоимость": True}],
+        )
+        add_rows("onec_tax_special_regime_notifications", [])
+        add_rows(
+            "onec_tax_kinds",
+            [
+                {
+                    "Ref_Key": "TAX-USN",
+                    "Description": "Налог при УСН (доходы)",
+                    "DeletionMark": False,
+                }
+            ],
+        )
+        add_rows(
+            "onec_tax_accruals",
+            [
+                {
+                    "Ref_Key": "ACCRUAL-1",
+                    "Date": "2026-03-31T00:00:00",
+                    "Posted": True,
+                    "DeletionMark": False,
+                    "Организация_Key": "ORG-USN",
+                }
+            ],
+        )
+        add_rows(
+            "onec_tax_accrual_lines",
+            [{"Ref_Key": "ACCRUAL-1", "ВидНалога_Key": "TAX-USN"}],
+        )
+        add_rows(
+            "onec_vat_sales_book",
+            [
+                {
+                    "Period": "2026-03-31T00:00:00",
+                    "Active": True,
+                    "Организация_Key": "ORG-USN",
+                    "СтавкаНДС": "НДС5",
+                    "НДС": "100",
+                }
+            ],
+        )
+        now = repository.security.utcnow()
+        db.add(
+            OrganizationTaxProfileOverride(
+                id="rate-anchor-usn",
+                tenant_id="shumeyko",
+                client_id="shumeyko",
+                client_company_id=company.id,
+                organization_id="ORG-USN",
+                tax_system="УСН Доходы",
+                vat_rate=Decimal("5"),
+                vat_mode="included",
+                vat_deduction_mode="not_allowed",
+                revenue_tax_rate=Decimal("0.01"),
+                income_tax_kind="",
+                valid_from=date(2026, 1, 1),
+                valid_to=None,
+                status="active",
+                reason=(
+                    "[rate_anchor_only] Подтвержденная ставка, не опубликованная OData"
+                ),
+                rate_basis_kind="regional_preference",
+                basis_document="Региональный закон о льготной ставке УСН",
+                confirmed_by="Бухгалтер",
+                source_object_ids='["ACCRUAL-1"]',
+                created_by_user_id=user.id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.flush()
+
+        fallback_profile, fallback_status = repository.resolve_company_tax_profile(
+            db,
+            company=company,
+            calculation_date=run.period_end,
+            refresh_run=run,
+        )
+        assert fallback_profile is None
+        assert fallback_status["status"] == "missing"
+
+        tax_collection = repository.sync_organization_tax_profiles(db, run, user=user)
+        source_profile = (
+            db.query(OrganizationTaxProfile)
+            .filter_by(source_refresh_run_id=run.id)
+            .one()
+        )
+
+    assert tax_collection.status == "loaded"
+    assert tax_collection.payload["profileCount"] == 1
+    assert tax_collection.payload["missingProfileCount"] == 0
+    assert tax_collection.payload["manualOverrideCount"] == 0
+    assert tax_collection.payload["methodologyVersion"] == (
+        "marketplace-tax-profile-v3"
+    )
+    diagnostic = tax_collection.payload["companyDiagnostics"][0]
+    assert diagnostic["accountingEvidence"]["rateAnchorMatched"] is True
+    assert source_profile.tax_system == "УСН Доходы"
+    assert source_profile.vat_rate == Decimal("5")
+    assert source_profile.vat_deduction_mode == "not_allowed"
+    assert source_profile.revenue_tax_rate == Decimal("0.01")
+    assert source_profile.source == "1C:tax_accruals+vat_sales+audited_rate"
+    assert source_profile.rate_basis_kind == "regional_preference"
+    assert source_profile.basis_document == "Региональный закон о льготной ставке УСН"
+    assert source_profile.confirmed_by == "Бухгалтер"
+
+
 def test_source_refresh_blocks_conflicting_active_run_with_status(
     tmp_path: Path,
 ) -> None:
@@ -1866,6 +3386,51 @@ def test_source_refresh_daily_blocks_when_full_is_active(
         payload = service.run(db, tenant_id="shumeyko", mode="daily", user=user)
 
     assert payload["status"] == "blocked_active_refresh"
+
+
+def test_source_refresh_incremental_blocks_when_daily_is_active(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = True
+    monkeypatch.setattr(
+        source_refresh,
+        "_incremental_yesterday",
+        lambda: date(2026, 6, 17),
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        active = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="active-daily-run",
+            period_start=date(2026, 6, 4),
+            period_end=date(2026, 6, 17),
+            user=user,
+            source_report=report,
+        )
+        db.commit()
+        service = SourceRefreshService(settings)
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="incremental",
+            user=user,
+            source_report=report,
+        )
+
+    assert payload["status"] == "blocked_active_refresh"
+    assert payload["blockedByRunId"] == active.id
 
 
 def test_source_refresh_low_disk_guard_skips_external_reads(tmp_path: Path) -> None:
@@ -2415,7 +3980,7 @@ def test_source_refresh_daily_stale_mapping_returns_needs_review(
     assert payload["newReportRunId"] is None
 
 
-def test_source_refresh_onec_only_does_not_publish_report(
+def test_source_refresh_standalone_onec_only_does_not_create_report(
     tmp_path: Path,
 ) -> None:
     seen: dict[str, object] = {}
@@ -2439,13 +4004,752 @@ def test_source_refresh_onec_only_does_not_publish_report(
             tenant_id="shumeyko",
             mode="onec-only",
             user=user,
-            source_report=report,
         )
         reports = db.query(ReportRun).filter_by(tenant_id="shumeyko").all()
 
     assert payload["status"] == "needs_review"
     assert payload["newReportRunId"] is None
     assert [item.id for item in reports] == ["report-1"]
+
+
+def test_onec_only_with_report_falls_back_to_full_without_reusable_wb_snapshot(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = SourceRefreshService(settings)._create_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="tax profile changed",
+            period_start=None,
+            period_end=None,
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+
+    assert isinstance(refresh_run, SourceRefreshRun)
+    assert refresh_run.mode == "full"
+    assert refresh_run.period_start == report.period_start
+    assert refresh_run.period_end == report.period_end
+    assert refresh_run.base_source_refresh_run_id is None
+
+
+def test_onec_only_with_report_reuses_complete_full_wb_snapshot(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        root_dir = settings.source_refresh_root_path / "full-reusable"
+        finance_dir = root_dir / "wb_finance"
+        cards_dir = root_dir / "wb_product_cards"
+        finance_dir.mkdir(parents=True)
+        cards_dir.mkdir()
+        (finance_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "seller_account_id": "WB_ACCOUNT",
+                            "status": "no_data",
+                            "page_index": 1,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (cards_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "seller_account_id": "WB_ACCOUNT",
+                            "ok": True,
+                            "page_index": 1,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = datetime.now().astimezone()
+        db.add(
+            WbCabinet(
+                id="cabinet-active",
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                display_name="Активный кабинет",
+                cabinet_key="active",
+                provider="wb_api",
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-reusable",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="base",
+        )
+        repository.update_source_refresh_run(
+            db,
+            base,
+            status="report_created",
+            root_dir=str(root_dir),
+            finished_at=datetime.now().astimezone(),
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            raw_path=str(finance_dir),
+            payload={
+                "sourceCoverageStart": report.period_start.isoformat(),
+                "sourceCoverageEnd": report.period_end.isoformat(),
+                "results": [
+                    {"wbCabinetId": "cabinet-active"},
+                    {"wbCabinetId": "cabinet-historical"},
+                ],
+            },
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_product_cards",
+            source_label="WB cards",
+            required=True,
+            status="loaded",
+            raw_path=str(cards_dir),
+        )
+        refresh_run = SourceRefreshService(settings)._create_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="tax profile changed",
+            period_start=None,
+            period_end=None,
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+
+    assert isinstance(refresh_run, SourceRefreshRun)
+    assert refresh_run.mode == "onec-only"
+    assert refresh_run.base_source_refresh_run_id == base.id
+
+
+def test_tax_profile_sync_distinguishes_live_profile_from_report_application(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="onec-tax-ready",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=None,
+            reason="tax profile",
+        )
+        company_ids = {
+            item.client_company_id
+            for item in db.query(repository.ReportUnitRow)
+            .filter(repository.ReportUnitRow.report_run_id == report.id)
+            .all()
+            if item.client_company_id
+        }
+        for index, company_id in enumerate(sorted(company_ids), start=1):
+            company = db.get(repository.ClientCompany, company_id)
+            assert company is not None
+            company.onec_organization_id = f"ORG-TAX-SYNC-{index}"
+            db.add(
+                OrganizationTaxProfile(
+                    id=f"tax-sync-profile-{index}",
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    client_company_id=company.id,
+                    organization_id=company.onec_organization_id,
+                    tax_system="ОСНО",
+                    vat_rate=Decimal("22"),
+                    vat_mode="included",
+                    vat_deduction_mode="allowed",
+                    revenue_tax_rate=Decimal("0"),
+                    income_tax_kind="ip_ndfl_progressive",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    source="1C:test",
+                    source_refresh_run_id=refresh_run.id,
+                    source_snapshot_hash="tax-profile-hash",
+                    methodology_version="marketplace-tax-profile-v3",
+                    status="active",
+                    created_at=repository.security.utcnow(),
+                )
+            )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="onec_tax_profiles",
+            source_label="Tax profiles",
+            required=False,
+            status="loaded",
+            snapshot_hash="tax-profile-hash",
+            row_count=len(company_ids),
+            payload={
+                "profileCount": len(company_ids),
+                "missingProfileCount": 0,
+                "unconfirmedProfileCount": 0,
+            },
+        )
+        not_applied = repository.tax_profile_sync_payload(
+            db,
+            report,
+            tax_context={"calculated": False},
+            include_staff_details=True,
+        )
+        db.add(
+            SourceLoad(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="",
+                report_run_id=report.id,
+                source_refresh_run_id=refresh_run.id,
+                required=False,
+                publication_required=False,
+                source_type="onec_tax_profiles",
+                source_label="Tax profiles",
+                status="loaded",
+                snapshot_hash=collection.snapshot_hash,
+                row_count=len(company_ids),
+                loaded_at=datetime.now().astimezone(),
+            )
+        )
+        db.flush()
+        applied = repository.tax_profile_sync_payload(
+            db,
+            report,
+            tax_context={"calculated": True},
+            include_staff_details=True,
+        )
+        client_payload = repository.tax_profile_sync_payload(
+            db,
+            report,
+            tax_context={"calculated": True},
+            include_staff_details=False,
+        )
+
+    assert not_applied["liveStatus"] == "ready"
+    assert not_applied["reportStatus"] == "confirmed_not_applied"
+    assert not_applied["needsRebuild"] is True
+    assert "ещё не применён" in not_applied["message"]
+    assert applied["reportStatus"] == "applied"
+    assert applied["needsRebuild"] is False
+    assert client_payload == {
+        "reportStatus": "applied",
+        "needsRebuild": False,
+        "message": "Налоговый профиль применён в текущем отчёте.",
+    }
+
+
+def test_retention_protects_report_refresh_and_composite_base(
+    tmp_path: Path,
+) -> None:
+    from scripts.prune_source_refresh import _protected_from_database
+
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base_root = settings.source_refresh_root_path / "full-lineage-base"
+        current_root = settings.source_refresh_root_path / "onec-lineage-current"
+        base_root.mkdir(parents=True)
+        current_root.mkdir()
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id=base_root.name,
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="base",
+        )
+        repository.update_source_refresh_run(
+            db,
+            base,
+            status="report_created",
+            root_dir=str(base_root),
+            finished_at=datetime.now().astimezone(),
+        )
+        composite = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id=current_root.name,
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            base_source_refresh_run=base,
+            reason="composite",
+        )
+        repository.update_source_refresh_run(
+            db,
+            composite,
+            status="report_created",
+            root_dir=str(current_root),
+            finished_at=datetime.now().astimezone(),
+        )
+        db.add(
+            SourceLoad(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="",
+                report_run_id=report.id,
+                source_refresh_run_id=composite.id,
+                required=True,
+                publication_required=False,
+                source_type="onec_odata",
+                source_label="1C",
+                status="loaded",
+                snapshot_hash="onec-hash",
+                row_count=1,
+                loaded_at=datetime.now().astimezone(),
+            )
+        )
+        db.commit()
+
+    protected = _protected_from_database(settings.database_url)
+    assert base_root.name in protected
+    assert current_root.name in protected
+
+
+def test_retention_protects_newest_successful_full_per_client(
+    tmp_path: Path,
+) -> None:
+    from scripts.prune_source_refresh import _protected_from_database
+
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        runs: list[SourceRefreshRun] = []
+        for index in (1, 2):
+            root = settings.source_refresh_root_path / f"full-client-{index}"
+            root.mkdir(parents=True)
+            run = repository.create_source_refresh_run(
+                db,
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                mode="full",
+                credential_source="tenant",
+                dry_run=False,
+                snapshot_set_id=root.name,
+                period_start=report.period_start,
+                period_end=report.period_end,
+                user=user,
+                reason=f"full {index}",
+            )
+            repository.update_source_refresh_run(
+                db,
+                run,
+                status="report_created",
+                root_dir=str(root),
+                finished_at=datetime.now().astimezone(),
+            )
+            runs.append(run)
+        db.commit()
+
+    protected = _protected_from_database(settings.database_url)
+
+    assert runs[-1].snapshot_set_id in protected
+
+
+def test_composite_report_source_loads_keep_wb_base_and_current_onec_lineage(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-base-loads",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="base",
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="onec-current-loads",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            base_source_refresh_run=base,
+            reason="current",
+            enforce_active_check=False,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_finance_detail",
+            source_label="WB",
+            required=True,
+            status="loaded",
+            snapshot_hash="wb-hash",
+            row_count=10,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            current,
+            source_type="onec_tax_profiles",
+            source_label="Tax",
+            required=False,
+            status="loaded",
+            snapshot_hash="tax-hash",
+            row_count=2,
+        )
+        repository.replace_source_loads_from_refresh(
+            db,
+            report,
+            current,
+            base_refresh_run=base,
+        )
+        loads = {
+            item.source_type: item
+            for item in db.query(SourceLoad).filter_by(report_run_id=report.id)
+        }
+
+    assert loads["wb_finance_detail"].source_refresh_run_id == base.id
+    assert loads["onec_tax_profiles"].source_refresh_run_id == current.id
+    assert loads["wb_finance_detail"].lineage_role == "base"
+    assert loads["wb_finance_detail"].coverage_start == report.period_start
+    assert loads["wb_finance_detail"].coverage_end == report.period_end
+    assert loads["onec_tax_profiles"].lineage_role == "current"
+    assert loads["onec_tax_profiles"].coverage_start == report.period_start
+    assert loads["onec_tax_profiles"].coverage_end == report.period_end
+
+
+def test_incremental_snapshot_set_hash_includes_source_snapshots(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="base-run",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            reason="base",
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="current-run",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            base_source_refresh_run=base,
+            reason="current",
+            enforce_active_check=False,
+        )
+        overlay = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="overlay-run",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            reason="overlay",
+            enforce_active_check=False,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_finance_detail",
+            source_label="WB",
+            required=True,
+            status="loaded",
+            snapshot_hash="wb-hash",
+            row_count=1,
+        )
+        onec = repository.add_source_refresh_collection(
+            db,
+            current,
+            source_type="onec_odata",
+            source_label="1C",
+            required=True,
+            status="loaded",
+            snapshot_hash="onec-hash-v1",
+            row_count=1,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            overlay,
+            source_type="wb_finance_detail",
+            source_label="WB overlay",
+            required=True,
+            status="loaded",
+            snapshot_hash="overlay-hash",
+            row_count=1,
+        )
+        first = service._report_snapshot_set_id(
+            current,
+            base_refresh_run=base,
+            contributing_runs=[base, overlay, current],
+        )
+        onec.snapshot_hash = "onec-hash-v2"
+        second = service._report_snapshot_set_id(
+            current,
+            base_refresh_run=base,
+            contributing_runs=[base, overlay, current],
+        )
+
+    assert first.startswith("composite-")
+    assert second.startswith("composite-")
+    assert first != second
+
+
+def test_incremental_source_loads_keep_only_composed_base_and_overlay_sources(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-incremental-lineage",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=report.period_start,
+            source_window_end=report.period_end,
+            user=user,
+            reason="base",
+        )
+        overlay = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="previous-incremental-lineage",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=date(2026, 5, 1),
+            source_window_end=report.period_end,
+            user=user,
+            reason="overlay",
+            enforce_active_check=False,
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="current-incremental-lineage",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=date(2026, 5, 21),
+            source_window_end=report.period_end,
+            user=user,
+            base_source_refresh_run=base,
+            reason="current",
+            enforce_active_check=False,
+        )
+        for run in (base, overlay, current):
+            for source_type in ("wb_finance_detail", "wb_stock_history_daily"):
+                repository.add_source_refresh_collection(
+                    db,
+                    run,
+                    source_type=source_type,
+                    source_label=source_type,
+                    required=source_type == "wb_finance_detail",
+                    status="loaded",
+                    snapshot_hash=f"{run.id}-{source_type}",
+                    row_count=1,
+                )
+        repository.add_source_refresh_collection(
+            db,
+            current,
+            source_type="onec_odata",
+            source_label="1C",
+            required=True,
+            status="loaded",
+            snapshot_hash="onec-current",
+            row_count=1,
+        )
+
+        repository.replace_source_loads_from_refresh(
+            db,
+            report,
+            current,
+            base_refresh_run=base,
+            contributing_runs=[base, overlay, current],
+        )
+        loads = list(
+            db.query(SourceLoad)
+            .filter_by(report_run_id=report.id)
+            .order_by(SourceLoad.id)
+        )
+
+    assert len(loads) == 5
+    assert {
+        (item.source_type, item.lineage_role) for item in loads
+    } == {
+        ("wb_finance_detail", "base"),
+        ("wb_finance_detail", "overlay"),
+        ("wb_finance_detail", "current"),
+        ("wb_stock_history_daily", "current"),
+        ("onec_odata", "current"),
+    }
+    finance_coverage = {
+        item.lineage_role: (item.coverage_start, item.coverage_end)
+        for item in loads
+        if item.source_type == "wb_finance_detail"
+    }
+    assert finance_coverage == {
+        "base": (report.period_start, report.period_end),
+        "overlay": (date(2026, 5, 1), report.period_end),
+        "current": (date(2026, 5, 21), report.period_end),
+    }
+
+
+def test_replace_report_source_load_uses_exact_registered_stock_collection(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        stock_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="registered-stock-source",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="registered stock source",
+        )
+        repository.add_source_refresh_collection(
+            db,
+            stock_run,
+            source_type="wb_stock_history_daily",
+            source_label="WB stock history",
+            required=False,
+            status="loaded",
+            snapshot_hash="stock-hash",
+            row_count=2,
+            raw_path=str(tmp_path / "stock"),
+        )
+        repository.replace_report_source_load_from_refresh(
+            db,
+            report,
+            stock_run,
+            source_type="wb_stock_history_daily",
+        )
+        loads = list(
+            db.query(SourceLoad).filter_by(
+                report_run_id=report.id,
+                source_type="wb_stock_history_daily",
+            )
+        )
+
+    assert len(loads) == 1
+    assert loads[0].source_refresh_run_id == stock_run.id
+    assert loads[0].snapshot_hash == "stock-hash"
 
 
 def test_source_refresh_fails_if_workbook_builder_does_not_create_file(
@@ -3146,16 +5450,29 @@ def _fake_onec_exporter(seen: dict[str, object]):
         results = []
         for item in collections:
             output_path = output_dir / f"{item.sample_id}.raw.json"
+            row = {
+                "Ref_Key": f"{item.sample_id}-ref",
+                "LineNumber": 1,
+                "Name": item.collection_name,
+            }
+            if item.sample_id == "commissioner_reports":
+                row.update(
+                    {
+                        "Организация_Key": "organization-1",
+                        "Запасы": [
+                            {
+                                "Номенклатура_Key": "item-1",
+                                "Количество": 1,
+                                "Всего": 100,
+                            }
+                        ],
+                        "ЗапасыВозвраты": [],
+                    }
+                )
             output_path.write_text(
                 json.dumps(
                     {
-                        "value": [
-                            {
-                                "Ref_Key": f"{item.sample_id}-ref",
-                                "LineNumber": 1,
-                                "Name": item.collection_name,
-                            }
-                        ],
+                        "value": [row],
                         "_source_pages": [
                             {
                                 "page_index": 1,
@@ -3193,6 +5510,8 @@ def _fake_workbook_builder(args) -> SimpleNamespace:
     assert args.wb_finance_dir is not None
     assert args.onec_dir is not None
     assert args.onec_opiu_config is None
+    assert args.tax_profiles is not None
+    assert args.sku_mappings is not None
     return SimpleNamespace(output_path=args.output)
 
 

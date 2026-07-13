@@ -27,30 +27,30 @@ class ProviderDefinition:
 PROVIDER_DEFINITIONS: dict[str, ProviderDefinition] = {
     "wb_api": ProviderDefinition(
         provider_base="wb_api",
-        label="Wildberries API",
+        label="API Wildberries",
         default_role="finance_reports",
         check_handler="wb_api",
         roles=(
             ProviderRole("finance_reports", "Финансовые отчеты"),
             ProviderRole("analytics_stocks", "Аналитика и остатки"),
             ProviderRole("content_cards", "Карточки товаров"),
-            ProviderRole("full_readonly", "Полный read-only доступ"),
+            ProviderRole("full_readonly", "Полный доступ только для чтения"),
         ),
     ),
     "onec_readonly": ProviderDefinition(
         provider_base="onec_readonly",
-        label="1С read-only",
+        label="1С — только чтение",
         default_role="cost_documents",
         check_handler="onec_readonly",
         roles=(
             ProviderRole("cost_documents", "Себестоимость и документы"),
             ProviderRole("stocks_warehouses", "Остатки и склады"),
-            ProviderRole("full_readonly", "Полный read-only доступ"),
+            ProviderRole("full_readonly", "Полный доступ только для чтения"),
         ),
     ),
     "ozon_api": ProviderDefinition(
         provider_base="ozon_api",
-        label="Ozon Seller API",
+        label="API кабинета продавца Ozon",
         default_role="finance_reports",
         check_handler="ozon_api",
         roles=(
@@ -58,7 +58,7 @@ PROVIDER_DEFINITIONS: dict[str, ProviderDefinition] = {
             ProviderRole("products_catalog", "Товары и каталог"),
             ProviderRole("stocks_analytics", "Остатки и аналитика"),
             ProviderRole("returns_reports", "Возвраты"),
-            ProviderRole("full_readonly", "Полный read-only доступ"),
+            ProviderRole("full_readonly", "Полный доступ только для чтения"),
         ),
     ),
 }

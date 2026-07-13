@@ -4,10 +4,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.docs_metadata import has_superseded_banner, load_frontmatter, string_list
-from scripts.validate_documentation_contracts import validate_excel_sheet_contract
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import validate_docs_manifest  # noqa: E402
+from validate_docs_manifest import validate_truth_precedence  # noqa: E402
+from validate_specs import validate_dependency_graph  # noqa: E402
+
+from scripts.build_client_tz_docx import check_docx, render_client_tz  # noqa: E402
+from scripts.docs_metadata import (  # noqa: E402
+    has_superseded_banner,
+    load_frontmatter,
+    string_list,
+)
+from scripts.validate_documentation_contracts import (  # noqa: E402
+    validate_excel_sheet_contract,
+)
+from wb_unit_economics.document_exports import markdown_sha256  # noqa: E402
 
 
 def test_block_yaml_lists_are_loaded_and_code_paths_exist() -> None:
@@ -43,3 +56,107 @@ def test_manifest_metadata_parity_validator() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_truth_metadata_requires_scope_and_priority() -> None:
+    from scripts.docs_metadata import validate_truth_metadata
+
+    failures = validate_truth_metadata({"source_of_truth": True}, "example.md")
+
+    assert "example.md: source_of_truth requires valid truth_scope" in failures
+    assert any("truth_priority" in failure for failure in failures)
+
+
+def test_truth_precedence_rejects_equal_leaders() -> None:
+    records = [
+        {
+            "path": "a.md",
+            "source_of_truth": True,
+            "truth_scope": "source-refresh",
+            "truth_priority": 100,
+        },
+        {
+            "path": "b.md",
+            "source_of_truth": True,
+            "truth_scope": "source-refresh",
+            "truth_priority": 100,
+        },
+    ]
+
+    assert validate_truth_precedence(records) == [
+        "truth_scope 'source-refresh' must have one highest-priority document; "
+        "found a.md, b.md"
+    ]
+
+
+def test_dependency_graph_rejects_cycle_but_ignores_related_specs() -> None:
+    a = ROOT / "docs/specs/a.md"
+    b = ROOT / "docs/specs/b.md"
+    metadata = {
+        a: {"depends_on": ["b"], "related_specs": ["docs/specs/b.md"]},
+        b: {"depends_on": ["a"]},
+    }
+
+    failures = validate_dependency_graph(metadata, {"a": a, "b": b})
+
+    assert len(failures) == 1
+    assert "docs/specs/a.md -> docs/specs/b.md -> docs/specs/a.md" in failures[0]
+
+    metadata[a]["depends_on"] = []
+    assert validate_dependency_graph(metadata, {"a": a, "b": b}) == []
+
+
+def test_reconciled_document_cannot_have_older_updated_at(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source.md"
+    source.write_text(
+        "---\ntitle: Source\ndoc_type: reference\nstatus: accepted\n"
+        "audience: [engineering]\nsource_of_truth: false\n"
+        "updated_at: '2026-07-13'\n---\nSource\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target.md"
+    target.write_text(
+        "---\ntitle: Target\ndoc_type: reference\nstatus: draft\n"
+        "audience: [engineering]\nsource_of_truth: false\n"
+        "last_reconciled_with: 'source.md @ 2026-07-13'\n"
+        "updated_at: '2026-07-12'\n---\nTarget\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    failures: list[str] = []
+
+    validate_docs_manifest.validate_markdown_metadata(
+        "target.md",
+        {
+            "title": "Target",
+            "doc_type": "reference",
+            "status": "draft",
+            "audience": ["engineering"],
+            "source_of_truth": False,
+        },
+        failures,
+    )
+
+    assert any("updated_at 2026-07-12 is older" in failure for failure in failures)
+
+
+def test_client_docx_check_rejects_stale_source(tmp_path: Path) -> None:
+    output = tmp_path / "client-tz.docx"
+    old_markdown = "# Старое ТЗ\n"
+    render_client_tz(
+        old_markdown,
+        source_hash=markdown_sha256(old_markdown),
+        output=output,
+    )
+    new_markdown = "# Новое ТЗ\n"
+
+    assert (
+        check_docx(
+            new_markdown,
+            source_hash=markdown_sha256(new_markdown),
+            output=output,
+        )
+        == 1
+    )

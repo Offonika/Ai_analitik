@@ -151,6 +151,10 @@ When validation scripts exist, run the relevant checks before finishing:
 - `.venv/bin/python scripts/validate_docs_manifest.py`;
 - `.venv/bin/python scripts/validate_llm_docs.py`.
 
+GitHub Actions runs the blocking `quality` and `tests` jobs for pull requests
+and pushes to `main`. Do not treat an absent check as a passing check; verify
+that both jobs were created and completed successfully before merge.
+
 If the scripts do not exist yet, say so instead of claiming they passed.
 
 For future implementation, prefer these test layers:

@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -23,10 +24,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from scripts.build_excel_mvp_from_snapshots import build_excel_mvp_from_args
+from wb_unit_economics.calculation import METHODOLOGY_VERSION
+from wb_unit_economics.contracts import (
+    MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactContract,
+)
+from wb_unit_economics.contracts import (
+    SkuMapping,
+    WbSalesReportSummaryRow,
+)
 from wb_unit_economics.onec_odata import (
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
+    INPUT_VAT_SAMPLE_COLLECTIONS,
     SERVICE_SAMPLE_COLLECTIONS,
+    TAX_PROFILE_SAMPLE_COLLECTIONS,
     OnecODataConfigError,
     OnecODataMetadataCheckResult,
     OnecODataSettings,
@@ -49,6 +60,13 @@ from wb_unit_economics.ozon import (
     export_ozon_stock_on_warehouses,
     ozon_settings_from_secret,
 )
+from wb_unit_economics.ozon_mart import (
+    _iter_realization_items,
+    _realization_amount,
+    _realization_expenses,
+    _realization_quantity,
+)
+from wb_unit_economics.source_integrity import RawIntegrityError, verify_raw_directory
 from wb_unit_economics.wb_content import (
     WbContentSettings,
     WbProductCardsPageResult,
@@ -56,6 +74,11 @@ from wb_unit_economics.wb_content import (
 )
 from wb_unit_economics.wb_content import (
     WbSellerAccount as WbContentSellerAccount,
+)
+from wb_unit_economics.wb_documents import (
+    WbDocumentExportResult,
+    export_wb_documents,
+    load_wb_document_export_results,
 )
 from wb_unit_economics.wb_finance import (
     WbFinanceConfigError,
@@ -65,6 +88,10 @@ from wb_unit_economics.wb_finance import (
     WbSalesReportListPageResult,
     export_wb_finance,
     export_wb_sales_report_list,
+    load_wb_finance_export_results,
+    load_wb_sales_report_summary_rows,
+    resume_wb_finance_export,
+    wb_finance_export_is_complete,
 )
 from wb_unit_economics.wb_stocks import (
     WbStockExportResult,
@@ -73,9 +100,14 @@ from wb_unit_economics.wb_stocks import (
 from wb_unit_economics.web import integrations, mapping_service, repository, security
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
 from wb_unit_economics.web.models import (
+    MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactModel,
+)
+from wb_unit_economics.web.models import (
+    MarketplaceOperationFact,
     ReportRun,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceSnapshotRow,
     Tenant,
     TenantIntegration,
     User,
@@ -83,18 +115,42 @@ from wb_unit_economics.web.models import (
 )
 from wb_unit_economics.web.settings import WebSettings
 
-SOURCE_REFRESH_MODES = {"daily", "weekly", "full", "onec-only", "ozon-only"}
+SOURCE_REFRESH_MODES = {
+    "daily",
+    "incremental",
+    "weekly",
+    "full",
+    "onec-only",
+    "ozon-only",
+}
+
+
+def _incremental_yesterday() -> date:
+    return datetime.now(tz=MOSCOW_TZ).date() - timedelta(days=1)
+
+
 SOURCE_REFRESH_RESUME_MODES = {"auto", "never"}
-ONEC_RESUME_MODES = {"daily", "weekly", "full", "onec-only"}
-WB_REQUIRED_MODES = {"daily", "weekly", "full"}
+ONEC_RESUME_MODES = {"daily", "incremental", "weekly", "full", "onec-only"}
+WB_REQUIRED_MODES = {"daily", "incremental", "weekly", "full"}
 OZON_REQUIRED_MODES = {"ozon-only"}
 OZON_OPTIONAL_MODES = {"daily", "weekly", "full"}
+OZON_TYPED_FILE_AUTHORITATIVE_TYPES = {
+    "ozon_finance_cash_flow",
+    "ozon_realization",
+    "ozon_realization_posting",
+    "ozon_mutual_settlement",
+    "ozon_products_buyout",
+    "ozon_b2b_sales_json",
+    "ozon_products_report",
+}
 CREDENTIAL_SOURCES = {"tenant", "env"}
 SOURCE_SNAPSHOT_ROW_CHUNK_SIZE = 1000
 ONEC_DATABASE_ROW_PERSIST_MAX_BYTES = 25 * 1024 * 1024
 READY_INTEGRATION_STATUSES = {"configured", "check_ok"}
 ONEC_REFRESH_COLLECTIONS = (
     *DEFAULT_SAMPLE_COLLECTIONS,
+    *TAX_PROFILE_SAMPLE_COLLECTIONS,
+    *INPUT_VAT_SAMPLE_COLLECTIONS,
     *GROSS_PROFIT_SAMPLE_COLLECTIONS,
     *SERVICE_SAMPLE_COLLECTIONS,
 )
@@ -197,6 +253,9 @@ class SourceRefreshService:
         wb_report_list_exporter: Callable[
             ..., list[WbSalesReportListPageResult]
         ] = export_wb_sales_report_list,
+        wb_documents_exporter: Callable[..., list[WbDocumentExportResult]] = (
+            export_wb_documents
+        ),
         wb_product_cards_exporter: Callable[
             ..., list[WbProductCardsPageResult]
         ] = export_wb_product_cards,
@@ -247,6 +306,7 @@ class SourceRefreshService:
         self.settings = settings
         self._wb_finance_exporter = wb_finance_exporter
         self._wb_report_list_exporter = wb_report_list_exporter
+        self._wb_documents_exporter = wb_documents_exporter
         self._wb_product_cards_exporter = wb_product_cards_exporter
         self._wb_stock_history_exporter = wb_stock_history_exporter
         self._ozon_cash_flow_exporter = ozon_cash_flow_exporter
@@ -338,14 +398,36 @@ class SourceRefreshService:
         self,
         db: Session,
         refresh_run_id: str,
+        *,
+        worker_id: str = "",
     ) -> dict[str, Any]:
-        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        refresh_run = db.scalar(
+            select(SourceRefreshRun)
+            .where(SourceRefreshRun.id == refresh_run_id)
+            .with_for_update()
+        )
         if refresh_run is None:
             raise SourceRefreshConfigError(
                 f"source refresh run not found: {refresh_run_id}"
             )
         if refresh_run.finished_at is not None:
             return repository.source_refresh_run_payload(refresh_run)
+        if (
+            refresh_run.status != "queued"
+            and worker_id
+            and refresh_run.worker_id
+            and refresh_run.worker_id != worker_id
+        ):
+            raise SourceRefreshBusyError(
+                "source refresh run is already owned by another worker"
+            )
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            worker_id=worker_id or refresh_run.worker_id,
+            heartbeat_at=security.utcnow(),
+        )
+        db.commit()
         user = (
             db.get(User, refresh_run.requested_by_user_id)
             if refresh_run.requested_by_user_id
@@ -389,26 +471,95 @@ class SourceRefreshService:
             )
         if not self.settings.source_refresh_enabled and not dry_run:
             raise SourceRefreshDisabledError(
-                "Source refresh выключен настройкой SHUMEYKO_SOURCE_REFRESH_ENABLED."
+                "Обновление источников выключено в настройках сервиса."
             )
         if db.get(Tenant, tenant_id) is None:
             raise SourceRefreshConfigError(f"tenant not found: {tenant_id}")
         if source_report is not None and source_report.tenant_id != tenant_id:
             raise PermissionError("source report tenant mismatch")
 
-        default_period_start, default_period_end = self._period_for_mode(mode)
-        period_start = period_start or default_period_start
-        period_end = period_end or default_period_end
-        if period_start > period_end:
-            raise SourceRefreshConfigError(
-                "source refresh period_start must not be after period_end"
-            )
-        snapshot_set_id = self._snapshot_set_id(mode)
         resolved_client_id = client_id or (
             source_report.client_id
             if source_report
             else repository.client_id_for_tenant(tenant_id)
         )
+
+        base_source_refresh_run: SourceRefreshRun | None = None
+        source_window_start: date | None = None
+        source_window_end: date | None = None
+        if mode == "incremental":
+            if not self.settings.source_refresh_incremental_enabled and not dry_run:
+                raise SourceRefreshDisabledError(
+                    "Инкрементальное обновление выключено feature flag."
+                )
+            if not self.settings.marketplace_daily_facts_enabled and not dry_run:
+                raise SourceRefreshConfigError(
+                    "incremental requires "
+                    "SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true"
+                )
+            if not self.settings.db_first_reports_enabled and not dry_run:
+                raise SourceRefreshConfigError(
+                    "incremental requires SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true"
+                )
+            source_report = db.scalar(
+                select(ReportRun)
+                .where(
+                    ReportRun.tenant_id == tenant_id,
+                    ReportRun.client_id == resolved_client_id,
+                    ReportRun.publication_status == "published",
+                    ReportRun.is_current.is_(True),
+                )
+                .order_by(ReportRun.generated_at.desc())
+            )
+            if source_report is None:
+                raise SourceRefreshConfigError(
+                    "incremental requires the current published report"
+                )
+            # The composite report always extends the current published report
+            # through yesterday. Request dates must not silently change its base.
+            period_start = source_report.period_start
+            period_end = _incremental_yesterday()
+            source_window_end = period_end
+            source_window_start = max(
+                period_start,
+                period_end
+                - timedelta(
+                    days=max(
+                        1,
+                        self.settings.source_refresh_incremental_window_days,
+                    )
+                    - 1
+                ),
+            )
+            base_source_refresh_run = self.find_incremental_base_refresh(
+                db,
+                source_report,
+                source_window_start=source_window_start,
+                credential_source=credential_source,
+            )
+        if source_report is not None and mode == "onec-only":
+            period_start = period_start or source_report.period_start
+            period_end = period_end or source_report.period_end
+            base_source_refresh_run = self.find_reusable_full_wb_refresh(
+                db,
+                source_report,
+                credential_source=credential_source,
+            )
+            if base_source_refresh_run is None:
+                # A report may only be rebuilt from a complete immutable WB base.
+                # If it no longer exists, fetch a new full read-only snapshot.
+                mode = "full"
+
+        default_period_start, default_period_end = self._period_for_mode(mode)
+        period_start = period_start or default_period_start
+        period_end = period_end or default_period_end
+        source_window_start = source_window_start or period_start
+        source_window_end = source_window_end or period_end
+        if period_start > period_end:
+            raise SourceRefreshConfigError(
+                "source refresh period_start must not be after period_end"
+            )
+        snapshot_set_id = self._snapshot_set_id(mode)
         resumed_from_run = self._resolve_resume_run(
             db,
             tenant_id=tenant_id,
@@ -426,20 +577,25 @@ class SourceRefreshService:
                 db,
                 tenant_id=tenant_id,
                 mode=mode,
+                client_id=resolved_client_id,
             )
             if conflict is not None:
                 return self._create_blocked_run(
                     db,
                     tenant_id=tenant_id,
-                    client_id=client_id,
+                    client_id=resolved_client_id,
                     mode=mode,
                     credential_source=credential_source,
                     dry_run=dry_run,
                     snapshot_set_id=snapshot_set_id,
                     period_start=period_start,
                     period_end=period_end,
+                    source_window_start=source_window_start,
+                    source_window_end=source_window_end,
                     user=user,
                     source_report=source_report,
+                    base_source_refresh_run=base_source_refresh_run,
+                    blocked_by_run=conflict,
                     reason=reason,
                     status="blocked_active_refresh",
                     error_message=(
@@ -457,16 +613,362 @@ class SourceRefreshService:
                 snapshot_set_id=snapshot_set_id,
                 period_start=period_start,
                 period_end=period_end,
-                client_id=client_id,
+                source_window_start=source_window_start,
+                source_window_end=source_window_end,
+                client_id=resolved_client_id,
                 user=user,
                 source_report=source_report,
                 resumed_from_run=resumed_from_run,
+                base_source_refresh_run=base_source_refresh_run,
                 reason=reason,
             )
         except ValueError as exc:
             raise SourceRefreshBusyError(str(exc)) from exc
         db.flush()
         return refresh_run
+
+    def find_reusable_full_wb_refresh(
+        self,
+        db: Session,
+        source_report: ReportRun,
+        *,
+        credential_source: str = "tenant",
+    ) -> SourceRefreshRun | None:
+        candidates = list(
+            db.scalars(
+                select(SourceRefreshRun)
+                .where(
+                    SourceRefreshRun.tenant_id == source_report.tenant_id,
+                    SourceRefreshRun.client_id == source_report.client_id,
+                    SourceRefreshRun.mode == "full",
+                    SourceRefreshRun.credential_source == credential_source,
+                    SourceRefreshRun.period_start <= source_report.period_start,
+                    SourceRefreshRun.period_end >= source_report.period_end,
+                    SourceRefreshRun.finished_at.is_not(None),
+                    SourceRefreshRun.status.in_(
+                        {"report_created", "needs_review", "source_loaded"}
+                    ),
+                )
+                .order_by(SourceRefreshRun.created_at.desc())
+            )
+        )
+        for candidate in candidates:
+            if self._full_wb_refresh_is_reusable(db, candidate, source_report):
+                return candidate
+        return None
+
+    def find_incremental_base_refresh(
+        self,
+        db: Session,
+        source_report: ReportRun,
+        *,
+        source_window_start: date,
+        credential_source: str = "tenant",
+    ) -> SourceRefreshRun | None:
+        required_coverage_end = source_window_start - timedelta(days=1)
+        candidates = list(
+            db.scalars(
+                select(SourceRefreshRun)
+                .where(
+                    SourceRefreshRun.tenant_id == source_report.tenant_id,
+                    SourceRefreshRun.client_id == source_report.client_id,
+                    SourceRefreshRun.mode == "full",
+                    SourceRefreshRun.credential_source == credential_source,
+                    SourceRefreshRun.period_start <= source_report.period_start,
+                    SourceRefreshRun.period_end
+                    >= min(required_coverage_end, source_report.period_end),
+                    SourceRefreshRun.finished_at.is_not(None),
+                    SourceRefreshRun.status.in_(
+                        {"report_created", "needs_review", "source_loaded"}
+                    ),
+                )
+                .order_by(SourceRefreshRun.created_at.desc())
+            )
+        )
+        allowed_root = self.settings.source_refresh_root_path.resolve()
+        for candidate in candidates:
+            if not candidate.root_dir:
+                continue
+            candidate_root = Path(candidate.root_dir).resolve()
+            if (
+                not candidate_root.is_relative_to(allowed_root)
+                or not candidate_root.is_dir()
+            ):
+                continue
+            finance = next(
+                (
+                    item
+                    for item in candidate.collections
+                    if item.source_type == "wb_finance_detail"
+                ),
+                None,
+            )
+            cards = next(
+                (
+                    item
+                    for item in candidate.collections
+                    if item.source_type == "wb_product_cards"
+                ),
+                None,
+            )
+            if finance is None or cards is None:
+                continue
+            daily_facts = dict((finance.payload or {}).get("dailyFacts") or {})
+            if (
+                finance.status not in MANDATORY_OK_STATUSES
+                or cards.status not in MANDATORY_OK_STATUSES
+                or daily_facts.get("status") != "materialized"
+                or (daily_facts.get("parity") or {}).get("status")
+                != "aggregate_only"
+                or (daily_facts.get("persistedParity") or {}).get("status")
+                != "matched"
+            ):
+                continue
+            if not self._wb_collection_manifest_is_complete(finance):
+                continue
+            if self._daily_facts_coverage_issue(
+                db,
+                tenant_id=source_report.tenant_id,
+                client_id=source_report.client_id,
+                period_start=source_report.period_start,
+                period_end=required_coverage_end,
+            ) is None:
+                return candidate
+        return None
+
+    def _daily_fact_contributing_runs(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+    ) -> list[SourceRefreshRun]:
+        run_ids = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel.source_refresh_run_id)
+                .where(
+                    MarketplaceFinanceDailyFactModel.tenant_id
+                    == refresh_run.tenant_id,
+                    MarketplaceFinanceDailyFactModel.client_id
+                    == refresh_run.client_id,
+                    MarketplaceFinanceDailyFactModel.marketplace == "wb",
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    >= refresh_run.period_start,
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    <= refresh_run.period_end,
+                )
+                .distinct()
+            )
+        )
+        return [
+            item
+            for item in db.scalars(
+                select(SourceRefreshRun).where(SourceRefreshRun.id.in_(run_ids))
+            )
+            if item is not None
+        ]
+
+    def _daily_facts_coverage_issue(
+        self,
+        db: Session,
+        *,
+        tenant_id: str,
+        client_id: str,
+        period_start: date,
+        period_end: date,
+    ) -> str | None:
+        if period_end < period_start:
+            return None
+        fact_conditions = (
+            MarketplaceFinanceDailyFactModel.tenant_id == tenant_id,
+            MarketplaceFinanceDailyFactModel.client_id == client_id,
+            MarketplaceFinanceDailyFactModel.marketplace == "wb",
+            MarketplaceFinanceDailyFactModel.fact_date >= period_start,
+            MarketplaceFinanceDailyFactModel.fact_date <= period_end,
+        )
+        if db.scalar(
+            select(MarketplaceFinanceDailyFactModel.id)
+            .where(*fact_conditions)
+            .limit(1)
+        ) is None:
+            return "daily_facts_empty"
+        if db.scalar(
+            select(MarketplaceFinanceDailyFactModel.id)
+            .where(
+                *fact_conditions,
+                MarketplaceFinanceDailyFactModel.is_partial_source.is_(True),
+            )
+            .limit(1)
+        ) is not None:
+            return "daily_facts_partial_source"
+        run_ids = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel.source_refresh_run_id)
+                .where(*fact_conditions)
+                .distinct()
+            )
+        )
+        runs = list(
+            db.scalars(
+                select(SourceRefreshRun).where(SourceRefreshRun.id.in_(run_ids))
+            )
+        )
+        intervals: list[tuple[date, date]] = []
+        for item in runs:
+            coverage_start = item.source_window_start or item.period_start
+            coverage_end = item.source_window_end or item.period_end
+            finance_collection = next(
+                (
+                    collection
+                    for collection in item.collections
+                    if collection.source_type == "wb_finance_detail"
+                ),
+                None,
+            )
+            finance_payload = (
+                dict(finance_collection.payload or {})
+                if finance_collection is not None
+                else {}
+            )
+            try:
+                coverage_start = date.fromisoformat(
+                    str(finance_payload["sourceCoverageStart"])
+                )
+                coverage_end = date.fromisoformat(
+                    str(finance_payload["sourceCoverageEnd"])
+                )
+            except (KeyError, TypeError, ValueError):
+                pass
+            intervals.append(
+                (
+                    max(period_start, coverage_start),
+                    min(period_end, coverage_end),
+                )
+            )
+        intervals.sort()
+        cursor = period_start
+        for start, end in intervals:
+            if end < cursor:
+                continue
+            if start > cursor:
+                return f"daily_facts_coverage_gap:{cursor.isoformat()}"
+            cursor = max(cursor, end + timedelta(days=1))
+            if cursor > period_end:
+                return None
+        return f"daily_facts_coverage_gap:{cursor.isoformat()}"
+
+    def _full_wb_refresh_is_reusable(
+        self,
+        db: Session,
+        candidate: SourceRefreshRun,
+        source_report: ReportRun,
+    ) -> bool:
+        if not candidate.root_dir:
+            return False
+        root_dir = Path(candidate.root_dir).resolve()
+        allowed_root = self.settings.source_refresh_root_path.resolve()
+        if not root_dir.is_relative_to(allowed_root) or not root_dir.is_dir():
+            return False
+        collections = {
+            item.source_type: item
+            for item in candidate.collections
+            if item.source_type.startswith("wb_")
+        }
+        finance = collections.get("wb_finance_detail")
+        required_wb = [item for item in collections.values() if item.required]
+        if finance is None or not required_wb:
+            return False
+        coverage = finance.payload or {}
+        try:
+            coverage_start = date.fromisoformat(str(coverage["sourceCoverageStart"]))
+            coverage_end = date.fromisoformat(str(coverage["sourceCoverageEnd"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if (
+            coverage_start > source_report.period_start
+            or coverage_end < source_report.period_end
+        ):
+            return False
+        if not all(
+            item.status in MANDATORY_OK_STATUSES
+            and self._collection_raw_dir(item) is not None
+            and self._wb_collection_manifest_is_complete(item)
+            for item in required_wb
+        ):
+            return False
+        active_cabinet_ids = {
+            item.id
+            for item in db.scalars(
+                select(WbCabinet).where(
+                    WbCabinet.tenant_id == source_report.tenant_id,
+                    WbCabinet.client_id == source_report.client_id,
+                    WbCabinet.status == "active",
+                    WbCabinet.provider == "wb_api",
+                )
+            )
+        }
+        snapshot_cabinet_ids = {
+            str(item.get("wbCabinetId") or "").strip()
+            for item in (finance.payload or {}).get("results", [])
+            if isinstance(item, dict) and str(item.get("wbCabinetId") or "").strip()
+        }
+        return not active_cabinet_ids or active_cabinet_ids.issubset(
+            snapshot_cabinet_ids
+        )
+
+    def _wb_collection_manifest_is_complete(
+        self,
+        collection: SourceRefreshCollection,
+    ) -> bool:
+        raw_dir = self._collection_raw_dir(collection)
+        if raw_dir is None:
+            return False
+        manifest_path = raw_dir / "manifest.json"
+        if (
+            not manifest_path.is_file()
+            or manifest_path.stat().st_size > 5 * 1024 * 1024
+        ):
+            return False
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        results = manifest.get("results") if isinstance(manifest, dict) else None
+        if not isinstance(results, list) or not results:
+            return False
+        account_results: dict[str, list[dict[str, Any]]] = {}
+        for item in results:
+            if not isinstance(item, dict):
+                return False
+            account_id = str(item.get("seller_account_id") or "").strip()
+            if not account_id:
+                return False
+            account_results.setdefault(account_id, []).append(item)
+            for key in ("output_file", "flat_output_file"):
+                output_name = str(item.get(key) or "").strip()
+                if output_name and (
+                    Path(output_name).name != output_name
+                    or not (raw_dir / output_name).is_file()
+                ):
+                    return False
+        if collection.source_type == "wb_finance_detail":
+            return all(
+                str(items[-1].get("status") or "") == "no_data"
+                for items in account_results.values()
+            )
+        return all(item.get("ok") is True for item in results)
+
+    def _collection_raw_dir(
+        self,
+        collection: SourceRefreshCollection,
+    ) -> Path | None:
+        if not collection.raw_path:
+            return None
+        path = Path(collection.raw_path).resolve()
+        allowed_root = self.settings.source_refresh_root_path.resolve()
+        if not path.is_relative_to(allowed_root):
+            return None
+        if path.is_file():
+            path = path.parent
+        return path if path.is_dir() else None
 
     def _execute_run(
         self,
@@ -481,20 +983,29 @@ class SourceRefreshService:
         dry_run = refresh_run.dry_run
         period_start = refresh_run.period_start
         period_end = refresh_run.period_end
+        source_window_start = refresh_run.source_window_start or period_start
+        source_window_end = refresh_run.source_window_end or period_end
         source_report = (
             db.get(ReportRun, refresh_run.source_report_run_id)
             if refresh_run.source_report_run_id
             else None
         )
+        base_refresh_run = (
+            db.get(SourceRefreshRun, refresh_run.base_source_refresh_run_id)
+            if refresh_run.base_source_refresh_run_id
+            else None
+        )
         root_dir = (
             self.settings.source_refresh_root_path / refresh_run.snapshot_set_id
         ).resolve()
+        db.info["source_refresh_run_id"] = refresh_run.id
         try:
             repository.update_source_refresh_run(
                 db,
                 refresh_run,
                 status="running",
                 started_at=security.utcnow(),
+                heartbeat_at=security.utcnow(),
                 root_dir=str(root_dir),
             )
             _commit_source_refresh_progress(db)
@@ -507,6 +1018,23 @@ class SourceRefreshService:
                         status="blocked_low_disk",
                         error_message=disk_issue["error_message"],
                     )
+            if mode == "incremental" and (
+                source_report is None or base_refresh_run is None
+            ):
+                repository.update_source_refresh_run(
+                    db,
+                    refresh_run,
+                    failure_code="incremental_base_unavailable",
+                )
+                return self._finish_without_report(
+                    db,
+                    refresh_run,
+                    status="needs_full_refresh",
+                    error_message=(
+                        "Compatible full daily-facts base is unavailable; "
+                        "run a full refresh."
+                    ),
+                )
             credentials = self._credentials(
                 db,
                 tenant_id=tenant_id,
@@ -530,8 +1058,8 @@ class SourceRefreshService:
                     refresh_run=refresh_run,
                     credentials=credentials,
                     root_dir=root_dir,
-                    period_start=period_start,
-                    period_end=period_end,
+                    period_start=source_window_start,
+                    period_end=source_window_end,
                     mode=mode,
                 ),
                 include_external=False,
@@ -590,8 +1118,8 @@ class SourceRefreshService:
                     refresh_run=refresh_run,
                     credentials=credentials,
                     root_dir=root_dir,
-                    period_start=period_start,
-                    period_end=period_end,
+                    period_start=source_window_start,
+                    period_end=source_window_end,
                     mode=mode,
                 ),
                 include_external=True,
@@ -606,8 +1134,31 @@ class SourceRefreshService:
             _commit_source_refresh_progress(db)
             wb_finance_dir = outputs.output_dirs.get("wb_finance_detail")
             wb_report_list_dir = outputs.output_dirs.get("wb_sales_report_list")
+            wb_cards_dir = outputs.output_dirs.get("wb_product_cards")
             wb_stock_history_dir = outputs.output_dirs.get("wb_stock_history_daily")
             onec_dir = outputs.output_dirs.get("onec_odata")
+            composite_rebuild = bool(
+                mode == "onec-only"
+                and source_report is not None
+                and base_refresh_run is not None
+            )
+            if composite_rebuild:
+                wb_finance_dir = self._required_collection_raw_dir(
+                    base_refresh_run,
+                    "wb_finance_detail",
+                )
+                wb_cards_dir = self._required_collection_raw_dir(
+                    base_refresh_run,
+                    "wb_product_cards",
+                )
+                wb_report_list_dir = self._optional_collection_raw_dir(
+                    base_refresh_run,
+                    "wb_sales_report_list",
+                )
+                wb_stock_history_dir = self._optional_collection_raw_dir(
+                    base_refresh_run,
+                    "wb_stock_history_daily",
+                )
 
             repository.update_source_refresh_run(
                 db,
@@ -622,7 +1173,75 @@ class SourceRefreshService:
                     status="failed",
                     error_message="Mandatory source refresh collection failed.",
                 )
-            if mode in {"daily", "onec-only", "ozon-only"}:
+            if (
+                mode in {"daily", "incremental"}
+                and self.settings.marketplace_daily_facts_enabled
+                and wb_finance_dir is not None
+                and onec_dir is not None
+            ):
+                self._materialize_wb_daily_facts(
+                    db,
+                    refresh_run,
+                    wb_finance_dir=wb_finance_dir,
+                    onec_dir=onec_dir,
+                    wb_report_list_dir=wb_report_list_dir,
+                    wb_cards_dir=wb_cards_dir,
+                    wb_stock_history_dir=wb_stock_history_dir,
+                )
+            if mode == "incremental":
+                coverage_issue = self._daily_facts_coverage_issue(
+                    db,
+                    tenant_id=refresh_run.tenant_id,
+                    client_id=refresh_run.client_id,
+                    period_start=refresh_run.period_start,
+                    period_end=refresh_run.period_end,
+                )
+                if coverage_issue:
+                    repository.update_source_refresh_run(
+                        db,
+                        refresh_run,
+                        failure_code="incremental_daily_facts_coverage_gap",
+                    )
+                    return self._finish_without_report(
+                        db,
+                        refresh_run,
+                        status="needs_full_refresh",
+                        error_message=coverage_issue,
+                    )
+            if mode == "ozon-only":
+                status = (
+                    "needs_review"
+                    if self._needs_review(refresh_run, mapping_collection)
+                    else "source_loaded"
+                )
+                self._finish_without_report(
+                    db,
+                    refresh_run,
+                    status=status,
+                )
+                source_blocker = repository.ozon_draft_source_blocker(
+                    db,
+                    refresh_run,
+                )
+                if source_blocker:
+                    repository.audit(
+                        db,
+                        action="ozon_draft_report_skipped",
+                        user=user,
+                        tenant_id=refresh_run.tenant_id,
+                        entity_type="source_refresh_run",
+                        entity_id=refresh_run.id,
+                        payload={"reason": source_blocker},
+                    )
+                    _commit_source_refresh_progress(db)
+                    return repository.source_refresh_run_payload(refresh_run)
+                repository.materialize_ozon_draft_report(
+                    db,
+                    refresh_run,
+                    user=user,
+                )
+                return repository.source_refresh_run_payload(refresh_run)
+            if mode == "daily" or (mode == "onec-only" and not composite_rebuild):
                 status = (
                     "needs_review"
                     if self._needs_review(refresh_run, mapping_collection)
@@ -636,6 +1255,26 @@ class SourceRefreshService:
 
             repository.update_source_refresh_run(db, refresh_run, status="rebuilding")
             _commit_source_refresh_progress(db)
+            contributing_runs: list[SourceRefreshRun] = []
+            wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None
+            wb_summary_rows: list[WbSalesReportSummaryRow] | None = None
+            if mode == "incremental":
+                contributing_runs = self._daily_fact_contributing_runs(db, refresh_run)
+                wb_daily_facts = self._daily_facts_for_report(db, refresh_run)
+                wb_summary_rows = self._incremental_wb_summary_rows(
+                    refresh_run,
+                    base_refresh_run=base_refresh_run,
+                    current_report_list_dir=wb_report_list_dir,
+                )
+            report_snapshot_set_id = self._report_snapshot_set_id(
+                refresh_run,
+                base_refresh_run=(
+                    base_refresh_run
+                    if composite_rebuild or mode == "incremental"
+                    else None
+                ),
+                contributing_runs=contributing_runs,
+            )
             if self.settings.db_first_reports_enabled:
                 new_report, workbook_path = self._build_db_first_report(
                     db,
@@ -644,15 +1283,29 @@ class SourceRefreshService:
                     wb_finance_dir=wb_finance_dir,
                     onec_dir=onec_dir,
                     wb_report_list_dir=wb_report_list_dir,
+                    wb_cards_dir=wb_cards_dir,
                     wb_stock_history_dir=wb_stock_history_dir,
+                    source_snapshot_set_id=report_snapshot_set_id,
+                    base_refresh_run=(
+                        base_refresh_run
+                        if composite_rebuild or mode == "incremental"
+                        else None
+                    ),
+                    contributing_runs=contributing_runs,
+                    wb_daily_facts=wb_daily_facts,
+                    wb_summary_rows=wb_summary_rows,
                 )
             else:
                 workbook_path = self._build_workbook(
+                    db,
                     refresh_run,
                     wb_finance_dir=wb_finance_dir,
                     onec_dir=onec_dir,
                     wb_report_list_dir=wb_report_list_dir,
                     wb_stock_history_dir=wb_stock_history_dir,
+                    raw_refresh_run=(
+                        base_refresh_run if composite_rebuild else refresh_run
+                    ),
                 )
                 new_report = repository.import_dashboard_payload(
                     db,
@@ -664,12 +1317,42 @@ class SourceRefreshService:
                     lineage_type="legacy_excel_import",
                     publication_status="draft",
                     publish=False,
+                    source_snapshot_set_id=report_snapshot_set_id,
                 )
+            primary_document_refresh = (
+                base_refresh_run
+                if composite_rebuild and base_refresh_run is not None
+                else refresh_run
+            )
+            primary_document_scope = repository.apply_wb_buyout_primary_documents(
+                db,
+                new_report,
+                primary_document_refresh,
+                source_runs=(
+                    contributing_runs
+                    if mode == "incremental"
+                    else ()
+                ),
+            )
             _commit_source_refresh_progress(db)
-            self._attach_source_loads(db, new_report, refresh_run)
+            self._attach_source_loads(
+                db,
+                new_report,
+                refresh_run,
+                contributing_runs=contributing_runs,
+            )
+            mapping_report_scope = repository.reconcile_report_mapping_source_load(
+                db, new_report
+            )
             final_status = (
                 "needs_review"
-                if self._needs_review(refresh_run, mapping_collection)
+                if self._needs_review(
+                    refresh_run,
+                    mapping_collection,
+                    mapping_report_ready=(
+                        mapping_report_scope["mappingIssueRows"] == 0
+                    ),
+                )
                 else "report_created"
             )
             repository.update_source_refresh_run(
@@ -691,7 +1374,12 @@ class SourceRefreshService:
                     "mode": mode,
                     "new_report_run_id": new_report.id,
                     "status": final_status,
-                    "snapshotSetId": refresh_run.snapshot_set_id,
+                    "snapshotSetId": report_snapshot_set_id,
+                    "baseSourceRefreshRunId": (
+                        base_refresh_run.id if composite_rebuild else None
+                    ),
+                    "mappingReportScope": mapping_report_scope,
+                    "buyoutPrimaryDocumentScope": primary_document_scope,
                 },
             )
             publication_blockers = repository.report_publication_blockers(
@@ -776,8 +1464,12 @@ class SourceRefreshService:
         snapshot_set_id: str,
         period_start: date,
         period_end: date,
+        source_window_start: date,
+        source_window_end: date,
         user: User | None,
         source_report: ReportRun | None,
+        base_source_refresh_run: SourceRefreshRun | None,
+        blocked_by_run: SourceRefreshRun | None,
         reason: str,
         status: str,
         error_message: str,
@@ -791,9 +1483,13 @@ class SourceRefreshService:
             snapshot_set_id=snapshot_set_id,
             period_start=period_start,
             period_end=period_end,
+            source_window_start=source_window_start,
+            source_window_end=source_window_end,
             client_id=client_id,
             user=user,
             source_report=source_report,
+            base_source_refresh_run=base_source_refresh_run,
+            blocked_by_run=blocked_by_run,
             reason=reason,
             enforce_active_check=False,
         )
@@ -815,7 +1511,21 @@ class SourceRefreshService:
         for collector in self._collector_plan(context.mode):
             if include_external == (collector.source_type == "sku_mapping"):
                 continue
-            result = collector.collect(self, context)
+            collector_context = context
+            if context.mode == "incremental" and collector.source_type in {
+                "onec_odata",
+                "wb_stock_history_daily",
+            }:
+                collector_context = CollectorContext(
+                    db=context.db,
+                    refresh_run=context.refresh_run,
+                    credentials=context.credentials,
+                    root_dir=context.root_dir,
+                    period_start=context.refresh_run.period_start,
+                    period_end=context.refresh_run.period_end,
+                    mode=context.mode,
+                )
+            result = collector.collect(self, collector_context)
             if result.output_dir is not None:
                 output_dirs[collector.source_type] = result.output_dir
             if collector.source_type == "sku_mapping":
@@ -842,7 +1552,7 @@ class SourceRefreshService:
                 source_type="wb_finance_detail",
                 label="WB Finance sales report details",
                 required=True,
-                modes=frozenset({"daily", "weekly", "full"}),
+                modes=frozenset({"daily", "incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_finance,
             ),
@@ -850,15 +1560,23 @@ class SourceRefreshService:
                 source_type="wb_sales_report_list",
                 label="WB Finance sales report list",
                 required=False,
-                modes=frozenset({"weekly", "full"}),
+                modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_report_list,
+            ),
+            SourceCollector(
+                source_type="wb_redeem_notifications",
+                label="WB primary redeem notifications",
+                required=False,
+                modes=frozenset({"incremental", "weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_redeem_notifications,
             ),
             SourceCollector(
                 source_type="wb_product_cards",
                 label="WB product cards",
                 required=True,
-                modes=frozenset({"daily", "weekly", "full"}),
+                modes=frozenset({"daily", "incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_product_cards,
             ),
@@ -866,7 +1584,7 @@ class SourceRefreshService:
                 source_type="wb_stock_history_daily",
                 label="WB daily stock history",
                 required=False,
-                modes=frozenset({"weekly", "full"}),
+                modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_STOCK_HISTORY_REFRESH_ROLES),
                 collect=_collect_wb_stock_history,
             ),
@@ -1388,13 +2106,19 @@ class SourceRefreshService:
             0,
             int(self.settings.source_refresh_wb_persist_row_limit),
         )
-        skip_row_persistence = row_count > persist_row_limit
+        files_only = self.settings.source_refresh_raw_db_mode == "files_only"
+        skip_row_persistence = files_only or row_count > persist_row_limit
         payload: dict[str, Any] = {
             "results": payload_items,
             "sourceCoverageStart": source_coverage_start.isoformat(),
             "sourceCoverageEnd": source_coverage_end.isoformat(),
         }
-        if skip_row_persistence:
+        if files_only:
+            payload["rowPersistence"] = {
+                "status": "file_authoritative",
+                "rawFilesAuthoritative": True,
+            }
+        elif skip_row_persistence:
             payload["rowPersistence"] = {
                 "status": "skipped_large_snapshot",
                 "limit": persist_row_limit,
@@ -1425,6 +2149,10 @@ class SourceRefreshService:
             raw_path=str(output_dir),
             error_message=error_message,
             payload=payload,
+        )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
         )
         if max_pages_exhausted or skip_row_persistence:
             return
@@ -1483,12 +2211,108 @@ class SourceRefreshService:
             ),
             payload=payload,
         )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        if self.settings.source_refresh_raw_db_mode == "files_only":
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "file_authoritative",
+                    "rawFilesAuthoritative": True,
+                },
+            }
+            db.flush()
+            return
         _persist_wb_report_list_rows(
             db,
             collection,
             result_items,
             wb_cabinet_ids=wb_cabinet_ids,
         )
+
+    def _record_wb_redeem_notifications(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        output_dir: Path,
+        results: Iterable[WbDocumentExportResult],
+        *,
+        wb_cabinet_ids: dict[str, str],
+    ) -> SourceRefreshCollection:
+        result_items = list(results)
+        payload_items = [
+            _wb_document_result_payload(
+                item,
+                wb_cabinet_id=wb_cabinet_ids.get(item.seller_account_id, ""),
+            )
+            for item in result_items
+        ]
+        document_rows = _wb_redeem_notification_rows(
+            output_dir,
+            result_items,
+            wb_cabinet_ids=wb_cabinet_ids,
+        )
+        summary_file = output_dir / "redeem_notifications.summary.json"
+        summary_file.write_text(
+            json.dumps(document_rows, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summary_hash = _hash_payload(document_rows)
+        integrity_results = [
+            {
+                "sellerAccountId": "WB_DOCUMENTS",
+                "pageIndex": 1,
+                "status": "loaded" if document_rows else "empty_expected",
+                "ok": True,
+                "rowCount": len(document_rows),
+                "statusCode": 200,
+                "rawPayloadHash": summary_hash,
+                "outputFile": summary_file.name,
+            }
+        ]
+        manifest_path = output_dir / "manifest.json"
+        try:
+            provider_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            provider_manifest = {}
+        if not isinstance(provider_manifest, dict):
+            provider_manifest = {}
+        provider_manifest["provider_results"] = provider_manifest.get(
+            "provider_results",
+            provider_manifest.get("results", []),
+        )
+        provider_manifest["results"] = integrity_results
+        manifest_path.write_text(
+            json.dumps(provider_manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        payload: dict[str, Any] = {
+            "results": integrity_results,
+            "accounts": payload_items,
+            "parsedDocuments": len(document_rows),
+            "documentsApiRequired": True,
+        }
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_redeem_notifications",
+            source_label="WB primary redeem notifications",
+            required=False,
+            status=_aggregate_status(payload_items, required=False),
+            snapshot_hash=_hash_payload(integrity_results),
+            row_count=len(document_rows),
+            raw_path=str(output_dir),
+            error_message="; ".join(item.error for item in result_items if item.error),
+            payload=payload,
+        )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        _persist_wb_redeem_notification_rows(db, collection, document_rows)
+        return collection
 
     def _record_wb_product_cards(
         self,
@@ -1539,6 +2363,20 @@ class SourceRefreshService:
             ),
             payload=payload,
         )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        if self.settings.source_refresh_raw_db_mode == "files_only":
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "file_authoritative",
+                    "rawFilesAuthoritative": True,
+                },
+            }
+            db.flush()
+            return
         _persist_wb_product_card_rows(
             db,
             collection,
@@ -1558,10 +2396,17 @@ class SourceRefreshService:
         period_end: date,
         actual_period_start: date | None = None,
         actual_period_end: date | None = None,
+        provider_window_available: bool = True,
     ) -> SourceRefreshCollection:
-        actual_period_start = actual_period_start or period_start
-        actual_period_end = actual_period_end or period_end
+        if provider_window_available:
+            actual_period_start = actual_period_start or period_start
+            actual_period_end = actual_period_end or period_end
         total_days = (period_end - period_start).days + 1
+        actual_days = (
+            (actual_period_end - actual_period_start).days + 1
+            if actual_period_start is not None and actual_period_end is not None
+            else 0
+        )
         accounts: list[dict[str, Any]] = []
         for item in results:
             source_status = (
@@ -1576,9 +2421,20 @@ class SourceRefreshService:
                 if item.ok and item.output_path is not None
                 else 0
             )
-            calculated = bool(item.ok and covered_days == total_days)
-            status = "complete" if calculated else source_status
-            if item.ok and not calculated:
+            provider_window_calculated = bool(
+                provider_window_available
+                and actual_days > 0
+                and item.ok
+                and covered_days == actual_days
+            )
+            full_coverage = bool(
+                provider_window_calculated and actual_days == total_days
+            )
+            calculated = provider_window_calculated
+            status = "complete" if full_coverage else source_status
+            if provider_window_calculated and not full_coverage:
+                status = "partial_provider_window"
+            elif item.ok and not calculated:
                 status = (
                     "partial_provider_window"
                     if actual_period_start > period_start
@@ -1593,6 +2449,19 @@ class SourceRefreshService:
                     "coveredDays": covered_days,
                     "totalDays": total_days,
                     "calculated": calculated,
+                    "providerWindowCalculated": provider_window_calculated,
+                    "fullCoverage": full_coverage,
+                    "calculationPeriodStart": (
+                        actual_period_start.isoformat()
+                        if actual_period_start is not None
+                        else None
+                    ),
+                    "calculationPeriodEnd": (
+                        actual_period_end.isoformat()
+                        if actual_period_end is not None
+                        else None
+                    ),
+                    "extrapolated": False,
                     "statusCode": item.status_code,
                     "error": item.error,
                 }
@@ -1600,12 +2469,19 @@ class SourceRefreshService:
         all_complete = bool(accounts) and all(
             bool(item["calculated"]) for item in accounts
         )
+        provider_window_complete = bool(accounts) and all(
+            bool(item["providerWindowCalculated"]) for item in accounts
+        )
+        full_coverage = provider_window_complete and all(
+            bool(item["fullCoverage"]) for item in accounts
+        )
         collection_status = "loaded" if all_complete else "needs_review"
         error_message = ""
         if not all_complete:
             error_message = (
-                "WB stock history is incomplete or Seller Analytics scope is missing; "
-                "lost contribution margin is not calculated."
+                "WB stock history does not completely cover the common provider "
+                "window or Seller Analytics scope is missing; lost contribution "
+                "margin is not calculated."
             )
         return repository.add_source_refresh_collection(
             db,
@@ -1621,10 +2497,32 @@ class SourceRefreshService:
             payload={
                 "periodStart": period_start.isoformat(),
                 "periodEnd": period_end.isoformat(),
-                "actualPeriodStart": actual_period_start.isoformat(),
-                "actualPeriodEnd": actual_period_end.isoformat(),
+                "actualPeriodStart": (
+                    actual_period_start.isoformat()
+                    if actual_period_start is not None
+                    else None
+                ),
+                "actualPeriodEnd": (
+                    actual_period_end.isoformat()
+                    if actual_period_end is not None
+                    else None
+                ),
                 "stockType": "wb",
                 "calculated": all_complete,
+                "providerWindowCalculated": provider_window_complete,
+                "fullCoverage": full_coverage,
+                "calculationPeriodStart": (
+                    actual_period_start.isoformat()
+                    if actual_period_start is not None
+                    else None
+                ),
+                "calculationPeriodEnd": (
+                    actual_period_end.isoformat()
+                    if actual_period_end is not None
+                    else None
+                ),
+                "calculationContextVersion": "lost-sales-filter-v1",
+                "extrapolated": False,
                 "accounts": accounts,
             },
         )
@@ -1650,6 +2548,21 @@ class SourceRefreshService:
             for item in result_items
         ]
         row_count = _ozon_collection_row_count(result_items)
+        files_only = (
+            self.settings.source_refresh_raw_db_mode == "files_only"
+            and self.settings.marketplace_daily_facts_enabled
+            and self.settings.source_refresh_ozon_files_only_enabled
+            and source_type in OZON_TYPED_FILE_AUTHORITATIVE_TYPES
+        )
+        collection_payload: dict[str, Any] = {
+            "marketplace": "ozon",
+            "results": payload_items,
+        }
+        if files_only:
+            collection_payload["rowPersistence"] = {
+                "status": "file_authoritative",
+                "rawFilesAuthoritative": True,
+            }
         collection = repository.add_source_refresh_collection(
             db,
             refresh_run,
@@ -1665,17 +2578,34 @@ class SourceRefreshService:
             snapshot_hash=_hash_payload(payload_items),
             row_count=row_count,
             raw_path=str(output_dir),
-            payload={
-                "marketplace": "ozon",
-                "results": payload_items,
-            },
+            payload=collection_payload,
         )
-        _persist_ozon_rows(
-            db,
+        _attach_collection_raw_integrity(
             collection,
-            result_items,
-            ozon_cabinet_ids=ozon_cabinet_ids,
+            source_root=self.settings.source_refresh_root_path,
         )
+        if self.settings.marketplace_daily_facts_enabled:
+            _materialize_ozon_typed_collection(
+                db,
+                refresh_run,
+                collection,
+                result_items,
+                ozon_cabinet_ids=ozon_cabinet_ids,
+            )
+        if files_only and (
+            ((collection.payload or {}).get("rawIntegrity") or {}).get("status")
+            != "verified"
+        ):
+            raise SourceRefreshConfigError(
+                f"verified raw files are required for {source_type} files-only mode"
+            )
+        if not files_only:
+            _persist_ozon_rows(
+                db,
+                collection,
+                result_items,
+                ozon_cabinet_ids=ozon_cabinet_ids,
+            )
 
     def _record_onec(
         self,
@@ -1690,6 +2620,9 @@ class SourceRefreshService:
                 item.sample_id in PUBLICATION_REQUIRED_ONEC_COLLECTION_IDS
             )
             status = _onec_status(item, required=required)
+            data_quality = _onec_financial_table_quality(item)
+            if data_quality["status"] == "partial_source":
+                status = "partial_source"
             collection = repository.add_source_refresh_collection(
                 db,
                 refresh_run,
@@ -1713,6 +2646,7 @@ class SourceRefreshService:
                     "effectivePageSize": item.effective_page_size,
                     "detailMode": item.detail_mode,
                     "publicationRequired": publication_required,
+                    "dataQuality": data_quality,
                 },
             )
             _persist_onec_rows(db, collection, item)
@@ -1727,15 +2661,15 @@ class SourceRefreshService:
         checked_at = security.utcnow().isoformat()
         status = "loaded" if result.ok else "failed"
         message = (
-            "1С OData metadata доступна в read-only режиме."
+            "Метаданные 1С OData доступны в режиме только для чтения."
             if result.ok
-            else "1С OData metadata недоступна для автоматического обновления."
+            else "Метаданные 1С OData недоступны для автоматического обновления."
         )
         repository.add_source_refresh_collection(
             db,
             refresh_run,
             source_type="onec_odata_metadata",
-            source_label="1С OData metadata",
+            source_label="Метаданные 1С OData",
             required=True,
             status=status,
             error_message=result.error,
@@ -1835,13 +2769,30 @@ class SourceRefreshService:
 
     def _build_workbook(
         self,
+        db: Session,
         refresh_run: SourceRefreshRun,
         *,
         wb_finance_dir: Path | None,
         onec_dir: Path | None,
         wb_report_list_dir: Path | None,
         wb_stock_history_dir: Path | None,
+        raw_refresh_run: SourceRefreshRun | None = None,
     ) -> Path:
+        integrity_refresh_run = raw_refresh_run or refresh_run
+        if wb_finance_dir is not None:
+            _reverify_collection_raw_integrity(
+                integrity_refresh_run,
+                source_type="wb_finance_detail",
+                raw_path=wb_finance_dir,
+                source_root=self.settings.source_refresh_root_path,
+            )
+        if wb_report_list_dir is not None:
+            _reverify_collection_raw_integrity(
+                integrity_refresh_run,
+                source_type="wb_sales_report_list",
+                raw_path=wb_report_list_dir,
+                source_root=self.settings.source_refresh_root_path,
+            )
         output_dir = (
             self.settings.export_root_path / "source_refresh" / refresh_run.id
         ).resolve()
@@ -1850,6 +2801,8 @@ class SourceRefreshService:
             raise ValueError("source-refresh workbook path is outside reports")
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "shumeyko_wb_excel_mvp.xlsx"
+        tax_profiles = repository.tax_profiles_for_source_refresh(db, refresh_run)
+        sku_mappings = self._calculation_sku_mappings(db, refresh_run)
         args = argparse.Namespace(
             client_id=(
                 refresh_run.client_id
@@ -1883,11 +2836,304 @@ class SourceRefreshService:
             report_period_end=refresh_run.period_end,
             cost_amount_field="Сумма",
             sales_cost_amount_field="СебестоимостьБезНДС",
+            tax_profiles=tax_profiles,
+            sku_mappings=sku_mappings,
         )
         self._workbook_builder(args)
         if not output_path.exists():
             raise ValueError("source refresh workbook was not created")
         return output_path
+
+    def _calculation_sku_mappings(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+    ) -> list[SkuMapping]:
+        exported = mapping_service.export_sku_mapping(
+            db,
+            tenant_id=refresh_run.tenant_id,
+            client_id=refresh_run.client_id,
+        )
+        return [
+            SkuMapping.model_validate(item)
+            for item in exported.get("skuMappingRows", [])
+        ]
+
+    def _materialize_wb_daily_facts(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        *,
+        wb_finance_dir: Path,
+        onec_dir: Path,
+        wb_report_list_dir: Path | None,
+        wb_cards_dir: Path | None,
+        wb_stock_history_dir: Path | None,
+    ) -> None:
+        from scripts.rebuild_report_from_sources import build_db_first_payload
+
+        _reverify_collection_raw_integrity(
+            refresh_run,
+            source_type="wb_finance_detail",
+            raw_path=wb_finance_dir,
+            source_root=self.settings.source_refresh_root_path,
+        )
+
+        args = argparse.Namespace(
+            client_id=refresh_run.client_id,
+            wb_finance_dir=wb_finance_dir,
+            wb_finance_source="files-stream",
+            stream_cache_dir=(
+                Path("data/.cache/source_refresh_stream") / refresh_run.id
+            ),
+            keep_stream_cache=False,
+            marketplace_daily_facts_enabled=True,
+            postgres_db_name="shumeyko_wb_unit_economics",
+            postgres_host="",
+            postgres_port=55433,
+            postgres_user="",
+            postgres_snapshot_id=None,
+            mapping_source="files",
+            mapping_snapshot_id=None,
+            cost_source="files",
+            cost_snapshot_id=None,
+            wb_cards_dir=wb_cards_dir,
+            onec_dir=onec_dir,
+            onec_marketplace_mapping_dir=self.settings.source_refresh_mapping_path,
+            sales_register_dir=onec_dir,
+            onec_services_dir=onec_dir,
+            wb_report_list_dir=wb_report_list_dir,
+            wb_paid_storage_dir=None,
+            wb_promotion_stats_dir=None,
+            wb_stock_history_dir=wb_stock_history_dir,
+            onec_stock_dir=onec_dir,
+            onec_opiu_config=None,
+            report_period_start=(
+                refresh_run.source_window_start or refresh_run.period_start
+            ),
+            report_period_end=(
+                refresh_run.source_window_end or refresh_run.period_end
+            ),
+            cost_amount_field="Сумма",
+            sales_cost_amount_field="auto",
+            source_refresh_run_id=refresh_run.id,
+            tenant_name=self._client_name(db, refresh_run.tenant_id),
+            sku_mappings=self._calculation_sku_mappings(db, refresh_run),
+        )
+        tax_profiles = repository.tax_profiles_for_source_refresh(db, refresh_run)
+        input_vat_policies = repository.input_vat_policies_for_source_refresh(
+            db, refresh_run
+        )
+        db.commit()
+        build = build_db_first_payload(
+            args,
+            tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
+        )
+        legacy_row_count = repository.source_snapshot_row_count_for_run(
+            db,
+            refresh_run_id=refresh_run.id,
+            source_type="wb_finance_detail",
+        )
+        calculation_parity = {
+            "status": "not_run_no_legacy_rows",
+            "legacyRowCount": legacy_row_count,
+        }
+        if legacy_row_count > 0:
+            source_parity = _legacy_wb_source_parity(
+                db,
+                refresh_run,
+                wb_finance_dir=wb_finance_dir,
+            )
+            legacy_args = argparse.Namespace(**vars(args))
+            legacy_args.wb_finance_source = "files"
+            legacy_build = build_db_first_payload(
+                legacy_args,
+                tax_profiles=tax_profiles,
+                input_vat_policies=input_vat_policies,
+            )
+            calculation_parity = _full_wb_calculation_parity(
+                legacy_build,
+                build,
+                legacy_row_count=legacy_row_count,
+                source_parity=source_parity,
+            )
+            parity_path = Path(refresh_run.root_dir) / "parity" / "wb-calculation.json"
+            parity_path.parent.mkdir(parents=True, exist_ok=True)
+            parity_path.write_text(
+                json.dumps(
+                    calculation_parity,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            calculation_parity["artifactPath"] = str(parity_path)
+        self._save_wb_daily_facts(
+            db,
+            refresh_run,
+            build,
+            calculation_parity=calculation_parity,
+        )
+        _commit_source_refresh_progress(db)
+
+    def _save_wb_daily_facts(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        build: dict[str, Any],
+        *,
+        calculation_parity: dict[str, Any] | None = None,
+    ) -> None:
+        all_daily_facts = list(build.get("daily_facts", []))
+        parity = _wb_daily_fact_parity(build, all_daily_facts)
+        coverage_start = refresh_run.source_window_start or refresh_run.period_start
+        coverage_end = refresh_run.source_window_end or refresh_run.period_end
+        daily_facts = [
+            item
+            for item in all_daily_facts
+            if coverage_start <= item.fact_date <= coverage_end
+        ]
+        daily_fact_count = repository.replace_marketplace_finance_daily_facts(
+            db,
+            refresh_run,
+            daily_facts,
+            marketplace="wb",
+            cabinet_ids=_marketplace_cabinet_ids(
+                refresh_run,
+                source_type="wb_finance_detail",
+            ),
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+        )
+        persisted_parity = _persisted_daily_facts_parity(
+            db,
+            refresh_run,
+            daily_facts,
+        )
+        finance_collection = next(
+            (
+                item
+                for item in refresh_run.collections
+                if item.source_type == "wb_finance_detail"
+            ),
+            None,
+        )
+        if finance_collection is None:
+            return
+        finance_collection.payload = {
+            **(finance_collection.payload or {}),
+            "dailyFacts": {
+                "status": "materialized",
+                "rowCount": daily_fact_count,
+                "periodStart": (
+                    min(item.fact_date for item in daily_facts).isoformat()
+                    if daily_facts
+                    else None
+                ),
+                "periodEnd": (
+                    max(item.fact_date for item in daily_facts).isoformat()
+                    if daily_facts
+                    else None
+                ),
+                "parity": parity,
+                "persistedParity": persisted_parity,
+            },
+            "calculationParity": calculation_parity or {"status": "not_run"},
+        }
+        db.flush()
+
+    def _daily_facts_for_report(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+    ) -> list[MarketplaceFinanceDailyFactContract]:
+        rows = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel)
+                .where(
+                    MarketplaceFinanceDailyFactModel.tenant_id
+                    == refresh_run.tenant_id,
+                    MarketplaceFinanceDailyFactModel.client_id
+                    == refresh_run.client_id,
+                    MarketplaceFinanceDailyFactModel.marketplace == "wb",
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    >= refresh_run.period_start,
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    <= refresh_run.period_end,
+                )
+                .order_by(
+                    MarketplaceFinanceDailyFactModel.fact_date,
+                    MarketplaceFinanceDailyFactModel.grain_hash,
+                )
+            )
+        )
+        if not rows:
+            raise SourceRefreshConfigError(
+                "incremental daily-facts report input is empty"
+            )
+        field_names = MarketplaceFinanceDailyFactContract.model_fields
+        return [
+            MarketplaceFinanceDailyFactContract.model_validate(
+                {name: getattr(row, name) for name in field_names}
+            )
+            for row in rows
+        ]
+
+    def _incremental_wb_summary_rows(
+        self,
+        refresh_run: SourceRefreshRun,
+        *,
+        base_refresh_run: SourceRefreshRun | None,
+        current_report_list_dir: Path | None,
+    ) -> list[WbSalesReportSummaryRow]:
+        rows_by_key: dict[tuple[str, str, int | None], WbSalesReportSummaryRow] = {}
+        if base_refresh_run is not None:
+            base_dir = self._optional_collection_raw_dir(
+                base_refresh_run,
+                "wb_sales_report_list",
+            )
+            if base_dir is not None:
+                _reverify_collection_raw_integrity(
+                    base_refresh_run,
+                    source_type="wb_sales_report_list",
+                    raw_path=base_dir,
+                    source_root=self.settings.source_refresh_root_path,
+                )
+                for row in load_wb_sales_report_summary_rows(
+                    base_dir,
+                    client_id=refresh_run.client_id,
+                ):
+                    if row.date_to < (
+                        refresh_run.source_window_start or refresh_run.period_start
+                    ):
+                        rows_by_key[
+                            (row.seller_account_id, row.report_id, row.report_type)
+                        ] = row
+        if current_report_list_dir is not None:
+            _reverify_collection_raw_integrity(
+                refresh_run,
+                source_type="wb_sales_report_list",
+                raw_path=current_report_list_dir,
+                source_root=self.settings.source_refresh_root_path,
+            )
+            for row in load_wb_sales_report_summary_rows(
+                current_report_list_dir,
+                client_id=refresh_run.client_id,
+            ):
+                rows_by_key[
+                    (row.seller_account_id, row.report_id, row.report_type)
+                ] = row
+        return sorted(
+            rows_by_key.values(),
+            key=lambda row: (
+                row.date_to,
+                row.seller_account_id,
+                row.report_id,
+                row.report_type or 0,
+            ),
+        )
 
     def _build_db_first_report(
         self,
@@ -1898,13 +3144,39 @@ class SourceRefreshService:
         wb_finance_dir: Path | None,
         onec_dir: Path | None,
         wb_report_list_dir: Path | None,
+        wb_cards_dir: Path | None,
         wb_stock_history_dir: Path | None,
+        source_snapshot_set_id: str,
+        base_refresh_run: SourceRefreshRun | None,
+        contributing_runs: Iterable[SourceRefreshRun] = (),
+        wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None,
+        wb_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     ) -> tuple[ReportRun, Path]:
         from scripts.export_report_artifacts import export_report_artifacts
         from scripts.rebuild_report_from_sources import (
             _validate_marts,
             build_db_first_payload,
         )
+
+        integrity_refresh_run = (
+            refresh_run
+            if wb_daily_facts is not None
+            else base_refresh_run or refresh_run
+        )
+        if wb_finance_dir is not None:
+            _reverify_collection_raw_integrity(
+                integrity_refresh_run,
+                source_type="wb_finance_detail",
+                raw_path=wb_finance_dir,
+                source_root=self.settings.source_refresh_root_path,
+            )
+        if wb_report_list_dir is not None:
+            _reverify_collection_raw_integrity(
+                integrity_refresh_run,
+                source_type="wb_sales_report_list",
+                raw_path=wb_report_list_dir,
+                source_root=self.settings.source_refresh_root_path,
+            )
 
         output_dir = (
             self.settings.export_root_path / "source_refresh" / refresh_run.id
@@ -1915,6 +3187,7 @@ class SourceRefreshService:
         output_dir.mkdir(parents=True, exist_ok=True)
         excel_path = output_dir / "shumeyko_wb_excel_mvp.xlsx"
         client_name = self._client_name(db, refresh_run.tenant_id)
+        sku_mappings = self._calculation_sku_mappings(db, refresh_run)
         args = argparse.Namespace(
             client_id=(
                 refresh_run.client_id
@@ -1925,9 +3198,17 @@ class SourceRefreshService:
                 )
             ),
             wb_finance_dir=wb_finance_dir,
-            wb_finance_source="files-stream",
+            wb_finance_source=(
+                "daily-facts" if wb_daily_facts is not None else "files-stream"
+            ),
+            wb_daily_facts=wb_daily_facts,
+            wb_sales_report_summary_rows=wb_summary_rows,
             stream_cache_dir=Path("data/.cache/source_refresh_stream") / refresh_run.id,
             keep_stream_cache=False,
+            marketplace_daily_facts_enabled=(
+                self.settings.marketplace_daily_facts_enabled
+                and wb_daily_facts is None
+            ),
             postgres_db_name="shumeyko_wb_unit_economics",
             postgres_host="",
             postgres_port=55433,
@@ -1937,7 +3218,7 @@ class SourceRefreshService:
             mapping_snapshot_id=None,
             cost_source="files",
             cost_snapshot_id=None,
-            wb_cards_dir=None,
+            wb_cards_dir=wb_cards_dir,
             onec_dir=onec_dir,
             onec_marketplace_mapping_dir=self.settings.source_refresh_mapping_path,
             sales_register_dir=onec_dir,
@@ -1954,14 +3235,44 @@ class SourceRefreshService:
             sales_cost_amount_field="auto",
             source_refresh_run_id=refresh_run.id,
             tenant_name=client_name,
+            sku_mappings=sku_mappings,
         )
+        tax_profiles = repository.tax_profiles_for_source_refresh(
+            db,
+            refresh_run,
+        )
+        input_vat_policies = repository.input_vat_policies_for_source_refresh(
+            db,
+            refresh_run,
+        )
+        tax_collection = next(
+            (
+                item
+                for item in refresh_run.collections
+                if item.source_type == "onec_tax_profiles"
+            ),
+            None,
+        )
+        expected_tax_profiles = (
+            int((tax_collection.payload or {}).get("profileCount") or 0)
+            if tax_collection is not None
+            else 0
+        )
+        if expected_tax_profiles and len(tax_profiles) < expected_tax_profiles:
+            raise SourceRefreshConfigError(
+                "confirmed 1C tax profiles were not resolved for report rebuild"
+            )
+        db.commit()
         build = build_db_first_payload(
             args,
-            tax_profiles=repository.tax_profiles_for_source_refresh(
-                db,
-                refresh_run,
-            ),
+            tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
         )
+        if (
+            self.settings.marketplace_daily_facts_enabled
+            and wb_daily_facts is None
+        ):
+            self._save_wb_daily_facts(db, refresh_run, build)
         report = repository.save_report_marts(
             db,
             build["payload"],
@@ -1970,13 +3281,21 @@ class SourceRefreshService:
             report_id=self._new_report_id(source_report, refresh_run),
             publication_status="draft",
             publish=False,
-            source_snapshot_set_id=refresh_run.snapshot_set_id,
+            source_snapshot_set_id=source_snapshot_set_id,
         )
-        repository.replace_source_loads_from_refresh(db, report, refresh_run)
+        repository.replace_source_loads_from_refresh(
+            db,
+            report,
+            refresh_run,
+            base_refresh_run=base_refresh_run,
+            contributing_runs=contributing_runs,
+        )
         _validate_marts(build["payload"])
-        db.flush()
+        db.commit()
+        artifact_payload = repository.report_full_payload(db, report)
+        db.commit()
         records = export_report_artifacts(
-            repository.report_full_payload(db, report),
+            artifact_payload,
             report_id=report.id,
             output_dir=output_dir,
             excel_path=excel_path,
@@ -2003,8 +3322,93 @@ class SourceRefreshService:
         db: Session,
         report: ReportRun,
         refresh_run: SourceRefreshRun,
+        *,
+        contributing_runs: Iterable[SourceRefreshRun] = (),
     ) -> None:
-        repository.replace_source_loads_from_refresh(db, report, refresh_run)
+        base_refresh_run = (
+            db.get(SourceRefreshRun, refresh_run.base_source_refresh_run_id)
+            if refresh_run.base_source_refresh_run_id
+            else None
+        )
+        repository.replace_source_loads_from_refresh(
+            db,
+            report,
+            refresh_run,
+            base_refresh_run=base_refresh_run,
+            contributing_runs=contributing_runs,
+        )
+
+    def _required_collection_raw_dir(
+        self,
+        refresh_run: SourceRefreshRun,
+        source_type: str,
+    ) -> Path:
+        path = self._optional_collection_raw_dir(refresh_run, source_type)
+        if path is None:
+            raise SourceRefreshConfigError(
+                f"reusable WB snapshot has no readable {source_type} directory"
+            )
+        return path
+
+    def _optional_collection_raw_dir(
+        self,
+        refresh_run: SourceRefreshRun,
+        source_type: str,
+    ) -> Path | None:
+        collection = next(
+            (
+                item
+                for item in refresh_run.collections
+                if item.source_type == source_type
+                and item.status in MANDATORY_OK_STATUSES
+            ),
+            None,
+        )
+        return self._collection_raw_dir(collection) if collection else None
+
+    def _report_snapshot_set_id(
+        self,
+        refresh_run: SourceRefreshRun,
+        *,
+        base_refresh_run: SourceRefreshRun | None,
+        contributing_runs: Iterable[SourceRefreshRun] = (),
+    ) -> str:
+        contributors = sorted(
+            {
+                item
+                for item in contributing_runs
+                if item.id != refresh_run.id
+                and item.id != getattr(base_refresh_run, "id", None)
+            },
+            key=lambda item: (item.created_at, item.id),
+        )
+        if base_refresh_run is None and not contributors:
+            return refresh_run.snapshot_set_id
+        lineage = [f"methodology:{METHODOLOGY_VERSION}"]
+
+        def add_run(role: str, run: SourceRefreshRun) -> None:
+            lineage.append(f"{role}:run:{run.snapshot_set_id}")
+            lineage.extend(
+                f"{role}:source:{item.source_type}:{item.snapshot_hash}"
+                for item in sorted(
+                    run.collections,
+                    key=lambda collection: (
+                        collection.source_type,
+                        collection.wb_cabinet_id,
+                        collection.id,
+                    ),
+                )
+                if item.status in MANDATORY_OK_STATUSES | REVIEW_STATUSES
+                and item.snapshot_hash
+            )
+
+        if base_refresh_run is not None:
+            add_run("base", base_refresh_run)
+        for contributor in contributors:
+            add_run("overlay", contributor)
+        add_run("current", refresh_run)
+        digest = hashlib.sha256("\n".join(lineage).encode()).hexdigest()[:20]
+        return f"composite-{digest}"
 
     def _mandatory_failed(self, refresh_run: SourceRefreshRun) -> bool:
         return any(
@@ -2026,11 +3430,18 @@ class SourceRefreshService:
         self,
         refresh_run: SourceRefreshRun,
         mapping_collection: SourceRefreshCollection,
+        *,
+        mapping_report_ready: bool = False,
     ) -> bool:
-        return mapping_collection.status == "stale" or any(
-            (not item.required and item.status not in OPTIONAL_OK_STATUSES)
-            or (item.required and item.status in REVIEW_STATUSES)
+        if mapping_collection.status == "stale":
+            return True
+        return any(
+            (
+                (not item.required and item.status not in OPTIONAL_OK_STATUSES)
+                or (item.required and item.status in REVIEW_STATUSES)
+            )
             for item in refresh_run.collections
+            if not (mapping_report_ready and item.id == mapping_collection.id)
         )
 
     def _resolve_resume_run(
@@ -2066,27 +3477,23 @@ class SourceRefreshService:
         else:
             candidates = list(
                 db.scalars(
-                select(SourceRefreshRun)
-                .where(
-                    SourceRefreshRun.tenant_id == tenant_id,
-                    SourceRefreshRun.client_id == client_id,
-                    SourceRefreshRun.credential_source == credential_source,
-                    SourceRefreshRun.period_start == period_start,
-                    SourceRefreshRun.period_end == period_end,
-                    SourceRefreshRun.mode.in_(ONEC_RESUME_MODES),
-                    SourceRefreshRun.finished_at.is_not(None),
-                    SourceRefreshRun.status.in_({"failed", "needs_review"}),
-                )
-                .order_by(SourceRefreshRun.created_at.desc())
-                .limit(20)
+                    select(SourceRefreshRun)
+                    .where(
+                        SourceRefreshRun.tenant_id == tenant_id,
+                        SourceRefreshRun.client_id == client_id,
+                        SourceRefreshRun.credential_source == credential_source,
+                        SourceRefreshRun.period_start == period_start,
+                        SourceRefreshRun.period_end == period_end,
+                        SourceRefreshRun.mode.in_(ONEC_RESUME_MODES),
+                        SourceRefreshRun.finished_at.is_not(None),
+                        SourceRefreshRun.status.in_({"failed", "needs_review"}),
+                    )
+                    .order_by(SourceRefreshRun.created_at.desc())
+                    .limit(20)
                 )
             )
             candidate = next(
-                (
-                    item
-                    for item in candidates
-                    if self._run_has_onec_checkpoint(item)
-                ),
+                (item for item in candidates if self._run_has_resume_checkpoint(item)),
                 None,
             )
             if candidate is None:
@@ -2103,18 +3510,33 @@ class SourceRefreshService:
         )
         root_dir = Path(candidate.root_dir).resolve() if candidate.root_dir else None
         allowed_root = self.settings.source_refresh_root_path.resolve()
-        has_safe_onec_dir = bool(
+        has_safe_resume_dir = bool(
             root_dir
             and root_dir.is_relative_to(allowed_root)
-            and (root_dir / "onec").is_dir()
+            and (
+                (root_dir / "onec").is_dir()
+                or (root_dir / "wb_finance" / "manifest.json").is_file()
+            )
         )
-        if not compatible or not has_safe_onec_dir:
+        if not compatible or not has_safe_resume_dir:
             if resume_from_run_id:
                 raise SourceRefreshConfigError(
-                    "resume source refresh is incompatible or has no safe 1C snapshot"
+                    "resume source refresh is incompatible or has no safe checkpoint"
                 )
             return None
         return candidate
+
+    def _run_has_resume_checkpoint(self, refresh_run: SourceRefreshRun) -> bool:
+        if self._run_has_onec_checkpoint(refresh_run):
+            return True
+        if not refresh_run.root_dir:
+            return False
+        root_dir = Path(refresh_run.root_dir).resolve()
+        allowed_root = self.settings.source_refresh_root_path.resolve()
+        return bool(
+            root_dir.is_relative_to(allowed_root)
+            and (root_dir / "wb_finance" / "manifest.json").is_file()
+        )
 
     def _run_has_onec_checkpoint(self, refresh_run: SourceRefreshRun) -> bool:
         if not refresh_run.root_dir:
@@ -2217,16 +3639,29 @@ def _collect_wb_finance(
     source_coverage_start = context.period_start - timedelta(
         days=context.period_start.weekday()
     )
-    results = service._wb_finance_exporter(
-        context.credentials.wb_settings,
-        output_dir,
-        period_start=source_coverage_start,
-        period_end=context.period_end,
-        limit=service._wb_limit(),
-        max_pages=service._wb_max_pages(),
-        request_delay_seconds=service._wb_delay_seconds(),
-        period="daily",
-    )
+    resume_dir = _safe_resume_subdirectory(service, context, "wb_finance")
+    if resume_dir is not None and (resume_dir / "manifest.json").is_file():
+        _copy_resume_directory(resume_dir, output_dir)
+        results = load_wb_finance_export_results(output_dir)
+        if not wb_finance_export_is_complete(results, context.credentials.wb_settings):
+            resume_wb_finance_export(
+                context.credentials.wb_settings,
+                output_dir,
+                max_pages=service._wb_max_pages(),
+                request_delay_seconds=service._wb_delay_seconds(),
+            )
+            results = load_wb_finance_export_results(output_dir)
+    else:
+        results = service._wb_finance_exporter(
+            context.credentials.wb_settings,
+            output_dir,
+            period_start=source_coverage_start,
+            period_end=context.period_end,
+            limit=service._wb_limit(),
+            max_pages=service._wb_max_pages(),
+            request_delay_seconds=service._wb_delay_seconds(),
+            period="daily",
+        )
     service._record_wb_finance(
         context.db,
         context.refresh_run,
@@ -2237,6 +3672,44 @@ def _collect_wb_finance(
         source_coverage_end=context.period_end,
     )
     return CollectorResult(output_dir=output_dir)
+
+
+def _safe_resume_subdirectory(
+    service: SourceRefreshService,
+    context: CollectorContext,
+    name: str,
+) -> Path | None:
+    if not context.refresh_run.resumed_from_run_id:
+        return None
+    previous = context.db.get(SourceRefreshRun, context.refresh_run.resumed_from_run_id)
+    if previous is None or not previous.root_dir:
+        return None
+    candidate = Path(previous.root_dir).resolve() / name
+    allowed_root = service.settings.source_refresh_root_path.resolve()
+    if not candidate.is_relative_to(allowed_root) or not candidate.is_dir():
+        return None
+    return candidate
+
+
+def _copy_resume_directory(source: Path, destination: Path) -> None:
+    """Copy an immutable checkpoint tree, preferring hard links."""
+    destination.mkdir(parents=True, exist_ok=True)
+    for source_path in source.rglob("*"):
+        if source_path.is_symlink():
+            continue
+        destination_path = destination / source_path.relative_to(source)
+        if source_path.is_dir():
+            destination_path.mkdir(parents=True, exist_ok=True)
+            continue
+        if not source_path.is_file():
+            continue
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        if destination_path.exists():
+            destination_path.unlink()
+        try:
+            os.link(source_path, destination_path)
+        except OSError:
+            shutil.copy2(source_path, destination_path)
 
 
 def _collect_wb_report_list(
@@ -2264,6 +3737,40 @@ def _collect_wb_report_list(
         wb_cabinet_ids=context.credentials.wb_cabinet_ids,
     )
     return CollectorResult(output_dir=output_dir)
+
+
+def _collect_wb_redeem_notifications(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_redeem_notifications"
+    resume_dir = _safe_resume_subdirectory(
+        service,
+        context,
+        "wb_redeem_notifications",
+    )
+    if resume_dir is not None and (resume_dir / "manifest.json").is_file():
+        _copy_resume_directory(resume_dir, output_dir)
+        results = load_wb_document_export_results(output_dir)
+    else:
+        results = service._wb_documents_exporter(
+            settings=context.credentials.wb_settings,
+            output_dir=output_dir,
+            period_start=context.period_start,
+            period_end=context.period_end,
+            category_keywords=("выкуп", "redeem-notification"),
+            download=True,
+        )
+    collection = service._record_wb_redeem_notifications(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+    )
+    return CollectorResult(collection=collection, output_dir=output_dir)
 
 
 def _collect_wb_product_cards(
@@ -2308,15 +3815,43 @@ def _collect_wb_stock_history(
     if context.credentials.wb_settings is None:
         return CollectorResult()
     output_dir = context.root_dir / "wb_stock_history_daily"
-    provider_period_start = max(
+    provider_period = _stock_history_provider_period(
         context.period_start,
-        _subtract_calendar_months(context.period_end, 3),
+        context.period_end,
     )
+    if provider_period is None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        results = [
+            WbStockExportResult(
+                seller_account_id=item.seller_account_id,
+                account_name=item.account_name,
+                source="wb_stock_history_daily_csv",
+                ok=False,
+                status="outside_provider_window",
+                row_count=0,
+                error="Requested period is outside the WB three-month history window.",
+            )
+            for item in context.credentials.wb_settings.accounts
+        ]
+        collection = service._record_wb_stock_history(
+            context.db,
+            context.refresh_run,
+            output_dir,
+            results,
+            wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+            period_start=context.period_start,
+            period_end=context.period_end,
+            actual_period_start=None,
+            actual_period_end=None,
+            provider_window_available=False,
+        )
+        return CollectorResult(collection=collection, output_dir=output_dir)
+    provider_period_start, provider_period_end = provider_period
     results = service._wb_stock_history_exporter(
         context.credentials.wb_settings,
         output_dir,
         period_start=provider_period_start,
-        period_end=context.period_end,
+        period_end=provider_period_end,
         stock_type="wb",
     )
     collection = service._record_wb_stock_history(
@@ -2328,7 +3863,7 @@ def _collect_wb_stock_history(
         period_start=context.period_start,
         period_end=context.period_end,
         actual_period_start=provider_period_start,
-        actual_period_end=context.period_end,
+        actual_period_end=provider_period_end,
     )
     return CollectorResult(collection=collection, output_dir=output_dir)
 
@@ -2903,7 +4438,7 @@ def _credential_issue(
     labels = {
         "wb_api": "Wildberries API",
         "ozon_api": "Ozon Seller API",
-        "onec_readonly": "1С read-only",
+        "onec_readonly": "1С — только чтение",
     }
     return {
         "source_type": provider,
@@ -2991,6 +4526,81 @@ def _wb_report_list_payload(
     }
 
 
+def _wb_document_result_payload(
+    item: WbDocumentExportResult,
+    *,
+    wb_cabinet_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "sellerAccountId": item.seller_account_id,
+        "accountName": item.account_name,
+        "wbCabinetId": wb_cabinet_id,
+        "status": _wb_document_status(item),
+        "sourceStatus": item.status,
+        "ok": item.ok,
+        "rowCount": item.row_count,
+        "downloadedCount": item.downloaded_count,
+        "statusCode": item.status_code,
+        "outputFile": item.output_file or None,
+        "error": item.error,
+    }
+
+
+def _wb_redeem_notification_rows(
+    output_dir: Path,
+    results: Iterable[WbDocumentExportResult],
+    *,
+    wb_cabinet_ids: dict[str, str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for result in results:
+        if not result.ok or not result.output_file:
+            continue
+        manifest_path = (output_dir / result.output_file).resolve()
+        if not manifest_path.is_relative_to(output_dir.resolve()):
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, list):
+            continue
+        for item in manifest:
+            if not isinstance(item, dict):
+                continue
+            download = item.get("download")
+            summary = download.get("summary") if isinstance(download, dict) else None
+            if not isinstance(summary, dict) or summary.get("status") != "parsed":
+                continue
+            report_id = str(summary.get("reportId") or "").strip()
+            if not report_id:
+                continue
+            rows.append(
+                {
+                    "reportId": report_id,
+                    "documentName": str(item.get("name") or ""),
+                    "category": str(item.get("category") or ""),
+                    "creationTime": str(item.get("creationTime") or ""),
+                    "quantity": str(summary.get("quantity") or ""),
+                    "purchaseAmount": str(summary.get("purchaseAmount") or ""),
+                    "vatAmount": (
+                        str(summary.get("vatAmount"))
+                        if summary.get("vatAmount") is not None
+                        else None
+                    ),
+                    "summaryStatus": "parsed",
+                    "sellerAccountId": result.seller_account_id,
+                    "accountName": result.account_name,
+                    "wbCabinetId": wb_cabinet_ids.get(
+                        result.seller_account_id,
+                        "",
+                    ),
+                    "rawDocumentHash": str(download.get("sha256") or ""),
+                }
+            )
+    return rows
+
+
 def _wb_product_cards_payload(
     item: WbProductCardsPageResult,
     *,
@@ -3008,6 +4618,7 @@ def _wb_product_cards_payload(
         "cardCount": item.card_count,
         "statusCode": item.status_code,
         "rawPayloadHash": item.raw_payload_hash,
+        "flatPayloadHash": item.flat_payload_hash,
         "outputFile": item.output_path.name if item.output_path else None,
         "flatOutputFile": item.flat_output_path.name if item.flat_output_path else None,
         "error": item.error,
@@ -3021,6 +4632,7 @@ def _ozon_result_payload(
 ) -> dict[str, Any]:
     return {
         "marketplace": "ozon",
+        "sourceType": item.source_type,
         "sellerAccountId": item.seller_account_id,
         "accountName": item.account_name,
         "wbCabinetId": ozon_cabinet_id,
@@ -3036,6 +4648,312 @@ def _ozon_result_payload(
         "reportCode": item.report_code,
         "error": item.error,
     }
+
+
+def _marketplace_cabinet_ids(
+    refresh_run: SourceRefreshRun,
+    *,
+    source_type: str,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for collection in refresh_run.collections:
+        if collection.source_type != source_type:
+            continue
+        payload = collection.payload or {}
+        for item in payload.get("results", []):
+            if not isinstance(item, dict):
+                continue
+            seller_account_id = str(item.get("sellerAccountId") or "").strip()
+            cabinet_id = str(item.get("wbCabinetId") or "").strip()
+            if seller_account_id:
+                result[seller_account_id] = cabinet_id
+    return result
+
+
+def _wb_daily_fact_parity(
+    build: dict[str, Any],
+    daily_facts: list[Any],
+) -> dict[str, Any]:
+    report = build.get("report")
+    if report is None:
+        raise SourceRefreshConfigError("daily facts parity report is missing")
+    checks = {
+        "quantity": (
+            sum((item.quantity for item in daily_facts), Decimal("0")),
+            sum((item.quantity for item in report.rows), Decimal("0")),
+        ),
+        "netRevenue": (
+            sum((item.net_revenue for item in daily_facts), Decimal("0")),
+            sum((item.net_revenue for item in report.rows), Decimal("0")),
+        ),
+        "commission": (
+            sum((item.wb_commission for item in daily_facts), Decimal("0")),
+            sum((item.wb_commission for item in report.rows), Decimal("0")),
+        ),
+        "logistics": (
+            sum((item.logistics for item in daily_facts), Decimal("0")),
+            sum((item.logistics for item in report.rows), Decimal("0")),
+        ),
+        "storage": (
+            sum((item.storage for item in daily_facts), Decimal("0")),
+            sum((item.storage for item in report.rows), Decimal("0")),
+        ),
+        "acceptance": (
+            sum((item.acceptance for item in daily_facts), Decimal("0")),
+            sum((item.acceptance for item in report.rows), Decimal("0")),
+        ),
+        "promotion": (
+            sum(
+                (item.marketplace_promotion for item in daily_facts),
+                Decimal("0"),
+            ),
+            sum((item.wb_promotion for item in report.rows), Decimal("0")),
+        ),
+        "penalties": (
+            sum(
+                (item.penalties_and_holdbacks for item in daily_facts),
+                Decimal("0"),
+            ),
+            sum(
+                (item.penalties_and_holdbacks for item in report.rows),
+                Decimal("0"),
+            ),
+        ),
+        "acquiring": (
+            sum((item.acquiring for item in daily_facts), Decimal("0")),
+            sum((item.acquiring for item in report.rows), Decimal("0")),
+        ),
+        "cogs": (
+            sum((item.cogs for item in daily_facts), Decimal("0")),
+            sum(
+                (item.cogs_from_1c_with_extra_costs for item in report.rows),
+                Decimal("0"),
+            ),
+        ),
+        "vatInputMarketplace": (
+            sum(
+                (item.vat_input_from_marketplace for item in daily_facts),
+                Decimal("0"),
+            ),
+            sum((item.vat_input_from_wb for item in report.rows), Decimal("0")),
+        ),
+        "vatInput1c": (
+            sum((item.vat_input_from_1c for item in daily_facts), Decimal("0")),
+            sum((item.vat_input_from_1c for item in report.rows), Decimal("0")),
+        ),
+    }
+    differences = {key: left - right for key, (left, right) in checks.items()}
+    mismatches = [
+        key
+        for key, difference in differences.items()
+        if difference != 0
+    ]
+    source_row_count = sum(item.source_row_count for item in daily_facts)
+    if source_row_count != int(build.get("wb_rows") or 0):
+        mismatches.append("sourceRowCount")
+    if mismatches:
+        cogs_detail = (
+            ""
+            if "cogs" not in mismatches
+            else f" (cogsDifference={differences['cogs']})"
+        )
+        raise SourceRefreshConfigError(
+            "daily facts parity mismatch: " + ",".join(sorted(mismatches)) + cogs_detail
+        )
+    return {
+        "status": "aggregate_only",
+        "sourceRowCount": source_row_count,
+        "dailyFactRows": len(daily_facts),
+        "reportRows": len(report.rows),
+        "checks": sorted(checks),
+        "differences": {
+            key: str(value) for key, value in differences.items() if value != 0
+        },
+        "roundingTolerance": {"cogs": "0.00"},
+    }
+
+
+def _full_wb_calculation_parity(
+    legacy_build: dict[str, Any],
+    streamed_build: dict[str, Any],
+    *,
+    legacy_row_count: int,
+    source_parity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    sections = {
+        "reportRowsAndTaxes": (
+            legacy_build.get("report"),
+            streamed_build.get("report"),
+        ),
+        "kpiAndReconciliation": (
+            legacy_build.get("payload"),
+            streamed_build.get("payload"),
+        ),
+        "generatedDailyFacts": (
+            legacy_build.get("daily_facts", []),
+            streamed_build.get("daily_facts", []),
+        ),
+    }
+    mismatches: list[str] = []
+    digests: dict[str, dict[str, str]] = {}
+    for name, (legacy, streamed) in sections.items():
+        legacy_value = _canonical_parity_value(legacy)
+        streamed_value = _canonical_parity_value(streamed)
+        legacy_digest = _hash_payload(legacy_value)
+        streamed_digest = _hash_payload(streamed_value)
+        digests[name] = {
+            "legacy": legacy_digest,
+            "streamed": streamed_digest,
+        }
+        if legacy_digest != streamed_digest:
+            mismatches.append(name)
+    legacy_source_rows = int(
+        legacy_build.get("wb_source_rows", legacy_build.get("wb_rows")) or 0
+    )
+    streamed_source_rows = int(
+        streamed_build.get("wb_source_rows", streamed_build.get("wb_rows")) or 0
+    )
+    legacy_report_period_rows = int(
+        legacy_build.get("wb_report_period_rows", legacy_build.get("wb_rows")) or 0
+    )
+    streamed_report_period_rows = int(
+        streamed_build.get(
+            "wb_report_period_rows",
+            streamed_build.get("wb_rows"),
+        )
+        or 0
+    )
+    if legacy_source_rows != streamed_source_rows:
+        mismatches.append("calculationSourceRowCount")
+    if legacy_report_period_rows != streamed_report_period_rows:
+        mismatches.append("calculationReportPeriodRowCount")
+    if source_parity is not None and source_parity.get("status") != "matched":
+        mismatches.append("legacyDbVsFiles")
+    return {
+        "status": "matched" if not mismatches else "mismatch",
+        "legacyRowCount": legacy_row_count,
+        "legacySourceRows": legacy_source_rows,
+        "streamedSourceRows": streamed_source_rows,
+        "legacyReportPeriodRows": legacy_report_period_rows,
+        "streamedReportPeriodRows": streamed_report_period_rows,
+        "sourceParity": source_parity or {"status": "not_run"},
+        "digests": digests,
+        "mismatches": sorted(set(mismatches)),
+    }
+
+
+def _legacy_wb_source_parity(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    wb_finance_dir: Path,
+) -> dict[str, Any]:
+    database_hashes = sorted(
+        str(value)
+        for value in db.scalars(
+            select(SourceSnapshotRow.raw_payload_hash).where(
+                SourceSnapshotRow.refresh_run_id == refresh_run.id,
+                SourceSnapshotRow.source_type == "wb_finance_detail",
+            )
+        )
+    )
+    collection = next(
+        (
+            item
+            for item in refresh_run.collections
+            if item.source_type == "wb_finance_detail"
+        ),
+        None,
+    )
+    if collection is None:
+        return {"status": "mismatch", "mismatches": ["collectionMissing"]}
+    file_hashes: list[str] = []
+    for result in (collection.payload or {}).get("results", []):
+        if not isinstance(result, dict):
+            continue
+        output_name = str(result.get("outputFile") or "").strip()
+        if not output_name:
+            continue
+        for row in _read_json_list(wb_finance_dir / output_name):
+            file_hashes.append(_hash_payload(row))
+    file_hashes.sort()
+    database_digest = _hash_payload(database_hashes)
+    file_digest = _hash_payload(file_hashes)
+    matched = (
+        len(database_hashes) == len(file_hashes) and database_digest == file_digest
+    )
+    return {
+        "status": "matched" if matched else "mismatch",
+        "databaseRows": len(database_hashes),
+        "fileRows": len(file_hashes),
+        "databaseDigest": database_digest,
+        "fileDigest": file_digest,
+        "mismatches": [] if matched else ["sourceRows"],
+    }
+
+
+def _persisted_daily_facts_parity(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    generated_facts: list[MarketplaceFinanceDailyFactContract],
+) -> dict[str, Any]:
+    persisted = list(
+        db.scalars(
+            select(MarketplaceFinanceDailyFactModel).where(
+                MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
+                MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
+                MarketplaceFinanceDailyFactModel.marketplace == "wb",
+                MarketplaceFinanceDailyFactModel.source_refresh_run_id
+                == refresh_run.id,
+            )
+        )
+    )
+    field_names = tuple(MarketplaceFinanceDailyFactContract.model_fields)
+    expected = [
+        {name: getattr(item, name) for name in field_names} for item in generated_facts
+    ]
+    actual = [{name: getattr(item, name) for name in field_names} for item in persisted]
+    expected_value = sorted(
+        (_canonical_parity_value(item) for item in expected),
+        key=_hash_payload,
+    )
+    actual_value = sorted(
+        (_canonical_parity_value(item) for item in actual),
+        key=_hash_payload,
+    )
+    expected_digest = _hash_payload(expected_value)
+    actual_digest = _hash_payload(actual_value)
+    matched = len(expected) == len(actual) and expected_digest == actual_digest
+    return {
+        "status": "matched" if matched else "mismatch",
+        "expectedRows": len(expected),
+        "persistedRows": len(actual),
+        "expectedDigest": expected_digest,
+        "persistedDigest": actual_digest,
+        "mismatches": [] if matched else ["dailyFacts"],
+    }
+
+
+def _canonical_parity_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return _canonical_parity_value(value.model_dump(mode="python"))
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_parity_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key) not in {"generatedAt", "generated_at"}
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_parity_value(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_canonical_parity_value(item) for item in value)
+    if hasattr(value, "value"):
+        return _canonical_parity_value(value.value)
+    return value
 
 
 def _ozon_status(item: OzonPageResult) -> str:
@@ -3105,6 +5023,18 @@ def _wb_product_cards_status(item: WbProductCardsPageResult) -> str:
     return "failed" if not item.ok else "loaded"
 
 
+def _wb_document_status(item: WbDocumentExportResult) -> str:
+    if item.ok and item.row_count > 0 and item.downloaded_count > 0:
+        return "loaded"
+    if item.ok and item.row_count == 0:
+        return "empty_expected"
+    if item.status_code in {401, 403}:
+        return "auth_failed"
+    if item.status_code == 429:
+        return "rate_limited"
+    return "failed" if not item.ok else "needs_review"
+
+
 def _aggregate_status(items: list[dict[str, Any]], *, required: bool) -> str:
     if not items:
         return "failed" if required else "needs_review"
@@ -3156,8 +5086,200 @@ def _onec_status(item: OnecSampleExportResult, *, required: bool) -> str:
     return "loaded"
 
 
+def _onec_financial_table_quality(
+    item: OnecSampleExportResult,
+) -> dict[str, Any]:
+    """Reject a commissioner snapshot that contains headers but no SKU details."""
+    if item.sample_id != "commissioner_reports":
+        return {"status": "not_applicable"}
+    if not item.ok or item.row_count == 0 or item.output_path is None:
+        return {"status": "not_checked"}
+    try:
+        rows = _extract_onec_rows(_read_json_object(item.output_path))
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "status": "partial_source",
+            "code": "commissioner_financial_tables_unreadable",
+            "error": exc.__class__.__name__,
+        }
+    table_names = ("Запасы", "ЗапасыВозвраты")
+    rows_with_tables = 0
+    rows_with_organization = 0
+    financial_line_count = 0
+    for row in rows:
+        if str(row.get("Организация_Key") or "").strip():
+            rows_with_organization += 1
+        has_table = False
+        for table_name in table_names:
+            table = row.get(table_name)
+            if isinstance(table, list):
+                has_table = True
+                financial_line_count += sum(
+                    1 for value in table if isinstance(value, dict)
+                )
+        if has_table:
+            rows_with_tables += 1
+    if not rows_with_tables or not financial_line_count:
+        return {
+            "status": "partial_source",
+            "code": "commissioner_financial_tables_missing",
+            "headerRows": len(rows),
+            "rowsWithTables": rows_with_tables,
+            "financialLineCount": financial_line_count,
+        }
+    if not rows_with_organization:
+        return {
+            "status": "partial_source",
+            "code": "commissioner_organization_missing",
+            "headerRows": len(rows),
+            "rowsWithTables": rows_with_tables,
+            "rowsWithOrganization": rows_with_organization,
+            "financialLineCount": financial_line_count,
+        }
+    return {
+        "status": "loaded",
+        "headerRows": len(rows),
+        "rowsWithTables": rows_with_tables,
+        "rowsWithOrganization": rows_with_organization,
+        "financialLineCount": financial_line_count,
+    }
+
+
 def _commit_source_refresh_progress(db: Session) -> None:
+    refresh_run_id = str(getattr(db, "info", {}).get("source_refresh_run_id") or "")
+    if refresh_run_id:
+        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        if refresh_run is not None and refresh_run.finished_at is None:
+            repository.update_source_refresh_run(
+                db,
+                refresh_run,
+                heartbeat_at=security.utcnow(),
+            )
     db.commit()
+
+
+def source_refresh_progress_payload(
+    refresh_run: SourceRefreshRun,
+    *,
+    source_root: Path,
+) -> dict[str, Any]:
+    status = refresh_run.status
+    terminal = refresh_run.finished_at is not None
+    if terminal:
+        stage = "complete"
+        current_source = "Завершено"
+    elif status == "queued":
+        stage = "queued"
+        current_source = "Очередь"
+    elif status == "rebuilding":
+        stage = "rebuilding"
+        current_source = "Расчёт отчёта"
+    elif status == "source_loaded":
+        stage = "mapping"
+        current_source = "Проверка сопоставления"
+    elif refresh_run.mode == "onec-only":
+        stage = "onec"
+        current_source = "1С"
+    elif refresh_run.mode == "ozon-only":
+        stage = "onec"
+        current_source = "Ozon и 1С"
+    else:
+        stage = "wb_finance"
+        current_source = "WB"
+
+    root = (
+        Path(refresh_run.root_dir).resolve()
+        if refresh_run.root_dir
+        else (source_root / refresh_run.snapshot_set_id).resolve()
+    )
+    allowed_root = source_root.resolve()
+    last_activity_at: datetime | None = None
+    manifest: dict[str, Any] = {}
+    manifest_path = root / "wb_finance" / "manifest.json"
+    if (
+        root.is_relative_to(allowed_root)
+        and manifest_path.is_file()
+        and manifest_path.stat().st_size <= 5 * 1024 * 1024
+    ):
+        with suppress(OSError, ValueError, TypeError, json.JSONDecodeError):
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                manifest = loaded
+
+    if root.is_relative_to(allowed_root) and root.is_dir():
+        activity_paths = [manifest_path]
+        with suppress(OSError):
+            activity_paths.extend(item for item in root.iterdir() if item.is_dir())
+        onec_root = root / "onec"
+        if onec_root.is_dir():
+            with suppress(OSError):
+                activity_paths.extend(
+                    item for item in onec_root.iterdir() if item.is_dir()
+                )
+        for activity_path in activity_paths:
+            with suppress(OSError):
+                modified_at = datetime.fromtimestamp(
+                    activity_path.stat().st_mtime,
+                    tz=ZoneInfo("UTC"),
+                )
+                if last_activity_at is None or modified_at > last_activity_at:
+                    last_activity_at = modified_at
+
+    results = [item for item in manifest.get("results", []) if isinstance(item, dict)]
+    account_results: dict[str, list[dict[str, Any]]] = {}
+    bytes_written = 0
+    for item in results:
+        account_id = str(item.get("seller_account_id") or "").strip()
+        if account_id:
+            account_results.setdefault(account_id, []).append(item)
+        output_name = str(item.get("output_file") or "").strip()
+        if not output_name or Path(output_name).name != output_name:
+            continue
+        output_path = manifest_path.parent / output_name
+        with suppress(OSError):
+            if output_path.is_file() and output_path.resolve().is_relative_to(
+                allowed_root
+            ):
+                bytes_written += output_path.stat().st_size
+
+    wb_accounts_completed = sum(
+        1
+        for items in account_results.values()
+        if items and str(items[-1].get("status") or "") == "no_data"
+    )
+    pages_loaded = sum(
+        1 for item in results if str(item.get("status") or "") != "no_data"
+    )
+    rows_loaded = sum(max(0, int(item.get("row_count") or 0)) for item in results)
+    completed_statuses = {
+        "loaded",
+        "empty_expected",
+        "needs_review",
+        "partial_source",
+        "failed",
+        "auth_failed",
+        "rate_limited",
+    }
+    completed_sources = sum(
+        1 for item in refresh_run.collections if item.status in completed_statuses
+    )
+    if not terminal and stage == "wb_finance" and (root / "onec").is_dir():
+        stage = "onec"
+        current_source = "1С"
+    return {
+        "stage": stage,
+        "currentSource": current_source,
+        "completedSources": completed_sources,
+        "totalSources": len(refresh_run.collections),
+        "wbAccountsCompleted": wb_accounts_completed,
+        "wbAccountsTotal": len(account_results),
+        "pagesLoaded": pages_loaded,
+        "rowsLoaded": rows_loaded,
+        "bytesWritten": bytes_written,
+        "lastActivityAt": (
+            last_activity_at.isoformat() if last_activity_at is not None else None
+        ),
+    }
 
 
 def _persist_wb_finance_rows(
@@ -3228,6 +5350,28 @@ def _persist_wb_report_list_rows(
         _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_wb_redeem_notification_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    rows: Iterable[dict[str, Any]],
+) -> None:
+    batch: list[dict[str, Any]] = []
+    for row_number, row in enumerate(rows, 1):
+        report_id = str(row.get("reportId") or "").strip()
+        batch.append(
+            {
+                "row_number": row_number,
+                "raw_payload_hash": _hash_payload(row),
+                "row_payload": row,
+                "source_row_id": report_id or str(row_number),
+                "wb_cabinet_id": str(row.get("wbCabinetId") or ""),
+                "loaded_at": collection.loaded_at,
+            }
+        )
+        _flush_snapshot_batch(db, collection, batch)
+    _flush_snapshot_batch(db, collection, batch, force=True)
 
 
 def _persist_wb_product_card_rows(
@@ -3349,11 +5493,875 @@ def _persist_ozon_rows(
         _mark_raw_row_persistence_failure(db, collection, exc)
 
 
+def _materialize_ozon_typed_collection(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    collection: SourceRefreshCollection,
+    results: Iterable[OzonPageResult],
+    *,
+    ozon_cabinet_ids: dict[str, str],
+) -> None:
+    payload = collection.payload or {}
+    raw_integrity = payload.get("rawIntegrity") or {}
+    if raw_integrity.get("status") != "verified":
+        collection.payload = {
+            **payload,
+            "typedParity": {
+                "status": "blocked_raw_integrity",
+                "reason": str(raw_integrity.get("error") or "not_verified"),
+            },
+        }
+        db.flush()
+        return
+    result_items = list(results)
+    file_operation_rows = list(
+        _iter_ozon_operation_facts(
+            result_items,
+            ozon_cabinet_ids=ozon_cabinet_ids,
+        )
+    )
+    operation_rows = _merge_ozon_operation_facts(file_operation_rows)
+    legacy_operation_rows = list(
+        _iter_legacy_ozon_operation_facts(
+            db,
+            collection,
+            ozon_cabinet_ids=ozon_cabinet_ids,
+        )
+    )
+    legacy_parity = _ozon_legacy_file_parity(
+        file_operation_rows,
+        legacy_operation_rows,
+    )
+    operation_count = repository.replace_marketplace_operation_facts(
+        db,
+        collection,
+        operation_rows,
+    )
+    persistence_parity = repository.marketplace_operation_facts_parity(
+        db,
+        collection,
+        operation_rows,
+    )
+    typed_parity = {
+        **persistence_parity,
+        "status": (
+            "matched"
+            if persistence_parity.get("status") == "matched"
+            and legacy_parity.get("status") in {"matched", "not_run_no_legacy_rows"}
+            and len(file_operation_rows) >= collection.row_count
+            else "mismatch"
+        ),
+        "sourceRows": collection.row_count,
+        "operationRowsBeforeMerge": len(file_operation_rows),
+        "operationRowsAfterMerge": len(operation_rows),
+        "persistenceParity": persistence_parity,
+        "legacyFileParity": legacy_parity,
+        "sourceCoverage": {
+            "status": (
+                "matched"
+                if len(file_operation_rows) >= collection.row_count
+                else "mismatch"
+            ),
+            "expectedRows": collection.row_count,
+            "normalizedRows": len(file_operation_rows),
+        },
+    }
+    ozon_daily_facts = _ozon_daily_facts_for_run(db, refresh_run)
+    ozon_daily_count = repository.replace_marketplace_finance_daily_facts(
+        db,
+        refresh_run,
+        ozon_daily_facts,
+        marketplace="ozon",
+        cabinet_ids=ozon_cabinet_ids,
+    )
+    collection.payload = {
+        **(collection.payload or {}),
+        "operationFacts": {
+            "status": "materialized",
+            "rowCount": operation_count,
+            "dailyRowCount": ozon_daily_count,
+        },
+        "typedParity": typed_parity,
+    }
+    db.flush()
+
+
+def _iter_ozon_operation_facts(
+    results: Iterable[OzonPageResult],
+    *,
+    ozon_cabinet_ids: dict[str, str],
+) -> Iterable[dict[str, Any]]:
+    for result in results:
+        if _is_ozon_report_control_result(result):
+            continue
+        for local_index, row in enumerate(_read_ozon_rows(result.output_path), 1):
+            yield from _ozon_operation_facts_for_row(
+                result,
+                row,
+                local_index=local_index,
+                ozon_cabinet_ids=ozon_cabinet_ids,
+            )
+
+
+def _iter_legacy_ozon_operation_facts(
+    db: Session,
+    collection: SourceRefreshCollection,
+    *,
+    ozon_cabinet_ids: dict[str, str],
+) -> Iterable[dict[str, Any]]:
+    rows = db.scalars(
+        select(SourceSnapshotRow)
+        .where(SourceSnapshotRow.collection_id == collection.id)
+        .order_by(SourceSnapshotRow.row_number)
+    )
+    augmentation_keys = {
+        "marketplace",
+        "seller_account_id",
+        "source_endpoint",
+        "source_page_index",
+        "source_output_file",
+    }
+    for row in rows:
+        payload = dict(row.row_payload or {})
+        seller_account_id = str(payload.get("seller_account_id") or "")
+        source_endpoint = str(payload.get("source_endpoint") or "")
+        if (
+            collection.source_type == "ozon_mutual_settlement"
+            and source_endpoint != "report_file"
+        ):
+            continue
+        page_index = int(payload.get("source_page_index") or 0)
+        source_payload = {
+            key: value for key, value in payload.items() if key not in augmentation_keys
+        }
+        result = OzonPageResult(
+            source_type=collection.source_type,
+            seller_account_id=seller_account_id,
+            account_name="",
+            page_index=page_index,
+            ok=True,
+            status="ok",
+            row_count=1,
+            source_endpoint=source_endpoint,
+        )
+        yield from _ozon_operation_facts_for_row(
+            result,
+            source_payload,
+            local_index=row.row_number,
+            ozon_cabinet_ids=ozon_cabinet_ids,
+        )
+
+
+def _ozon_operation_facts_for_row(
+    result: OzonPageResult,
+    row: dict[str, Any],
+    *,
+    local_index: int,
+    ozon_cabinet_ids: dict[str, str],
+) -> Iterable[dict[str, Any]]:
+    items = _ozon_operation_items(result, row)
+    for item in items:
+        fact = _ozon_operation_fact(
+            result,
+            row=row,
+            item=item,
+            local_index=local_index,
+            ozon_cabinet_ids=ozon_cabinet_ids,
+        )
+        if result.source_type.removesuffix("_file") == "ozon_finance_cash_flow":
+            yield from _ozon_cash_flow_operation_facts(fact, item)
+            continue
+        if not result.source_type.startswith("ozon_realization"):
+            yield fact
+            continue
+        expense_fields = {
+            "commission": Decimal(fact["commission"]),
+            "service_amount": Decimal(fact["service_amount"]),
+            "logistics": Decimal(fact["logistics"]),
+            "storage": Decimal(fact["storage"]),
+            "promotion": Decimal(fact["promotion"]),
+            "compensation": Decimal(fact["compensation"]),
+            "other_amount": Decimal(fact["other_amount"]),
+        }
+        product_fact = {
+            **fact,
+            "service_key": "product",
+            "service_name": "",
+            **{field: Decimal("0") for field in expense_fields},
+        }
+        product_fact["source_key"] = _ozon_fact_source_key(product_fact)
+        yield product_fact
+        for service_key, amount in expense_fields.items():
+            if amount == 0:
+                continue
+            service_fact = {
+                **fact,
+                "service_key": service_key,
+                "service_name": service_key,
+                "quantity": Decimal("0"),
+                "amount": Decimal("0"),
+                "price": Decimal("0"),
+                "income": Decimal("0"),
+                "expense": Decimal("0"),
+                **{field: Decimal("0") for field in expense_fields},
+            }
+            service_fact[service_key] = amount
+            service_fact["source_key"] = _ozon_fact_source_key(service_fact)
+            yield service_fact
+
+
+def _ozon_cash_flow_operation_facts(
+    fact: dict[str, Any],
+    item: dict[str, Any],
+) -> Iterable[dict[str, Any]]:
+    summary = {
+        **fact,
+        "service_key": "cash_flow_summary",
+        "service_name": "cash_flow_summary",
+    }
+    summary["source_key"] = _ozon_fact_source_key(summary)
+    yield summary
+    for category in (
+        "delivery",
+        "return",
+        "loan",
+        "invoice_transfer",
+        "rfbs",
+        "services",
+        "others",
+    ):
+        payload = item.get(category)
+        if not isinstance(payload, dict):
+            continue
+        total = _decimal_value(payload, "total", "amount", "price")
+        category_fact = {
+            **fact,
+            "service_key": f"cash_flow_category:{category}",
+            "service_name": category,
+            "operation_type": "cash_flow_category",
+            "quantity": Decimal("0"),
+            "amount": total,
+            "price": Decimal("0"),
+            "income": Decimal("0"),
+            "expense": Decimal("0"),
+            "commission": Decimal("0"),
+            "service_amount": Decimal("0"),
+            "logistics": Decimal("0"),
+            "storage": Decimal("0"),
+            "promotion": Decimal("0"),
+            "compensation": Decimal("0"),
+            "other_amount": Decimal("0"),
+            "raw_payload_hash": _hash_payload(payload),
+            "_stable_payload_hash": _ozon_stable_payload_hash(payload),
+        }
+        category_fact["source_key"] = _ozon_fact_source_key(category_fact)
+        yield category_fact
+        lines = payload.get("items")
+        if not isinstance(lines, list):
+            continue
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            line_name = _text_value(line, "name", "operation_type", "type")
+            line_fact = {
+                **category_fact,
+                "service_key": (
+                    f"cash_flow_item:{category}:{_ozon_stable_payload_hash(line)}"
+                ),
+                "service_name": line_name or category,
+                "operation_type": "cash_flow_item",
+                "amount": _decimal_value(line, "price", "amount", "total"),
+                "raw_payload_hash": _hash_payload(line),
+                "_stable_payload_hash": _ozon_stable_payload_hash(line),
+            }
+            line_fact["source_key"] = _ozon_fact_source_key(line_fact)
+            yield line_fact
+
+
+def _ozon_legacy_file_parity(
+    file_rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not legacy_rows:
+        return {"status": "not_run_no_legacy_rows", "legacyRows": 0}
+    file_values = _merge_ozon_operation_facts(file_rows)
+    legacy_values = _merge_ozon_operation_facts(legacy_rows)
+    file_digest = _ozon_operation_rows_digest(file_values)
+    legacy_digest = _ozon_operation_rows_digest(legacy_values)
+    matched = len(file_values) == len(legacy_values) and file_digest == legacy_digest
+    return {
+        "status": "matched" if matched else "mismatch",
+        "fileRows": len(file_rows),
+        "legacyRows": len(legacy_rows),
+        "fileFacts": len(file_values),
+        "legacyFacts": len(legacy_values),
+        "fileDigest": file_digest,
+        "legacyDigest": legacy_digest,
+        "mismatches": [] if matched else ["normalizedOperations"],
+    }
+
+
+def _ozon_operation_rows_digest(rows: list[dict[str, Any]]) -> str:
+    values = [
+        {
+            key: value
+            for key, value in row.items()
+            if not key.startswith("_")
+            and key not in {"source_row_id", "source_row_number"}
+        }
+        for row in rows
+    ]
+    values.sort(key=lambda item: str(item.get("source_key") or ""))
+    return _hash_payload(values)
+
+
+def _ozon_operation_items(
+    result: OzonPageResult,
+    row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    source_type = result.source_type.removesuffix("_file")
+    if source_type == "ozon_finance_cash_flow":
+        cash_flows = row.get("cash_flows")
+        if not isinstance(cash_flows, list):
+            return [row]
+        details = row.get("details")
+        detail_by_period = (
+            {
+                str(item.get("period") or ""): item
+                for item in details
+                if isinstance(item, dict)
+            }
+            if isinstance(details, list)
+            else {}
+        )
+        return [
+            {
+                **item,
+                **detail_by_period.get(str(item.get("period") or ""), {}),
+            }
+            for item in cash_flows
+            if isinstance(item, dict)
+        ]
+    if source_type in {"ozon_realization", "ozon_realization_posting"}:
+        normalized = _iter_realization_items(row)
+        order = row.get("order")
+        if not isinstance(order, dict):
+            return normalized
+        return [{**item, **order} for item in normalized]
+    if source_type == "ozon_products_buyout":
+        products = row.get("products")
+        if isinstance(products, list):
+            return [item for item in products if isinstance(item, dict)]
+    if source_type == "ozon_b2b_sales_json":
+        invoices = row.get("invoices")
+        if not isinstance(invoices, list):
+            return [row]
+        result_items: list[dict[str, Any]] = []
+        for invoice in invoices:
+            if not isinstance(invoice, dict):
+                continue
+            info = invoice.get("info")
+            invoice_info = info if isinstance(info, dict) else {}
+            operations = invoice.get("operations")
+            if not isinstance(operations, list) or not operations:
+                result_items.append({**invoice, **invoice_info})
+                continue
+            for operation in operations:
+                if isinstance(operation, dict):
+                    result_items.append({**invoice, **invoice_info, **operation})
+        return result_items
+    return [row]
+
+
+def _ozon_daily_facts_for_run(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+) -> list[MarketplaceFinanceDailyFactContract]:
+    rows = list(
+        db.scalars(
+            select(MarketplaceOperationFact).where(
+                MarketplaceOperationFact.tenant_id == refresh_run.tenant_id,
+                MarketplaceOperationFact.client_id == refresh_run.client_id,
+                MarketplaceOperationFact.marketplace == "ozon",
+                MarketplaceOperationFact.source_refresh_run_id == refresh_run.id,
+            )
+        )
+    )
+    grouped: dict[tuple[object, ...], dict[str, Any]] = {}
+    for row in rows:
+        if row.operation_date is None:
+            continue
+        if not (
+            refresh_run.period_start <= row.operation_date <= refresh_run.period_end
+        ):
+            continue
+        operation_group = row.operation_type or row.service_key or "unknown"
+        key = (
+            row.seller_account_id,
+            row.operation_date,
+            row.source_type,
+            row.product_id,
+            row.offer_id,
+            row.sku,
+            row.barcode,
+            operation_group,
+        )
+        bucket = grouped.setdefault(
+            key,
+            {
+                "quantity": Decimal("0"),
+                "amount": Decimal("0"),
+                "commission": Decimal("0"),
+                "logistics": Decimal("0"),
+                "storage": Decimal("0"),
+                "promotion": Decimal("0"),
+                "other": Decimal("0"),
+                "hashes": [],
+                "partial": False,
+            },
+        )
+        bucket["quantity"] += Decimal(row.quantity)
+        bucket["amount"] += Decimal(row.income or row.amount)
+        bucket["commission"] += Decimal(row.commission)
+        bucket["logistics"] += Decimal(row.logistics)
+        bucket["storage"] += Decimal(row.storage)
+        bucket["promotion"] += Decimal(row.promotion)
+        bucket["other"] += Decimal(row.other_amount) + Decimal(row.expense)
+        if row.raw_payload_hash not in bucket["hashes"]:
+            bucket["hashes"].append(row.raw_payload_hash)
+        bucket["partial"] = bool(bucket["partial"] or row.is_partial_source)
+    facts: list[MarketplaceFinanceDailyFactContract] = []
+    for key, bucket in grouped.items():
+        (
+            seller_account_id,
+            fact_date,
+            source_type,
+            product_id,
+            offer_id,
+            sku,
+            barcode,
+            operation_group,
+        ) = key
+        quantity = Decimal(bucket["quantity"])
+        try:
+            nm_id = int(str(product_id)) if str(product_id) else None
+        except ValueError:
+            nm_id = None
+        source_hash_digest = hashlib.sha256(
+            "\0".join(sorted(str(value) for value in bucket["hashes"])).encode("utf-8")
+        ).hexdigest()
+        facts.append(
+            MarketplaceFinanceDailyFactContract(
+                client_id=refresh_run.client_id,
+                seller_account_id=str(seller_account_id),
+                organization_id="",
+                fact_date=fact_date,
+                marketplace_report_id=str(source_type),
+                document_kind=str(source_type),
+                nm_id=nm_id,
+                vendor_code=str(offer_id or sku),
+                barcode=str(barcode),
+                onec_item_id="",
+                sales_model="",
+                operation_group=str(operation_group),
+                sales_quantity=max(quantity, Decimal("0")),
+                return_quantity=abs(min(quantity, Decimal("0"))),
+                quantity=quantity,
+                net_revenue=Decimal(bucket["amount"]),
+                wb_commission=Decimal(bucket["commission"]),
+                logistics=Decimal(bucket["logistics"]),
+                storage=Decimal(bucket["storage"]),
+                marketplace_promotion=Decimal(bucket["promotion"]),
+                penalties_and_holdbacks=Decimal(bucket["other"]),
+                source_row_count=len(bucket["hashes"]),
+                source_hash_digest=source_hash_digest,
+                is_partial_source=bool(bucket["partial"]),
+                methodology_version="ozon-typed-daily-v1",
+            )
+        )
+    return facts
+
+
+def _merge_ozon_operation_facts(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    numeric_fields = (
+        "quantity",
+        "amount",
+        "price",
+        "income",
+        "expense",
+        "debit_amount",
+        "credit_amount",
+        "commission",
+        "service_amount",
+        "logistics",
+        "storage",
+        "promotion",
+        "compensation",
+        "other_amount",
+    )
+    fallback_occurrences: dict[str, int] = {}
+    for row in rows:
+        key = str(row["source_key"])
+        if _ozon_fact_uses_fallback(row):
+            fallback_occurrences[key] = fallback_occurrences.get(key, 0) + 1
+            key = _hash_payload(
+                {
+                    "businessKey": key,
+                    "duplicateOrdinal": fallback_occurrences[key],
+                }
+            )
+            row = {**row, "source_key": key}
+        current = result.get(key)
+        if current is None:
+            result[key] = dict(row)
+            continue
+        for field in numeric_fields:
+            current[field] = Decimal(current.get(field) or 0) + Decimal(
+                row.get(field) or 0
+            )
+        current["source_row_number"] = min(
+            int(current.get("source_row_number") or 0),
+            int(row.get("source_row_number") or 0),
+        )
+        current["is_partial_source"] = bool(
+            current.get("is_partial_source") or row.get("is_partial_source")
+        )
+        current["raw_payload_hash"] = _hash_payload(
+            sorted(
+                {
+                    str(current.get("raw_payload_hash") or ""),
+                    str(row.get("raw_payload_hash") or ""),
+                }
+            )
+        )
+    return list(result.values())
+
+
+def _ozon_fact_uses_fallback(row: dict[str, Any]) -> bool:
+    return bool(row.get("_preserve_occurrences")) or not (
+        str(row.get("operation_id") or row.get("operation_type") or "")
+        or str(row.get("posting_number") or "")
+    )
+
+
+def _ozon_operation_fact(
+    result: OzonPageResult,
+    *,
+    row: dict[str, Any],
+    item: dict[str, Any],
+    local_index: int,
+    ozon_cabinet_ids: dict[str, str],
+) -> dict[str, Any]:
+    source_row_id = _first_row_id(
+        row,
+        "id",
+        "operation_id",
+        "posting_number",
+        "product_id",
+        "offer_id",
+        "sku",
+        "code",
+        "ID товара",
+        "Идентификатор товара",
+        "Артикул",
+        "Артикул продавца",
+        "SKU",
+    ) or (
+        f"{result.source_type.removesuffix('_file')}:{result.page_index}:{local_index}"
+    )
+    operation_id = _text_value(
+        item, "operation_id", "operationId", "id", "Документ"
+    ) or _text_value(row, "operation_id", "operationId", "id")
+    posting_number = _text_value(
+        item, "posting_number", "postingNumber", "Номер отправления"
+    ) or _text_value(row, "posting_number", "postingNumber", "Номер отправления")
+    product_id = _text_value(
+        item,
+        "product_id",
+        "productId",
+        "Ozon Product ID",
+        "ID товара",
+        "Идентификатор товара",
+    )
+    offer_id = _text_value(item, "offer_id", "offerId", "Артикул продавца", "Артикул")
+    sku = _text_value(item, "sku", "SKU", "ozon_sku", "Ozon SKU")
+    barcode = _text_value(
+        item,
+        "barcode",
+        "Barcode",
+        "Штрихкод",
+        "Штрихкод (Серийный номер / EAN)",
+        "Баркод",
+    )
+    product_name = _text_value(
+        item,
+        "product_name",
+        "Product name",
+        "name",
+        "Название товара",
+        "Наименование",
+    )
+    operation_type = _text_value(
+        item,
+        "operation_type",
+        "operation_type_name",
+        "operationType",
+        "type",
+        "Тип операции",
+        "Название операции",
+        "Наименование",
+    ) or _text_value(
+        row,
+        "operation_type",
+        "operation_type_name",
+        "operationType",
+        "type",
+        "Тип операции",
+        "Название операции",
+    )
+    service_key = _text_value(
+        item,
+        "service_key",
+        "serviceKey",
+        "service_code",
+        "serviceCode",
+        "service_name",
+        "serviceName",
+        "Название услуги",
+    ) or ("aggregate" if result.source_type == "ozon_realization" else "operation")
+    service_name = _text_value(
+        item,
+        "service_name",
+        "serviceName",
+        "Название услуги",
+    )
+    source_type = result.source_type.removesuffix("_file")
+    preserve_occurrences = False
+    if source_type == "ozon_mutual_settlement":
+        service_name = operation_type or service_name
+        service_key = f"mutual:{_ozon_stable_payload_hash(item)}"
+        preserve_occurrences = True
+    is_realization_source = result.source_type.startswith("ozon_realization")
+    is_cash_flow_source = (
+        result.source_type.removesuffix("_file") == "ozon_finance_cash_flow"
+    )
+    cash_period_start, cash_period_end = (
+        _ozon_cash_flow_period(item) if is_cash_flow_source else (None, None)
+    )
+    if is_cash_flow_source and cash_period_start is not None:
+        operation_id = (
+            f"{cash_period_start.isoformat()}|"
+            f"{(cash_period_end or cash_period_start).isoformat()}"
+        )
+    expenses, expenses_loaded = (
+        _realization_expenses(item) if is_realization_source else ({}, False)
+    )
+    amount = (
+        _realization_amount(item)
+        if is_realization_source
+        else _decimal_value(item, "orders_amount")
+        - abs(_decimal_value(item, "returns_amount"))
+        if is_cash_flow_source
+        else _decimal_value(item, "amount", "accruals_for_sale", "Итого", "Сумма")
+    )
+    fact = {
+        "wb_cabinet_id": ozon_cabinet_ids.get(result.seller_account_id, ""),
+        "seller_account_id": result.seller_account_id,
+        "source_type": source_type,
+        "source_key": "",
+        "source_row_id": source_row_id,
+        "source_row_number": local_index,
+        "operation_id": operation_id,
+        "posting_number": posting_number,
+        "product_id": product_id,
+        "offer_id": offer_id,
+        "sku": sku,
+        "service_key": service_key,
+        "service_name": service_name,
+        "barcode": barcode,
+        "product_name": product_name,
+        "operation_type": operation_type
+        or ("cash_flow" if is_cash_flow_source else ""),
+        "operation_date": cash_period_start
+        or _date_value(
+            item,
+            "operation_date",
+            "operationDate",
+            "accrual_date",
+            "sale_date",
+            "created_date",
+            "date",
+            "Дата операции",
+            "period",
+        )
+        or _date_value(row, "operation_date", "operationDate", "date"),
+        "quantity": (
+            _realization_quantity(item)
+            if is_realization_source
+            else _decimal_value(item, "quantity", "qty", "Количество")
+        ),
+        "amount": amount or Decimal("0"),
+        "price": _decimal_value(
+            item,
+            "price",
+            "seller_price_per_instance",
+            "buyout_price",
+            "Цена",
+        ),
+        "income": (
+            _decimal_value(item, "orders_amount")
+            if is_cash_flow_source
+            else _decimal_value(
+                item,
+                "income",
+                "revenue",
+                "accruals_for_sale",
+                "Начислено",
+            )
+        ),
+        "expense": (
+            abs(_decimal_value(item, "returns_amount"))
+            if is_cash_flow_source
+            else _decimal_value(
+                item,
+                "expense",
+                "sale_commission",
+                "delivery_charge",
+                "return_delivery_charge",
+                "Расход",
+            )
+        ),
+        "debit_amount": _decimal_value(
+            item,
+            "debit_amount",
+            "Сумма дебиторской задолженности, RUR",
+        ),
+        "credit_amount": _decimal_value(
+            item,
+            "credit_amount",
+            "Сумма кредиторской задолженности, RUR",
+        ),
+        "commission": (
+            _decimal_value(item, "commission_amount")
+            if is_cash_flow_source
+            else expenses.get("commission", Decimal("0"))
+        ),
+        "service_amount": (
+            _decimal_value(item, "services_amount")
+            if is_cash_flow_source
+            else expenses.get("services", Decimal("0"))
+        ),
+        "logistics": (
+            _decimal_value(item, "item_delivery_and_return_amount")
+            if is_cash_flow_source
+            else expenses.get("logistics", Decimal("0"))
+        ),
+        "storage": expenses.get("storage", Decimal("0")),
+        "promotion": expenses.get("promotion", Decimal("0")),
+        "compensation": expenses.get("compensation", Decimal("0")),
+        "other_amount": expenses.get("other", Decimal("0"))
+        + expenses.get("partner_services", Decimal("0")),
+        "expenses_loaded": expenses_loaded,
+        "is_partial_source": not (result.ok and result.status == "ok")
+        or (is_realization_source and amount is None),
+        "currency": _text_value(item, "currency", "currency_code", "Валюта") or "RUB",
+        "source_endpoint": result.source_endpoint,
+        "raw_payload_hash": _hash_payload(item),
+        "_stable_payload_hash": _ozon_stable_payload_hash(item),
+        "_preserve_occurrences": preserve_occurrences,
+    }
+    fact["source_key"] = _ozon_fact_source_key(fact)
+    return fact
+
+
+def _ozon_fact_source_key(fact: dict[str, Any]) -> str:
+    operation_id = str(fact.get("operation_id") or fact.get("operation_type") or "")
+    posting_number = str(fact.get("posting_number") or "")
+    return _hash_payload(
+        {
+            "sellerAccountId": str(fact.get("seller_account_id") or ""),
+            "sourceType": str(fact.get("source_type") or ""),
+            "operationId": operation_id,
+            "postingNumber": posting_number,
+            "productId": str(fact.get("product_id") or ""),
+            "offerId": str(fact.get("offer_id") or ""),
+            "sku": str(fact.get("sku") or ""),
+            "serviceKey": str(fact.get("service_key") or ""),
+            "fallbackRawPayloadHash": (
+                str(fact.get("_stable_payload_hash") or "")
+                if not operation_id and not posting_number
+                else ""
+            ),
+        }
+    )
+
+
+def _ozon_stable_payload_hash(payload: dict[str, Any]) -> str:
+    return _hash_payload(
+        {
+            key: value
+            for key, value in payload.items()
+            if key.casefold().replace("_", "")
+            not in {"rownumber", "sourcepagenumber", "sourcepageindex"}
+        }
+    )
+
+
+def _ozon_cash_flow_period(
+    payload: dict[str, Any],
+) -> tuple[date | None, date | None]:
+    period = payload.get("period")
+    if isinstance(period, dict):
+        period_start = _date_value(period, "begin", "start", "from")
+        period_end = _date_value(period, "end", "to") or period_start
+        return period_start, period_end
+    period_start = _date_value(payload, "period")
+    return period_start, period_start
+
+
+def _text_value(row: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _decimal_value(row: dict[str, Any], *keys: str) -> Decimal:
+    value = _text_value(row, *keys).replace(" ", "").replace(",", ".")
+    if not value:
+        return Decimal("0")
+    try:
+        return Decimal(value)
+    except InvalidOperation:
+        return Decimal("0")
+
+
+def _date_value(row: dict[str, Any], *keys: str) -> date | None:
+    value = _text_value(row, *keys)
+    if not value:
+        return None
+    if len(value) == 7:
+        with suppress(ValueError):
+            return date.fromisoformat(f"{value}-01")
+    with suppress(ValueError):
+        return date.fromisoformat(value[:10])
+    for pattern in ("%d.%m.%Y", "%d-%m-%Y"):
+        with suppress(ValueError):
+            return datetime.strptime(value[:10], pattern).date()
+    return None
+
+
 def _is_ozon_report_control_result(result: OzonPageResult) -> bool:
     if result.source_type.endswith("_info"):
         return True
     if result.source_type.endswith("_file"):
         return False
+    if result.source_type == "ozon_mutual_settlement":
+        return True
     endpoint = str(result.source_endpoint or "")
     return endpoint.startswith("/v1/report/") or endpoint == "/v1/report/info"
 
@@ -3371,6 +6379,31 @@ def _persist_onec_rows(
         _mark_raw_row_persistence_failure(db, collection, exc)
         return
     if byte_size > ONEC_DATABASE_ROW_PERSIST_MAX_BYTES:
+        if result.sample_id == "commissioner_reports":
+            try:
+                rows = _extract_onec_rows(_read_json_object(result.output_path))
+                compact_rows = [_compact_onec_commissioner_row(row) for row in rows]
+                _persist_onec_snapshot_rows(
+                    db,
+                    collection,
+                    result,
+                    compact_rows,
+                )
+            except (OSError, ValueError, TypeError) as exc:
+                _mark_raw_row_persistence_failure(db, collection, exc)
+                return
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "compacted_large_snapshot",
+                    "limitBytes": ONEC_DATABASE_ROW_PERSIST_MAX_BYTES,
+                    "byteSize": byte_size,
+                    "rawFilesAuthoritative": True,
+                    "persistedDocumentRows": len(compact_rows),
+                },
+            }
+            db.flush()
+            return
         collection.payload = {
             **(collection.payload or {}),
             "rowPersistence": {
@@ -3384,24 +6417,74 @@ def _persist_onec_rows(
         return
     try:
         rows = _extract_onec_rows(_read_json_object(result.output_path))
-        batch: list[dict[str, Any]] = []
-        for row_number, row in enumerate(rows, 1):
-            source_row_id = _first_row_id(row, "Ref_Key", "LineNumber", "НомерСтроки")
-            if not source_row_id:
-                source_row_id = f"{result.sample_id}:{row_number}"
-            batch.append(
-                {
-                    "row_number": row_number,
-                    "raw_payload_hash": _hash_payload(row),
-                    "row_payload": row,
-                    "source_row_id": source_row_id,
-                    "loaded_at": collection.loaded_at,
-                }
-            )
-            _flush_snapshot_batch(db, collection, batch)
-        _flush_snapshot_batch(db, collection, batch, force=True)
+        _persist_onec_snapshot_rows(db, collection, result, rows)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_onec_snapshot_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    result: OnecSampleExportResult,
+    rows: list[dict[str, Any]],
+) -> None:
+    batch: list[dict[str, Any]] = []
+    for row_number, row in enumerate(rows, 1):
+        source_row_id = _first_row_id(row, "Ref_Key", "LineNumber", "НомерСтроки")
+        if not source_row_id:
+            source_row_id = f"{result.sample_id}:{row_number}"
+        batch.append(
+            {
+                "row_number": row_number,
+                "raw_payload_hash": _hash_payload(row),
+                "row_payload": row,
+                "source_row_id": source_row_id,
+                "loaded_at": collection.loaded_at,
+            }
+        )
+        _flush_snapshot_batch(db, collection, batch)
+    _flush_snapshot_batch(db, collection, batch, force=True)
+
+
+def _compact_onec_commissioner_row(row: dict[str, Any]) -> dict[str, Any]:
+    header_fields = (
+        "Ref_Key",
+        "Date",
+        "Number",
+        "Posted",
+        "DeletionMark",
+        "Комментарий",
+        "НомерВходящегоДокумента",
+        "Организация_Key",
+        "Контрагент_Key",
+        "СуммаДокумента",
+        "СуммаДокументаВозврат",
+        "СуммаДокументаСУчетомВознаграждения",
+        "СуммаВознаграждения",
+    )
+    line_fields = (
+        "Номенклатура_Key",
+        "ХарактеристикаНоменклатуры_Key",
+        "Количество",
+        "Цена",
+        "Сумма",
+        "Всего",
+        "СуммаНДС",
+        "СтавкаНДС",
+    )
+    compact = {key: row[key] for key in header_fields if key in row}
+    for table_name in ("Запасы", "ЗапасыВозвраты"):
+        table = row.get(table_name)
+        compact[table_name] = (
+            [
+                {key: item[key] for key in line_fields if key in item}
+                for item in table
+                if isinstance(item, dict)
+            ]
+            if isinstance(table, list)
+            else []
+        )
+    return compact
 
 
 def _persist_mapping_rows(
@@ -3665,6 +6748,23 @@ def _subtract_calendar_months(value: date, months: int) -> date:
     return date(year, month, day)
 
 
+def _moscow_today() -> date:
+    return datetime.now(tz=MOSCOW_TZ).date()
+
+
+def _stock_history_provider_period(
+    period_start: date,
+    period_end: date,
+    *,
+    today: date | None = None,
+) -> tuple[date, date] | None:
+    earliest_available = _subtract_calendar_months(today or _moscow_today(), 3)
+    actual_start = max(period_start, earliest_available)
+    if actual_start > period_end:
+        return None
+    return actual_start, period_end
+
+
 def _mark_raw_row_persistence_failure(
     db: Session,
     collection: SourceRefreshCollection,
@@ -3690,6 +6790,88 @@ def _hash_payload(payload: Any) -> str:
         default=str,
     )
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _attach_collection_raw_integrity(
+    collection: SourceRefreshCollection,
+    *,
+    source_root: Path,
+) -> None:
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise SourceRefreshConfigError(
+            f"raw integrity results are missing for {collection.source_type}"
+        )
+    try:
+        verified = verify_raw_directory(
+            Path(collection.raw_path),
+            source_type=collection.source_type,
+            source_root=source_root,
+            collection_results=results,
+            collection_row_count=collection.row_count,
+            collection_snapshot_hash=collection.snapshot_hash,
+        )
+    except RawIntegrityError as exc:
+        collection.payload = {
+            **payload,
+            "rawIntegrity": {
+                "status": "failed",
+                "error": str(exc),
+            },
+        }
+        return
+    collection.payload = {
+        **payload,
+        "rawIntegrity": verified.as_payload(),
+    }
+
+
+def _reverify_collection_raw_integrity(
+    refresh_run: SourceRefreshRun,
+    *,
+    source_type: str,
+    raw_path: Path,
+    source_root: Path,
+) -> None:
+    collection = next(
+        (
+            item
+            for item in refresh_run.collections
+            if item.source_type == source_type
+            and Path(item.raw_path).resolve() == raw_path.resolve()
+        ),
+        None,
+    )
+    if collection is None:
+        raise SourceRefreshConfigError(
+            f"registered raw collection is missing for {source_type}"
+        )
+    payload = collection.payload or {}
+    if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+        return
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise SourceRefreshConfigError(
+            f"registered raw results are missing for {source_type}"
+        )
+    try:
+        verified = verify_raw_directory(
+            raw_path,
+            source_type=source_type,
+            source_root=source_root,
+            collection_results=results,
+            collection_row_count=collection.row_count,
+            collection_snapshot_hash=collection.snapshot_hash,
+        )
+    except RawIntegrityError as exc:
+        raise SourceRefreshConfigError(
+            f"raw integrity changed before rebuild for {source_type}: {exc}"
+        ) from exc
+    collection.payload = {
+        **payload,
+        "rawIntegrity": verified.as_payload(),
+    }
 
 
 def _safe_error(exc: Exception) -> str:

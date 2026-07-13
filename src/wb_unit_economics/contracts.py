@@ -102,6 +102,10 @@ class TaxProfile(ProjectModel):
     valid_from: date | None = None
     valid_to: date | None = None
     source: str = "config"
+    rate_basis_kind: str = ""
+    basis_document: str = ""
+    confirmed_by: str = ""
+    source_object_ids: list[str] = Field(default_factory=list)
 
     @field_validator("vat_rate", "revenue_tax_rate", mode="before")
     @classmethod
@@ -119,6 +123,31 @@ class TaxProfile(ProjectModel):
         return self
 
 
+class InputVatPolicy(ProjectModel):
+    client_id: str
+    organization_id: str
+    mode: str = "accounting_fact"
+    valid_from: date
+    valid_to: date | None = None
+    product_vat_basis: str = "sales_cost_difference"
+    service_vat_basis: str = "wb_gross_22_122"
+    reason: str = ""
+    source: str = "organization_policy"
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> InputVatPolicy:
+        if self.mode not in {"accounting_fact", "management_assumption"}:
+            raise ValueError("unsupported input VAT policy mode")
+        if self.valid_to is not None and self.valid_to < self.valid_from:
+            raise ValueError("valid_to must be greater than or equal to valid_from")
+        return self
+
+    def is_effective_for(self, calculation_date: date) -> bool:
+        if calculation_date < self.valid_from:
+            return False
+        return self.valid_to is None or calculation_date <= self.valid_to
+
+
 class WbApiSnapshot(ProjectModel):
     client_id: str
     seller_account_id: str
@@ -129,6 +158,7 @@ class WbApiSnapshot(ProjectModel):
     loaded_at: datetime
     wb_document_id: str
     wb_report_id: str = ""
+    report_type: int | None = None
     nm_id: int | None = None
     vendor_code: str = ""
     barcode: str = ""
@@ -149,6 +179,7 @@ class WbApiSnapshot(ProjectModel):
     raw_payload_hash: str
     original_sale_date: date | None = None
     is_partial_source: bool = False
+    source_row_count: int = Field(default=1, ge=1)
 
     @field_validator(
         "quantity",
@@ -173,6 +204,63 @@ class WbApiSnapshot(ProjectModel):
         if self.period_end < self.period_start:
             raise ValueError("period_end must be greater than or equal to period_start")
         return self
+
+
+class MarketplaceFinanceDailyFact(ProjectModel):
+    marketplace: str = "wb"
+    client_id: str
+    seller_account_id: str
+    organization_id: str
+    fact_date: date
+    marketplace_report_id: str = ""
+    document_kind: str = ""
+    nm_id: int | None = None
+    vendor_code: str = ""
+    barcode: str = ""
+    onec_item_id: str = ""
+    sales_model: str = ""
+    operation_group: str = ""
+    sales_quantity: Decimal = Decimal("0")
+    return_quantity: Decimal = Decimal("0")
+    quantity: Decimal = Decimal("0")
+    return_amount: Decimal = Decimal("0")
+    net_revenue: Decimal = Decimal("0")
+    wb_commission: Decimal = Decimal("0")
+    logistics: Decimal = Decimal("0")
+    storage: Decimal = Decimal("0")
+    acceptance: Decimal = Decimal("0")
+    marketplace_promotion: Decimal = Decimal("0")
+    penalties_and_holdbacks: Decimal = Decimal("0")
+    acquiring: Decimal = Decimal("0")
+    cogs: Decimal = Decimal("0")
+    vat_input_from_marketplace: Decimal = Decimal("0")
+    vat_input_from_1c: Decimal = Decimal("0")
+    source_row_count: int = 0
+    source_hash_digest: str
+    is_partial_source: bool = False
+    methodology_version: str
+
+    @field_validator(
+        "sales_quantity",
+        "return_quantity",
+        "quantity",
+        "return_amount",
+        "net_revenue",
+        "wb_commission",
+        "logistics",
+        "storage",
+        "acceptance",
+        "marketplace_promotion",
+        "penalties_and_holdbacks",
+        "acquiring",
+        "cogs",
+        "vat_input_from_marketplace",
+        "vat_input_from_1c",
+        mode="before",
+    )
+    @classmethod
+    def decimal_from_value(cls, value: object) -> Decimal:
+        return Decimal(str(value))
 
 
 class OzonApiSnapshot(ProjectModel):
@@ -391,6 +479,7 @@ class OnecUnfCostSnapshot(ProjectModel):
     cost_method: str
     effective_from: date
     effective_to: date | None = None
+    source_document_kind: str = ""
     source_document: str
     raw_payload_hash: str
 
@@ -448,6 +537,8 @@ class UnitEconomicsRow(ProjectModel):
     week_start: date
     week_end: date
     is_partial_week: bool
+    accounting_period_date: date | None = None
+    accounting_period_source: str = ""
     document_report: str = ""
     wb_report_id: str = ""
     wb_report_date: str = ""
@@ -475,6 +566,13 @@ class UnitEconomicsRow(ProjectModel):
     penalties_and_holdbacks: Decimal = Decimal("0")
     acquiring: Decimal
     cogs_from_1c_with_extra_costs: Decimal
+    unit_cost: Decimal | None = None
+    cost_method: str = ""
+    cost_match_status: str = ""
+    cost_source_kind: str = ""
+    cost_source_period_start: date | None = None
+    cost_source_period_end: date | None = None
+    cost_source_document: str = ""
     revenue_without_vat: Decimal = Decimal("0")
     gross_profit: Decimal
     vat_5_from_revenue: Decimal = Decimal("0")
@@ -482,8 +580,12 @@ class UnitEconomicsRow(ProjectModel):
     vat_input: Decimal = Decimal("0")
     vat_input_from_wb: Decimal = Decimal("0")
     vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_from_import_scenario: Decimal = Decimal("0")
+    vat_input_from_wb_scenario: Decimal = Decimal("0")
     vat_input_difference: Decimal = Decimal("0")
     vat_input_completeness: str = ""
+    input_vat_mode: str = "accounting_fact"
+    vat_input_confirmed: bool = False
     vat_payable: Decimal = Decimal("0")
     usn_1_from_revenue: Decimal = Decimal("0")
     income_tax_kind: str = ""
@@ -536,6 +638,8 @@ class ReportReconciliationRow(ProjectModel):
     vat_input: Decimal = Decimal("0")
     vat_input_from_wb: Decimal = Decimal("0")
     vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_from_import_scenario: Decimal = Decimal("0")
+    vat_input_from_wb_scenario: Decimal = Decimal("0")
     vat_input_difference: Decimal = Decimal("0")
     vat_input_completeness: str = ""
     vat_payable: Decimal = Decimal("0")
@@ -830,6 +934,8 @@ class OnecMarketplaceServiceRow(ProjectModel):
     amount_includes_vat: bool = False
     vat_included_in_cost: bool = False
     include_expenses_in_cost: bool = False
+    source_kind: str = "supplier_receipt_expenses"
+    match_status: str = "matched_marketplace_pair"
     source_row_hash: str
 
     @field_validator("amount", "vat", "total", mode="before")
@@ -846,6 +952,8 @@ class TaxInputReconciliationRow(ProjectModel):
     week_end: date
     vat_input_from_wb: Decimal = Decimal("0")
     vat_input_from_1c: Decimal = Decimal("0")
+    vat_input_from_import_scenario: Decimal = Decimal("0")
+    vat_input_from_wb_scenario: Decimal = Decimal("0")
     vat_input_difference: Decimal = Decimal("0")
     vat_input_completeness: str = ""
     source_row_count: int = 0
@@ -853,6 +961,8 @@ class TaxInputReconciliationRow(ProjectModel):
     @field_validator(
         "vat_input_from_wb",
         "vat_input_from_1c",
+        "vat_input_from_import_scenario",
+        "vat_input_from_wb_scenario",
         "vat_input_difference",
         mode="before",
     )

@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from wb_unit_economics.contracts import MappingStatus, OzonSkuMapping, SkuMapping
@@ -21,6 +21,8 @@ from wb_unit_economics.web.models import (
     Marketplace1cMappingDecision,
     MarketplaceMappingItem,
     OnecMappingItem,
+    ReportRun,
+    ReportUnitRow,
     SourceRefreshCollection,
     SourceRefreshRun,
     SourceSnapshotRow,
@@ -71,16 +73,12 @@ def rebuild_candidates(
             "items": 0,
             "onecItems": 0,
             "candidates": 0,
+            "autoAccepted": 0,
+            "remainingReview": 0,
+            "currentMappingConflictCount": 0,
+            "affectedReportItems": 0,
+            "reportRebuildRequired": False,
         }
-
-    db.execute(
-        delete(Marketplace1cMappingCandidate).where(
-            Marketplace1cMappingCandidate.tenant_id == tenant_id,
-            Marketplace1cMappingCandidate.client_id == client_id,
-            Marketplace1cMappingCandidate.source == "auto",
-        )
-    )
-    db.flush()
 
     onec_items = _upsert_onec_items(db, refresh_run)
     marketplace_items = _upsert_marketplace_items(db, refresh_run)
@@ -95,8 +93,39 @@ def rebuild_candidates(
         tenant_id=tenant_id,
         client_id=client_id,
     )
-    candidate_count = _build_auto_candidates(db, candidate_items, onec_items)
+    candidate_count, active_candidate_ids = _build_auto_candidates(
+        db, candidate_items, onec_items
+    )
+    _stale_missing_auto_candidates(
+        db,
+        tenant_id=tenant_id,
+        client_id=client_id,
+        active_candidate_ids=active_candidate_ids,
+    )
+    auto_accepted_items = _auto_accept_unique_barcode_candidates(
+        db,
+        tenant_id=tenant_id,
+        client_id=client_id,
+        refresh_run_id=refresh_run.id,
+        trigger_user=user,
+    )
     _refresh_item_statuses(db, tenant_id=tenant_id, client_id=client_id)
+    remaining_review = _mapping_review_count(
+        db,
+        tenant_id=tenant_id,
+        client_id=client_id,
+    )
+    current_mapping_conflict_count = _current_mapping_conflict_count(
+        db,
+        tenant_id=tenant_id,
+        client_id=client_id,
+    )
+    affected_report_items = _affected_report_item_count(
+        db,
+        report_run_id=refresh_run.source_report_run_id,
+        items=auto_accepted_items,
+    )
+    report_rebuild_required = affected_report_items > 0
     _add_decision(
         db,
         tenant_id=tenant_id,
@@ -111,6 +140,11 @@ def rebuild_candidates(
             "onecItems": len(onec_items),
             "candidates": candidate_count,
             "archivedItems": archived_count,
+            "autoAccepted": len(auto_accepted_items),
+            "remainingReview": remaining_review,
+            "currentMappingConflictCount": current_mapping_conflict_count,
+            "affectedReportItems": affected_report_items,
+            "reportRebuildRequired": report_rebuild_required,
         },
     )
     return {
@@ -122,6 +156,11 @@ def rebuild_candidates(
         "onecItems": len(onec_items),
         "candidates": candidate_count,
         "archivedItems": archived_count,
+        "autoAccepted": len(auto_accepted_items),
+        "remainingReview": remaining_review,
+        "currentMappingConflictCount": current_mapping_conflict_count,
+        "affectedReportItems": affected_report_items,
+        "reportRebuildRequired": report_rebuild_required,
     }
 
 
@@ -1085,7 +1124,7 @@ def _build_auto_candidates(
     db: Session,
     marketplace_items: list[MarketplaceMappingItem],
     onec_items: list[OnecMappingItem],
-) -> int:
+) -> tuple[int, set[str]]:
     by_barcode: dict[str, list[OnecMappingItem]] = defaultdict(list)
     by_article: dict[str, list[OnecMappingItem]] = defaultdict(list)
     by_article_normalized: dict[str, list[OnecMappingItem]] = defaultdict(list)
@@ -1096,6 +1135,7 @@ def _build_auto_candidates(
             by_article[_lookup_key(item.onec_article)].append(item)
             by_article_normalized[_normalized_article(item.onec_article)].append(item)
     count = 0
+    active_candidate_ids: set[str] = set()
     for item in marketplace_items:
         attempts = [
             ("barcode", item.barcode, by_barcode, Decimal("1")),
@@ -1137,7 +1177,7 @@ def _build_auto_candidates(
                         evidence,
                     )
         for onec, method, confidence, evidence in best_by_onec.values():
-            _upsert_candidate(
+            candidate = _upsert_candidate(
                 db,
                 item,
                 onec,
@@ -1146,8 +1186,254 @@ def _build_auto_candidates(
                 source="auto",
                 evidence=evidence,
             )
+            active_candidate_ids.add(candidate.id)
             count += 1
-    return count
+    return count, active_candidate_ids
+
+
+def _stale_missing_auto_candidates(
+    db: Session,
+    *,
+    tenant_id: str,
+    client_id: str,
+    active_candidate_ids: set[str],
+) -> None:
+    candidates = list(
+        db.scalars(
+            select(Marketplace1cMappingCandidate).where(
+                Marketplace1cMappingCandidate.tenant_id == tenant_id,
+                Marketplace1cMappingCandidate.client_id == client_id,
+                Marketplace1cMappingCandidate.source == "auto",
+                Marketplace1cMappingCandidate.status.in_(
+                    list(ACTIVE_CANDIDATE_STATUSES)
+                ),
+            )
+        )
+    )
+    now = security.utcnow()
+    for candidate in candidates:
+        if candidate.id not in active_candidate_ids:
+            candidate.status = "stale"
+            candidate.updated_at = now
+    db.flush()
+
+
+def _auto_accept_unique_barcode_candidates(
+    db: Session,
+    *,
+    tenant_id: str,
+    client_id: str,
+    refresh_run_id: str,
+    trigger_user: User | None,
+) -> list[MarketplaceMappingItem]:
+    candidates = list(
+        db.scalars(
+            select(Marketplace1cMappingCandidate).where(
+                Marketplace1cMappingCandidate.tenant_id == tenant_id,
+                Marketplace1cMappingCandidate.client_id == client_id,
+                Marketplace1cMappingCandidate.source == "auto",
+                Marketplace1cMappingCandidate.method == "barcode",
+                Marketplace1cMappingCandidate.confidence == Decimal("1"),
+                Marketplace1cMappingCandidate.status.in_(
+                    list(ACTIVE_CANDIDATE_STATUSES)
+                ),
+            )
+        )
+    )
+    if not candidates:
+        return []
+    onec_by_id = _onec_by_id(
+        db, [candidate.onec_mapping_item_id for candidate in candidates]
+    )
+    by_item: dict[str, list[Marketplace1cMappingCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        evidence = candidate.evidence or {}
+        if int(evidence.get("matchCount") or 0) == 1:
+            by_item[candidate.item_id].append(candidate)
+
+    accepted: list[MarketplaceMappingItem] = []
+    now = security.utcnow()
+    for item_id, item_candidates in by_item.items():
+        item = db.get(MarketplaceMappingItem, item_id)
+        if (
+            item is None
+            or item.tenant_id != tenant_id
+            or item.client_id != client_id
+            or item.status == "archived"
+            or _active_current(db, item.id) is not None
+        ):
+            continue
+        logical_candidates: dict[str, Marketplace1cMappingCandidate] = {}
+        for candidate in item_candidates:
+            onec = onec_by_id.get(candidate.onec_mapping_item_id)
+            if onec is None:
+                continue
+            logical_candidates.setdefault(onec.onec_item_id or onec.id, candidate)
+        if len(logical_candidates) != 1:
+            continue
+        candidate = next(iter(logical_candidates.values()))
+        onec = onec_by_id[candidate.onec_mapping_item_id]
+        mapping = Marketplace1cCurrentMapping(
+            id=_new_id("mp1c_current"),
+            tenant_id=tenant_id,
+            client_id=client_id,
+            item_id=item.id,
+            candidate_id=candidate.id,
+            onec_mapping_item_id=onec.id,
+            status=MappingStatus.MATCHED.value,
+            match_method="mapping_service_auto_barcode",
+            confidence=Decimal("1"),
+            comment="автоматически сопоставлено по точному штрихкоду живой 1С",
+            updated_by_user_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(mapping)
+        item.status = MappingStatus.MATCHED.value
+        item.updated_at = now
+        db.flush()
+        _add_decision(
+            db,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            item_id=item.id,
+            action="auto_accept",
+            user=None,
+            candidate_id=candidate.id,
+            onec_mapping_item_id=onec.id,
+            new_mapping_id=mapping.id,
+            reason="единственный точный штрихкод живой 1С",
+            payload={
+                "source": "onec_live_barcode",
+                "refreshRunId": refresh_run_id,
+                "matchMethod": "mapping_service_auto_barcode",
+                "confidence": 1,
+                "matchCount": 1,
+                "triggerUserId": trigger_user.id if trigger_user else None,
+            },
+        )
+        accepted.append(item)
+    return accepted
+
+
+def _mapping_review_count(
+    db: Session,
+    *,
+    tenant_id: str,
+    client_id: str,
+) -> int:
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(MarketplaceMappingItem)
+            .where(
+                MarketplaceMappingItem.tenant_id == tenant_id,
+                MarketplaceMappingItem.client_id == client_id,
+                MarketplaceMappingItem.status.in_(list(MAPPING_REVIEW_STATUSES)),
+            )
+        )
+        or 0
+    )
+
+
+def _current_mapping_conflict_count(
+    db: Session,
+    *,
+    tenant_id: str,
+    client_id: str,
+) -> int:
+    currents = list(
+        db.scalars(
+            select(Marketplace1cCurrentMapping).where(
+                Marketplace1cCurrentMapping.tenant_id == tenant_id,
+                Marketplace1cCurrentMapping.client_id == client_id,
+                Marketplace1cCurrentMapping.status == MappingStatus.MATCHED.value,
+                Marketplace1cCurrentMapping.revoked_at.is_(None),
+            )
+        )
+    )
+    if not currents:
+        return 0
+    current_onec = _onec_by_id(
+        db, [current.onec_mapping_item_id for current in currents]
+    )
+    exact_candidates = list(
+        db.scalars(
+            select(Marketplace1cMappingCandidate).where(
+                Marketplace1cMappingCandidate.tenant_id == tenant_id,
+                Marketplace1cMappingCandidate.client_id == client_id,
+                Marketplace1cMappingCandidate.source == "auto",
+                Marketplace1cMappingCandidate.method == "barcode",
+                Marketplace1cMappingCandidate.confidence == Decimal("1"),
+                Marketplace1cMappingCandidate.status.in_(
+                    list(ACTIVE_CANDIDATE_STATUSES)
+                ),
+            )
+        )
+    )
+    candidate_onec = _onec_by_id(
+        db, [candidate.onec_mapping_item_id for candidate in exact_candidates]
+    )
+    candidates_by_item: dict[str, dict[str, OnecMappingItem]] = defaultdict(dict)
+    for candidate in exact_candidates:
+        if int((candidate.evidence or {}).get("matchCount") or 0) != 1:
+            continue
+        onec = candidate_onec.get(candidate.onec_mapping_item_id)
+        if onec is not None:
+            candidates_by_item[candidate.item_id][onec.onec_item_id or onec.id] = onec
+    conflicts = 0
+    for current in currents:
+        exact = candidates_by_item.get(current.item_id, {})
+        onec = current_onec.get(current.onec_mapping_item_id or "")
+        if len(exact) != 1 or onec is None:
+            continue
+        exact_logical_id = next(iter(exact))
+        if exact_logical_id != (onec.onec_item_id or onec.id):
+            conflicts += 1
+    return conflicts
+
+
+def _affected_report_item_count(
+    db: Session,
+    *,
+    report_run_id: str | None,
+    items: list[MarketplaceMappingItem],
+) -> int:
+    if not report_run_id or not items:
+        return 0
+    report = db.get(ReportRun, report_run_id)
+    if report is None:
+        return 0
+    rows = list(
+        db.execute(
+            select(
+                ReportUnitRow.nm_id,
+                ReportUnitRow.article_wb,
+                ReportUnitRow.barcode,
+            ).where(ReportUnitRow.report_run_id == report.id)
+        )
+    )
+    nm_ids = {_lookup_key(row.nm_id) for row in rows if _lookup_key(row.nm_id)}
+    articles = {
+        _lookup_key(row.article_wb) for row in rows if _lookup_key(row.article_wb)
+    }
+    barcodes = {
+        _lookup_key(row.barcode) for row in rows if _lookup_key(row.barcode)
+    }
+    affected_ids = {
+        item.id
+        for item in items
+        if (
+            (_lookup_key(item.nm_id) and _lookup_key(item.nm_id) in nm_ids)
+            or (
+                _lookup_key(item.vendor_code)
+                and _lookup_key(item.vendor_code) in articles
+            )
+            or (_lookup_key(item.offer_id) and _lookup_key(item.offer_id) in articles)
+            or (_lookup_key(item.barcode) and _lookup_key(item.barcode) in barcodes)
+        )
+    }
+    return len(affected_ids)
 
 
 def _upsert_onec_item(

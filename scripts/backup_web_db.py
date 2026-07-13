@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("/var/backups/shumeiko-web"),
     )
-    parser.add_argument("--retention-days", type=int, default=14)
+    parser.add_argument("--retention-days", type=int, default=3)
     return parser.parse_args()
 
 

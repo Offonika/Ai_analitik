@@ -5,8 +5,8 @@ status: active
 audience: ["engineering", "operations"]
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-07-10"
-updated_at: "2026-07-10"
+last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-07-13"
+updated_at: "2026-07-13"
 ---
 
 # FastAPI route inventory
@@ -39,9 +39,13 @@ updated_at: "2026-07-10"
 | `POST` | `/api/clients` | `create_client_api_clients_post` | Create Client |
 | `POST` | `/api/clients/{client_id}/cabinets` | `create_client_cabinet_api_clients__client_id__cabinets_post` | Create Client Cabinet |
 | `PATCH` | `/api/clients/{client_id}/cabinets/{cabinet_id}` | `update_client_cabinet_api_clients__client_id__cabinets__cabinet_id__patch` | Update Client Cabinet |
+| `GET` | `/api/clients/{client_id}/companies/{company_id}/input-vat-policies` | `list_client_company_input_vat_policies_api_clients__client_id__companies__company_id__input_vat_policies_get` | List Client Company Input Vat Policies |
+| `POST` | `/api/clients/{client_id}/companies/{company_id}/input-vat-policies` | `create_client_company_input_vat_policy_api_clients__client_id__companies__company_id__input_vat_policies_post` | Create Client Company Input Vat Policy |
+| `PATCH` | `/api/clients/{client_id}/companies/{company_id}/input-vat-policies/{policy_id}/disable` | `disable_client_company_input_vat_policy_api_clients__client_id__companies__company_id__input_vat_policies__policy_id__disable_patch` | Disable Client Company Input Vat Policy |
 | `PATCH` | `/api/clients/{client_id}/companies/{company_id}/onec-organization` | `update_client_company_onec_organization_api_clients__client_id__companies__company_id__onec_organization_patch` | Update Client Company Onec Organization |
 | `POST` | `/api/clients/{client_id}/companies/{company_id}/tax-profile-overrides` | `create_client_company_tax_profile_override_api_clients__client_id__companies__company_id__tax_profile_overrides_post` | Create Client Company Tax Profile Override |
 | `PATCH` | `/api/clients/{client_id}/companies/{company_id}/tax-profile-overrides/{override_id}/disable` | `disable_client_company_tax_profile_override_api_clients__client_id__companies__company_id__tax_profile_overrides__override_id__disable_patch` | Disable Client Company Tax Profile Override |
+| `PATCH` | `/api/clients/{client_id}/companies/{company_id}/tax-profile-overrides/{override_id}/rate-basis` | `confirm_client_company_tax_rate_basis_api_clients__client_id__companies__company_id__tax_profile_overrides__override_id__rate_basis_patch` | Confirm Client Company Tax Rate Basis |
 | `GET` | `/api/clients/{client_id}/integrations` | `list_client_integrations_api_clients__client_id__integrations_get` | List Client Integrations |
 | `POST` | `/api/clients/{client_id}/mapping-file` | `upload_client_mapping_file_api_clients__client_id__mapping_file_post` | Upload Client Mapping File |
 | `GET` | `/api/clients/{client_id}/mapping/export/sku-mapping` | `client_mapping_export_sku_mapping_api_clients__client_id__mapping_export_sku_mapping_get` | Client Mapping Export Sku Mapping |
@@ -71,10 +75,12 @@ updated_at: "2026-07-10"
 | `GET` | `/api/reports/latest/summary` | `latest_summary_api_reports_latest_summary_get` | Latest Summary |
 | `POST` | `/api/reports/{report_id}/analytical-report` | `build_analytical_report_api_reports__report_id__analytical_report_post` | Build Analytical Report |
 | `GET` | `/api/reports/{report_id}/analytical-report.{extension}` | `download_analytical_report_api_reports__report_id__analytical_report__extension__get` | Download Analytical Report |
+| `GET` | `/api/reports/{report_id}/buyout-reconciliation` | `report_buyout_reconciliation_api_reports__report_id__buyout_reconciliation_get` | Report Buyout Reconciliation |
 | `GET` | `/api/reports/{report_id}/client-draft` | `report_client_draft_api_reports__report_id__client_draft_get` | Report Client Draft |
 | `PUT` | `/api/reports/{report_id}/client-draft` | `save_client_draft_api_reports__report_id__client_draft_put` | Save Client Draft |
 | `POST` | `/api/reports/{report_id}/client-draft/finalize` | `finalize_client_draft_api_reports__report_id__client_draft_finalize_post` | Finalize Client Draft |
 | `POST` | `/api/reports/{report_id}/client-draft/refine` | `refine_client_draft_api_reports__report_id__client_draft_refine_post` | Refine Client Draft |
+| `GET` | `/api/reports/{report_id}/cogs-reconciliation` | `report_cogs_reconciliation_api_reports__report_id__cogs_reconciliation_get` | Report Cogs Reconciliation |
 | `GET` | `/api/reports/{report_id}/document-reconciliation` | `report_document_reconciliation_api_reports__report_id__document_reconciliation_get` | Report Document Reconciliation |
 | `GET` | `/api/reports/{report_id}/export.xlsx` | `export_excel_api_reports__report_id__export_xlsx_get` | Export Excel |
 | `GET` | `/api/reports/{report_id}/financial-document-reconciliation` | `report_financial_document_reconciliation_api_reports__report_id__financial_document_reconciliation_get` | Report Financial Document Reconciliation |
@@ -84,6 +90,8 @@ updated_at: "2026-07-10"
 | `POST` | `/api/reports/{report_id}/live-checks/wb-stock` | `live_check_wb_stock_api_reports__report_id__live_checks_wb_stock_post` | Live Check Wb Stock |
 | `GET` | `/api/reports/{report_id}/management-report` | `report_management_report_api_reports__report_id__management_report_get` | Report Management Report |
 | `POST` | `/api/reports/{report_id}/mapping-file` | `upload_mapping_file_api_reports__report_id__mapping_file_post` | Upload Mapping File |
+| `GET` | `/api/reports/{report_id}/marketplace-expense-reconciliation` | `report_marketplace_expense_reconciliation_api_reports__report_id__marketplace_expense_reconciliation_get` | Report Marketplace Expense Reconciliation |
+| `GET` | `/api/reports/{report_id}/ozon-diagnostics` | `report_ozon_diagnostics_api_reports__report_id__ozon_diagnostics_get` | Report Ozon Diagnostics |
 | `POST` | `/api/reports/{report_id}/publish-with-tasks` | `publish_report_with_tasks_api_reports__report_id__publish_with_tasks_post` | Publish Report With Tasks |
 | `GET` | `/api/reports/{report_id}/refresh-jobs/{job_id}` | `get_refresh_job_api_reports__report_id__refresh_jobs__job_id__get` | Get Refresh Job |
 | `POST` | `/api/reports/{report_id}/refresh/onec-auto` | `refresh_onec_auto_api_reports__report_id__refresh_onec_auto_post` | Refresh Onec Auto |
@@ -93,4 +101,4 @@ updated_at: "2026-07-10"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **72**.
+Всего маршрутов: **80**.

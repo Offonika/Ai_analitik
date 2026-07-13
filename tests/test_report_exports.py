@@ -4,6 +4,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from wb_unit_economics.excel import REQUIRED_SHEETS
 from wb_unit_economics.report_exports import (
     write_excel_from_marts,
     write_ozon_diagnostics_excel,
@@ -83,6 +84,10 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
 
     workbook = load_workbook(output, read_only=True, data_only=True)
     try:
+        assert [
+            name for name in workbook.sheetnames if name in REQUIRED_SHEETS
+        ] == REQUIRED_SHEETS
+        assert workbook.active.title == "Дашборд"
         assert "Ликвидность МД" in workbook.sheetnames
         readme_rows = {
             row[0].value: row[1].value
@@ -128,6 +133,79 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
     assert document_values[0] == "ОК"
 
 
+def test_db_first_excel_explains_incomplete_stock_history(tmp_path: Path) -> None:
+    output = tmp_path / "report.xlsx"
+    write_excel_from_marts(
+        {
+            "meta": {"client": "Клиент", "period": "01.03.2026 - 10.07.2026"},
+            "readiness": {"status": "needs_review"},
+            "unitRows": [],
+            "lostSales": [],
+            "lostSalesCoverage": {
+                "calculated": False,
+                "coveredDays": 92,
+                "totalDays": 132,
+                "message": "Не рассчитано: история остатков покрывает 92 из 132 дней",
+            },
+        },
+        output,
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        values = [
+            cell.value
+            for row in workbook["Упущенные продажи"].iter_rows()
+            for cell in row
+        ]
+    finally:
+        workbook.close()
+
+    assert "Не рассчитано: история остатков покрывает 92 из 132 дней" in values
+
+
+def test_db_first_excel_publishes_partial_stock_calculation_window(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "partial-window-report.xlsx"
+    message = (
+        "Рассчитано за доступный период: история остатков покрывает "
+        "92 из 132 дней, без экстраполяции."
+    )
+    write_excel_from_marts(
+        {
+            "meta": {"client": "Клиент", "period": "01.03.2026 - 10.07.2026"},
+            "readiness": {"status": "needs_review"},
+            "unitRows": [],
+            "lostSales": [],
+            "lostSalesCoverage": {
+                "calculated": True,
+                "providerWindowCalculated": True,
+                "fullCoverage": False,
+                "coveredDays": 92,
+                "totalDays": 132,
+                "calculationPeriodStart": "2026-04-10",
+                "calculationPeriodEnd": "2026-07-10",
+                "extrapolated": False,
+                "message": message,
+            },
+        },
+        output,
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        values = [
+            cell.value
+            for row in workbook["Упущенные продажи"].iter_rows()
+            for cell in row
+        ]
+    finally:
+        workbook.close()
+
+    assert message in values
+
+
 def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
     tmp_path: Path,
 ) -> None:
@@ -160,6 +238,9 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
                     "onecRevenue": 1000.0,
                     "profitBeforeTax": 900.0,
                     "profitAfterTax": 846.0,
+                    "vatOutput": 120.0,
+                    "vatInput": 20.0,
+                    "vatPayable": 100.0,
                     "revenueTax": 54.0,
                     "taxSystem": "УСН Доходы",
                     "taxProfileSource": "Catalog_Организации",
@@ -255,6 +336,10 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
         ]
         unit_headers = [cell.value for cell in workbook["Юнит экономика Ozon"][1]]
         summary_headers = [cell.value for cell in workbook["Сводная Ozon"][1]]
+        summary_data = [
+            [cell.value for cell in row]
+            for row in workbook["Сводная Ozon"].iter_rows(min_row=2)
+        ]
     finally:
         workbook.close()
 
@@ -270,5 +355,22 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
     assert "Тип атрибуции" in sku_headers
     assert "Остаток периода" in sku_headers
     assert "Расходы из Ozon detail" in summary_headers
+    assert "Строк выручки без сопоставления" in summary_headers
+    assert "Строк выручки с неоднозначным сопоставлением" in summary_headers
+    assert "Режим порога существенности" in summary_headers
+    assert "Минимальный месячный порог" in summary_headers
+    assert "Максимальный месячный порог" in summary_headers
+    article_index = summary_headers.index("Код статьи")
+    effect_index = summary_headers.index("Влияние на прибыль")
+    tax_effects = {
+        row[article_index]: row[effect_index]
+        for row in summary_data
+        if row[article_index]
+    }
+    assert tax_effects["revenue_tax"] == -54.0
+    assert tax_effects["vat_output"] is None
+    assert tax_effects["vat_input"] is None
+    assert tax_effects["vat_payable"] == -100.0
+    assert tax_effects["profit_after_tax"] == 846.0
     assert "550" not in {str(value) for value in sku_values}
     assert "1C без пары в Ozon: приходная 175" in reconciliation_values

@@ -5,12 +5,14 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: active
 source_of_truth: true
-updated_at: "2026-06-18"
+truth_scope: configuration
+truth_priority: 100
+updated_at: "2026-07-13"
 ---
 
 # Config
 
-Здесь будут храниться настройки пилота без секретов:
+Здесь хранятся и документируются настройки пилота без секретов:
 
 - список кабинетов;
 - период отчета;
@@ -49,3 +51,13 @@ GUID-настройки сверки `1С ОПиУ` можно вынести в
 `config/onec_opiu_accounts.example.json`. В нем хранятся только non-secret
 идентификаторы счетов выручки, себестоимости, НДС, РВБ-услуг и структурной
 единицы. Если файл не задан, Excel помечает ОПиУ-сверку как `pilot defaults`.
+
+Быстрая staff-пересборка управляется non-secret параметрами:
+
+- `SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_ENABLED=false` — feature flag; включать
+  только после миграции и shadow parity с последним `full`;
+- `SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_WINDOW_DAYS=28` — календарное окно WB,
+  которое incremental загружает и атомарно заменяет в daily facts.
+
+Режим также требует `SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true` и
+`SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`.

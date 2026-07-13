@@ -205,6 +205,142 @@ def build_sku_mapping_from_barcodes(
     )
 
 
+def merge_sku_mappings_with_current(
+    fallback_mappings: Iterable[SkuMapping],
+    current_mappings: Iterable[SkuMapping],
+) -> list[SkuMapping]:
+    """Apply current decisions while retaining legacy product/barcode aliases."""
+
+    current = list(current_mappings)
+    by_nm: dict[tuple[str, str, int], list[SkuMapping]] = defaultdict(list)
+    by_vendor: dict[tuple[str, str, str], list[SkuMapping]] = defaultdict(list)
+    by_barcode: dict[tuple[str, str, str], list[SkuMapping]] = defaultdict(list)
+    for item in current:
+        if item.match_method == "imported_mapping_file":
+            # The legacy file retains richer alias-level identity than the
+            # original bulk-import projection. Only later exact/manual
+            # decisions may override it.
+            continue
+        if item.nm_id is not None:
+            by_nm[(item.client_id, item.seller_account_id, item.nm_id)].append(item)
+        vendor_code = normalize_article(item.vendor_code)
+        if vendor_code:
+            by_vendor[(item.client_id, item.seller_account_id, vendor_code)].append(
+                item
+            )
+        barcode = normalize_barcode(item.barcode)
+        if barcode:
+            by_barcode[(item.client_id, item.seller_account_id, barcode)].append(item)
+
+    result: list[SkuMapping] = []
+    seen_keys: set[tuple[str, str, int | None, str, str]] = set()
+    for fallback in fallback_mappings:
+        selected = _current_mapping_for_alias(
+            fallback,
+            by_nm=by_nm,
+            by_vendor=by_vendor,
+            by_barcode=by_barcode,
+        )
+        if selected is None:
+            merged = fallback
+        else:
+            same_onec_item = bool(
+                selected.onec_item_id
+                and selected.onec_item_id == fallback.onec_item_id
+            )
+            merged = selected.model_copy(
+                update={
+                    "organization_id": (
+                        selected.organization_id or fallback.organization_id
+                    ),
+                    "nm_id": fallback.nm_id,
+                    "vendor_code": fallback.vendor_code,
+                    "barcode": fallback.barcode,
+                    "onec_article": (
+                        selected.onec_article
+                        or fallback.onec_article
+                        if same_onec_item
+                        else selected.onec_article
+                    ),
+                    "onec_characteristic": (
+                        fallback.onec_characteristic
+                        if same_onec_item and fallback.onec_characteristic
+                        else selected.onec_characteristic
+                    ),
+                }
+            )
+        key = _sku_mapping_key(merged)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            result.append(merged)
+
+    for item in current:
+        key = _sku_mapping_key(item)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result.append(item)
+    return result
+
+
+def _current_mapping_for_alias(
+    fallback: SkuMapping,
+    *,
+    by_nm: Mapping[tuple[str, str, int], list[SkuMapping]],
+    by_vendor: Mapping[tuple[str, str, str], list[SkuMapping]],
+    by_barcode: Mapping[tuple[str, str, str], list[SkuMapping]],
+) -> SkuMapping | None:
+    candidates: list[SkuMapping] = []
+    if fallback.nm_id is not None:
+        candidates = list(
+            by_nm.get(
+                (fallback.client_id, fallback.seller_account_id, fallback.nm_id),
+                [],
+            )
+        )
+    if not candidates and fallback.vendor_code:
+        candidates = list(
+            by_vendor.get(
+                (
+                    fallback.client_id,
+                    fallback.seller_account_id,
+                    normalize_article(fallback.vendor_code),
+                ),
+                [],
+            )
+        )
+    if not candidates and fallback.barcode:
+        candidates = list(
+            by_barcode.get(
+                (
+                    fallback.client_id,
+                    fallback.seller_account_id,
+                    normalize_barcode(fallback.barcode),
+                ),
+                [],
+            )
+        )
+    logical = {
+        (
+            item.onec_item_id,
+            item.status,
+            item.match_method,
+        ): item
+        for item in candidates
+    }
+    return next(iter(logical.values())) if len(logical) == 1 else None
+
+
+def _sku_mapping_key(item: SkuMapping) -> tuple[str, str, int | None, str, str]:
+    return (
+        item.client_id,
+        item.seller_account_id,
+        item.nm_id,
+        normalize_article(item.vendor_code),
+        normalize_barcode(item.barcode),
+    )
+
+
 def load_wb_card_flat_rows(cards_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted(cards_dir.glob("*.flat.json")):

@@ -5,11 +5,16 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
 ---
 
 # Назначение
+
+> **Статус draft.** Локальные команды и документальные контракты проверяются,
+> но создание и публикация нового production `report_run` не выполняются в
+> рамках документационной синхронизации. После отдельного полного smoke runbook
+> можно повысить до `active`.
 
 Этот runbook описывает безопасную DB-first сборку юнит-экономики Wildberries из
 локальных snapshots или Postgres inputs. Он не описывает получение секретов и не

@@ -21,6 +21,7 @@ from wb_unit_economics.excel import (
     REPORT_STATUS_LABELS,
     _account_label,
     _analysis_period_note,
+    _apply_accounting_period_dates,
     _client_unit_rows,
     _cost_article_lookup,
     _cost_method_lookup,
@@ -69,6 +70,7 @@ class ReportMarts:
     lostSalesCoverage: dict[str, Any] = field(default_factory=dict)
     reconciliation: list[dict[str, Any]] = field(default_factory=list)
     reconciliationMonthly: list[dict[str, Any]] = field(default_factory=list)
+    marketplaceServiceRows: list[dict[str, Any]] = field(default_factory=list)
     documentReconciliation: list[dict[str, Any]] = field(default_factory=list)
     taxInputReconciliation: list[dict[str, Any]] = field(default_factory=list)
     readiness: dict[str, Any] = field(default_factory=dict)
@@ -87,6 +89,7 @@ class ReportMarts:
             "lostSalesCoverage": self.lostSalesCoverage,
             "reconciliation": self.reconciliation,
             "reconciliationMonthly": self.reconciliationMonthly,
+            "marketplaceServiceRows": self.marketplaceServiceRows,
             "documentReconciliation": self.documentReconciliation,
             "taxInputReconciliation": self.taxInputReconciliation,
         }
@@ -113,6 +116,7 @@ def build_report_marts(
     onec_gross_rows = list(onec_gross_profit_rows)
     onec_service_rows = list(onec_marketplace_service_rows)
     wb_summary_rows = list(wb_sales_report_summary_rows)
+    _apply_accounting_period_dates(report, onec_gross_rows, wb_summary_rows)
     unit_rows = unit_rows_mart(
         report,
         cost_snapshots=cost_rows,
@@ -167,6 +171,7 @@ def build_report_marts(
             report.source_coverage_end.isoformat() if report.source_coverage_end else ""
         ),
         "methodologyVersion": report.methodology_version,
+        "marketplaceExpenseContextVersion": "marketplace-expense-reconciliation-v1",
         "generatedAt": report.generated_at.strftime("%d.%m.%Y %H:%M"),
         "sourceWorkbook": "",
         "source": source_label,
@@ -200,9 +205,89 @@ def build_report_marts(
             onec_marketplace_service_rows=onec_service_rows,
             source_run_id=source_run_id,
         ),
+        marketplaceServiceRows=marketplace_service_rows_mart(
+            report,
+            onec_service_rows,
+            account_labels=account_labels,
+            organization_labels=organization_labels,
+        ),
         documentReconciliation=document_reconciliation,
         taxInputReconciliation=tax_input_reconciliation,
     )
+
+
+def marketplace_expense_control_group(category: str) -> str:
+    normalized = category.strip().casefold()
+    if "продвиж" in normalized:
+        return "promotion"
+    if any(marker in normalized for marker in ("штраф", "пен", "доплат")):
+        return "penalties"
+    return "core_services"
+
+
+def marketplace_service_rows_mart(
+    report: UnitEconomicsReport,
+    rows: Iterable[OnecMarketplaceServiceRow],
+    *,
+    account_labels: Mapping[str, str] | None = None,
+    organization_labels: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    accounts_by_organization: dict[str, set[str]] = {}
+    for report_row in report.rows:
+        accounts_by_organization.setdefault(report_row.organization_id, set()).add(
+            report_row.seller_account_id
+        )
+    result: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        accounts = sorted(accounts_by_organization.get(row.organization_id, set()))
+        seller_account_id = accounts[0] if len(accounts) == 1 else ""
+        match_status = row.match_status
+        if len(accounts) > 1:
+            match_status = "ambiguous_cabinet_allocation"
+        elif not accounts:
+            match_status = "missing_cabinet_mapping"
+        control_group = marketplace_expense_control_group(row.service_category)
+        recognition_date = (
+            row.input_date or row.document_date
+            if control_group == "penalties"
+            else row.week_end
+        )
+        result.append(
+            {
+                "id": f"marketplace-service-{index}-{row.source_row_hash[:16]}",
+                "clientId": row.client_id,
+                "sellerAccountId": seller_account_id,
+                "cabinet": (
+                    _account_label(seller_account_id, account_labels)
+                    if seller_account_id
+                    else ""
+                ),
+                "organizationId": row.organization_id,
+                "organization": _organization_label(
+                    row.organization_id, organization_labels
+                ),
+                "counterpartyId": row.counterparty_id,
+                "periodStart": row.week_start.isoformat(),
+                "periodEnd": row.week_end.isoformat(),
+                "recognitionDate": recognition_date.isoformat(),
+                "documentDate": row.document_date.isoformat(),
+                "inputDate": row.input_date.isoformat() if row.input_date else "",
+                "documentId": row.document_id,
+                "documentNumber": row.document_number,
+                "inputNumber": row.input_number,
+                "documentComment": row.document_comment,
+                "serviceCategory": row.service_category,
+                "controlGroup": control_group,
+                "serviceName": row.service_name,
+                "amountWithoutVat": _number(row.amount),
+                "vat": _number(row.vat),
+                "amountWithVat": _number(row.total),
+                "sourceKind": row.source_kind,
+                "matchStatus": match_status,
+                "sourceRowHash": row.source_row_hash,
+            }
+        )
+    return result
 
 
 def unit_rows_mart(
@@ -226,6 +311,12 @@ def unit_rows_mart(
             {
                 "id": f"unit-{index}",
                 "week": row.week_start.isoformat(),
+                "accountingPeriodDate": (
+                    row.accounting_period_date.isoformat()
+                    if row.accounting_period_date
+                    else ""
+                ),
+                "accountingPeriodSource": row.accounting_period_source,
                 "month": _month_label(month_start, report),
                 "documentReport": row.document_report,
                 "wbReportId": row.wb_report_id,
@@ -253,11 +344,32 @@ def unit_rows_mart(
                 "vatInput": _number(row.vat_input),
                 "vatInputFromWb": _number(row.vat_input_from_wb),
                 "vatInputFrom1c": _number(row.vat_input_from_1c),
+                "vatInputFromImportScenario": _number(
+                    row.vat_input_from_import_scenario
+                ),
+                "vatInputFromWbScenario": _number(row.vat_input_from_wb_scenario),
                 "vatInputDifference": _number(row.vat_input_difference),
                 "vatInputCompleteness": row.vat_input_completeness,
+                "inputVatMode": row.input_vat_mode,
+                "vatInputConfirmed": row.vat_input_confirmed,
                 "vatPayable": _number(row.vat_payable),
                 "revenueWithoutVat": _number(row.revenue_without_vat),
                 "cost": _number(row.cogs_from_1c_with_extra_costs),
+                "unitCost": _nullable_number(row.unit_cost),
+                "costMethod": row.cost_method,
+                "costMatchStatus": row.cost_match_status,
+                "costSourceKind": row.cost_source_kind,
+                "costSourcePeriodStart": (
+                    row.cost_source_period_start.isoformat()
+                    if row.cost_source_period_start
+                    else ""
+                ),
+                "costSourcePeriodEnd": (
+                    row.cost_source_period_end.isoformat()
+                    if row.cost_source_period_end
+                    else ""
+                ),
+                "costSourceDocument": row.cost_source_document,
                 "commission": _number(row.wb_commission),
                 "logistics": _number(row.logistics),
                 "storage": _number(row.storage),
@@ -351,6 +463,7 @@ def lost_sales_mart(
                 ),
                 "note": row[17],
                 "sourceStatus": row[18],
+                "calculationContext": row[19],
             }
         )
     return result
@@ -376,13 +489,28 @@ def lost_sales_coverage_mart(
                 "coveredDays": int(item.get("covered_days") or 0),
                 "totalDays": int(item.get("total_days") or 0),
                 "calculated": bool(item.get("calculated")),
+                "providerWindowCalculated": bool(
+                    item.get("provider_window_calculated")
+                ),
+                "fullCoverage": bool(item.get("full_coverage")),
+                "calculationPeriodStart": item.get("calculation_period_start"),
+                "calculationPeriodEnd": item.get("calculation_period_end"),
+                "extrapolated": False,
             }
         )
     return {
         "status": str(coverage.get("status") or "not_loaded"),
         "calculated": bool(coverage.get("calculated")),
+        "providerWindowCalculated": bool(
+            coverage.get("provider_window_calculated")
+        ),
+        "fullCoverage": bool(coverage.get("full_coverage")),
         "coveredDays": int(coverage.get("covered_days") or 0),
         "totalDays": int(coverage.get("total_days") or 0),
+        "calculationPeriodStart": coverage.get("calculation_period_start"),
+        "calculationPeriodEnd": coverage.get("calculation_period_end"),
+        "calculationContextVersion": "lost-sales-filter-v1",
+        "extrapolated": False,
         "message": str(coverage.get("message") or coverage.get("source_label") or ""),
         "accounts": accounts,
     }
@@ -396,7 +524,7 @@ def reconciliation_monthly_mart(
     source_run_id: str = "",
 ) -> list[dict[str, Any]]:
     buckets: dict[str, dict[str, Decimal | bool]] = {}
-    for row in report.report_reconciliation_rows:
+    for row in report.rows:
         label = _month_label(_row_month_start(row, report.report_period_start), report)
         bucket = buckets.setdefault(
             label,
@@ -489,7 +617,7 @@ def reconciliation_monthly_mart(
                 "onec_mp_expenses": _nullable_number(onec_mp_expenses),
                 "mp_expenses_delta": _nullable_number(mp_expenses_delta),
                 "status": status,
-                "wbBasis": "week_end; P&L без НДС",
+                "wbBasis": "accounting_period_date; P&L без НДС",
                 "onecBasis": "фактическая дата регистра/документа 1С",
                 "sourceRunId": source_run_id,
                 "comment": _monthly_reconciliation_comment(status),
@@ -557,9 +685,9 @@ def document_reconciliation_mart(
             [],
         )
         matched_candidates = _match_onec_document_rows(row, onec_index, summaries)
-        for actual in matched_candidates:
-            matched_actual_keys.add(_onec_document_actual_key(actual))
         actuals = _document_reconciliation_actuals(matched_candidates)
+        for actual in actuals:
+            matched_actual_keys.add(_onec_document_actual_key(actual))
         reconciled = _document_reconciliation_row(
             row,
             actuals,
@@ -662,6 +790,10 @@ def _document_reconciliation_payload(
         "wbForPaySum": _nullable_number(row["expected_settlement"]),
         "onecSettlementTotal": _nullable_number(row["onec_settlement"]),
         "settlementDelta": _nullable_number(row["settlement_delta"]),
+        "onecVat": _nullable_number(row["onec_vat"]),
+        "onecCogs": _nullable_number(row["onec_cogs"]),
+        "onecCogsWithoutVat": _nullable_number(row["onec_cogs_without_vat"]),
+        "onecGrossProfit": _nullable_number(row["onec_gross_profit"]),
         "onecSourceRows": row["onec_source_rows"],
         "comment": str(row["comment"]),
     }

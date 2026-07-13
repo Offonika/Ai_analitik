@@ -10,7 +10,13 @@ from wb_unit_economics.web import mapping_service, repository, security
 from wb_unit_economics.web.app import create_app
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
 from wb_unit_economics.web.models import (
+    Marketplace1cCurrentMapping,
+    Marketplace1cMappingDecision,
     MarketplaceMappingItem,
+    OnecMappingItem,
+    ReportRun,
+    ReportUnitRow,
+    SourceLoad,
     SourceRefreshCollection,
     SourceRefreshRun,
     SourceSnapshotRow,
@@ -48,6 +54,9 @@ def test_mapping_service_builds_candidates_accepts_and_exports(tmp_path: Path) -
         assert result["onecItems"] >= 2
         assert result["candidates"] >= 2
         assert result["archivedItems"] == 1
+        assert result["autoAccepted"] == 1
+        assert result["remainingReview"] == 1
+        assert result["currentMappingConflictCount"] == 0
         assert db.get(MarketplaceMappingItem, "mp-stale").status == "archived"
 
         items = mapping_service.list_mapping_items(
@@ -69,6 +78,10 @@ def test_mapping_service_builds_candidates_accepts_and_exports(tmp_path: Path) -
         assert ozon_candidates[0]["onecItem"]["onecItemId"] == "ONEC-1"
 
         wb_item = next(item for item in items if item["marketplace"] == "wb")
+        assert wb_item["status"] == "matched"
+        assert wb_item["currentMapping"]["matchMethod"] == (
+            "mapping_service_auto_barcode"
+        )
         candidates = mapping_service.mapping_candidates_payload(
             db,
             tenant_id="shumeyko",
@@ -79,18 +92,13 @@ def test_mapping_service_builds_candidates_accepts_and_exports(tmp_path: Path) -
             item for item in candidates if item["method"] == "barcode"
         )
 
-        accepted = mapping_service.accept_mapping(
+        history = mapping_service.mapping_history_payload(
             db,
             tenant_id="shumeyko",
             client_id="shumeyko",
             item_id=wb_item["id"],
-            user=user,
-            candidate_id=barcode_candidate["id"],
-            reason="fixture accept",
         )
-        db.commit()
-
-        assert accepted["item"]["status"] == "matched"
+        assert history["items"][0]["action"] == "auto_accept"
         review_items = mapping_service.list_mapping_items(
             db,
             tenant_id="shumeyko",
@@ -176,6 +184,444 @@ def test_mapping_file_import_accepts_current_mapping(tmp_path: Path) -> None:
         )
         assert exported["ozonMappingRows"][0]["status"] == "matched"
         assert exported["ozonMappingRows"][0]["onec_item_id"] == "ONEC-1"
+
+
+def test_exact_barcode_auto_accept_is_idempotent_and_audited(tmp_path: Path) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+
+        first = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        second = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        db.commit()
+
+        assert first["autoAccepted"] == 1
+        assert second["autoAccepted"] == 0
+        assert db.query(Marketplace1cCurrentMapping).count() == 1
+        decisions = db.query(Marketplace1cMappingDecision).filter_by(
+            action="auto_accept"
+        )
+        assert decisions.count() == 1
+        decision = decisions.one()
+        assert decision.user_id is None
+        assert decision.payload["refreshRunId"] == "refresh-1"
+        assert decision.payload["matchMethod"] == "mapping_service_auto_barcode"
+
+
+def test_rejected_exact_barcode_is_not_auto_accepted_again(tmp_path: Path) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+        mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        wb_item = next(
+            item
+            for item in mapping_service.list_mapping_items(
+                db, tenant_id="shumeyko", client_id="shumeyko"
+            )["items"]
+            if item["marketplace"] == "wb"
+        )
+        barcode_candidate = next(
+            item
+            for item in mapping_service.mapping_candidates_payload(
+                db,
+                tenant_id="shumeyko",
+                client_id="shumeyko",
+                item_id=wb_item["id"],
+            )["candidates"]
+            if item["method"] == "barcode"
+        )
+        mapping_service.revoke_mapping(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+            user=user,
+            reason="test rejection",
+        )
+        mapping_service.reject_candidate(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+            user=user,
+            candidate_id=barcode_candidate["id"],
+            reason="wrong barcode in marketplace card",
+        )
+
+        rebuilt = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        db.commit()
+
+        assert rebuilt["autoAccepted"] == 0
+        assert db.query(Marketplace1cCurrentMapping).filter_by(
+            item_id=wb_item["id"]
+        ).one_or_none() is None
+        candidates = mapping_service.mapping_candidates_payload(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+        )["candidates"]
+        assert next(item for item in candidates if item["method"] == "barcode")[
+            "status"
+        ] == "rejected"
+
+
+def test_excluded_item_is_not_auto_accepted(tmp_path: Path) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+        mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        wb_item = next(
+            item
+            for item in mapping_service.list_mapping_items(
+                db, tenant_id="shumeyko", client_id="shumeyko"
+            )["items"]
+            if item["marketplace"] == "wb"
+        )
+        mapping_service.revoke_mapping(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+            user=user,
+            reason="exclude fixture",
+        )
+        mapping_service.exclude_item(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+            user=user,
+            reason="not sold",
+        )
+
+        rebuilt = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+
+        assert rebuilt["autoAccepted"] == 0
+        current = db.query(Marketplace1cCurrentMapping).filter_by(
+            item_id=wb_item["id"]
+        ).one()
+        assert current.status == "excluded"
+        assert current.match_method == "manual_exclude"
+
+
+def test_exact_barcode_does_not_replace_existing_mapping_and_reports_conflict(
+    tmp_path: Path,
+) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+        mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        wb_item = next(
+            item
+            for item in mapping_service.list_mapping_items(
+                db, tenant_id="shumeyko", client_id="shumeyko"
+            )["items"]
+            if item["marketplace"] == "wb"
+        )
+        mapping_service.revoke_mapping(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+            user=user,
+            reason="replace in fixture",
+        )
+        now = security.utcnow()
+        alternative = OnecMappingItem(
+            id="onec-alternative",
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            source_item_key="onec:alternative:",
+            onec_item_id="ONEC-ALTERNATIVE",
+            onec_article="ALT",
+            name="Другой товар 1С",
+            barcode="222",
+            source_type="onec_barcodes",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(alternative)
+        db.flush()
+        mapping_service.accept_mapping(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            item_id=wb_item["id"],
+            user=user,
+            onec_mapping_item_id=alternative.id,
+            reason="confirmed earlier",
+        )
+
+        rebuilt = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        db.commit()
+
+        assert rebuilt["autoAccepted"] == 0
+        assert rebuilt["currentMappingConflictCount"] == 1
+        current = db.query(Marketplace1cCurrentMapping).filter_by(
+            item_id=wb_item["id"]
+        ).one()
+        assert current.onec_mapping_item_id == alternative.id
+        assert current.match_method == "manual_search"
+
+
+def test_ambiguous_exact_barcode_stays_in_manual_queue(tmp_path: Path) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+        _seed_second_onec_for_barcode(db, barcode="111")
+
+        rebuilt = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+        db.commit()
+
+        wb_item = next(
+            item
+            for item in mapping_service.list_mapping_items(
+                db, tenant_id="shumeyko", client_id="shumeyko"
+            )["items"]
+            if item["marketplace"] == "wb"
+        )
+        assert rebuilt["autoAccepted"] == 0
+        assert wb_item["status"] == "ambiguous"
+        assert wb_item["currentMapping"] is None
+
+
+def test_marketplace_item_without_candidate_stays_missing(tmp_path: Path) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+        run = db.get(SourceRefreshRun, "refresh-1")
+        collection = next(
+            item
+            for item in run.collections
+            if item.source_type == "wb_product_cards"
+        )
+        db.add(
+            SourceSnapshotRow(
+                refresh_run_id=run.id,
+                collection_id=collection.id,
+                tenant_id="shumeyko",
+                client_id="shumeyko",
+                source_type="wb_product_cards",
+                source_label="wb_product_cards",
+                source_row_id="wb-no-candidate",
+                row_number=99,
+                raw_payload_hash="hash-no-candidate",
+                row_payload={
+                    "seller_account_id": "WB_ACCOUNT_1",
+                    "nm_id": 9999,
+                    "vendor_code": "NO-MATCH",
+                    "barcode": "777777",
+                    "title": "Без кандидата",
+                },
+                loaded_at=security.utcnow(),
+            )
+        )
+        db.flush()
+
+        rebuilt = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+
+        missing_item = next(
+            item
+            for item in mapping_service.list_mapping_items(
+                db, tenant_id="shumeyko", client_id="shumeyko"
+            )["items"]
+            if item["nmId"] == "9999"
+        )
+        assert rebuilt["autoAccepted"] == 1
+        assert missing_item["status"] == "missing"
+        assert missing_item["candidateCount"] == 0
+
+
+def test_auto_accept_reports_items_affected_in_source_report(tmp_path: Path) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        _seed_source_rows(db)
+        now = security.utcnow()
+        report = ReportRun(
+            id="report-mapping-impact",
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            client_name="Шумейко",
+            title="Mapping impact",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 30),
+            period_text="01.03.2026 - 30.06.2026",
+            period_status="full_months",
+            generated_at=now,
+            status="ready",
+            publication_status="published",
+            methodology_version="test",
+            source_workbook="",
+            created_at=now,
+        )
+        db.add(report)
+        db.add(
+            ReportUnitRow(
+                report_run_id=report.id,
+                row_uid="impact-row",
+                nm_id="1001",
+                article_wb="ART-1",
+                barcode="111",
+                status="missing_mapping",
+            )
+        )
+        db.get(SourceRefreshRun, "refresh-1").source_report_run_id = report.id
+        db.flush()
+
+        rebuilt = mapping_service.rebuild_candidates(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            user=user,
+            refresh_run_id="refresh-1",
+        )
+
+        assert rebuilt["autoAccepted"] == 1
+        assert rebuilt["affectedReportItems"] == 1
+        assert rebuilt["reportRebuildRequired"] is True
+
+
+def test_report_mapping_source_load_is_scoped_and_staff_payload_is_filtered(
+    tmp_path: Path,
+) -> None:
+    session_factory = _mapping_session_factory(tmp_path)
+    with session_factory() as db:
+        _seed_source_rows(db)
+        run = db.get(SourceRefreshRun, "refresh-1")
+        mapping_collection = SourceRefreshCollection(
+            refresh_run=run,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            source_type="sku_mapping",
+            source_label="Marketplace mapping",
+            required=True,
+            status="needs_review",
+            row_count=10,
+            payload={
+                "rebuild": {
+                    "autoAccepted": 3,
+                    "remainingReview": 2,
+                    "currentMappingConflictCount": 1,
+                }
+            },
+            loaded_at=security.utcnow(),
+        )
+        db.add(mapping_collection)
+        now = security.utcnow()
+        report = ReportRun(
+            id="report-scoped-mapping",
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            client_name="Шумейко",
+            title="Scoped mapping",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 30),
+            period_text="01.03.2026 - 30.06.2026",
+            period_status="full_months",
+            generated_at=now,
+            status="ready",
+            publication_status="draft",
+            methodology_version="test",
+            source_workbook="",
+            created_at=now,
+        )
+        db.add(report)
+        db.add(
+            ReportUnitRow(
+                report_run_id=report.id,
+                row_uid="scoped-ok",
+                nm_id="1001",
+                status="ОК",
+            )
+        )
+        db.flush()
+        repository.replace_source_loads_from_refresh(db, report, run)
+
+        scoped = repository.reconcile_report_mapping_source_load(db, report)
+        mapping_load = db.query(SourceLoad).filter_by(
+            report_run_id=report.id,
+            source_type="sku_mapping",
+        ).one()
+        staff_payload = repository.source_refresh_run_payload(
+            run, include_sensitive=True
+        )
+        client_payload = repository.source_refresh_run_payload(
+            run, include_sensitive=False
+        )
+
+        assert scoped["mappingIssueRows"] == 0
+        assert scoped["sourceLoadUpdated"] is True
+        assert mapping_load.status == "loaded"
+        assert staff_payload["mappingAutoSync"]["autoAccepted"] == 3
+        assert client_payload["mappingAutoSync"] is None
 
 
 def test_empty_ozon_refresh_does_not_archive_valid_existing_items(
@@ -301,34 +747,29 @@ def test_mapping_api_is_staff_only_and_reports_conflict(tmp_path: Path) -> None:
         f"/api/clients/shumeyko/mapping/items/{item['id']}/candidates"
     ).json()["candidates"]
 
-    accept = client.post(
+    protected = client.post(
         f"/api/clients/shumeyko/mapping/items/{item['id']}/accept",
         json={"candidate_id": candidates[0]["id"], "reason": "ok"},
     )
-    assert accept.status_code == 200
-    conflict = client.post(
-        f"/api/clients/shumeyko/mapping/items/{item['id']}/accept",
-        json={"candidate_id": candidates[0]["id"], "reason": "again"},
-    )
-    assert conflict.status_code == 409
+    assert protected.status_code == 409
     history = client.get(f"/api/clients/shumeyko/mapping/items/{item['id']}/history")
     assert history.status_code == 200
-    assert history.json()["items"][0]["action"] == "accept"
+    assert history.json()["items"][0]["action"] == "auto_accept"
 
     ozon_item = next(row for row in items if row["marketplace"] == "ozon")
     ozon_candidates = client.get(
         f"/api/clients/shumeyko/mapping/items/{ozon_item['id']}/candidates"
     ).json()["candidates"]
-    reject = client.post(
-        f"/api/clients/shumeyko/mapping/items/{ozon_item['id']}/reject",
-        json={"candidate_id": ozon_candidates[0]["id"], "reason": "not this SKU"},
+    accept = client.post(
+        f"/api/clients/shumeyko/mapping/items/{ozon_item['id']}/accept",
+        json={"candidate_id": ozon_candidates[0]["id"], "reason": "checked"},
     )
-    assert reject.status_code == 200
-    reject_history = client.get(
+    assert accept.status_code == 200
+    accept_history = client.get(
         f"/api/clients/shumeyko/mapping/items/{ozon_item['id']}/history"
     )
-    assert reject_history.status_code == 200
-    assert reject_history.json()["items"][0]["action"] == "reject"
+    assert accept_history.status_code == 200
+    assert accept_history.json()["items"][0]["action"] == "accept"
 
     client.post("/api/auth/logout")
     _login(client, "client@example.com")
@@ -356,6 +797,9 @@ def test_mapping_ui_static_assets_expose_staff_workflow() -> None:
     assert "postMappingAction" in app_js
     assert "/mapping/onec-search" in app_js
     assert "/mapping/export/sku-mapping" in app_js
+    assert "Автоматически сопоставлено по штрихкоду 1С" in app_js
+    assert "Конфликт с ранее принятой связью" in app_js
+    assert "mapping_service_auto_barcode" in app_js
 
     assert ".mapping-service-panel" in css
     assert ".mapping-candidate" in css
@@ -466,7 +910,7 @@ def _seed_source_rows(db) -> None:
                 "product_id": "5001",
                 "offer_id": "ART-1",
                 "sku": "OZON-SKU-1",
-                "barcode": "111",
+                "barcode": "999",
                 "name": "Товар Ozon",
             },
         ),
@@ -571,6 +1015,49 @@ def _seed_empty_ozon_refresh(db) -> None:
                 source_row_id=row_id,
                 row_number=index,
                 raw_payload_hash=f"empty-hash-{index}",
+                row_payload=payload,
+                loaded_at=now,
+            )
+        )
+    db.flush()
+
+
+def _seed_second_onec_for_barcode(db, *, barcode: str) -> None:
+    run = db.get(SourceRefreshRun, "refresh-1")
+    collections = {
+        item.source_type: item
+        for item in run.collections
+        if item.source_type in {"onec_nomenclature", "onec_barcodes"}
+    }
+    now = security.utcnow()
+    rows = [
+        (
+            "onec_nomenclature",
+            "onec-2",
+            {
+                "Ref_Key": "ONEC-2",
+                "Description": "Другой товар",
+                "Артикул": "ART-2",
+            },
+        ),
+        (
+            "onec_barcodes",
+            "barcode-2",
+            {"Номенклатура_Key": "ONEC-2", "Штрихкод": barcode},
+        ),
+    ]
+    for index, (source_type, row_id, payload) in enumerate(rows, 100):
+        db.add(
+            SourceSnapshotRow(
+                refresh_run_id=run.id,
+                collection_id=collections[source_type].id,
+                tenant_id="shumeyko",
+                client_id="shumeyko",
+                source_type=source_type,
+                source_label=source_type,
+                source_row_id=row_id,
+                row_number=index,
+                raw_payload_hash=f"second-hash-{index}",
                 row_payload=payload,
                 loaded_at=now,
             )

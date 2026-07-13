@@ -7,14 +7,23 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "operations"]
 source_of_truth: true
+truth_scope: ozon
+truth_priority: 100
 related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py, src/wb_unit_economics/marketplace.py, src/wb_unit_economics/contracts.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/providers.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/app.js]
 related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_contracts.py, tests/test_provider_registry.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_sku_mapping, marketplace_api_snapshot, unit_economics_report]
-depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
+depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. Read-only collector, marts, mapping и web diagnostics
+реализованы и имеют целевые тесты, но полный mixed-report acceptance и
+production rollout не доказываются только changelog. Непроверенные критерии
+остаются основанием не повышать spec до `implemented`.
 
 # Goal
 
@@ -24,10 +33,12 @@ updated_at: "2026-07-10"
 V1 не заменяет WB-методику. V1 добавляет provider `ozon_api`, raw snapshots
 Ozon и общий контракт `marketplace_api_snapshot`, где `marketplace` принимает
 значения `wb` или `ozon`. Для клиентов без WB допускается диагностический
-режим `ozon-only`: он читает Ozon + 1C и сохраняет source snapshots, но не
-публикует unit economics отчет до mart validation и отдельной приемки
-нормализации Ozon. Смешанный отчет WB+Ozon можно публиковать только после той
-же приемки.
+режим `ozon-only`: он читает Ozon + 1C, сохраняет source snapshots и после
+успешного недемонстрационного запуска создает внутренний `draft`-отчет с
+`lineage_type = ozon_mart_snapshot`, закрепленный за конкретным immutable
+source refresh. Такой черновик виден только staff и не публикуется клиенту до
+mart validation и отдельной финансовой приемки. Смешанный отчет WB+Ozon можно
+публиковать только после той же приемки.
 
 # Canonical Ozon P&L v2
 
@@ -36,14 +47,34 @@ Ozon и общий контракт `marketplace_api_snapshot`, где `marketpl
 себестоимость регистра продаж и расходы mutual settlement относятся к одному
 `client_company_id`, `onec_organization_id` и календарному месяцу. Стоимость
 индексируется по `organization_id + onec_item_id + month`; средняя стоимость
-всего snapshot запрещена.
+всего snapshot запрещена. Если организация 1С не выбрана, строки других
+организаций не используются как fallback: закрытый месяц получает
+`missing_1c_organization`, попадает в `excludedIncompletePeriods`, а финансовые
+итоги и прибыль не публикуются до решения аналитика.
+
+Signed-движения регистра продаж сначала агрегируются внутри документа по ключу
+`organization_id + onec_item_id + month + document_id + counterparty_id`.
+Количество и выбранная
+себестоимость суммируются раздельно, поэтому строки одного документа с
+количеством и стоимостью в разных движениях остаются связанными. Документ
+участвует в unit cost только при ненулевом итоговом signed-количестве;
+стоимостные движения документа с нулевым количеством остаются только в
+сверке и не присоединяются к продажам другого документа. Если `Документ` или
+`Recorder` отсутствует, fallback ограничивается одной исходной строкой
+snapshot и не объединяет независимые строки. Для прямого Ozon-контроля строка
+стоимости без контрагента наследует контрагента snapshot только при единственном
+контрагенте в этой строке. Маркированные движения разных контрагентов внутри
+одного Recorder не складываются. Любая неразмеченная quantity/cost строка при
+нескольких контрагентах дает `direct1cStatus = not_available`, даже если
+Recorder указан; система не выбирает одного автоматически.
 
 Компания хранит отдельный `onec_organization_id`; существующий текстовый
 `source_key` не переопределяется. Автосвязь разрешена только по уже
 сохраненному точному `Ref_Key` либо по единственному точному совпадению полного
 названия без нечеткого поиска. Один непривязанный Ozon-кабинет можно связать с
 единственной компанией клиента автоматически с записью в audit. Все остальные
-случаи получают `needs_review`.
+случаи получают `needs_review`. Наличие ровно одной компании и одной организации
+1С без совпадения имени не является основанием для автосвязи.
 
 Налоговый профиль является неизменяемым снимком организации 1С с периодом
 действия, `source_refresh_run_id`, hash источника и версией методики. Приоритет:
@@ -79,6 +110,29 @@ Ozon и общий контракт `marketplace_api_snapshot`, где `marketpl
 незакрытого отчета комиссионера. Общие profit/margin диапазона с любым
 исключенным месяцем равны `null`.
 
+Покрытие количества считается по всей положительной реализации месяца,
+включая несопоставленные и неоднозначные строки. `revenueCoveragePct` равен
+`null`, если полная выручка неизвестна из-за таких строк. Для прозрачной
+диагностики API отдельно возвращает `eligibleRevenueAmount`,
+`coveredEligibleRevenueAmount`, `eligibleRevenueCoveragePct`,
+`unmappedQuantity`, `ambiguousQuantity`, `unmappedRevenueRowCount` и
+`ambiguousRevenueRowCount`. Несопоставленная строка с ненулевой суммой делает
+`revenueCoveragePct = null` даже при нулевом или отрицательном количестве.
+Строка с положительным количеством, но нулевой суммой влияет только на
+`quantityCoveragePct` и не делает известное покрытие выручки пустым.
+
+Прямой контроль регистра 1С имеет `direct1cStatus = available` только при
+положительных signed quantity и COGS. При положительном количестве и нулевой
+или отрицательной стоимости API возвращает `direct1cStatus = not_available` и
+`direct1cReason = nonpositive_cost`; такая сверка не изображается готовой.
+
+Порог существенности применяется отдельно к каждому месяцу. Месячный mart
+возвращает фактический `materialityThresholdAmount`. Для диапазона из нескольких
+месяцев это поле равно `null`, а `materialityThresholdMode = monthly` и поля
+`materialityThresholdMinAmount`/`materialityThresholdMaxAmount` показывают
+границы реально примененных месячных порогов; порог от суммарной выручки
+диапазона не пересчитывается.
+
 Строки и итоги возвращают `profitBeforeTax`, `marginBeforeTax`, `vatOutput`,
 `vatInput`, `vatPayable`, `revenueTax`, `incomeTax`,
 `profitBeforeIncomeTax`, `profitAfterTax`, `marginAfterTax`, `taxSystem`,
@@ -87,6 +141,11 @@ deprecated alias для `profitBeforeTax`. Для ОСНО P&L без НДС д�
 только при подтвержденной выручке, себестоимости без НДС и входящем НДС. Без
 годовой базы НДФЛ `profitAfterTax` не публикуется; UI показывает
 «Управленческая прибыль до НДФЛ».
+
+В Excel и статье P&L `vatPayable`, `revenueTax` и `incomeTax` имеют отрицательное
+`effectAmount`. `vatOutput` и `vatInput` являются строками налогового моста с
+`effectAmount = null` и не складываются повторно с `vatPayable`.
+`profitAfterTax` остается итоговой строкой результата.
 
 Legacy-блок `pnl` сохраняется только в staff API с `deprecated = true` и
 `replacement = ozonMart`; UI его не отображает. Staff API также предоставляет
@@ -99,7 +158,33 @@ Legacy-блок `pnl` сохраняется только в staff API с `depre
 блокируется, а строки не удаляются молча. Исторические snapshots разных
 refresh run не считаются дублями; расчет всегда использует один run.
 Dry-run хранится в аудите готовности, но никогда не становится источником
-`ozonMart` и не скрывает последний реальный immutable snapshot.
+`ozonMart` и не скрывает последний реальный immutable snapshot. Источником
+расчета является последний завершенный недемонстрационный `ozon-only` run со
+статусом `source_loaded` или `needs_review`. Более новая активная или
+неуспешная попытка возвращается отдельно как `latestAttempt` и не заменяет
+совместимое поле `latestRun`, указывающее на фактический расчетный snapshot.
+
+Коллекция 1С `commissioner_reports` обязана содержать не только заголовки
+документов, но и `Организация_Key` и финансовые табличные части `Запасы` и
+`ЗапасыВозвраты`.
+Загруженные заголовки при отсутствии всех товарных строк имеют статус
+`partial_source` с кодом `commissioner_financial_tables_missing`. Такой
+структурно неполный `ozon-only` snapshot остается доступен для диагностики, но
+не создает новый Ozon draft и не скрывает последний воспроизводимый черновик.
+Отсутствующий `Организация_Key` аналогично дает
+`commissioner_organization_missing`: организационный scope не угадывается.
+Если полный raw-файл превышает общий лимит DB persistence, он остается
+авторитетным immutable-источником, а в `source_snapshot_rows` сохраняется
+компактная копия заголовков и только финансово значимых полей товарных строк.
+Mart обязан рассчитываться из этой компактной копии того же refresh run; чтение
+«последнего файла вообще» или другого snapshot запрещено.
+Отсутствие конкретного документа 1С внутри корректно загруженного источника
+по-прежнему создает `needs_review` и показывается в документной сверке.
+
+Диапазон агрегирует `rowCount`, `summary`, `totals` и `closedPeriodTotals` из
+помесячных mart, а не из ограниченного массива preview-строк. `rows` остается
+только витринным preview; `previewLimited = true`, когда полный `rowCount`
+больше количества возвращенных строк.
 
 # Scope
 
@@ -217,6 +302,9 @@ finance cash-flow может сохраняться как технически�
 - поддерживает безопасные query-фильтры `period_start`, `period_end` и
   `wb_cabinet_id`, чтобы показатели Ozon пересчитывались под выбранный период и
   Ozon-кабинет;
+- если клиентский отчет не создан, блок «Контроль перед отправкой» явно
+  показывает, что report-level проверка недоступна, и выводит доступную
+  диагностику Ozon + 1C вместо пустого состояния загрузки;
 - возвращает только safe metadata: статус запуска, период, счетчики коллекций,
   readiness по Ozon realization, mapping и обязательным 1C источникам;
 - не возвращает и не отображает preview Ozon cash-flow как расчетную выручку;
@@ -324,10 +412,43 @@ register, витрина может показать `onecCogs` и `profitAfterC
 `ozon_realization_posting`, `ozon_products_buyout`, `ozon_b2b_sales_json`.
 Они объясняют возможные отдельные документы Ozon, но не меняют методическую
 выручку: база выручки Ozon v1 остается `onec_sales_register`.
-В Ozon v1 витрине должна быть отдельная сверка выручки:
-`Ozon realization / отчет комиссионера + Ozon buyout = 1C регистр продаж`.
-Если эта формула сходится, дельта Ozon vs 1C показывается как `0`, даже если
-buyout подтвержден не по номеру отчета, а по контрольному агрегату.
+Верхние KPI витрины `Выручка 1C Ozon` и `Себестоимость 1C` показывают прямые
+итоги того же регистра, включая подтвержденные дополнительные документы,
+например выкупы. Итоговый P&L Ozon использует ту же базу и поэтому включает
+выкупы. SKU-строки по реализации/отчету комиссионера остаются детализацией:
+дополнительные документы без подтвержденной связи с товаром не распределяются
+по SKU, но входят в выручку, себестоимость и итоговую прибыль Ozon.
+До появления в снимке 1C подтвержденного поля `СебестоимостьБезНДС` и
+входящего НДС себестоимость берется из поля 1C `Себестоимость` без собственной
+корректировки НДС. Витрина помечает это как «НДС не выделен» и не называет
+такую сумму себестоимостью без НДС.
+В Ozon v1 витрине должна быть отдельная сверка выручки. Карточка
+`Выручка 1C Ozon · факт` берется только из 1C OData
+`AccumulationRegister_Продажи` по Ozon-контрагенту и включает все проведенные
+документы выбранного периода, в том числе выкупы. Эта карточка не является
+данными Ozon API или WB API и не должна подменяться ими при отсутствии 1C.
+
+Контрольная формула первички:
+`Ozon API realization + Ozon API buyout = 1C регистр продаж`.
+Ozon realization и Ozon buyout образуют ожидаемую сумму первичных документов,
+а регистр продаж 1C является бухгалтерским фактом. Отчет комиссионера 1C и
+расходные накладные выкупов показываются между ними как документная
+расшифровка, но не используются вместо Ozon API в левой части формулы.
+Диагностика отдельно показывает дельту отчета комиссионера, дельту выкупов и
+общую дельту регистра.
+
+Для каждого вида первички диагностика возвращает один из статусов:
+`matched`, `missing_in_1c`, `not_posted`, `wrong_date`, `amount_mismatch` или
+`missing_ozon_source`. Для отчета комиссионера период извлекается из комментария
+1C; если отчет относится к выбранному месяцу, но дата документа выходит за его
+границы, документ должен оставаться видимым со статусом `wrong_date`. UI
+показывает номер и дату документа, проблему и конкретное действие бухгалтеру.
+После исправления в 1C кнопка `Перепроверить после исправления` запускает только
+read-only обновление `ozon-only`; кабинет не создает, не меняет и не проводит
+документы 1C автоматически.
+
+Если контрольная формула сходится, дельта Ozon API vs 1C показывается как `0`,
+даже если buyout подтвержден не по номеру отчета, а по контрольному агрегату.
 Для отдельных выкупов Ozon ключ сверки - не номер B2B УПД, а номер отчета о
 выкупленных товарах Ozon, например `4767782`. В 1C этот номер извлекается из
 `Комментарий`/`ОснованиеПечати` расходной накладной с основанием `Выкуп`;
@@ -669,6 +790,10 @@ Integration:
   nonpositive cost returns `blocked` and null profit. A closed incomplete May
   is listed in `excludedIncompletePeriods`; open June is listed only in
   `excludedOpenPeriods`;
+- on immutable snapshot `source_refresh_c349dd3c521a4e668346cc2114f066aa`,
+  May has seven missing-cost rows, zero ambiguous mappings and zero incomplete
+  expense rows; the earlier `5/2/2` composition belongs to another snapshot.
+  The durable acceptance invariant is null May profit plus explicit blockers;
 - tax profile tests cover explicit 1C USN, OSNO with confirmed input VAT,
   missing profile, missing annual NDFL base, overlapping profiles and multiple
   organizations of one client;
@@ -730,6 +855,45 @@ Acceptance:
 
 # Changelog
 
+- 2026-07-12: Добавлен полный typed shadow для Ozon: cash-flow service lines,
+  realization/posting, mutual settlement, buyout, B2B и product catalog
+  материализуются из verified immutable files. Legacy DB rows и typed путь
+  сравниваются по всем строкам, P&L, mart, mapping, выкупам и сверкам; порядок
+  preview и технические row ids исключены из business grain.
+
+- 2026-07-12: отчет комиссионера Ozon снова загружается с товарными частями;
+  header-only snapshot помечается `partial_source` и не может заменить
+  последний пригодный Ozon draft.
+
+- 2026-07-12: Успешный production `ozon-only` создает staff-only Ozon draft,
+  закрепленный за исходным refresh run. Добавлены mode-scoped статус загрузки,
+  воспроизводимая сводка/Excel и явное разделение служебной витрины, черновика
+  и опубликованного клиентского отчета.
+
+- 2026-07-11: Разделены источники выручки Ozon: верхний факт берется только из
+  регистра продаж 1C, а Ozon realization + buyout используются как ожидаемая
+  первичка. Добавлен контроль отсутствующих, непроведенных, датированных не тем
+  периодом и отличающихся по сумме документов с read-only перепроверкой после
+  исправления в 1C.
+
+- 2026-07-11: при отсутствии клиентского отчета контроль перед отправкой
+  показывает состояние и диагностику Ozon + 1C вместо пустого блока загрузки.
+- 2026-07-11: итоговый P&L Ozon приведен к прямому регистру продаж 1C и
+  включает выкупы; SKU-детализация сохранена без искусственного распределения
+  дополнительных документов по товарам.
+- 2026-07-11: витрина Ozon сохраняет KPI и SKU-P&L без клиентского отчета;
+  SKU-P&L явно отделен от верхних итогов регистра 1C, а себестоимость помечена
+  как сумму, в которой НДС не выделен.
+- 2026-07-11: верхние KPI Ozon переключены на прямые итоги регистра продаж 1C
+  (включая выкупы); SKU-P&L сохранен отдельным и явно помечен как расчет без
+  выкупов.
+- 2026-07-11: made revenue coverage depend on unknown nonzero revenue rather
+  than unmapped quantity, and marked nonpositive direct 1C COGS unavailable.
+- 2026-07-11: Isolated direct 1C COGS control by counterparty inside Recorder
+  and made unlabeled movements with multiple counterparties unavailable.
+- 2026-07-11: Removed single-company/single-organization guessing, made
+  documentless direct COGS control conservative, added unknown-revenue row
+  counters and preserved the actually applied monthly materiality thresholds.
 - 2026-07-10: Replaced the superseded Sabura April whole-snapshot control with
   signed monthly COGS `12 487 433.55` and pre-tax profit `8 228 128.48`; added
   `costQuality`, materiality rules, `excludedIncompletePeriods` and the

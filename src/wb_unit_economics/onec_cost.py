@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from wb_unit_economics.contracts import OnecGrossProfitDocumentRow, OnecUnfCostSnapshot
+from wb_unit_economics.contracts import (
+    InputVatPolicy,
+    OnecGrossProfitDocumentRow,
+    OnecUnfCostSnapshot,
+)
 from wb_unit_economics.mapping import load_onec_rows
 from wb_unit_economics.onec_odata import extract_odata_rows, raw_payload_hash
 
@@ -61,6 +65,8 @@ def load_sales_register_cost_snapshots(
     amount_field: str = "Себестоимость",
     loaded_at: datetime | None = None,
     marketplace_counterparties_only: bool = False,
+    input_vat_policies: Iterable[InputVatPolicy] = (),
+    confirmed_input_vat_org_ids: set[str] | None = None,
 ) -> list[OnecUnfCostSnapshot]:
     sales_rows = load_sales_register_rows(sample_dir)
     reference_dir = reference_dir or sample_dir
@@ -72,6 +78,8 @@ def load_sales_register_cost_snapshots(
         amount_field=amount_field,
         loaded_at=loaded_at,
         marketplace_counterparties_only=marketplace_counterparties_only,
+        input_vat_policies=input_vat_policies,
+        confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
     )
 
 
@@ -277,15 +285,21 @@ def extract_sales_register_cost_snapshots(
     amount_field: str = "Себестоимость",
     loaded_at: datetime | None = None,
     marketplace_counterparties_only: bool = False,
+    input_vat_policies: Iterable[InputVatPolicy] = (),
+    confirmed_input_vat_org_ids: set[str] | None = None,
 ) -> list[OnecUnfCostSnapshot]:
     loaded_at = loaded_at or datetime.now(tz=MOSCOW_TZ)
     cost_method = _sales_register_cost_method(amount_field)
     barcode_index = _barcode_index(barcode_rows)
     nomenclature = _nomenclature_index(nomenclature_rows)
+    policies = list(input_vat_policies)
+    confirmed_org_ids = confirmed_input_vat_org_ids or set()
     records = flatten_stock_record_sets(sales_rows)
     if marketplace_counterparties_only:
         records = _filter_marketplace_sales_cost_records(records)
-    document_groups: dict[tuple[str, str, str, date, date, str], dict[str, Any]] = {}
+    document_groups: dict[
+        tuple[str, str, str, date, date, str, str], dict[str, Any]
+    ] = {}
     for record in records:
         if not _parse_bool(record.get("Active"), default=True):
             continue
@@ -293,7 +307,20 @@ def extract_sales_register_cost_snapshots(
         week_start, week_end = week_bounds(period)
         quantity = decimal_from_value(record.get("Количество"))
         amount = decimal_from_value(record.get(amount_field))
-        if quantity == 0 and amount == 0:
+        including_raw = record.get("Себестоимость")
+        excluding_raw = record.get("СебестоимостьБезНДС")
+        including_amount = (
+            decimal_from_value(including_raw) if including_raw is not None else None
+        )
+        excluding_amount = (
+            decimal_from_value(excluding_raw) if excluding_raw is not None else None
+        )
+        if (
+            quantity == 0
+            and amount == 0
+            and (including_amount is None or including_amount == 0)
+            and (excluding_amount is None or excluding_amount == 0)
+        ):
             continue
         item_id = _text(record.get("Номенклатура_Key"))
         organization_id = _text(record.get("Организация_Key"))
@@ -302,20 +329,41 @@ def extract_sales_register_cost_snapshots(
         document_id = _text(record.get("Документ") or record.get("Recorder"))
         if not document_id:
             continue
-        key = (organization_id, item_id, "", week_start, week_end, document_id)
+        document_kind = _sales_cost_document_kind(record)
+        key = (
+            organization_id,
+            item_id,
+            "",
+            week_start,
+            week_end,
+            document_id,
+            document_kind,
+        )
         group = document_groups.setdefault(
             key,
             {
                 "quantity": Decimal("0"),
                 "amount": Decimal("0"),
+                "cost_including_vat": Decimal("0"),
+                "cost_excluding_vat": Decimal("0"),
+                "cost_including_vat_complete": True,
+                "cost_excluding_vat_complete": True,
                 "row_hashes": [],
             },
         )
         group["quantity"] += abs(quantity)
         group["amount"] += abs(amount)
+        if including_raw is None:
+            group["cost_including_vat_complete"] = False
+        else:
+            group["cost_including_vat"] += abs(including_amount or Decimal("0"))
+        if excluding_raw is None:
+            group["cost_excluding_vat_complete"] = False
+        else:
+            group["cost_excluding_vat"] += abs(excluding_amount or Decimal("0"))
         group["row_hashes"].append(raw_payload_hash(record))
 
-    groups: dict[tuple[str, str, str, date, date], dict[str, Any]] = {}
+    groups: dict[tuple[str, str, str, date, date, str], dict[str, Any]] = {}
     for (
         organization_id,
         item_id,
@@ -323,33 +371,89 @@ def extract_sales_register_cost_snapshots(
         week_start,
         week_end,
         document_id,
+        document_kind,
     ), document_group in document_groups.items():
         quantity = document_group["quantity"]
         if quantity == 0:
             continue
-        key = (organization_id, item_id, characteristic, week_start, week_end)
+        key = (
+            organization_id,
+            item_id,
+            characteristic,
+            week_start,
+            week_end,
+            document_kind,
+        )
         group = groups.setdefault(
             key,
             {
                 "quantity": Decimal("0"),
                 "amount": Decimal("0"),
+                "cost_including_vat": Decimal("0"),
+                "cost_excluding_vat": Decimal("0"),
+                "cost_including_vat_complete": True,
+                "cost_excluding_vat_complete": True,
                 "document_ids": [],
                 "row_hashes": [],
             },
         )
         group["quantity"] += quantity
         group["amount"] += document_group["amount"]
+        group["cost_including_vat"] += document_group["cost_including_vat"]
+        group["cost_excluding_vat"] += document_group["cost_excluding_vat"]
+        group["cost_including_vat_complete"] = bool(
+            group["cost_including_vat_complete"]
+            and document_group["cost_including_vat_complete"]
+        )
+        group["cost_excluding_vat_complete"] = bool(
+            group["cost_excluding_vat_complete"]
+            and document_group["cost_excluding_vat_complete"]
+        )
         group["document_ids"].append(document_id)
         group["row_hashes"].extend(document_group["row_hashes"])
 
     snapshots: list[OnecUnfCostSnapshot] = []
-    for organization_id, item_id, characteristic, week_start, week_end in sorted(
-        groups
-    ):
-        group = groups[(organization_id, item_id, characteristic, week_start, week_end)]
+    for (
+        organization_id,
+        item_id,
+        characteristic,
+        week_start,
+        week_end,
+        document_kind,
+    ) in sorted(groups):
+        group = groups[
+            (
+                organization_id,
+                item_id,
+                characteristic,
+                week_start,
+                week_end,
+                document_kind,
+            )
+        ]
         quantity = group["quantity"]
         if quantity == 0:
             continue
+        input_vat_value: Decimal | None = None
+        input_vat_source = ""
+        policy = _input_vat_policy_for(
+            policies,
+            organization_id=organization_id,
+            calculation_date=week_end,
+        )
+        actual_confirmed = organization_id in confirmed_org_ids
+        difference_available = bool(
+            group["cost_including_vat_complete"]
+            and group["cost_excluding_vat_complete"]
+        )
+        difference = group["cost_including_vat"] - group["cost_excluding_vat"]
+        if difference_available and difference >= Decimal("-0.01"):
+            if actual_confirmed:
+                input_vat_value = max(difference, Decimal("0")) / quantity
+                input_vat_source = "onec_purchase_book_confirmed_cost_difference"
+            elif policy is not None and policy.mode == "management_assumption":
+                input_vat_value = max(difference, Decimal("0")) / quantity
+                input_vat_source = "management_assumption:sales_cost_difference"
         article, name = nomenclature.get(item_id, ("", ""))
         snapshots.append(
             OnecUnfCostSnapshot(
@@ -363,13 +467,17 @@ def extract_sales_register_cost_snapshots(
                 characteristic=characteristic,
                 cost_value=group["amount"] / quantity,
                 extra_costs_value=Decimal("0"),
+                input_vat_value=input_vat_value,
+                input_vat_source=input_vat_source,
                 cost_currency="RUB",
                 cost_method=cost_method,
                 effective_from=week_start,
                 effective_to=week_end,
+                source_document_kind=document_kind,
                 source_document=(
                     "AccumulationRegister_Продажи "
                     f"{week_start.isoformat()}..{week_end.isoformat()}"
+                    + (f" · {document_kind}" if document_kind else "")
                 ),
                 raw_payload_hash=raw_payload_hash(
                     {
@@ -380,6 +488,7 @@ def extract_sales_register_cost_snapshots(
                             characteristic,
                             week_start.isoformat(),
                             week_end.isoformat(),
+                            document_kind,
                         ],
                         "document_ids": group["document_ids"],
                         "row_hashes": group["row_hashes"],
@@ -388,6 +497,23 @@ def extract_sales_register_cost_snapshots(
             )
         )
     return snapshots
+
+
+def _input_vat_policy_for(
+    policies: Iterable[InputVatPolicy],
+    *,
+    organization_id: str,
+    calculation_date: date,
+) -> InputVatPolicy | None:
+    candidates = [
+        item
+        for item in policies
+        if item.organization_id == organization_id
+        and item.is_effective_for(calculation_date)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.valid_from)
 
 
 def extract_gross_profit_document_rows(
@@ -621,8 +747,17 @@ def _filter_marketplace_sales_cost_records(
     return [
         record
         for record in records
-        if "отчеткомиссионера" in _record_document_type(record).lower()
+        if _sales_cost_document_kind(record)
     ]
+
+
+def _sales_cost_document_kind(record: Mapping[str, Any]) -> str:
+    normalized = _record_document_type(record).replace(" ", "").casefold()
+    if "отчеткомиссионера" in normalized:
+        return "commissioner_report"
+    if "расходнаянакладная" in normalized:
+        return "buyout_notice"
+    return ""
 
 
 def _record_document_type(record: Mapping[str, Any]) -> str:

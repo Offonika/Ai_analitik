@@ -15,7 +15,7 @@ from wb_unit_economics.calculation import (
 from wb_unit_economics.contracts import TaxProfile
 
 _ARTICLE_LABELS = {
-    "revenue": "Выручка 1C Ozon SKU",
+    "revenue": "Выручка 1C Ozon SKU (без выкупов)",
     "commission": "Базовое вознаграждение Ozon",
     "services": "Услуги Ozon",
     "partner_services": "Услуги партнеров / перевыставление",
@@ -24,8 +24,8 @@ _ARTICLE_LABELS = {
     "promotion": "Реклама и продвижение",
     "compensation": "Компенсации",
     "other": "Другие услуги Ozon",
-    "cogs": "Себестоимость продаж 1C",
-    "profit": "Прибыль до налогов",
+    "cogs": "Себестоимость 1C по SKU (НДС не выделен)",
+    "profit": "Прибыль до налогов по SKU",
 }
 
 _ARTICLE_GROUPS = {
@@ -100,6 +100,7 @@ def empty_ozon_mart_payload(limit: int = 0) -> dict[str, Any]:
         "excludedIncompletePeriods": [],
         "monthly": [],
         "costQuality": _empty_cost_quality(),
+        "reconciliationTotals": _empty_reconciliation_totals(),
         "taxProfile": _tax_profile_payload(None, required=True),
         "profitAliasDeprecated": True,
         "expenseAttribution": _empty_expense_attribution(),
@@ -130,6 +131,7 @@ def build_ozon_unit_economics_mart(
     direct_1c_cost_control: Mapping[str, Any] | None = None,
     cost_materiality_minimum: Decimal = _COST_MATERIALITY_MINIMUM,
     cost_materiality_revenue_rate: Decimal = _COST_MATERIALITY_REVENUE_RATE,
+    organization_scope_status: str = "ready",
 ) -> dict[str, Any]:
     preview_limit = max(0, int(preview_limit))
     revenue_by_item, has_commissioner = _onec_commissioner_revenue_by_item(
@@ -181,6 +183,15 @@ def build_ozon_unit_economics_mart(
         materiality_minimum=cost_materiality_minimum,
         materiality_revenue_rate=cost_materiality_revenue_rate,
     )
+    if organization_scope_status == "missing_1c_organization":
+        _apply_missing_organization_scope(all_rows, cost_quality)
+        expense_attribution = _empty_expense_attribution()
+        expense_attribution.update(
+            {
+                "status": "blocked",
+                "message": "Выберите организацию 1C до расчета расходов Ozon.",
+            }
+        )
     _apply_tax_profile_to_rows(
         all_rows,
         tax_profile=tax_profile,
@@ -261,10 +272,12 @@ def build_ozon_unit_economics_mart(
         ),
         "monthly": [],
         "costQuality": cost_quality,
+        "reconciliationTotals": _empty_reconciliation_totals(),
         "taxProfile": _tax_profile_payload(
             tax_profile,
             required=tax_profile_required,
         ),
+        "organizationScopeStatus": organization_scope_status,
         "profitAliasDeprecated": True,
         "expenseAttribution": expense_attribution,
         "articleRows": _mart_article_rows(all_rows, totals),
@@ -288,12 +301,14 @@ def combine_ozon_monthly_marts(
     monthly: list[dict[str, Any]] = []
     excluded_open_periods: list[dict[str, Any]] = []
     excluded_incomplete_periods: list[dict[str, Any]] = []
-    closed_rows: list[dict[str, Any]] = []
+    closed_marts: list[Mapping[str, Any]] = []
+    row_count = 0
     for mart in monthly_marts:
         period_filter = mart.get("periodFilter") or {}
         period_start = period_filter.get("periodStart")
         period_end = period_filter.get("periodEnd")
         mart_rows = [dict(item) for item in mart.get("rows") or []]
+        row_count += int(mart.get("rowCount") or len(mart_rows))
         period_key = str(period_start or "period")[:7]
         for index, row in enumerate(mart_rows, start=1):
             row["id"] = f"ozon-mart-{period_key}-{index}"
@@ -304,13 +319,22 @@ def combine_ozon_monthly_marts(
                 "periodStart": period_start,
                 "periodEnd": period_end,
                 "status": mart.get("status") or "not_started",
+                "rowCount": int(mart.get("rowCount") or len(mart_rows)),
+                "previewLimited": bool(mart.get("previewLimited")),
                 "summary": summary,
                 "totals": dict(mart.get("totals") or {}),
                 "taxProfile": dict(mart.get("taxProfile") or {}),
                 "costQuality": dict(mart.get("costQuality") or {}),
+                "organizationScopeStatus": mart.get("organizationScopeStatus")
+                or "ready",
             }
         )
-        if int(summary.get("missing1cCommissioner") or 0):
+        mart_open_periods = [
+            dict(item) for item in mart.get("excludedOpenPeriods") or []
+        ]
+        if mart_open_periods:
+            excluded_open_periods.extend(mart_open_periods)
+        elif int(summary.get("missing1cCommissioner") or 0):
             excluded_open_periods.append(
                 {
                     "periodStart": period_start,
@@ -320,29 +344,34 @@ def combine_ozon_monthly_marts(
             )
         else:
             cost_quality = dict(mart.get("costQuality") or _empty_cost_quality())
-            reasons = _incomplete_period_reasons(
-                summary,
-                cost_quality=cost_quality,
+            mart_incomplete_periods = [
+                dict(item) for item in mart.get("excludedIncompletePeriods") or []
+            ]
+            reasons = (
+                list(mart_incomplete_periods[0].get("reasons") or [])
+                if mart_incomplete_periods
+                else _incomplete_period_reasons(summary, cost_quality=cost_quality)
             )
             if reasons:
-                excluded_incomplete_periods.append(
-                    {
-                        "periodStart": period_start,
-                        "periodEnd": period_end,
-                        "reason": reasons[0],
-                        "reasons": reasons,
-                    }
-                )
+                if mart_incomplete_periods:
+                    excluded_incomplete_periods.extend(mart_incomplete_periods)
+                else:
+                    excluded_incomplete_periods.append(
+                        {
+                            "periodStart": period_start,
+                            "periodEnd": period_end,
+                            "reason": reasons[0],
+                            "reasons": reasons,
+                        }
+                    )
             elif mart.get("status") == "ready" and cost_quality.get(
                 "status"
             ) in {"complete", "warning"}:
-                closed_rows.extend(mart_rows)
+                closed_marts.append(mart)
 
-    summary = _summary_for_rows(all_rows)
-    totals = _totals_for_rows(all_rows)
-    _apply_tax_totals(totals, all_rows)
-    closed_totals = _totals_for_rows(closed_rows)
-    _apply_tax_totals(closed_totals, closed_rows)
+    summary = _combine_monthly_summaries(monthly_marts)
+    totals = _combine_monthly_totals(monthly_marts)
+    closed_totals = _combine_monthly_totals(closed_marts)
     if excluded_open_periods or excluded_incomplete_periods:
         for key in (
             "profit",
@@ -354,12 +383,11 @@ def combine_ozon_monthly_marts(
             "marginAfterTax",
         ):
             totals[key] = None
-    _mark_partial_expense_totals(totals, summary)
     rows = all_rows[:preview_limit] if preview_limit else []
     status = (
         "partial_source"
         if excluded_open_periods or excluded_incomplete_periods
-        else _mart_status(len(all_rows), summary)
+        else _mart_status(row_count, summary)
     )
     cost_quality = _combine_cost_quality(monthly_marts)
     tax_profiles = [
@@ -392,10 +420,10 @@ def combine_ozon_monthly_marts(
             )
         ),
         "basis": "staff_only_ozon_unit_economics_mart_v2_monthly",
-        "rowCount": len(all_rows),
+        "rowCount": row_count,
         "previewLimit": preview_limit,
         "previewRowCount": len(rows),
-        "previewLimited": len(all_rows) > len(rows),
+        "previewLimited": row_count > len(rows),
         "summary": summary,
         "totals": totals,
         "closedPeriodTotals": closed_totals,
@@ -403,10 +431,15 @@ def combine_ozon_monthly_marts(
         "excludedIncompletePeriods": excluded_incomplete_periods,
         "monthly": monthly,
         "costQuality": cost_quality,
+        "reconciliationTotals": _empty_reconciliation_totals(),
         "taxProfile": tax_profile,
         "expenseAttribution": _combine_expense_attribution(monthly_marts),
-        "articleRows": _mart_article_rows(all_rows, totals),
-        "articleDrilldown": _mart_article_drilldown_rows(all_rows),
+        "articleRows": _combine_monthly_article_rows(monthly_marts, totals),
+        "articleDrilldown": [
+            dict(item)
+            for mart in monthly_marts
+            for item in mart.get("articleDrilldown") or []
+        ],
         "issues": [*_mart_issues(summary), *_cost_quality_issues(cost_quality)],
         "rows": rows,
         "periodFilter": {
@@ -417,6 +450,172 @@ def combine_ozon_monthly_marts(
     }
 
 
+def _combine_monthly_summaries(
+    monthly_marts: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    result = _empty_summary()
+    for mart in monthly_marts:
+        summary = mart.get("summary") or {}
+        for field in result:
+            result[field] += int(summary.get(field) or 0)
+    return result
+
+
+def _combine_monthly_totals(
+    monthly_marts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not monthly_marts:
+        return _empty_totals()
+    source_totals = [dict(mart.get("totals") or {}) for mart in monthly_marts]
+    result = _empty_totals()
+
+    def sum_available(field: str) -> float:
+        return _json_number(
+            sum(
+                (
+                    _decimal_or_none(item.get(field)) or Decimal("0")
+                    for item in source_totals
+                ),
+                Decimal("0"),
+            )
+        ) or 0.0
+
+    def complete_sum(field: str) -> float | None:
+        values = [_decimal_or_none(item.get(field)) for item in source_totals]
+        if any(value is None for value in values):
+            return None
+        return _json_number(
+            sum((value for value in values if value is not None), Decimal("0"))
+        )
+
+    result["quantity"] = sum_available("quantity")
+    for field in (
+        "onecRevenue",
+        "cogs",
+        "ozonExpenses",
+        "profit",
+        "profitBeforeTax",
+        "vatOutput",
+        "vatInput",
+        "vatPayable",
+        "revenueTax",
+        "incomeTax",
+        "profitBeforeIncomeTax",
+        "profitAfterTax",
+    ):
+        result[field] = complete_sum(field)
+    revenue = _decimal_or_none(result.get("onecRevenue"))
+    profit_before_tax = _decimal_or_none(result.get("profitBeforeTax"))
+    profit_after_tax = _decimal_or_none(result.get("profitAfterTax"))
+    result["margin"] = (
+        _json_number(profit_before_tax / revenue)
+        if revenue and profit_before_tax is not None
+        else None
+    )
+    result["marginBeforeTax"] = result["margin"]
+    result["marginAfterTax"] = (
+        _json_number(profit_after_tax / revenue)
+        if revenue and profit_after_tax is not None
+        else None
+    )
+    categorical_values: dict[str, str] = {}
+    for field, default in (
+        ("taxSystem", ""),
+        ("taxProfileSource", "missing"),
+        ("taxCompleteness", "missing_tax_profile"),
+    ):
+        values = {str(item.get(field) or default) for item in source_totals}
+        categorical_values[field] = (
+            next(iter(values)) if len(values) == 1 else "mixed"
+        )
+        result[field] = categorical_values[field]
+    if (
+        categorical_values["taxSystem"] == "mixed"
+        or categorical_values["taxCompleteness"] == "mixed"
+    ):
+        for field in (
+            "vatOutput",
+            "vatInput",
+            "vatPayable",
+            "revenueTax",
+            "incomeTax",
+            "profitBeforeIncomeTax",
+            "profitAfterTax",
+            "marginAfterTax",
+        ):
+            result[field] = None
+    return result
+
+
+def _combine_monthly_article_rows(
+    monthly_marts: Sequence[Mapping[str, Any]],
+    totals: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for mart in monthly_marts:
+        for item in mart.get("articleRows") or []:
+            article_id = str(item.get("articleId") or "")
+            if not article_id:
+                continue
+            target = grouped.setdefault(
+                article_id,
+                {
+                    **dict(item),
+                    "amount": Decimal("0"),
+                    "effectAmount": Decimal("0"),
+                    "effectComplete": True,
+                    "sourceLabels": set(),
+                },
+            )
+            amount = _decimal_or_none(item.get("amount"))
+            effect = _decimal_or_none(item.get("effectAmount"))
+            if amount is not None:
+                target["amount"] += amount
+            if effect is None:
+                target["effectComplete"] = False
+            else:
+                target["effectAmount"] += effect
+            target["sourceLabels"].update(item.get("sourceLabels") or [])
+
+    total_fields = {"revenue": "onecRevenue", "cogs": "cogs", "profit": "profit"}
+    result: list[dict[str, Any]] = []
+    for article_id, item in grouped.items():
+        total_field = total_fields.get(article_id)
+        if total_field:
+            amount = _decimal_or_none(totals.get(total_field))
+            effect = amount if article_id in {"revenue", "profit"} else (
+                -amount if amount is not None else None
+            )
+        else:
+            amount = item["amount"]
+            effect = item["effectAmount"] if item["effectComplete"] else None
+        result.append(
+            {
+                **{
+                    key: value
+                    for key, value in item.items()
+                    if key
+                    not in {
+                        "amount",
+                        "effectAmount",
+                        "effectComplete",
+                        "sourceLabels",
+                    }
+                },
+                "amount": _json_number(amount),
+                "effectAmount": _json_number(effect),
+                "sourceLabels": sorted(item["sourceLabels"]),
+            }
+        )
+    return sorted(
+        result,
+        key=lambda item: (
+            int(item.get("sortOrder") or 80),
+            str(item.get("articleId") or ""),
+        ),
+    )
+
+
 def _empty_summary() -> dict[str, int]:
     return {
         "ready": 0,
@@ -425,6 +624,7 @@ def _empty_summary() -> dict[str, int]:
         "ambiguousMapping": 0,
         "missingCost": 0,
         "missing1cCommissioner": 0,
+        "missing1cOrganization": 0,
         "buyoutPeriodOnly": 0,
         "partialExpenses": 0,
     }
@@ -454,20 +654,47 @@ def _empty_totals() -> dict[str, Any]:
     }
 
 
+def _empty_reconciliation_totals() -> dict[str, Any]:
+    return {
+        "basis": "onec_sales_register",
+        "quantity": None,
+        "onecRevenue": None,
+        "cogs": None,
+        "revenueStatus": "not_available",
+        "cogsStatus": "not_available",
+        "revenueDeltaVsSku": None,
+        "cogsDeltaVsSku": None,
+    }
+
+
 def _empty_cost_quality() -> dict[str, Any]:
     return {
         "status": "complete",
         "revenueAmount": 0.0,
         "coveredRevenueAmount": 0.0,
         "revenueCoveragePct": None,
+        "eligibleRevenueAmount": 0.0,
+        "coveredEligibleRevenueAmount": 0.0,
+        "eligibleRevenueCoveragePct": None,
         "quantity": 0.0,
         "coveredQuantity": 0.0,
         "quantityCoveragePct": None,
+        "unmappedQuantity": 0.0,
+        "ambiguousQuantity": 0.0,
+        "unmappedRevenueRowCount": 0,
+        "ambiguousRevenueRowCount": 0,
         "missingCostCount": 0,
         "anomalyCount": 0,
         "insufficientHistoryCount": 0,
         "estimatedImpactAmount": 0.0,
         "materialityThresholdAmount": _json_number(_COST_MATERIALITY_MINIMUM),
+        "materialityThresholdMode": "monthly",
+        "materialityThresholdMinAmount": _json_number(
+            _COST_MATERIALITY_MINIMUM
+        ),
+        "materialityThresholdMaxAmount": _json_number(
+            _COST_MATERIALITY_MINIMUM
+        ),
         "materialityMinimumAmount": _json_number(_COST_MATERIALITY_MINIMUM),
         "materialityRevenueRate": _json_number(
             _COST_MATERIALITY_REVENUE_RATE
@@ -481,6 +708,7 @@ def _empty_cost_quality() -> dict[str, Any]:
         "direct1cDeviationPct": None,
         "direct1cEstimatedImpact": None,
         "direct1cStatus": "not_available",
+        "direct1cReason": "missing_control",
         "blockingReasons": [],
     }
 
@@ -494,10 +722,14 @@ def _apply_cost_quality(
     materiality_revenue_rate: Decimal,
 ) -> dict[str, Any]:
     result = _empty_cost_quality()
-    revenue_amount = Decimal("0")
-    covered_revenue = Decimal("0")
+    eligible_revenue = Decimal("0")
+    covered_eligible_revenue = Decimal("0")
     quantity = Decimal("0")
     covered_quantity = Decimal("0")
+    unmapped_quantity = Decimal("0")
+    ambiguous_quantity = Decimal("0")
+    unmapped_revenue_row_count = 0
+    ambiguous_revenue_row_count = 0
     mart_cogs = Decimal("0")
     anomaly_impact = Decimal("0")
     anomaly_rows: list[dict[str, Any]] = []
@@ -517,20 +749,30 @@ def _apply_cost_quality(
         if row.get("rowType") != "realization_item":
             continue
         quality_status = str(row.get("qualityStatus") or "")
+        row_quantity = _decimal_or_none(row.get("quantity")) or Decimal("0")
+        realization_amount = _decimal_or_none(row.get("realizationAmount"))
+        if row_quantity > 0:
+            quantity += row_quantity
+        if quality_status == "missing_mapping":
+            unmapped_quantity += max(row_quantity, Decimal("0"))
+            if realization_amount is not None and realization_amount != 0:
+                unmapped_revenue_row_count += 1
+        elif quality_status == "ambiguous_mapping":
+            ambiguous_quantity += max(row_quantity, Decimal("0"))
+            if realization_amount is not None and realization_amount != 0:
+                ambiguous_revenue_row_count += 1
         if quality_status in {
             "missing_mapping",
             "ambiguous_mapping",
             "missing_1c_commissioner",
+            "missing_1c_organization",
         }:
             continue
         row_revenue = _decimal_or_none(row.get("onecRevenue"))
-        row_quantity = _decimal_or_none(row.get("quantity")) or Decimal("0")
         unit_cost = _decimal_or_none(row.get("unitCost"))
         cogs = _decimal_or_none(row.get("cogs"))
         if row_revenue is not None and row_revenue > 0:
-            revenue_amount += row_revenue
-        if row_quantity > 0:
-            quantity += row_quantity
+            eligible_revenue += row_revenue
         if unit_cost is None or unit_cost <= 0 or cogs is None:
             row["costQualityStatus"] = "blocked"
             row["costQualityReason"] = (
@@ -541,7 +783,7 @@ def _apply_cost_quality(
             missing_count += 1
             continue
         if row_revenue is not None and row_revenue > 0:
-            covered_revenue += row_revenue
+            covered_eligible_revenue += row_revenue
         if row_quantity > 0:
             covered_quantity += row_quantity
             mart_cogs += cogs
@@ -571,7 +813,7 @@ def _apply_cost_quality(
 
     threshold = max(
         abs(materiality_minimum),
-        abs(revenue_amount) * abs(materiality_revenue_rate),
+        abs(eligible_revenue) * abs(materiality_revenue_rate),
     )
     mart_average = (
         mart_cogs / covered_quantity if covered_quantity > 0 else None
@@ -580,7 +822,12 @@ def _apply_cost_quality(
     direct_cogs = _decimal_or_none(direct_1c_cost_control.get("cogs"))
     direct_average = (
         direct_cogs / direct_quantity
-        if direct_quantity and direct_cogs is not None
+        if (
+            direct_quantity is not None
+            and direct_quantity > 0
+            and direct_cogs is not None
+            and direct_cogs > 0
+        )
         else None
     )
     direct_deviation = (
@@ -606,17 +853,32 @@ def _apply_cost_quality(
     elif anomaly_rows or insufficient_history_count:
         status = "warning"
     direct_status = "not_available"
+    direct_reason = "missing_control"
     if direct_average is not None:
         direct_status = "available"
+        direct_reason = "available"
+    elif direct_quantity is not None and direct_quantity <= 0:
+        direct_reason = "nonpositive_quantity"
+    elif direct_cogs is not None and direct_cogs <= 0:
+        direct_reason = "nonpositive_cost"
 
     result.update(
         {
             "status": status,
-            "revenueAmount": _json_number(revenue_amount),
-            "coveredRevenueAmount": _json_number(covered_revenue),
-            "revenueCoveragePct": _ratio_or_none(
-                covered_revenue,
-                revenue_amount,
+            "revenueAmount": _json_number(eligible_revenue),
+            "coveredRevenueAmount": _json_number(covered_eligible_revenue),
+            "revenueCoveragePct": (
+                None
+                if unmapped_revenue_row_count or ambiguous_revenue_row_count
+                else _ratio_or_none(covered_eligible_revenue, eligible_revenue)
+            ),
+            "eligibleRevenueAmount": _json_number(eligible_revenue),
+            "coveredEligibleRevenueAmount": _json_number(
+                covered_eligible_revenue
+            ),
+            "eligibleRevenueCoveragePct": _ratio_or_none(
+                covered_eligible_revenue,
+                eligible_revenue,
             ),
             "quantity": _json_number(quantity),
             "coveredQuantity": _json_number(covered_quantity),
@@ -624,11 +886,18 @@ def _apply_cost_quality(
                 covered_quantity,
                 quantity,
             ),
+            "unmappedQuantity": _json_number(unmapped_quantity),
+            "ambiguousQuantity": _json_number(ambiguous_quantity),
+            "unmappedRevenueRowCount": unmapped_revenue_row_count,
+            "ambiguousRevenueRowCount": ambiguous_revenue_row_count,
             "missingCostCount": missing_count,
             "anomalyCount": len(anomaly_rows),
             "insufficientHistoryCount": insufficient_history_count,
             "estimatedImpactAmount": _json_number(anomaly_impact),
             "materialityThresholdAmount": _json_number(threshold),
+            "materialityThresholdMode": "monthly",
+            "materialityThresholdMinAmount": _json_number(threshold),
+            "materialityThresholdMaxAmount": _json_number(threshold),
             "materialityMinimumAmount": _json_number(materiality_minimum),
             "materialityRevenueRate": _json_number(materiality_revenue_rate),
             "martQuantity": _json_number(covered_quantity),
@@ -640,10 +909,80 @@ def _apply_cost_quality(
             "direct1cDeviationPct": _json_number(direct_deviation),
             "direct1cEstimatedImpact": _json_number(direct_impact),
             "direct1cStatus": direct_status,
+            "direct1cReason": direct_reason,
             "blockingReasons": blocking_reasons,
         }
     )
     return result
+
+
+def _apply_missing_organization_scope(
+    rows: Sequence[dict[str, Any]],
+    cost_quality: dict[str, Any],
+) -> None:
+    quantity = Decimal("0")
+    for row in rows:
+        if row.get("rowType") != "realization_item":
+            continue
+        row_quantity = _decimal_or_none(row.get("quantity")) or Decimal("0")
+        if row_quantity > 0:
+            quantity += row_quantity
+        row.update(
+            {
+                "onecRevenue": None,
+                "revenueAmount": None,
+                "revenueBasis": "none",
+                "unitCost": None,
+                "confirmedInputVat": None,
+                "cogs": None,
+                "cogsAmount": None,
+                "ozonCommission": None,
+                "ozonServices": None,
+                "ozonPartnerServices": None,
+                "ozonLogistics": None,
+                "ozonStorage": None,
+                "ozonOtherExpenses": None,
+                "ozonExpenses": None,
+                "skuAttributedExpenseAmount": None,
+                "periodUnattributedExpenseAmount": None,
+                "expenseArticles": [],
+                "profit": None,
+                "profitAmount": None,
+                "margin": None,
+                "qualityStatus": "missing_1c_organization",
+                "expenseStatus": "not_applicable",
+                "costQualityStatus": "blocked",
+                "costQualityReason": "missing_1c_organization",
+                "problemReason": "Для кабинета Ozon не выбрана организация 1C.",
+                "statusReason": "Для кабинета Ozon не выбрана организация 1C.",
+                "actionText": "Выберите организацию 1C.",
+            }
+        )
+    cost_quality.update(
+        {
+            "status": "blocked",
+            "revenueAmount": 0.0,
+            "coveredRevenueAmount": 0.0,
+            "revenueCoveragePct": None,
+            "eligibleRevenueAmount": 0.0,
+            "coveredEligibleRevenueAmount": 0.0,
+            "eligibleRevenueCoveragePct": None,
+            "quantity": _json_number(quantity),
+            "coveredQuantity": 0.0,
+            "quantityCoveragePct": 0.0 if quantity else None,
+            "martQuantity": 0.0,
+            "martCogs": 0.0,
+            "martAverageUnitCost": None,
+            "direct1cQuantity": None,
+            "direct1cCogs": None,
+            "direct1cAverageUnitCost": None,
+            "direct1cDeviationPct": None,
+            "direct1cEstimatedImpact": None,
+            "direct1cStatus": "not_available",
+            "direct1cReason": "missing_control",
+            "blockingReasons": ["missing_1c_organization"],
+        }
+    )
 
 
 def _valid_cost_history(values: Sequence[Decimal]) -> list[Decimal]:
@@ -685,17 +1024,47 @@ def _combine_cost_quality(
             Decimal("0"),
         )
 
-    revenue = total("revenueAmount")
-    covered_revenue = total("coveredRevenueAmount")
+    eligible_revenue = total("eligibleRevenueAmount")
+    covered_eligible_revenue = total("coveredEligibleRevenueAmount")
     quantity = total("quantity")
     covered_quantity = total("coveredQuantity")
+    unmapped_quantity = total("unmappedQuantity")
+    ambiguous_quantity = total("ambiguousQuantity")
+    unmapped_revenue_row_count = sum(
+        int(item.get("unmappedRevenueRowCount") or 0) for item in items
+    )
+    ambiguous_revenue_row_count = sum(
+        int(item.get("ambiguousRevenueRowCount") or 0) for item in items
+    )
+    monthly_thresholds = [
+        threshold
+        for item in items
+        if (
+            threshold := _decimal_or_none(
+                item.get("materialityThresholdAmount")
+            )
+        )
+        is not None
+    ]
     mart_quantity = total("martQuantity")
     mart_cogs = total("martCogs")
     direct_quantity = total("direct1cQuantity")
     direct_cogs = total("direct1cCogs")
     mart_average = mart_cogs / mart_quantity if mart_quantity else None
+    direct_statuses = {
+        str(item.get("direct1cStatus") or "not_available") for item in items
+    }
+    direct_reasons = {
+        str(item.get("direct1cReason") or "missing_control") for item in items
+    }
     direct_average = (
-        direct_cogs / direct_quantity if direct_quantity else None
+        direct_cogs / direct_quantity
+        if (
+            direct_statuses == {"available"}
+            and direct_quantity > 0
+            and direct_cogs > 0
+        )
+        else None
     )
     direct_deviation = (
         (mart_average - direct_average) / direct_average
@@ -721,12 +1090,28 @@ def _combine_cost_quality(
     result.update(
         {
             "status": status,
-            "revenueAmount": _json_number(revenue),
-            "coveredRevenueAmount": _json_number(covered_revenue),
-            "revenueCoveragePct": _ratio_or_none(covered_revenue, revenue),
+            "revenueAmount": _json_number(eligible_revenue),
+            "coveredRevenueAmount": _json_number(covered_eligible_revenue),
+            "revenueCoveragePct": (
+                None
+                if unmapped_revenue_row_count or ambiguous_revenue_row_count
+                else _ratio_or_none(covered_eligible_revenue, eligible_revenue)
+            ),
+            "eligibleRevenueAmount": _json_number(eligible_revenue),
+            "coveredEligibleRevenueAmount": _json_number(
+                covered_eligible_revenue
+            ),
+            "eligibleRevenueCoveragePct": _ratio_or_none(
+                covered_eligible_revenue,
+                eligible_revenue,
+            ),
             "quantity": _json_number(quantity),
             "coveredQuantity": _json_number(covered_quantity),
             "quantityCoveragePct": _ratio_or_none(covered_quantity, quantity),
+            "unmappedQuantity": _json_number(unmapped_quantity),
+            "ambiguousQuantity": _json_number(ambiguous_quantity),
+            "unmappedRevenueRowCount": unmapped_revenue_row_count,
+            "ambiguousRevenueRowCount": ambiguous_revenue_row_count,
             "missingCostCount": sum(
                 int(item.get("missingCostCount") or 0) for item in items
             ),
@@ -738,10 +1123,16 @@ def _combine_cost_quality(
             ),
             "estimatedImpactAmount": _json_number(total("estimatedImpactAmount")),
             "materialityThresholdAmount": _json_number(
-                max(
-                    _COST_MATERIALITY_MINIMUM,
-                    revenue * _COST_MATERIALITY_REVENUE_RATE,
-                )
+                monthly_thresholds[0]
+                if len(items) == 1 and len(monthly_thresholds) == 1
+                else None
+            ),
+            "materialityThresholdMode": "monthly",
+            "materialityThresholdMinAmount": _json_number(
+                min(monthly_thresholds) if monthly_thresholds else None
+            ),
+            "materialityThresholdMaxAmount": _json_number(
+                max(monthly_thresholds) if monthly_thresholds else None
             ),
             "martQuantity": _json_number(mart_quantity),
             "martCogs": _json_number(mart_cogs),
@@ -759,6 +1150,15 @@ def _combine_cost_quality(
                 "not_available"
                 if direct_average is None
                 else "available"
+            ),
+            "direct1cReason": (
+                "available"
+                if direct_average is not None
+                else "nonpositive_cost"
+                if "nonpositive_cost" in direct_reasons
+                else "nonpositive_quantity"
+                if "nonpositive_quantity" in direct_reasons
+                else "missing_control"
             ),
             "blockingReasons": blocking_reasons,
         }
@@ -1417,6 +1817,7 @@ def _increment_summary(
         "ambiguous_mapping": "ambiguousMapping",
         "missing_cost": "missingCost",
         "missing_1c_commissioner": "missing1cCommissioner",
+        "missing_1c_organization": "missing1cOrganization",
         "buyout_period_only": "buyoutPeriodOnly",
     }.get(quality_status)
     if key:
@@ -2107,6 +2508,7 @@ def _incomplete_period_reasons(
 ) -> list[str]:
     reasons: list[str] = []
     for field, reason in (
+        ("missing1cOrganization", "missing_1c_organization"),
         ("missingCost", "missing_cost"),
         ("ambiguousMapping", "ambiguous_mapping"),
         ("missingMapping", "missing_mapping"),
@@ -2116,7 +2518,7 @@ def _incomplete_period_reasons(
         if int(summary.get(field) or 0):
             reasons.append(reason)
     if cost_quality.get("status") == "blocked" and not any(
-        item in reasons for item in ("missing_cost",)
+        item in reasons for item in ("missing_cost", "missing_1c_organization")
     ):
         reasons.append("cost_quality_blocked")
     return reasons
@@ -2127,6 +2529,11 @@ def _mart_message_with_cost_quality(
     summary: Mapping[str, int],
     cost_quality: Mapping[str, Any],
 ) -> str:
+    if int(summary.get("missing1cOrganization") or 0):
+        return (
+            "Прибыль Ozon не рассчитана: выберите организацию 1C для этого "
+            "кабинета."
+        )
     if cost_quality.get("status") == "blocked" and status == "partial_source":
         return (
             "Прибыль Ozon не рассчитана: себестоимость отсутствует или "
@@ -2170,6 +2577,8 @@ def _cost_quality_issues(
 def _mart_status(row_count: int, summary: Mapping[str, int]) -> str:
     if not row_count:
         return "not_started"
+    if int(summary.get("missing1cOrganization") or 0):
+        return "partial_source"
     if int(summary.get("missing1cCommissioner") or 0):
         return "partial_source"
     if int(summary.get("missingMapping") or 0) or int(
@@ -2187,6 +2596,8 @@ def _mart_message(status: str, summary: Mapping[str, int]) -> str:
             "Расчетная витрина Ozon готова для внутренней проверки "
             "экономики по товарам."
         )
+    if int(summary.get("missing1cOrganization") or 0):
+        return "Выберите организацию 1C для расчета Ozon."
     if int(summary.get("missing1cCommissioner") or 0):
         return "Есть строки Ozon, но нет закрытия Ozon в 1C."
     if status == "needs_review":
@@ -2204,6 +2615,12 @@ def _mart_message(status: str, summary: Mapping[str, int]) -> str:
 
 def _mart_issues(summary: Mapping[str, int]) -> list[dict[str, str]]:
     specs = [
+        (
+            "missing1cOrganization",
+            "ozon_mart_missing_1c_organization",
+            "Не выбрана организация 1C",
+            "Выберите организацию 1C для кабинета Ozon.",
+        ),
         (
             "ambiguousMapping",
             "ozon_mart_ambiguous_mapping",
@@ -2479,7 +2896,7 @@ def _realization_quantity(item: dict[str, Any]) -> Decimal:
 
 
 def _realization_amount(item: dict[str, Any]) -> Decimal | None:
-    return _first_decimal(
+    amount = _first_decimal(
         item,
         "sale_amount",
         "saleAmount",
@@ -2493,6 +2910,18 @@ def _realization_amount(item: dict[str, Any]) -> Decimal | None:
         "Всего",
         "Сумма",
     )
+    if amount is not None:
+        return amount
+    delivery_commission = item.get("delivery_commission")
+    if isinstance(delivery_commission, dict):
+        return _first_decimal(
+            delivery_commission,
+            "amount",
+            "sale_amount",
+            "saleAmount",
+            "price",
+        )
+    return None
 
 
 def _realization_expenses(item: dict[str, Any]) -> tuple[dict[str, Decimal], bool]:

@@ -5,10 +5,15 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-01"
+updated_at: "2026-07-13"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
+
+> **Статус draft.** Команды используются как рабочая эксплуатационная база, но
+> полный end-to-end прогон всех privileged production-команд в рамках
+> документационной синхронизации не выполнялся. Повышать runbook до `active`
+> можно только после отдельной безопасной проверки полного сценария.
 
 Кабинет `shumeiko.offonika.ru` работает как read-only продукт:
 HTML-оболочка открывается публично, но данные отчета, Excel export, AI-чат и
@@ -75,6 +80,13 @@ sudo systemctl reload nginx
 Перед включением проверить, что summary API не отдает полный `unitRows`, а
 PostgreSQL timeout настроен через `SHUMEYKO_POSTGRES_STATEMENT_TIMEOUT_MS`
 или default `15000`.
+
+Для крупного отчета отдельно проверить первый и повторный вызовы защищенных
+`/api/reports/{id}/summary` и `/api/reports/{id}/freshness`. Первый вызов после
+перезапуска должен укладываться в 8 секунд, повторный — в 3 секунды. Сервер пишет
+безопасные строки `report_endpoint_timing`; длительность более 5 секунд имеет
+уровень warning. `QueryCanceled`, HTTP 500 или постоянное состояние UI
+`Загружаем клиента` считаются инцидентом, а не основанием повышать timeout.
 
 Порядок первого запуска:
 
@@ -148,6 +160,25 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/rebuild_report_from_sources.p
   --report-id excel_mvp_YYYY_MM_DD \
   --export-all
 ```
+
+Если ручная пересборка использует `--source-snapshot-set-id`, она обязана
+передать зарегистрированную lineage-связь через `--source-refresh-run-id` либо
+через точечную связь источника. Для восстановления истории остатков передаются
+точный каталог и run, в котором зарегистрирована именно эта коллекция:
+
+```bash
+SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/rebuild_report_from_sources.py \
+  --report-id excel_mvp_YYYY_MM_DD \
+  --source-snapshot-set-id composite_snapshot_id \
+  --wb-stock-history-dir data/source_refresh/<run>/wb_stock_history_daily \
+  --stock-history-refresh-run-id source_refresh_<id>
+```
+
+Каталог должен совпадать с `raw_path` зарегистрированной коллекции
+`wb_stock_history_daily`. Несвязанная текстовая метка snapshot теперь
+отклоняется до сохранения report run. Доступное окно истории WB считается от
+текущей московской даты; период целиком старше трёх месяцев не отправляется в
+WB и фиксируется как непокрытый, без подстановки нулей.
 
 Экспорт без пересборки источников:
 
@@ -475,13 +506,119 @@ PostgreSQL backup:
 ```bash
 SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/backup_web_db.py \
   --output-dir /var/backups/shumeiko-web \
-  --retention-days 14
+  --retention-days 3
 ```
 
 Архивы backup хранятся вне Git и должны быть доступны только операционному
 пользователю/root. Скрипт должен писать `pg_dump` в gzip потоково: нельзя
 держать полный дамп PostgreSQL в памяти, потому что runtime-БД содержит raw
 snapshot rows и может быть существенно больше доступной RAM.
+Локальная ретенция ограничена тремя днями: при текущем размере dump 14-дневная
+история не помещается на root-диске. Долговременные копии должны выгружаться на
+другой физический диск или в объектное хранилище.
+
+Перед массовой очисткой raw DB rows и online repack дополнительно создается
+JSON-подтверждение внешней копии. Для filesystem оно содержит пути, SHA-256,
+`createdAt`, `offHostVerified: true`, `restoreListChecked: true`,
+`backupMount` и `backupDevice`. Оба файла находятся на mount, отличном от
+PostgreSQL и `/data`. Для S3 вместо локальных путей фиксируются URI, version id,
+размеры объектов, endpoint, region и bucket. Verifier повторно читает обе
+зафиксированные версии, пересчитывает SHA-256 и потоково выполняет
+`pg_restore --list`. Без подтверждения retention `--apply` и online repack
+завершают preflight без изменений.
+
+Пакет создается только на заранее подключенном внешнем mount:
+
+```bash
+.venv/bin/python scripts/create_maintenance_backup.py \
+  --backup-mount /mnt/external-shumeyko-backup
+```
+
+Скрипт создает custom-format `database.dump`, `roles.sql`, выполняет
+`pg_restore --list`, считает SHA-256 и печатает путь к
+`backup-verification.json`. `/data` и PostgreSQL filesystem отклоняются.
+
+Для приватного versioned S3 bucket используется отдельный пользователь с
+правами чтения/записи только в этом bucket. Credential JSON хранится вне Git с
+правами `0600`; ключи нельзя передавать через аргументы CLI или печатать в лог:
+
+```bash
+SHUMEYKO_DATABASE_URL=... \
+.venv/bin/python scripts/create_maintenance_backup.py \
+  --s3-config /root/.config/shumeyko/s3-backup.json \
+  --roles-system-user postgres
+```
+
+Database dump и roles dump загружаются сразу из stdout PostgreSQL в multipart
+S3 upload. После загрузки скрипт читает конкретные object versions обратно,
+проверяет SHA-256 и `pg_restore --list`, загружает копию verification JSON в тот
+же префикс и сохраняет небольшой локальный verification JSON для последующего
+`prune --apply`/repack. Полный dump на root-диске не создается.
+`--roles-system-user postgres` используется только на локальном PostgreSQL host,
+чтобы `pg_dumpall --roles-only` мог прочитать `pg_authid`; credential приложения
+для этого недостаточно.
+
+# Marketplace raw-row migration
+
+Теневой запуск использует:
+
+```bash
+SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true
+SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=legacy
+```
+
+После WB parity-check включается `files_only`. В этом режиме raw WB остаются в
+`source_refresh_root`, а PostgreSQL получает только collection metadata и
+дневную WB-витрину. Ozon параллельно строит типизированные текущие operations,
+но продолжает совместимую raw-запись до отдельного parity-check. Только после
+него дополнительно включается:
+
+```bash
+SHUMEYKO_SOURCE_REFRESH_OZON_FILES_ONLY_ENABLED=true
+```
+
+DB retention сначала запускается без `--apply`. Принять старые marketplace
+collections как file-authoritative можно только с полной проверкой manifest и
+hashes:
+
+```bash
+.venv/bin/python scripts/prune_source_refresh_database.py \
+  --file-authoritative-marketplace \
+  --adopt-verified-marketplace-files \
+  --source-root data/source_refresh
+```
+
+После проверки dry-run destructive запуск обязательно получает внешний пакет:
+
+```bash
+.venv/bin/python scripts/prune_source_refresh_database.py \
+  --file-authoritative-marketplace \
+  --adopt-verified-marketplace-files \
+  --source-root data/source_refresh \
+  --backup-verification /var/lib/shumeiko/maintenance-backups/...-backup-verification.json \
+  --apply
+```
+
+Проверяемое восстановление выполняется без API и по умолчанию является dry-run:
+
+```bash
+SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=legacy \
+.venv/bin/python scripts/restore_marketplace_raw_rows.py \
+  --run-id source_refresh_xxx
+```
+
+После сверки команда повторяется с `--apply`; повторный запуск не добавляет
+дубли.
+
+После удаления и `VACUUM (ANALYZE)` физическое уменьшение выполняется один раз:
+
+```bash
+.venv/bin/python scripts/online_repack_source_snapshot_rows.py \
+  --backup-verification /path/to/off-host-backup-verification.json
+```
+
+После проверки preflight команда повторяется с `--apply`. Daily, weekly и
+watchdog timers должны быть остановлены; web продолжает обслуживать чтения.
 
 # Monitor
 

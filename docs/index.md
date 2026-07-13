@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
 
 # Индекс документации проекта
@@ -15,6 +15,11 @@ updated_at: "2026-07-10"
 implementation spec, затем общий MVP spec, затем клиентские документы и README.
 
 # Главные источники правды
+
+`source_of_truth` сохраняется для обратной совместимости. Машинный приоритет
+задают `truth_scope` и `truth_priority`: документы сравниваются только внутри
+одного scope, большее число имеет приоритет. Для каждого scope в manifest есть
+ровно один документ с максимальным приоритетом.
 
 - `AGENTS.md` — правила работы агента, безопасность, spec-first workflow и
   порядок разрешения конфликтов.
@@ -39,6 +44,8 @@ implementation spec, затем общий MVP spec, затем клиентск
   как экспорты.
 - `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` —
   accepted spec hardening `source_refresh`, provider registry и retention CLI.
+- `docs/specs/source-refresh-database-retention.md` — accepted spec пакетной
+  ретенции raw snapshot rows PostgreSQL с защитой report lineage.
 - `docs/specs/marketplace-unit-economics-ozon-integration.md` — accepted spec
   read-only Ozon Seller API, raw snapshots и общего marketplace-слоя WB/Ozon.
 - `docs/specs/wb-unit-economics-ai-git-workflow.md` — accepted spec
@@ -52,6 +59,31 @@ implementation spec, затем общий MVP spec, затем клиентск
 - `README.md` — локальная структура проекта, секреты, базовые команды.
 - `config/README.md` — что можно хранить в non-secret конфигурации.
 
+# Источники истины по scope
+
+| Scope | Канонический документ | Приоритет |
+| --- | --- | ---: |
+| `project-governance` | `AGENTS.md` | 100 |
+| `project-overview` | `README.md` | 100 |
+| `configuration` | `config/README.md` | 100 |
+| `product-scope` | `docs/specs/wb-unit-economics-mvp.md` | 100 |
+| `excel-methodology` | `docs/specs/wb-unit-economics-excel-mvp-implementation.md` | 100 |
+| `tax-methodology` | `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` | 100 |
+| `mapping` | `docs/specs/marketplace-1c-mapping-service.md` | 100 |
+| `report-publication` | `docs/specs/wb-unit-economics-db-first-report-marts.md` | 100 |
+| `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 |
+| `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 |
+| `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 |
+| `ozon` | `docs/specs/marketplace-unit-economics-ozon-integration.md` | 100 |
+| `development-workflow` | `docs/specs/wb-unit-economics-ai-git-workflow.md` | 100 |
+
+ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
+остается поддерживающим источником scope `source-refresh` с приоритетом 80.
+
+`depends_on` задает только ациклический порядок реализации и совместимости.
+Концептуальные обратные ссылки хранятся в `related_specs` и не участвуют в
+порядке rollout.
+
 # Что читать по контуру
 
 | Контур | Главный документ | Статус | Когда читать |
@@ -63,9 +95,10 @@ implementation spec, затем общий MVP spec, затем клиентск
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
+| Source refresh DB retention | `docs/specs/source-refresh-database-retention.md` | accepted | Меняются правила хранения raw snapshot rows PostgreSQL или процедура освобождения диска. |
 | Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
 | Month close pilot | `docs/specs/month-close-control-pilot.md` | draft | Нужно понять пилотный read-only контур закрытия месяца: онлайн-ОСВ, налоги, ЕНС, НДС, скрины и процессные подтверждения до CRM. |
-| AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, hooks, Git checks или commit/push workflow. |
+| AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
 
 # Клиентский пакет
@@ -105,7 +138,7 @@ implementation spec, затем общий MVP spec, затем клиентск
 - `docs/runbooks/source-refresh-schedule.md` — установка systemd timers для
   daily/weekly source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
-  проверки, коммит, push и локальный pre-commit hook.
+  локальные проверки, GitHub CI, коммит, push и pre-commit hook.
 
 # Решения
 

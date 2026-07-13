@@ -44,6 +44,26 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.client_companies (
 CREATE INDEX IF NOT EXISTS ix_client_companies_client
     ON wb_unit_economics.client_companies (client_id, status);
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_client_companies_active_onec_organization
+    ON wb_unit_economics.client_companies (client_id, onec_organization_id)
+    WHERE onec_organization_id <> '' AND status = 'active';
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.client_company_aliases (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    client_company_id text NOT NULL REFERENCES wb_unit_economics.client_companies(id) ON DELETE CASCADE,
+    alias_key text NOT NULL,
+    display_name text NOT NULL,
+    source text NOT NULL DEFAULT 'display_name',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (client_id, client_company_id, alias_key)
+);
+
+CREATE INDEX IF NOT EXISTS ix_client_company_alias_lookup
+    ON wb_unit_economics.client_company_aliases (client_id, alias_key);
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_cabinets (
     id text PRIMARY KEY,
     client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
@@ -131,6 +151,7 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_runs (
     lineage_type text NOT NULL DEFAULT 'legacy_excel_import',
     source_snapshot_set_id text NOT NULL DEFAULT '',
     methodology_version text NOT NULL,
+    marketplace_expense_context_version text NOT NULL DEFAULT '',
     source_workbook text NOT NULL DEFAULT '',
     source_workbook_path text NOT NULL DEFAULT '',
     return_reason_limitation text NOT NULL DEFAULT '',
@@ -151,6 +172,8 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_unit_rows (
     wb_cabinet_id text NOT NULL DEFAULT '',
     row_uid text NOT NULL,
     week date,
+    accounting_period_date date,
+    accounting_period_source varchar not null default '',
     month text NOT NULL DEFAULT '',
     document_report text NOT NULL DEFAULT '',
     wb_report_id text NOT NULL DEFAULT '',
@@ -175,11 +198,22 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_unit_rows (
     vat_input numeric NOT NULL DEFAULT 0,
     vat_input_from_wb numeric NOT NULL DEFAULT 0,
     vat_input_from_1c numeric NOT NULL DEFAULT 0,
+    vat_input_from_import_scenario numeric NOT NULL DEFAULT 0,
+    vat_input_from_wb_scenario numeric NOT NULL DEFAULT 0,
     vat_input_difference numeric NOT NULL DEFAULT 0,
     vat_input_completeness varchar NOT NULL DEFAULT '',
+    input_vat_mode varchar NOT NULL DEFAULT 'accounting_fact',
+    vat_input_confirmed boolean NOT NULL DEFAULT false,
     vat_payable numeric NOT NULL DEFAULT 0,
     revenue_without_vat numeric NOT NULL DEFAULT 0,
     cost numeric NOT NULL DEFAULT 0,
+    unit_cost numeric,
+    cost_method text NOT NULL DEFAULT '',
+    cost_match_status text NOT NULL DEFAULT '',
+    cost_source_kind text NOT NULL DEFAULT '',
+    cost_source_period_start date,
+    cost_source_period_end date,
+    cost_source_document text NOT NULL DEFAULT '',
     commission numeric NOT NULL DEFAULT 0,
     logistics numeric NOT NULL DEFAULT 0,
     storage numeric NOT NULL DEFAULT 0,
@@ -226,6 +260,11 @@ CREATE INDEX IF NOT EXISTS ix_report_unit_rows_product
         report_run_id, product, nm_id, article_wb, article_1c, barcode
     );
 
+CREATE INDEX IF NOT EXISTS ix_report_unit_rows_accounting_period
+    ON wb_unit_economics.report_unit_rows (
+        report_run_id, accounting_period_date
+    );
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.report_lost_sales_rows (
     id bigserial PRIMARY KEY,
     report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
@@ -244,6 +283,7 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_lost_sales_rows (
     lost_revenue numeric NOT NULL DEFAULT 0,
     lost_profit numeric NOT NULL DEFAULT 0,
     note text NOT NULL DEFAULT '',
+    calculation_context jsonb NOT NULL DEFAULT '{}'::jsonb,
     UNIQUE (report_run_id, row_uid)
 );
 
@@ -267,6 +307,45 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_reconciliation_monthly (
     comment text NOT NULL DEFAULT '',
     UNIQUE (report_run_id, month)
 );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_marketplace_expense_rows (
+    id bigserial PRIMARY KEY,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    client_id text NOT NULL DEFAULT '',
+    client_company_id text NOT NULL DEFAULT '',
+    wb_cabinet_id text NOT NULL DEFAULT '',
+    row_uid text NOT NULL,
+    seller_account_id text NOT NULL DEFAULT '',
+    cabinet text NOT NULL DEFAULT '',
+    organization_id text NOT NULL DEFAULT '',
+    organization text NOT NULL DEFAULT '',
+    counterparty_id text NOT NULL DEFAULT '',
+    period_start date,
+    period_end date,
+    recognition_date date,
+    document_date date,
+    input_date date,
+    document_id text NOT NULL DEFAULT '',
+    document_number text NOT NULL DEFAULT '',
+    input_number text NOT NULL DEFAULT '',
+    document_comment text NOT NULL DEFAULT '',
+    service_category text NOT NULL DEFAULT '',
+    control_group text NOT NULL DEFAULT '',
+    service_name text NOT NULL DEFAULT '',
+    amount_without_vat numeric NOT NULL DEFAULT 0,
+    vat numeric NOT NULL DEFAULT 0,
+    amount_with_vat numeric NOT NULL DEFAULT 0,
+    source_kind text NOT NULL DEFAULT '',
+    match_status text NOT NULL DEFAULT '',
+    source_row_hash text NOT NULL DEFAULT '',
+    UNIQUE (report_run_id, row_uid)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_marketplace_expense_filter
+    ON wb_unit_economics.report_marketplace_expense_rows (
+        report_run_id, recognition_date, wb_cabinet_id, client_company_id,
+        control_group, match_status
+    );
 
 CREATE TABLE IF NOT EXISTS wb_unit_economics.report_document_reconciliation_rows (
     id bigserial PRIMARY KEY,
@@ -311,6 +390,11 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_document_reconciliation_rows
     buyout_retail_amount_sum numeric,
     buyout_for_pay_sum numeric,
     buyout_bank_payment_sum numeric,
+    buyout_primary_document_id text NOT NULL DEFAULT '',
+    buyout_primary_document_status text NOT NULL DEFAULT '',
+    buyout_primary_document_quantity numeric,
+    buyout_primary_document_amount numeric,
+    buyout_primary_document_delta numeric,
     onec_expense_invoice_amount numeric,
     buyout_retail_delta numeric,
     buyout_for_pay_delta numeric,
@@ -319,6 +403,10 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_document_reconciliation_rows
     wb_for_pay_sum numeric,
     onec_settlement_total numeric,
     settlement_delta numeric,
+    onec_vat numeric,
+    onec_cogs numeric,
+    onec_cogs_without_vat numeric,
+    onec_gross_profit numeric,
     onec_source_rows integer,
     comment text NOT NULL DEFAULT '',
     UNIQUE (report_run_id, row_uid)
@@ -359,6 +447,11 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.source_refresh_runs (
     source_report_run_id text REFERENCES wb_unit_economics.report_runs(id) ON DELETE SET NULL,
     new_report_run_id text REFERENCES wb_unit_economics.report_runs(id) ON DELETE SET NULL,
     resumed_from_run_id text REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE SET NULL,
+    base_source_refresh_run_id text REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE SET NULL,
+    blocked_by_run_id text REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE SET NULL,
+    worker_id text NOT NULL DEFAULT '',
+    failure_code text NOT NULL DEFAULT '',
+    heartbeat_at timestamptz,
     mode text NOT NULL,
     credential_source text NOT NULL,
     dry_run boolean NOT NULL DEFAULT false,
@@ -428,6 +521,133 @@ CREATE INDEX IF NOT EXISTS ix_source_snapshot_rows_lookup
         tenant_id, source_type, source_row_id
     );
 
+CREATE TABLE IF NOT EXISTS wb_unit_economics.marketplace_finance_daily_facts (
+    id bigserial PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL DEFAULT '',
+    marketplace text NOT NULL,
+    wb_cabinet_id text NOT NULL DEFAULT '',
+    seller_account_id text NOT NULL DEFAULT '',
+    organization_id text NOT NULL DEFAULT '',
+    fact_date date NOT NULL,
+    marketplace_report_id text NOT NULL DEFAULT '',
+    document_kind text NOT NULL DEFAULT '',
+    nm_id integer,
+    vendor_code text NOT NULL DEFAULT '',
+    barcode text NOT NULL DEFAULT '',
+    onec_item_id text NOT NULL DEFAULT '',
+    sales_model text NOT NULL DEFAULT '',
+    operation_group text NOT NULL DEFAULT '',
+    sales_quantity numeric(20, 6) NOT NULL DEFAULT 0,
+    return_quantity numeric(20, 6) NOT NULL DEFAULT 0,
+    quantity numeric(20, 6) NOT NULL DEFAULT 0,
+    return_amount numeric(20, 2) NOT NULL DEFAULT 0,
+    net_revenue numeric(20, 2) NOT NULL DEFAULT 0,
+    wb_commission numeric(20, 2) NOT NULL DEFAULT 0,
+    logistics numeric(20, 2) NOT NULL DEFAULT 0,
+    storage numeric(20, 2) NOT NULL DEFAULT 0,
+    acceptance numeric(20, 2) NOT NULL DEFAULT 0,
+    marketplace_promotion numeric(20, 2) NOT NULL DEFAULT 0,
+    penalties_and_holdbacks numeric(20, 2) NOT NULL DEFAULT 0,
+    acquiring numeric(20, 2) NOT NULL DEFAULT 0,
+    cogs numeric(20, 2) NOT NULL DEFAULT 0,
+    vat_input_from_marketplace numeric(20, 2) NOT NULL DEFAULT 0,
+    vat_input_from_1c numeric(20, 2) NOT NULL DEFAULT 0,
+    source_row_count integer NOT NULL DEFAULT 0,
+    source_hash_digest text NOT NULL,
+    grain_hash text NOT NULL,
+    is_partial_source boolean NOT NULL DEFAULT false,
+    source_snapshot_set_id text NOT NULL DEFAULT '',
+    source_refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id),
+    methodology_version text NOT NULL,
+    loaded_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, marketplace, grain_hash)
+);
+
+CREATE INDEX IF NOT EXISTS ix_marketplace_finance_daily_facts_window
+    ON wb_unit_economics.marketplace_finance_daily_facts (
+        tenant_id, client_id, marketplace, fact_date
+    );
+
+CREATE INDEX IF NOT EXISTS ix_marketplace_finance_daily_facts_product
+    ON wb_unit_economics.marketplace_finance_daily_facts (
+        tenant_id, marketplace, nm_id, barcode
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.marketplace_operation_facts (
+    id bigserial PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL DEFAULT '',
+    marketplace text NOT NULL,
+    wb_cabinet_id text NOT NULL DEFAULT '',
+    seller_account_id text NOT NULL DEFAULT '',
+    source_type text NOT NULL,
+    source_key text NOT NULL,
+    source_row_id text NOT NULL DEFAULT '',
+    source_row_number integer NOT NULL DEFAULT 0,
+    operation_id text NOT NULL DEFAULT '',
+    posting_number text NOT NULL DEFAULT '',
+    product_id text NOT NULL DEFAULT '',
+    offer_id text NOT NULL DEFAULT '',
+    sku text NOT NULL DEFAULT '',
+    service_key text NOT NULL DEFAULT '',
+    service_name text NOT NULL DEFAULT '',
+    barcode text NOT NULL DEFAULT '',
+    product_name text NOT NULL DEFAULT '',
+    operation_type text NOT NULL DEFAULT '',
+    operation_date date,
+    quantity numeric(20, 6) NOT NULL DEFAULT 0,
+    amount numeric(20, 2) NOT NULL DEFAULT 0,
+    price numeric(20, 2) NOT NULL DEFAULT 0,
+    income numeric(20, 2) NOT NULL DEFAULT 0,
+    expense numeric(20, 2) NOT NULL DEFAULT 0,
+    debit_amount numeric(20, 2) NOT NULL DEFAULT 0,
+    credit_amount numeric(20, 2) NOT NULL DEFAULT 0,
+    commission numeric(20, 2) NOT NULL DEFAULT 0,
+    service_amount numeric(20, 2) NOT NULL DEFAULT 0,
+    logistics numeric(20, 2) NOT NULL DEFAULT 0,
+    storage numeric(20, 2) NOT NULL DEFAULT 0,
+    promotion numeric(20, 2) NOT NULL DEFAULT 0,
+    compensation numeric(20, 2) NOT NULL DEFAULT 0,
+    other_amount numeric(20, 2) NOT NULL DEFAULT 0,
+    expenses_loaded boolean NOT NULL DEFAULT false,
+    is_partial_source boolean NOT NULL DEFAULT false,
+    currency text NOT NULL DEFAULT 'RUB',
+    source_endpoint text NOT NULL DEFAULT '',
+    raw_payload_hash text NOT NULL,
+    source_snapshot_set_id text NOT NULL DEFAULT '',
+    source_refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id),
+    loaded_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, marketplace, source_type, source_key)
+);
+
+CREATE INDEX IF NOT EXISTS ix_marketplace_operation_facts_window
+    ON wb_unit_economics.marketplace_operation_facts (
+        tenant_id, client_id, marketplace, operation_date
+    );
+
+CREATE INDEX IF NOT EXISTS ix_marketplace_operation_facts_product
+    ON wb_unit_economics.marketplace_operation_facts (
+        tenant_id, marketplace, product_id, offer_id, sku
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.marketplace_fact_staging (
+    id bigserial PRIMARY KEY,
+    load_id text NOT NULL,
+    fact_kind text NOT NULL,
+    tenant_id text NOT NULL,
+    client_id text NOT NULL DEFAULT '',
+    marketplace text NOT NULL,
+    grain_hash text NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL,
+    CONSTRAINT uq_marketplace_fact_staging_load_grain
+        UNIQUE (load_id, grain_hash)
+);
+
+CREATE INDEX IF NOT EXISTS ix_marketplace_fact_staging_load
+    ON wb_unit_economics.marketplace_fact_staging (load_id, fact_kind);
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.organization_tax_profiles (
     id text PRIMARY KEY,
     tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
@@ -443,6 +663,10 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.organization_tax_profiles (
     valid_from date,
     valid_to date,
     source text NOT NULL,
+    rate_basis_kind text NOT NULL DEFAULT '',
+    basis_document text NOT NULL DEFAULT '',
+    confirmed_by text NOT NULL DEFAULT '',
+    source_object_ids text NOT NULL DEFAULT '[]',
     source_refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE CASCADE,
     source_snapshot_hash text NOT NULL DEFAULT '',
     methodology_version text NOT NULL DEFAULT 'ozon-tax-profile-v2',
@@ -472,6 +696,10 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.organization_tax_profile_overrides 
     valid_to date,
     status text NOT NULL DEFAULT 'active',
     reason text NOT NULL,
+    rate_basis_kind text NOT NULL DEFAULT '',
+    basis_document text NOT NULL DEFAULT '',
+    confirmed_by text NOT NULL DEFAULT '',
+    source_object_ids text NOT NULL DEFAULT '[]',
     created_by_user_id text REFERENCES wb_unit_economics.users(id) ON DELETE SET NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
@@ -479,6 +707,29 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.organization_tax_profile_overrides 
 
 CREATE INDEX IF NOT EXISTS ix_organization_tax_profile_overrides_lookup
     ON wb_unit_economics.organization_tax_profile_overrides (
+        client_company_id, status, valid_from, valid_to
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.organization_input_vat_policies (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    client_company_id text NOT NULL REFERENCES wb_unit_economics.client_companies(id) ON DELETE CASCADE,
+    organization_id text NOT NULL,
+    mode text NOT NULL DEFAULT 'accounting_fact',
+    product_vat_basis text NOT NULL DEFAULT 'sales_cost_difference',
+    service_vat_basis text NOT NULL DEFAULT 'wb_gross_22_122',
+    valid_from date NOT NULL,
+    valid_to date,
+    status text NOT NULL DEFAULT 'active',
+    reason text NOT NULL,
+    created_by_user_id text REFERENCES wb_unit_economics.users(id) ON DELETE SET NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_organization_input_vat_policies_lookup
+    ON wb_unit_economics.organization_input_vat_policies (
         client_company_id, status, valid_from, valid_to
     );
 

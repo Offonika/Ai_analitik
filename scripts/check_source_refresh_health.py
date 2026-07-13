@@ -28,6 +28,7 @@ FAILED_STATUSES = {
     "needs_configuration",
     "blocked_active_refresh",
     "blocked_low_disk",
+    "needs_full_refresh",
 }
 ACTIVE_STATUSES = {"queued", "running", "source_loaded", "rebuilding"}
 

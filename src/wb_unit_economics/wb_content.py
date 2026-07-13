@@ -80,6 +80,7 @@ class WbProductCardsPageResult:
     card_count: int
     flat_row_count: int = 0
     raw_payload_hash: str = ""
+    flat_payload_hash: str = ""
     output_path: Path | None = None
     flat_output_path: Path | None = None
     status_code: int | None = None
@@ -260,6 +261,7 @@ def export_product_cards_page(
     cards = extract_product_cards(payload)
     flat_rows = flatten_product_cards(account, cards, cards_source=cards_source)
     payload_hash = raw_payload_hash(payload)
+    flat_payload_hash = raw_payload_hash(flat_rows)
     output_prefix = (
         f"{account.seller_account_id.lower()}_{cards_source}_cards_page_{page_index}"
     )
@@ -282,6 +284,7 @@ def export_product_cards_page(
         card_count=len(cards),
         flat_row_count=len(flat_rows),
         raw_payload_hash=payload_hash,
+        flat_payload_hash=flat_payload_hash,
         output_path=output_path,
         flat_output_path=flat_output_path,
         status_code=status_code,
@@ -385,6 +388,7 @@ def _write_manifest(
                 "flat_row_count": item.flat_row_count,
                 "status_code": item.status_code,
                 "raw_payload_hash": item.raw_payload_hash,
+                "flat_payload_hash": item.flat_payload_hash,
                 "output_file": item.output_path.name if item.output_path else None,
                 "flat_output_file": (
                     item.flat_output_path.name if item.flat_output_path else None

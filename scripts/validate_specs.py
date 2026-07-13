@@ -8,6 +8,7 @@ from docs_metadata import (
     has_superseded_banner,
     load_frontmatter,
     string_list,
+    validate_truth_metadata,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,7 @@ def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
         failures.append(f"{rel_path}: updated_at must be an ISO date")
     if metadata.get("status") == "draft" and metadata.get("source_of_truth") is True:
         failures.append(f"{rel_path}: draft spec cannot be source_of_truth")
+    failures.extend(validate_truth_metadata(metadata, str(rel_path)))
 
     for key in ("related_code", "related_tests"):
         value = metadata.get(key, [])
@@ -66,7 +68,7 @@ def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
                 )
 
     known_ids = spec_ids or set()
-    for key in ("depends_on", "superseded_by"):
+    for key in ("depends_on", "related_specs", "superseded_by"):
         for reference in string_list(metadata.get(key)):
             if not _reference_exists(reference, known_ids):
                 failures.append(f"{rel_path}: unknown {key} reference: {reference}")
@@ -86,6 +88,53 @@ def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
         if not has_superseded_banner(body):
             failures.append(f"{rel_path}: superseded spec needs a visible banner")
 
+    if metadata.get("status") == "implemented":
+        if not string_list(metadata.get("related_code")):
+            failures.append(f"{rel_path}: implemented spec needs related_code")
+        if not string_list(metadata.get("related_tests")):
+            failures.append(f"{rel_path}: implemented spec needs related_tests")
+
+    return failures
+
+
+def validate_dependency_graph(
+    metadata_by_path: dict[Path, dict], spec_ids: dict[str, Path]
+) -> list[str]:
+    """Return failures when spec implementation dependencies contain a cycle."""
+    graph: dict[Path, list[Path]] = {path: [] for path in metadata_by_path}
+    for path, metadata in metadata_by_path.items():
+        for reference in string_list(metadata.get("depends_on")):
+            target = spec_ids.get(reference)
+            if target is None:
+                candidate = ROOT / reference
+                if candidate in metadata_by_path:
+                    target = candidate
+            if target is not None:
+                graph[path].append(target)
+
+    failures: list[str] = []
+    visiting: list[Path] = []
+    visited: set[Path] = set()
+
+    def visit(path: Path) -> None:
+        if path in visited:
+            return
+        if path in visiting:
+            start = visiting.index(path)
+            cycle = visiting[start:] + [path]
+            rendered = " -> ".join(str(item.relative_to(ROOT)) for item in cycle)
+            failure = f"spec dependency cycle: {rendered}"
+            if failure not in failures:
+                failures.append(failure)
+            return
+        visiting.append(path)
+        for target in graph[path]:
+            visit(target)
+        visiting.pop()
+        visited.add(path)
+
+    for path in sorted(graph):
+        visit(path)
     return failures
 
 
@@ -132,6 +181,8 @@ def main() -> int:
                     f"{rel_path}: supersedes target lacks reciprocal "
                     f"superseded_by: {reference}"
                 )
+
+    failures.extend(validate_dependency_graph(metadata_by_path, spec_ids))
 
     for path in spec_paths:
         if not path.exists():

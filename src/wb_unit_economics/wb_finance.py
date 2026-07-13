@@ -20,6 +20,7 @@ from wb_unit_economics.contracts import (
     WbApiSnapshot,
     WbSalesReportSummaryRow,
 )
+from wb_unit_economics.source_integrity import verify_raw_directory
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 FINANCE_DETAILED_ENDPOINT = (
@@ -395,6 +396,18 @@ def export_wb_finance(
                     rate_limit_backoff_seconds=request_delay_seconds,
                 )
                 results.append(result)
+                _write_manifest(
+                    output_dir / "manifest.json",
+                    results,
+                    period_start=period_start,
+                    period_end=period_end,
+                    limit=limit,
+                    max_pages=max_pages,
+                    period=period,
+                    request_delay_seconds=request_delay_seconds,
+                    fields=fields,
+                    extra={"checkpoint_status": "running"},
+                )
                 if not result.ok or result.status == "no_data":
                     break
                 if result.rrd_id_next is None or result.rrd_id_next == rrd_id:
@@ -411,6 +424,93 @@ def export_wb_finance(
         period=period,
         request_delay_seconds=request_delay_seconds,
         fields=fields,
+    )
+    return results
+
+
+def recover_wb_finance_manifest_from_pages(
+    settings: WbFinanceSettings,
+    export_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+    limit: int = 100000,
+    max_pages: int = 50,
+    request_delay_seconds: float = 61.0,
+    period: str = "daily",
+    fields: Iterable[str] = DEFAULT_FINANCE_FIELDS,
+) -> list[WbFinancePageResult]:
+    """Recover an interrupted manifest from immutable WB page files."""
+
+    account_by_file_prefix = {
+        account.seller_account_id.casefold(): account for account in settings.accounts
+    }
+    grouped_paths: dict[str, list[tuple[int, Path]]] = {}
+    for path in export_dir.glob("*_finance_page_*.raw.json"):
+        stem = path.name.removesuffix(".raw.json")
+        try:
+            account_prefix, page_text = stem.rsplit("_finance_page_", 1)
+            page_index = int(page_text)
+        except (ValueError, TypeError):
+            continue
+        grouped_paths.setdefault(account_prefix.casefold(), []).append(
+            (page_index, path)
+        )
+    if not grouped_paths:
+        raise ValueError("WB finance page files were not found")
+
+    results: list[WbFinancePageResult] = []
+    for account_prefix, page_items in sorted(grouped_paths.items()):
+        account = account_by_file_prefix.get(account_prefix)
+        if account is None:
+            raise ValueError("WB finance page account is not configured")
+        previous_rrd_id = 0
+        expected_page_index = 1
+        for page_index, path in sorted(page_items):
+            if page_index != expected_page_index:
+                raise ValueError("WB finance page sequence has a gap")
+            row_count = 0
+            last_row: dict[str, Any] | None = None
+            for row in _iter_json_list_objects(path):
+                row_count += 1
+                last_row = row
+            next_rrd_id = (
+                _int_or_none(_first(last_row or {}, "rrdId", "rrd_id"))
+                if last_row is not None
+                else None
+            )
+            results.append(
+                WbFinancePageResult(
+                    seller_account_id=account.seller_account_id,
+                    account_name=account.account_name,
+                    page_index=page_index,
+                    ok=True,
+                    status="ok" if row_count else "no_data",
+                    row_count=row_count,
+                    rrd_id_start=previous_rrd_id,
+                    rrd_id_next=next_rrd_id,
+                    raw_payload_hash=_file_sha256(path),
+                    output_path=path,
+                    status_code=200 if row_count else 204,
+                )
+            )
+            if next_rrd_id is not None:
+                previous_rrd_id = next_rrd_id
+            expected_page_index += 1
+    _write_manifest(
+        export_dir / "manifest.json",
+        results,
+        period_start=period_start,
+        period_end=period_end,
+        limit=limit,
+        max_pages=max_pages,
+        period=period,
+        request_delay_seconds=request_delay_seconds,
+        fields=fields,
+        extra={
+            "checkpoint_status": "recovered_interrupted",
+            "recovered_at": datetime.now(tz=MOSCOW_TZ).isoformat(),
+        },
     )
     return results
 
@@ -441,6 +541,7 @@ def resume_wb_finance_export(
     )
     previous_results = _finance_page_results_from_manifest(manifest, export_dir)
     new_results: list[WbFinancePageResult] = []
+    manifest_backed_up = False
     for account in settings.accounts:
         resume_point = _finance_resume_point(manifest, account.seller_account_id)
         if resume_point is None:
@@ -470,7 +571,30 @@ def resume_wb_finance_export(
                     ),
                     rate_limit_backoff_seconds=request_delay_seconds,
                 )
+                if not manifest_backed_up:
+                    _backup_manifest(manifest_path)
+                    manifest_backed_up = True
                 new_results.append(result)
+                _write_manifest(
+                    manifest_path,
+                    [*previous_results, *new_results],
+                    period_start=period_start,
+                    period_end=period_end,
+                    limit=limit,
+                    max_pages=max_pages,
+                    period=period,
+                    request_delay_seconds=request_delay_seconds,
+                    fields=resolved_fields,
+                    extra={
+                        "checkpoint_status": "running",
+                        "resume": {
+                            "previous_generated_at": manifest.get("generated_at"),
+                            "previous_result_count": len(previous_results),
+                            "new_result_count": len(new_results),
+                            "resumed_at": datetime.now(tz=MOSCOW_TZ).isoformat(),
+                        },
+                    },
+                )
                 if not result.ok or result.status == "no_data":
                     break
                 if result.rrd_id_next is None or result.rrd_id_next == rrd_id:
@@ -480,7 +604,6 @@ def resume_wb_finance_export(
                 time.sleep(request_delay_seconds)
     if not new_results:
         return []
-    _backup_manifest(manifest_path)
     _write_manifest(
         manifest_path,
         [*previous_results, *new_results],
@@ -501,6 +624,27 @@ def resume_wb_finance_export(
         },
     )
     return new_results
+
+
+def load_wb_finance_export_results(export_dir: Path) -> list[WbFinancePageResult]:
+    manifest = _read_json_object(export_dir / "manifest.json")
+    return _finance_page_results_from_manifest(manifest, export_dir)
+
+
+def wb_finance_export_is_complete(
+    results: Iterable[WbFinancePageResult],
+    settings: WbFinanceSettings,
+) -> bool:
+    latest_by_account: dict[str, WbFinancePageResult] = {}
+    for item in results:
+        previous = latest_by_account.get(item.seller_account_id)
+        if previous is None or item.page_index > previous.page_index:
+            latest_by_account[item.seller_account_id] = item
+    return bool(settings.accounts) and all(
+        latest_by_account.get(account.seller_account_id) is not None
+        and latest_by_account[account.seller_account_id].status == "no_data"
+        for account in settings.accounts
+    )
 
 
 def export_wb_finance_by_report_ids(
@@ -969,6 +1113,7 @@ def normalize_finance_row(
         loaded_at=loaded_at,
         wb_document_id=_document_id(row, row_hash),
         wb_report_id=_report_id(row),
+        report_type=_int_or_none(_first(row, "reportType", "report_type")),
         nm_id=_int_or_none(_first(row, "nmId", "nm_id")),
         vendor_code=_text(_first(row, "vendorCode", "sa_name")).lower(),
         barcode=_text(_first(row, "sku", "barcode")),
@@ -1021,6 +1166,7 @@ def iter_wb_finance_snapshots(
     client_id: str,
     account_org_mapping: Iterable[AccountOrgMapping],
 ) -> Iterator[WbApiSnapshot]:
+    verify_raw_directory(export_dir, source_type="wb_finance_detail")
     manifest_path = export_dir / "manifest.json"
     manifest = _read_json_object(manifest_path)
     loaded_at = _parse_datetime(manifest.get("generated_at")) or datetime.now(
@@ -1059,6 +1205,7 @@ def load_wb_sales_report_summary_rows(
     *,
     client_id: str,
 ) -> list[WbSalesReportSummaryRow]:
+    verify_raw_directory(export_dir, source_type="wb_sales_report_list")
     manifest = _read_json_object(export_dir / "manifest.json")
     rows: list[WbSalesReportSummaryRow] = []
     for result in manifest.get("results", []):
@@ -1463,6 +1610,14 @@ def _write_json_list(path: Path, payload: list[Mapping[str, Any]]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

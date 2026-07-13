@@ -111,6 +111,7 @@ def test_ozon_mart_closed_month_calculates_profit_and_keeps_buyout_separate() ->
         "ambiguousMapping": 0,
         "missingCost": 0,
         "missing1cCommissioner": 0,
+        "missing1cOrganization": 0,
         "buyoutPeriodOnly": 1,
         "partialExpenses": 0,
     }
@@ -168,6 +169,10 @@ def test_ozon_mart_closed_month_calculates_profit_and_keeps_buyout_separate() ->
     assert payload["totals"]["marginBeforeTax"] == 200 / 900
     assert payload["totals"]["profitAfterTax"] is None
     assert payload["totals"]["taxCompleteness"] == "missing_tax_profile"
+    assert payload["costQuality"]["revenueCoveragePct"] == 1.0
+    assert payload["costQuality"]["quantityCoveragePct"] == 1.0
+    assert payload["costQuality"]["unmappedRevenueRowCount"] == 0
+    assert payload["costQuality"]["ambiguousRevenueRowCount"] == 0
     assert payload["profitAliasDeprecated"] is True
 
 
@@ -411,6 +416,136 @@ def test_ozon_monthly_range_hides_profit_when_open_month_is_included() -> None:
     assert open_row["cogs"] is None
     assert open_row["ozonExpenses"] is None
     assert open_row["qualityStatus"] == "missing_1c_commissioner"
+
+
+def test_ozon_monthly_range_totals_do_not_depend_on_preview_rows() -> None:
+    first = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        buyout_reconciliation={
+            "matchedWithoutReportNumber": 1,
+            "buyoutAmount": "100",
+            "buyoutQuantity": "1",
+        },
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=1,
+    )
+    second = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row(source_row_id="realization-june")],
+        commissioner_rows=[
+            SourceRow(
+                row_number=2,
+                source_row_id="commissioner-june",
+                row_payload={
+                    "Date": "2026-06-30",
+                    "Комментарий": "ОЗОН Отчет комиссионера за июнь",
+                    "Контрагент_Key": "OZON-CP",
+                    "Запасы": [
+                        {
+                            "Номенклатура_Key": "ITEM-1",
+                            "Количество": "2",
+                            "Всего": "900",
+                        }
+                    ],
+                },
+            )
+        ],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        preview_limit=1,
+    )
+
+    combined = combine_ozon_monthly_marts([first, second], preview_limit=1)
+
+    assert combined["rowCount"] == first["rowCount"] + second["rowCount"]
+    assert combined["previewRowCount"] == 1
+    assert combined["previewLimited"] is True
+    assert combined["summary"]["ready"] == 2
+    assert combined["totals"]["profitBeforeTax"] == (
+        first["totals"]["profitBeforeTax"] + second["totals"]["profitBeforeTax"]
+    )
+    assert combined["closedPeriodTotals"] == combined["totals"]
+
+
+def test_ozon_range_reports_monthly_materiality_thresholds_without_recalculation(
+) -> None:
+    def month_mart(month: int) -> dict[str, Any]:
+        month_end = date(2026, month, 30 if month == 6 else 31)
+        commissioner = SourceRow(
+            row_number=month,
+            source_row_id=f"commissioner-{month}",
+            row_payload={
+                "Date": month_end.isoformat(),
+                "Комментарий": "ОЗОН Отчет комиссионера",
+                "Контрагент_Key": "OZON-CP",
+                "Запасы": [
+                    {
+                        "Номенклатура_Key": "ITEM-1",
+                        "Количество": "2",
+                        "Всего": "15000000",
+                    }
+                ],
+            },
+        )
+        return build_ozon_unit_economics_mart(
+            realization_rows=[
+                _realization_row(
+                    source_row_id=f"realization-{month}",
+                    sale_amount="15000000",
+                )
+            ],
+            commissioner_rows=[commissioner],
+            unit_costs={"ITEM-1": Decimal("300")},
+            mapping_resolver=_resolver(),
+            period_start=date(2026, month, 1),
+            period_end=month_end,
+            preview_limit=10,
+        )
+
+    may = month_mart(5)
+    june = month_mart(6)
+    combined = combine_ozon_monthly_marts([may, june], preview_limit=10)
+
+    assert may["costQuality"]["materialityThresholdAmount"] == 100000.0
+    assert june["costQuality"]["materialityThresholdAmount"] == 100000.0
+    assert combined["costQuality"]["materialityThresholdAmount"] is None
+    assert combined["costQuality"]["materialityThresholdMode"] == "monthly"
+    assert combined["costQuality"]["materialityThresholdMinAmount"] == 100000.0
+    assert combined["costQuality"]["materialityThresholdMaxAmount"] == 100000.0
+
+
+def test_ozon_mart_blocks_profit_without_onec_organization_scope() -> None:
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[],
+        unit_costs={},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+        organization_scope_status="missing_1c_organization",
+    )
+
+    assert payload["status"] == "partial_source"
+    assert payload["summary"]["missing1cOrganization"] == 1
+    assert payload["summary"]["missing1cCommissioner"] == 0
+    assert payload["totals"]["profitBeforeTax"] is None
+    assert payload["excludedOpenPeriods"] == []
+    assert payload["excludedIncompletePeriods"] == [
+        {
+            "periodStart": "2026-05-01",
+            "periodEnd": "2026-05-31",
+            "reason": "missing_1c_organization",
+            "reasons": ["missing_1c_organization"],
+        }
+    ]
+    assert payload["rows"][0]["qualityStatus"] == "missing_1c_organization"
+    assert payload["rows"][0]["actionText"] == "Выберите организацию 1C."
 
 
 def test_ozon_osno_keeps_after_tax_empty_without_confirmed_input_vat() -> None:
@@ -1002,6 +1137,9 @@ def test_ozon_mart_does_not_allocate_onec_revenue_for_one_item_many_sku() -> Non
     )
 
     assert payload["summary"]["ambiguousMapping"] == 2
+    assert payload["costQuality"]["ambiguousQuantity"] == 4.0
+    assert payload["costQuality"]["quantityCoveragePct"] == 0.0
+    assert payload["costQuality"]["revenueCoveragePct"] is None
     for row in payload["rows"]:
         assert row["qualityStatus"] == "ambiguous_mapping"
         assert row["onecRevenue"] is None
@@ -1075,6 +1213,98 @@ def test_ozon_mart_missing_mapping_does_not_calculate_cogs_or_profit() -> None:
     assert row["onecRevenue"] is None
     assert row["cogs"] is None
     assert row["profit"] is None
+    assert payload["costQuality"]["quantity"] == 2.0
+    assert payload["costQuality"]["coveredQuantity"] == 0.0
+    assert payload["costQuality"]["quantityCoveragePct"] == 0.0
+    assert payload["costQuality"]["unmappedQuantity"] == 2.0
+    assert payload["costQuality"]["unmappedRevenueRowCount"] == 1
+    assert payload["costQuality"]["revenueCoveragePct"] is None
+
+
+def test_ozon_mart_zero_quantity_unmapped_revenue_keeps_coverage_unknown() -> None:
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[
+            _realization_row(
+                sale_qty="0",
+                sale_amount="500",
+            )
+        ],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_missing_resolver,
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+    )
+
+    assert payload["summary"]["missingMapping"] == 1
+    assert payload["costQuality"]["quantity"] == 0.0
+    assert payload["costQuality"]["unmappedQuantity"] == 0.0
+    assert payload["costQuality"]["unmappedRevenueRowCount"] == 1
+    assert payload["costQuality"]["ambiguousRevenueRowCount"] == 0
+    assert payload["costQuality"]["revenueCoveragePct"] is None
+
+
+def test_ozon_mart_zero_revenue_unmapped_quantity_keeps_revenue_coverage() -> None:
+    matched_resolver = _resolver()
+
+    def resolver(candidate: dict[str, Any]) -> dict[str, Any]:
+        if candidate.get("offerId") == "OZ-UNMAPPED":
+            return _missing_resolver(candidate)
+        return matched_resolver(candidate)
+
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[
+            _realization_row(),
+            _realization_row(
+                source_row_id="zero-revenue-unmapped",
+                offer_id="OZ-UNMAPPED",
+                product_id="unmapped-product",
+                sku="unmapped-sku",
+                barcode="unmapped-barcode",
+                sale_qty="1",
+                sale_amount="0",
+            ),
+        ],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=resolver,
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+    )
+
+    quality = payload["costQuality"]
+    assert quality["eligibleRevenueAmount"] == 900.0
+    assert quality["coveredEligibleRevenueAmount"] == 900.0
+    assert quality["unmappedQuantity"] == 1.0
+    assert quality["unmappedRevenueRowCount"] == 0
+    assert quality["revenueCoveragePct"] == 1.0
+    assert quality["quantityCoveragePct"] == 2 / 3
+
+
+def test_ozon_mart_nonpositive_direct_cost_is_not_available() -> None:
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        direct_1c_cost_control={
+            "quantity": Decimal("10"),
+            "cogs": Decimal("0"),
+        },
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+    )
+
+    quality = payload["costQuality"]
+    assert quality["direct1cQuantity"] == 10.0
+    assert quality["direct1cCogs"] == 0.0
+    assert quality["direct1cAverageUnitCost"] is None
+    assert quality["direct1cDeviationPct"] is None
+    assert quality["direct1cStatus"] == "not_available"
+    assert quality["direct1cReason"] == "nonpositive_cost"
 
 
 def test_ozon_mart_missing_expense_fields_are_partial_not_zero() -> None:

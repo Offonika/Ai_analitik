@@ -10,9 +10,10 @@
 может мониторить изменения. Текущий пилот проверяет эту рамку на задаче
 юнит-экономики Wildberries по данным WB и `1С:УНФ`.
 
-Здесь будут храниться только рабочие файлы пилота: настройки, локальные данные и
-сгенерированные отчеты. Реальные ключи Wildberries хранятся только в локальном
-файле `.env` и не должны попадать в Git, документы, письма или чаты.
+Репозиторий содержит код, тесты, спецификации и эксплуатационные шаблоны пилота.
+Локальные snapshots и сгенерированные отчеты остаются вне Git. Реальные ключи
+маркетплейсов хранятся только в закрытом runtime-окружении и не должны попадать
+в Git, документы, письма или чаты.
 
 # Где хранить ключи WB
 
@@ -70,12 +71,18 @@ ONEC_ODATA_TIMEOUT_SECONDS=30
 
 ```text
 /opt/shumeyko-partners-wb-unit-economics/
+  .github/          # GitHub Actions CI для pull request и main
   .env              # реальные локальные ключи, не коммитить
   .env.example      # пример без секретов
-  config/           # будущие настройки клиентов и методики
+  config/           # non-secret настройки клиентов и методики
   data/             # локальные выгрузки и snapshots, не коммитить
   docs/             # ТЗ, инструкции и spec пилота
+  deploy/           # шаблоны nginx и systemd
   reports/          # Excel-отчеты, не коммитить
+  scripts/          # импорт, проверки, сборка, публикация и обслуживание
+  sql/              # схема и миграционные SQL-артефакты
+  src/              # приложение и расчетные слои
+  tests/            # unit, contract, integration и report smoke tests
 ```
 
 # Документы
@@ -88,10 +95,15 @@ ONEC_ODATA_TIMEOUT_SECONDS=30
 
 - продуктовая рамка: `docs/product-concept-ai-report-analyst.md`;
 - Excel MVP: `docs/specs/wb-unit-economics-excel-mvp-implementation.md`;
+- сопоставление маркетплейсов и 1С:
+  `docs/specs/marketplace-1c-mapping-service.md`;
 - DB-first публикация отчетов: `docs/specs/wb-unit-economics-db-first-report-marts.md`;
 - web-кабинет и AI: `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`;
 - source refresh и provider registry:
   `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md`;
+- Ozon как второй read-only маркетплейс:
+  `docs/specs/marketplace-unit-economics-ozon-integration.md`;
+- ретенция source refresh: `docs/specs/source-refresh-database-retention.md`;
 - формулы и ручная сверка: `docs/calculation-formulas.md`;
 - сборка и проверка отчета: `docs/runbooks/report-generation.md`;
 - эксплуатация web-кабинета: `docs/runbooks/web-cabinet-operations.md`;
@@ -237,6 +249,6 @@ Production-путь использует PostgreSQL, nginx `/api/*`, HTTPS и se
 `OPENAI_API_KEY`/`SHUMEYKO_OPENAI_API_KEY`, пароли пользователей и доступы
 WB/1С хранятся только в закрытом runtime окружении, не в Git и не в Markdown.
 
-Для v2.1 эксплуатационные команды собраны в
+Актуальные эксплуатационные команды без привязки README к номеру версии собраны в
 `docs/runbooks/web-cabinet-operations.md`: server-side пользователи, импорт
 нового `report_run`, AI/live-checks, backup, monitor и deployment smoke.

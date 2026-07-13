@@ -180,10 +180,9 @@ def ozon_settings_from_secret(
         api_key = _first_text(item, "apiKey", "api_key", "token", "API_KEY")
         if not client_id or not api_key:
             continue
-        seller_account_id = (
-            _first_text(item, "sellerAccountId", "seller_account_id", "id")
-            or (fallback_id if len(accounts_payload) == 1 else f"{fallback_id}_{index}")
-        )
+        seller_account_id = _first_text(
+            item, "sellerAccountId", "seller_account_id", "id"
+        ) or (fallback_id if len(accounts_payload) == 1 else f"{fallback_id}_{index}")
         account_name = _first_text(item, "accountName", "account_name", "name")
         accounts.append(
             OzonSellerAccount(
@@ -481,9 +480,7 @@ def _export_period_chunks_endpoint(
                     page_index=page_index,
                     payload=payload_factory(chunk_start, chunk_end),
                     row_extractor=row_extractor,
-                    file_suffix=(
-                        f"{chunk_start.isoformat()}_{chunk_end.isoformat()}"
-                    ),
+                    file_suffix=(f"{chunk_start.isoformat()}_{chunk_end.isoformat()}"),
                 )
                 results.append(result)
                 _sleep_between_requests(request_delay_seconds)
@@ -1010,10 +1007,7 @@ def _tabular_rows(text: str) -> list[dict[str, str]]:
         delimiter=_tabular_delimiter(stripped),
     )
     return [
-        {
-            str(key or "").strip(): str(value or "").strip()
-            for key, value in row.items()
-        }
+        {str(key or "").strip(): str(value or "").strip() for key, value in row.items()}
         for row in reader
     ]
 
@@ -1190,6 +1184,7 @@ def _write_manifest(
         "loadedAt": datetime.now().isoformat(),
         "results": [
             {
+                "sourceType": item.source_type,
                 "sellerAccountId": item.seller_account_id,
                 "accountName": item.account_name,
                 "pageIndex": item.page_index,
@@ -1197,6 +1192,7 @@ def _write_manifest(
                 "ok": item.ok,
                 "rowCount": item.row_count,
                 "statusCode": item.status_code,
+                "sourceEndpoint": item.source_endpoint,
                 "rawPayloadHash": item.raw_payload_hash,
                 "outputFile": item.output_path.name if item.output_path else None,
                 "reportCode": item.report_code,
@@ -1236,9 +1232,7 @@ def _month_ranges_between(
     year, month = period_start.year, period_start.month
     while (year, month) <= (period_end.year, period_end.month):
         chunk_start = max(period_start, date(year, month, 1))
-        next_month = (
-            date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
-        )
+        next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
         chunk_end = min(period_end, next_month - timedelta(days=1))
         ranges.append((chunk_start, chunk_end))
         month += 1

@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from wb_unit_economics.onec_odata import (
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
+    INPUT_VAT_SAMPLE_COLLECTIONS,
+    TAX_PROFILE_SAMPLE_COLLECTIONS,
     OnecODataConfigError,
     OnecODataSettings,
     OnecSampleCollection,
@@ -83,7 +85,12 @@ def _select_collections(selected_ids: list[str]) -> list[OnecSampleCollection]:
         return list(DEFAULT_SAMPLE_COLLECTIONS)
     by_id = {
         item.sample_id: item
-        for item in [*DEFAULT_SAMPLE_COLLECTIONS, *GROSS_PROFIT_SAMPLE_COLLECTIONS]
+        for item in [
+            *DEFAULT_SAMPLE_COLLECTIONS,
+            *TAX_PROFILE_SAMPLE_COLLECTIONS,
+            *INPUT_VAT_SAMPLE_COLLECTIONS,
+            *GROSS_PROFIT_SAMPLE_COLLECTIONS,
+        ]
     }
     unknown = sorted(set(selected_ids) - set(by_id))
     if unknown:

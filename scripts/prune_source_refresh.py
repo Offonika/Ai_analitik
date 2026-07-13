@@ -9,14 +9,13 @@ import sys
 from pathlib import Path
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from wb_unit_economics.web.database import make_engine, make_session_factory
-from wb_unit_economics.web.models import ReportRun, SourceRefreshRun
+from wb_unit_economics.web.models import ReportRun, SourceLoad, SourceRefreshRun
 from wb_unit_economics.web.settings import WebSettings
 
 
@@ -32,13 +31,23 @@ def main() -> int:
         return 2
 
     candidates = _snapshot_dirs(source_root)
-    protected = _protected_snapshot_names(
-        candidates,
-        database_url=args.database_url or os.getenv("SHUMEYKO_DATABASE_URL") or "",
-        daily_keep=args.daily_keep,
-        full_keep=args.full_keep,
-        extra_protected=set(args.protect_snapshot_set),
-    )
+    try:
+        protected = _protected_snapshot_names(
+            candidates,
+            database_url=(
+                args.database_url or os.getenv("SHUMEYKO_DATABASE_URL") or ""
+            ),
+            daily_keep=args.daily_keep,
+            full_keep=args.full_keep,
+            extra_protected=set(args.protect_snapshot_set),
+        )
+    except Exception as exc:
+        print(
+            "Database protection read failed; no files were deleted: "
+            f"{exc.__class__.__name__}",
+            file=sys.stderr,
+        )
+        return 2
     deletable = [item for item in candidates if item.name not in protected]
     print(f"Source refresh root: {source_root}")
     print(f"Directories: {len(candidates)}")
@@ -106,27 +115,68 @@ def _latest_by_prefix(candidates: list[Path], prefix: str, limit: int) -> list[P
 
 def _protected_from_database(database_url: str) -> set[str]:
     protected: set[str] = set()
-    try:
-        engine = make_engine(database_url)
-        session_factory = make_session_factory(engine)
-        with session_factory() as db:
+    engine = make_engine(database_url)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        report_filter = ReportRun.publication_status.in_({"draft", "published"})
+        for value in db.scalars(
+            select(ReportRun.source_snapshot_set_id).where(
+                report_filter,
+                ReportRun.source_snapshot_set_id != "",
+            )
+        ):
+            protected.add(str(value))
+        protected_run_ids = {
+            str(value)
             for value in db.scalars(
-                select(ReportRun.source_snapshot_set_id).where(
-                    ReportRun.publication_status == "published",
-                    ReportRun.source_snapshot_set_id != "",
+                select(SourceLoad.source_refresh_run_id)
+                .join(ReportRun, ReportRun.id == SourceLoad.report_run_id)
+                .where(
+                    report_filter,
+                    SourceLoad.source_refresh_run_id.is_not(None),
                 )
-            ):
-                protected.add(str(value))
+            )
+            if value
+        }
+        protected_run_ids.update(
+            run.id
             for run in db.scalars(
                 select(SourceRefreshRun).where(SourceRefreshRun.finished_at.is_(None))
-            ):
-                if run.snapshot_set_id:
-                    protected.add(run.snapshot_set_id)
-    except SQLAlchemyError as exc:
-        print(
-            f"Database protection read failed: {exc.__class__.__name__}",
-            file=sys.stderr,
+            )
         )
+        newest_full_by_client: set[tuple[str, str]] = set()
+        for run in db.scalars(
+            select(SourceRefreshRun)
+            .where(
+                SourceRefreshRun.mode == "full",
+                SourceRefreshRun.finished_at.is_not(None),
+                SourceRefreshRun.status.in_(
+                    {"report_created", "needs_review", "source_loaded"}
+                ),
+            )
+            .order_by(SourceRefreshRun.created_at.desc())
+        ):
+            client_key = (run.tenant_id, run.client_id)
+            if client_key in newest_full_by_client:
+                continue
+            newest_full_by_client.add(client_key)
+            protected_run_ids.add(run.id)
+        pending = list(protected_run_ids)
+        visited: set[str] = set()
+        while pending:
+            run_id = pending.pop()
+            if run_id in visited:
+                continue
+            visited.add(run_id)
+            run = db.get(SourceRefreshRun, run_id)
+            if run is None:
+                continue
+            if run.snapshot_set_id:
+                protected.add(run.snapshot_set_id)
+            if run.root_dir:
+                protected.add(Path(run.root_dir).name)
+            if run.base_source_refresh_run_id:
+                pending.append(run.base_source_refresh_run_id)
     return protected
 
 

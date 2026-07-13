@@ -6,10 +6,15 @@ audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
 
 # Назначение
+
+> **Статус draft.** Unit-файлы и команды проверяются локально, но полный цикл
+> установки timers и production refresh не запускается только ради проверки
+> документации. После отдельного операционного smoke runbook можно повысить до
+> `active`.
 
 Этот runbook описывает безопасное расписание `source refresh` для web-кабинета
 Shumeyko. Расписание запускает только read-only CLI
@@ -21,10 +26,20 @@ Shumeyko. Расписание запускает только read-only CLI
 - Daily refresh: каждый час в `*:15 MSK`, режим `daily`.
 - Weekly full refresh: понедельник в `08:15 MSK`, режим `full`.
 
-Режим `onec-only` использовать только для диагностики/перезагрузки 1С raw
-snapshots. Он не должен публиковать клиентский `report_run`: клиентская витрина
-создается только из `weekly`/`full` или ручного DB-first rebuild, где явно
-переданы и WB, и 1С snapshots.
+`incremental` — ручной staff-режим между ними. Он повторно читает последние
+`28` дней WB, свежую 1C за полный отчетный период, атомарно заменяет окно daily
+facts и создает новый immutable draft без чтения всей raw-истории. Режим
+включается только после shadow parity флагом
+`SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_ENABLED=true`. При отсутствии полной базы,
+разрыве coverage или ошибке parity возвращается `needs_full_refresh`; полный
+refresh автоматически не запускается.
+
+Самостоятельный режим `onec-only` без `source_report_id` используется для
+диагностики/перезагрузки 1С raw snapshots и не создаёт отчёт. Если явно передан
+исходный отчёт, система создаёт только staff-черновик: переиспользует полный
+неизменяемый WB-снимок с покрытием всего периода либо автоматически выполняет
+`full` read-only refresh. Публикация и переключение текущего клиентского отчёта
+в обоих случаях запрещены без отдельной приёмки.
 
 На текущем сервере systemd работает в timezone `Europe/Moscow`, поэтому
 `OnCalendar` в unit-файлах задан локальным московским временем. Если сервер
@@ -40,6 +55,9 @@ deploy/systemd/shumeiko-source-refresh-daily.service
 deploy/systemd/shumeiko-source-refresh-daily.timer
 deploy/systemd/shumeiko-source-refresh-weekly.service
 deploy/systemd/shumeiko-source-refresh-weekly.timer
+deploy/systemd/shumeiko-source-refresh-worker@.service
+deploy/systemd/shumeiko-source-refresh-watchdog.service
+deploy/systemd/shumeiko-source-refresh-watchdog.timer
 ```
 
 Оба service-файла используют:
@@ -48,6 +66,20 @@ deploy/systemd/shumeiko-source-refresh-weekly.timer
 - проектный `.venv/bin/python`;
 - `EnvironmentFile=/etc/shumeiko-web.env`;
 - `SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko` как безопасный tenant по умолчанию.
+
+Ручной запуск из web, совместимая кнопка 1С, AI-команда, пересборка после
+загрузки сопоставления и production daily/weekly выполняют отдельный шаблон
+`shumeiko-source-refresh-worker@<run_id>.service`. Web-процесс только создаёт
+`queued` run и запускает unit; чтение источников и сборка отчёта внутри
+`shumeiko-web.service` запрещены. Watchdog раз в минуту проверяет heartbeat.
+Локальный `cli:<pid>:<run_id>` fallback разрешён только для SQLite/dev; stale
+CLI run восстанавливается лишь после подтверждения отсутствия процесса.
+
+Фоновый worker ограничен `MemoryHigh=2G`, `MemoryMax=3G` и
+`MemorySwapMax=1G`. На production он включён в systemd-oomd как приоритетный
+кандидат на завершение при давлении памяти. Поэтому тяжёлый refresh может
+завершиться управляемой ошибкой и быть продолжен по checkpoint, но не должен
+забирать память у SSH, PostgreSQL и базовых системных служб.
 
 Секреты, токены и содержимое `.env` не переносить в unit-файлы. Для production
 refresh доступы должны приходить из encrypted tenant integrations.
@@ -58,6 +90,7 @@ refresh доступы должны приходить из encrypted tenant int
 sudo cp deploy/systemd/shumeiko-source-refresh-*.service /etc/systemd/system/
 sudo cp deploy/systemd/shumeiko-source-refresh-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
+sudo systemctl enable --now shumeiko-source-refresh-watchdog.timer
 sudo systemctl enable --now shumeiko-source-refresh-daily.timer
 sudo systemctl enable --now shumeiko-source-refresh-weekly.timer
 ```
@@ -120,6 +153,20 @@ systemctl list-timers 'shumeiko-source-refresh-*'
 journalctl -u shumeiko-source-refresh-daily.service -n 100 --no-pager
 journalctl -u shumeiko-source-refresh-weekly.service -n 100 --no-pager
 ```
+
+# Восстановление зависшего legacy refresh
+
+Сначала остановить web-процесс, который владеет старой in-process задачей.
+Затем выполнить dry-run ремонта и только после сверки применить его:
+
+```bash
+.venv/bin/python scripts/repair_source_refresh_run.py --run-id <run_id>
+.venv/bin/python scripts/repair_source_refresh_run.py --run-id <run_id> --apply
+```
+
+Команда переводит только незавершённый run в `failed`; snapshots, manifests,
+collections и аналитические очереди не удаляются. Повторный запуск создаётся
+как новый run с `resume_mode=auto`.
 
 Ожидаемый лог CLI содержит `Source refresh`, `Status`, `Mode`, `Snapshot set`
 и `Period`. Логи не должны содержать токены, connection strings или raw payload.
@@ -186,6 +233,13 @@ refresh. Если сборка артефактов прошла, но позж�
 передать все `source_snapshot_set_id` опубликованных отчетов через
 `--protect-snapshot-set`.
 
+На production общий filesystem retention запускается отдельным
+`shumeiko-source-refresh-prune.timer` ежедневно в 03:45 с небольшим случайным
+сдвигом. Он сохраняет три последних daily, два последних full, все snapshots из
+published/draft lineage и явно защищённый WB parity snapshot
+`daily-20260712-065846`. Service использует тот же fail-closed PostgreSQL
+protection: ошибка чтения lineage завершает запуск без удаления файлов.
+
 Для общей DB-first готовности публикации и интеграций:
 
 ```bash
@@ -223,13 +277,17 @@ refresh. Если сборка артефактов прошла, но позж�
 - Production scheduler и health helper не читают локальный `.env`; runtime config
   приходит из systemd environment, а WB/1C доступы — из encrypted tenant
   integrations.
-- Для загруженных 1C/mapping и небольших WB collections raw rows пишутся в
-  `source_snapshot_rows`. Для WB finance выше
-  `SHUMEYKO_SOURCE_REFRESH_WB_PERSIST_ROW_LIMIT` повторная запись миллионов
-  строк в PostgreSQL пропускается: immutable JSON в `source_refresh_root`
-  остается авторитетным raw snapshot, а collection сохраняет row count, hash,
-  raw path и `rowPersistence.status=skipped_large_snapshot`. Эти данные не
-  публикуются в клиентский UI.
+- В переходном `SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=legacy` сохраняется прежняя
+  запись небольших marketplace collections в `source_snapshot_rows`. После
+  parity-check production переключается на `files_only`: immutable WB/Ozon JSON
+  в `source_refresh_root` становится авторитетным raw snapshot, collection
+  сохраняет row count/hash/path и `rowPersistence.status=file_authoritative`,
+  а PostgreSQL получает дневные/типизированные facts без полного raw payload.
+  1С и mapping пока используют прежние правила и лимит 25 MiB.
+- Для Ozon дополнительно требуется
+  `SHUMEYKO_SOURCE_REFRESH_OZON_FILES_ONLY_ENABLED=true`. До отдельной сверки
+  Ozon этот флаг не включается: типизированные operations строятся в тени, а
+  raw-строки продолжают сохраняться для совместимости работающего web-процесса.
 - Интервал WB Finance задается
   `SHUMEYKO_SOURCE_REFRESH_WB_REQUEST_DELAY_SECONDS`, а отдельный интервал
   Content API для карточек —

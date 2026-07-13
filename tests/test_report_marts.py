@@ -21,9 +21,12 @@ from wb_unit_economics.contracts import (
 from wb_unit_economics.report_marts import build_report_marts
 
 
-def _complete_stock_history_csv(*, zero_date: date) -> str:
-    start = date(2026, 3, 1)
-    end = date(2026, 6, 17)
+def _complete_stock_history_csv(
+    *,
+    zero_date: date,
+    start: date = date(2026, 3, 1),
+    end: date = date(2026, 6, 17),
+) -> str:
     dates = []
     current = start
     while current <= end:
@@ -38,6 +41,7 @@ def _write_stock_history_dir(
     root,
     *,
     csv_text: str,
+    period_start: str = "2026-03-01",
     period_end: str = "2026-06-17",
 ) -> None:
     root.mkdir()
@@ -46,7 +50,7 @@ def _write_stock_history_dir(
     (root / "manifest.json").write_text(
         json.dumps(
             {
-                "period_start": "2026-03-01",
+                "period_start": period_start,
                 "period_end": period_end,
                 "stock_type": "wb",
                 "results": [
@@ -93,6 +97,64 @@ def test_report_marts_do_not_turn_missing_stock_dates_into_zero_days(tmp_path) -
     assert payload["lostSalesCoverage"]["calculated"] is False
     assert payload["lostSalesCoverage"]["coveredDays"] == 2
     assert payload["lostSalesCoverage"]["totalDays"] == 109
+
+
+def test_report_marts_calculate_only_common_provider_stock_window(tmp_path) -> None:
+    stock_history_dir = tmp_path / "provider_window_stock_history"
+    _write_stock_history_dir(
+        stock_history_dir,
+        period_start="2026-04-10",
+        csv_text=_complete_stock_history_csv(
+            start=date(2026, 4, 10),
+            end=date(2026, 6, 17),
+            zero_date=date(2026, 4, 11),
+        ),
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    payload = build_report_marts(
+        report,
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        stock_history_dir=stock_history_dir,
+    ).to_dashboard_payload()
+
+    coverage = payload["lostSalesCoverage"]
+    assert coverage["calculated"] is True
+    assert coverage["providerWindowCalculated"] is True
+    assert coverage["fullCoverage"] is False
+    assert coverage["coveredDays"] == 69
+    assert coverage["totalDays"] == 109
+    assert coverage["calculationPeriodStart"] == "2026-04-10"
+    assert coverage["calculationPeriodEnd"] == "2026-06-17"
+    assert coverage["extrapolated"] is False
+    assert "Рассчитано за доступный период" in coverage["message"]
+    assert payload["lostSales"]
+    context = payload["lostSales"][0]["calculationContext"]
+    assert context["version"] == "lost-sales-filter-v1"
+    assert context["providerPeriodStart"] == "2026-04-10"
+    assert context["providerPeriodEnd"] == "2026-06-17"
+    assert set(context["stockByDate"]) == {
+        item.isoformat()
+        for item in (
+            date(2026, 4, 10) + timedelta(days=offset) for offset in range(69)
+        )
+    }
+    assert context["financePeriods"]
+    assert all(
+        isinstance(item["salesQuantity"], str)
+        and isinstance(item["netRevenue"], str)
+        and isinstance(item["contributionMargin"], str)
+        for item in context["financePeriods"]
+    )
 
 
 def test_report_marts_separate_negative_margin_as_prevented_loss(tmp_path) -> None:
@@ -249,7 +311,74 @@ def test_document_reconciliation_uses_loaded_onec_documents() -> None:
     assert row["amountDelta"] == 0.0
 
 
-def test_report_marts_assign_cross_month_week_to_closing_month() -> None:
+def test_document_reconciliation_keeps_month_end_cost_adjustment_separate() -> None:
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+    expected = next(
+        row
+        for row in report.onec_report_reconciliation_rows
+        if row.document_label == "Отчет комиссионера"
+    )
+    actual = OnecGrossProfitDocumentRow(
+        client_id=CLIENT_ID,
+        organization_id=expected.organization_id,
+        counterparty_id="WB",
+        document_id="onec-document-1",
+        document_type="ОтчетКомиссионера",
+        document_date=expected.document_date,
+        week_start=expected.week_start,
+        week_end=expected.week_end,
+        sales_quantity=expected.sales_quantity,
+        return_quantity=expected.return_quantity,
+        quantity=expected.quantity,
+        revenue=expected.revenue_after_spp,
+        vat=Decimal("0"),
+        cogs=Decimal("500"),
+        cogs_without_vat=Decimal("500"),
+        gross_profit=expected.revenue_after_spp - Decimal("500"),
+        external_report_id=expected.wb_report_ids[0],
+        source_row_count=1,
+    )
+    adjustment = actual.model_copy(
+        update={
+            "document_date": date(2026, 4, 30),
+            "week_start": date(2026, 4, 27),
+            "week_end": date(2026, 5, 3),
+            "sales_quantity": Decimal("0"),
+            "return_quantity": Decimal("0"),
+            "quantity": Decimal("0"),
+            "revenue": Decimal("0"),
+            "cogs": Decimal("-20"),
+            "cogs_without_vat": Decimal("-20"),
+            "gross_profit": Decimal("20"),
+        }
+    )
+
+    payload = build_report_marts(
+        report,
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        onec_gross_profit_rows=[actual, adjustment],
+    ).to_dashboard_payload()
+
+    adjustment_row = next(
+        item
+        for item in payload["documentReconciliation"]
+        if item["documentType"] == "Корректировка себестоимости 1С"
+    )
+    assert adjustment_row["onecDocumentDates"] == "2026-04-30"
+    assert adjustment_row["onecCogs"] == -20.0
+    assert adjustment_row["onecQuantity"] == 0.0
+
+
+def test_report_marts_assign_cross_month_week_to_onec_document_month() -> None:
     snapshot = wb_snapshots()[0].model_copy(
         update={
             "period_start": date(2026, 4, 27),
@@ -267,11 +396,40 @@ def test_report_marts_assign_cross_month_week_to_closing_month() -> None:
         report_period_start=date(2026, 4, 1),
         report_period_end=date(2026, 5, 31),
     )
+    expected = next(
+        row
+        for row in report.onec_report_reconciliation_rows
+        if row.document_label == "Отчет комиссионера"
+    )
+    actual = OnecGrossProfitDocumentRow(
+        client_id=CLIENT_ID,
+        organization_id=expected.organization_id,
+        counterparty_id="WB",
+        document_id="onec-boundary-document",
+        document_type="ОтчетКомиссионера",
+        document_date=date(2026, 4, 30),
+        week_start=expected.week_start,
+        week_end=expected.week_end,
+        sales_quantity=expected.sales_quantity,
+        return_quantity=expected.return_quantity,
+        quantity=expected.quantity,
+        revenue=expected.revenue_after_spp,
+        vat=Decimal("0"),
+        cogs=expected.cogs_from_1c_with_extra_costs,
+        gross_profit=expected.gross_profit,
+        external_report_id=expected.wb_report_ids[0],
+        source_row_count=1,
+    )
 
-    payload = build_report_marts(report).to_dashboard_payload()
+    payload = build_report_marts(
+        report,
+        onec_gross_profit_rows=[actual],
+    ).to_dashboard_payload()
 
-    assert payload["unitRows"][0]["month"] == "Май 2026"
-    assert payload["unitRows"][0]["documentReport"].endswith("закрытие 03.05.2026")
+    assert payload["unitRows"][0]["month"] == "Апрель 2026"
+    assert payload["unitRows"][0]["accountingPeriodDate"] == "2026-04-30"
+    assert payload["unitRows"][0]["accountingPeriodSource"] == "onec_document_date"
+    assert payload["unitRows"][0]["documentReport"].endswith("закрытие 30.04.2026")
 
 
 def test_report_marts_assign_march_april_week_to_april() -> None:
@@ -296,6 +454,9 @@ def test_report_marts_assign_march_april_week_to_april() -> None:
     payload = build_report_marts(report).to_dashboard_payload()
 
     assert payload["unitRows"][0]["month"] == "Апрель 2026"
+    assert payload["unitRows"][0]["accountingPeriodSource"] == (
+        "wb_week_end_fallback"
+    )
     assert payload["unitRows"][0]["documentReport"].endswith("закрытие 05.04.2026")
 
 

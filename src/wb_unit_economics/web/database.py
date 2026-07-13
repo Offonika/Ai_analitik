@@ -26,7 +26,8 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_07_10_tax_and_stock_trust_contract"
+DB_FIRST_SCHEMA_VERSION = "2026_07_13_incremental_source_refresh"
+MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
 
@@ -96,11 +97,13 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_report_document_reconciliation_columns(engine)
     _ensure_source_load_columns(engine)
     _ensure_source_refresh_resume_columns(engine)
+    _ensure_marketplace_operation_fact_columns(engine)
     _ensure_tax_profile_columns(engine)
     _ensure_multi_client_columns(engine)
     _ensure_multi_client_indexes(engine)
     if run_backfill and schema_version(engine) != DB_FIRST_SCHEMA_VERSION:
-        _backfill_multi_client_hierarchy(engine)
+        if not _schema_migration_at_least(engine, MULTI_CLIENT_BACKFILL_VERSION):
+            _backfill_multi_client_hierarchy(engine)
         _record_schema_migration(engine, DB_FIRST_SCHEMA_VERSION)
 
 
@@ -117,6 +120,23 @@ def schema_version(engine: Engine) -> str:
     except Exception:
         return ""
     return str(value or "")
+
+
+def _schema_migration_at_least(engine: Engine, version: str) -> bool:
+    table_name = _table_name(engine, "schema_migrations")
+    try:
+        with engine.begin() as connection:
+            return bool(
+                connection.execute(
+                    text(
+                        f"SELECT 1 FROM {table_name} "
+                        "WHERE version >= :version LIMIT 1"
+                    ),
+                    {"version": version},
+                ).scalar()
+            )
+    except Exception:
+        return False
 
 
 def _schema(engine: Engine) -> str | None:
@@ -166,6 +186,7 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
         "source_snapshot_set_id": "VARCHAR NOT NULL DEFAULT ''",
         "source_coverage_start": "DATE",
         "source_coverage_end": "DATE",
+        "marketplace_expense_context_version": "VARCHAR NOT NULL DEFAULT ''",
     }
     missing = [
         (column, definition)
@@ -188,6 +209,7 @@ def _ensure_report_unit_row_columns(engine: Engine) -> None:
         column["name"]
         for column in inspect(engine).get_columns("report_unit_rows", schema=schema)
     }
+    bool_default = "0" if schema is None else "FALSE"
     column_specs = {
         "document_report": "VARCHAR NOT NULL DEFAULT ''",
         "wb_report_id": "VARCHAR NOT NULL DEFAULT ''",
@@ -196,8 +218,12 @@ def _ensure_report_unit_row_columns(engine: Engine) -> None:
         "vat_input": "NUMERIC NOT NULL DEFAULT 0",
         "vat_input_from_wb": "NUMERIC NOT NULL DEFAULT 0",
         "vat_input_from_1c": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input_from_import_scenario": "NUMERIC NOT NULL DEFAULT 0",
+        "vat_input_from_wb_scenario": "NUMERIC NOT NULL DEFAULT 0",
         "vat_input_difference": "NUMERIC NOT NULL DEFAULT 0",
         "vat_input_completeness": "VARCHAR NOT NULL DEFAULT ''",
+        "input_vat_mode": "VARCHAR NOT NULL DEFAULT 'accounting_fact'",
+        "vat_input_confirmed": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
         "vat_payable": "NUMERIC NOT NULL DEFAULT 0",
         "income_tax_kind": "VARCHAR NOT NULL DEFAULT ''",
         "income_tax_base": "NUMERIC NOT NULL DEFAULT 0",
@@ -207,20 +233,33 @@ def _ensure_report_unit_row_columns(engine: Engine) -> None:
         "tax_profile_source": "VARCHAR",
         "tax_completeness": "VARCHAR NOT NULL DEFAULT ''",
         "pnl_vat_mode": "VARCHAR NOT NULL DEFAULT ''",
+        "unit_cost": "NUMERIC",
+        "cost_method": "VARCHAR NOT NULL DEFAULT ''",
+        "cost_match_status": "VARCHAR NOT NULL DEFAULT ''",
+        "cost_source_kind": "VARCHAR NOT NULL DEFAULT ''",
+        "cost_source_period_start": "DATE",
+        "cost_source_period_end": "DATE",
+        "cost_source_document": "TEXT NOT NULL DEFAULT ''",
+        "accounting_period_date": "DATE",
+        "accounting_period_source": "VARCHAR NOT NULL DEFAULT ''",
     }
     missing = [
         (column, definition)
         for column, definition in column_specs.items()
         if column not in existing
     ]
-    if not missing:
-        return
     table_name = _table_name(engine, "report_unit_rows")
     with engine.begin() as connection:
         for column, definition in missing:
             connection.execute(
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
             )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_report_unit_rows_accounting_period "
+                f"ON {table_name} (report_run_id, accounting_period_date)"
+            )
+        )
 
 
 def _ensure_report_lost_sales_columns(engine: Engine) -> None:
@@ -234,6 +273,7 @@ def _ensure_report_lost_sales_columns(engine: Engine) -> None:
     column_specs = {
         "onec_stock_quantity": "NUMERIC NOT NULL DEFAULT 0",
         "onec_warehouses": "TEXT NOT NULL DEFAULT ''",
+        "calculation_context": "JSON NOT NULL DEFAULT '{}'",
     }
     missing = [
         (column, definition)
@@ -252,12 +292,13 @@ def _ensure_report_lost_sales_columns(engine: Engine) -> None:
 
 def _ensure_report_reconciliation_monthly_columns(engine: Engine) -> None:
     schema = _schema(engine)
-    existing = {
-        column["name"]
+    existing_columns = {
+        column["name"]: column
         for column in inspect(engine).get_columns(
             "report_reconciliation_monthly", schema=schema
         )
     }
+    existing = set(existing_columns)
     column_specs = {
         "wb_quantity": "NUMERIC NOT NULL DEFAULT 0",
         "onec_quantity": "NUMERIC",
@@ -279,14 +320,19 @@ def _ensure_report_reconciliation_monthly_columns(engine: Engine) -> None:
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
             )
         if schema is not None:
-            for column in (
+            nullable_columns = (
                 "onec_quantity",
                 "quantity_delta",
                 "onec_cogs",
                 "cogs_delta",
                 "onec_mp_expenses",
                 "mp_expenses_delta",
-            ):
+            )
+            for column in nullable_columns:
+                if column not in existing_columns or existing_columns[column].get(
+                    "nullable"
+                ) is True:
+                    continue
                 connection.execute(
                     text(
                         f"ALTER TABLE {table_name} ALTER COLUMN {column} DROP NOT NULL"
@@ -305,6 +351,9 @@ def _ensure_source_load_columns(engine: Engine) -> None:
         "source_refresh_run_id": "VARCHAR",
         "required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
         "publication_required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
+        "coverage_start": "DATE",
+        "coverage_end": "DATE",
+        "lineage_role": "VARCHAR NOT NULL DEFAULT 'current'",
     }
     missing = [
         (column, definition)
@@ -327,6 +376,13 @@ def _ensure_source_refresh_resume_columns(engine: Engine) -> None:
     specs = {
         "source_refresh_runs": {
             "resumed_from_run_id": "VARCHAR",
+            "base_source_refresh_run_id": "VARCHAR",
+            "blocked_by_run_id": "VARCHAR",
+            "worker_id": "VARCHAR NOT NULL DEFAULT ''",
+            "failure_code": "VARCHAR NOT NULL DEFAULT ''",
+            "heartbeat_at": "TIMESTAMP WITH TIME ZONE",
+            "source_window_start": "DATE",
+            "source_window_end": "DATE",
         },
         "source_refresh_collections": {
             "publication_required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
@@ -350,6 +406,51 @@ def _ensure_source_refresh_resume_columns(engine: Engine) -> None:
                 connection.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
                 )
+
+
+def _ensure_marketplace_operation_fact_columns(engine: Engine) -> None:
+    """Add typed marketplace operation fields to an existing deployment."""
+    schema = _schema(engine)
+    existing = {
+        column["name"]
+        for column in inspect(engine).get_columns(
+            "marketplace_operation_facts", schema=schema
+        )
+    }
+    bool_default = "0" if schema is None else "FALSE"
+    column_specs = {
+        "source_row_number": "INTEGER NOT NULL DEFAULT 0",
+        "barcode": "VARCHAR NOT NULL DEFAULT ''",
+        "product_name": "VARCHAR NOT NULL DEFAULT ''",
+        "service_key": "VARCHAR NOT NULL DEFAULT ''",
+        "service_name": "VARCHAR NOT NULL DEFAULT ''",
+        "logistics": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "storage": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "promotion": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "compensation": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "other_amount": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "price": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "income": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "expense": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "debit_amount": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "credit_amount": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "expenses_loaded": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
+        "is_partial_source": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
+        "source_endpoint": "VARCHAR NOT NULL DEFAULT ''",
+    }
+    missing = [
+        (column, definition)
+        for column, definition in column_specs.items()
+        if column not in existing
+    ]
+    if not missing:
+        return
+    table_name = _table_name(engine, "marketplace_operation_facts")
+    with engine.begin() as connection:
+        for column, definition in missing:
+            connection.execute(
+                text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+            )
 
 
 def _ensure_report_document_reconciliation_columns(engine: Engine) -> None:
@@ -377,10 +478,19 @@ def _ensure_report_document_reconciliation_columns(engine: Engine) -> None:
         "buyout_retail_amount_sum": "NUMERIC",
         "buyout_for_pay_sum": "NUMERIC",
         "buyout_bank_payment_sum": "NUMERIC",
+        "buyout_primary_document_id": "VARCHAR NOT NULL DEFAULT ''",
+        "buyout_primary_document_status": "VARCHAR NOT NULL DEFAULT ''",
+        "buyout_primary_document_quantity": "NUMERIC",
+        "buyout_primary_document_amount": "NUMERIC",
+        "buyout_primary_document_delta": "NUMERIC",
         "onec_expense_invoice_amount": "NUMERIC",
         "buyout_retail_delta": "NUMERIC",
         "buyout_for_pay_delta": "NUMERIC",
         "buyout_bank_delta": "NUMERIC",
+        "onec_vat": "NUMERIC",
+        "onec_cogs": "NUMERIC",
+        "onec_cogs_without_vat": "NUMERIC",
+        "onec_gross_profit": "NUMERIC",
     }
     missing = [
         (column, definition)
@@ -466,16 +576,23 @@ def _ensure_tax_profile_columns(engine: Engine) -> None:
         existing = {
             column["name"] for column in inspector.get_columns(table, schema=schema)
         }
-        if "vat_deduction_mode" in existing:
-            continue
+        missing_specs = {
+            "vat_deduction_mode": "VARCHAR NOT NULL DEFAULT 'unknown'",
+            "rate_basis_kind": "VARCHAR NOT NULL DEFAULT ''",
+            "basis_document": "TEXT NOT NULL DEFAULT ''",
+            "confirmed_by": "VARCHAR NOT NULL DEFAULT ''",
+            "source_object_ids": "TEXT NOT NULL DEFAULT '[]'",
+        }
         table_name = _table_name(engine, table)
         with engine.begin() as connection:
-            connection.execute(
-                text(
-                    f"ALTER TABLE {table_name} ADD COLUMN vat_deduction_mode "
-                    "VARCHAR NOT NULL DEFAULT 'unknown'"
-                )
-            )
+            for column, definition in missing_specs.items():
+                if column not in existing:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            f"ADD COLUMN {column} {definition}"
+                        )
+                    )
 
 
 def _ensure_multi_client_indexes(engine: Engine) -> None:
@@ -487,10 +604,22 @@ def _ensure_multi_client_indexes(engine: Engine) -> None:
         ),
         "source_snapshot_rows": "ix_source_snapshot_rows_tenant_client_backfill",
     }
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    missing_specs: list[tuple[str, str]] = []
+    for table, index in specs.items():
+        existing_indexes = {
+            str(item.get("name") or "")
+            for item in inspector.get_indexes(table, schema=schema)
+        }
+        if index not in existing_indexes:
+            missing_specs.append((table, index))
+    if not missing_specs:
+        return
     with engine.begin() as connection:
-        if _schema(engine) is not None:
+        if schema is not None:
             connection.execute(text("SET LOCAL statement_timeout = 0"))
-        for table, index in specs.items():
+        for table, index in missing_specs:
             table_name = _table_name(engine, table)
             connection.execute(
                 text(

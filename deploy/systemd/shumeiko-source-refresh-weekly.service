@@ -9,5 +9,10 @@ WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
 EnvironmentFile=/etc/shumeiko-web.env
 Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko
 ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode full --reason "systemd weekly full source refresh"
+MemoryHigh=512M
+MemoryMax=1G
+MemorySwapMax=256M
+OOMScoreAdjust=300
+TasksMax=128
 NoNewPrivileges=true
 PrivateTmp=true

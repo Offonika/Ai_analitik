@@ -7,19 +7,33 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "agent"]
 source_of_truth: true
+truth_scope: development-workflow
+truth_priority: 100
 related_code:
+  - .github/workflows/ci.yml
   - scripts/ai_git_publish.py
   - scripts/check_git_safety.py
   - scripts/validate_no_secrets.py
   - .githooks/pre-commit
-related_tests: []
+related_tests:
+  - tests/test_ci_workflow.py
 contracts: []
 depends_on:
   - AGENTS.md
 supersedes: []
 rollout_required: false
-updated_at: "2026-07-01"
+updated_at: "2026-07-13"
 ---
+
+# Implementation Status
+
+Статус остается `accepted`. CLI, safety-check, pre-commit hook и GitHub Actions
+CI реализованы, структура CI покрыта контрактными тестами, а первый удаленный
+run завершился успешно: `quality` и `tests` (`587 passed`). Попытка включить
+branch protection для приватного репозитория 2026-07-13 вернула GitHub API
+`403`: текущий тариф требует upgrade или публичный репозиторий. Пока защита
+недоступна, CI видим в pull request, но технически не запрещает ручной merge;
+поэтому spec не переводится в `implemented`.
 
 # Goal
 
@@ -33,6 +47,8 @@ updated_at: "2026-07-01"
 
 - локальный Git hook перед коммитом;
 - CLI для безопасного цикла `validate -> stage -> commit -> push`;
+- GitHub Actions CI для pull request в `main`, push в `main` и ручного запуска;
+- стабильные блокирующие job `quality` и `tests`;
 - запрет публикации секретов, raw client data и generated artifacts;
 - документация для ручного и автоматизированного сценария.
 
@@ -42,6 +58,8 @@ updated_at: "2026-07-01"
 - автоматический push без явного запуска пользователем или агентом;
 - хранение GitHub tokens в репозитории;
 - автоматическое создание pull requests;
+- deployment, production migrations и включение feature flags;
+- использование repository secrets или production credentials в CI;
 - публикация `data/`, `reports/`, `.env` или generated Excel/CSV/ZIP.
 
 # User Roles And Decisions
@@ -50,7 +68,8 @@ updated_at: "2026-07-01"
 
 - engineer или агент ИИ готовит изменения;
 - owner проекта решает, когда запускать публикацию;
-- reviewer читает историю Git и может восстановить изменения по коммитам.
+- reviewer читает историю Git, видит результат CI и может восстановить изменения
+  по коммитам.
 
 Бизнес-решение: AI-assisted development должна оставлять частые, небольшие и
 проверяемые коммиты без риска утечки клиентских данных.
@@ -60,6 +79,11 @@ updated_at: "2026-07-01"
 Git workflow читает только рабочее дерево и Git metadata. Он не читает `.env`.
 Сканер секретов пропускает локальные `data/` и `reports/`, потому что эти папки
 не должны участвовать в Git-публикации.
+
+GitHub-hosted runner получает только содержимое репозитория и стандартный
+`GITHUB_TOKEN` с разрешением `contents: read`. Checkout не сохраняет credentials
+в Git config. В workflow не передаются repository secrets, WB/1C/Ozon tokens или
+production database URL.
 
 Запрещено коммитить:
 
@@ -95,6 +119,15 @@ Git workflow читает только рабочее дерево и Git metada
 - `scripts/ai_git_publish.py --dry-run` не меняет Git state.
 - `scripts/ai_git_publish.py --no-push` может создать локальный коммит после
   успешных проверок.
+- CI запускается для pull request в `main`, push в `main` и вручную.
+- Job `quality` использует Python 3.12 и Node.js 20, запускает Ruff, JavaScript
+  syntax check, документальные контракты, DOCX/OpenAPI parity, no-secrets и Git
+  safety checks.
+- Job `tests` запускает полный `pytest` на Python 3.12.
+- `permissions` ограничены `contents: read`, а checkout использует
+  `persist-credentials: false`.
+- Проверка внешних ссылок видима в CI, но остается неблокирующей.
+- Новый push отменяет устаревший CI run той же ветки или pull request.
 - Documentation validators проходят после добавления runbook/spec.
 - Existing local raw data, reports and `.env` remain ignored.
 
@@ -102,17 +135,26 @@ Git workflow читает только рабочее дерево и Git metada
 
 Rollout:
 
-1. Закоммитить spec, runbook, scripts и hook.
+1. Закоммитить spec, runbook, scripts, hook и `.github/workflows/ci.yml`.
 2. Включить hooks path локально:
    `git config core.hooksPath .githooks`.
 3. Проверить `scripts/ai_git_publish.py --dry-run`.
+4. Дождаться первого успешного `quality` и `tests` в pull request.
+5. Если тариф GitHub поддерживает branch protection для приватного репозитория,
+   включить для `main` обязательные `quality` и `tests`.
+6. До включения защиты применять ручное правило: не сливать PR, пока оба job не
+   завершились успешно.
 
 Rollback:
 
 - отключить hook: `git config --unset core.hooksPath`;
+- снять обязательные CI checks в branch protection;
 - использовать обычные `git add`, `git commit`, `git push`;
 - удалить workflow-файлы отдельным коммитом, если сценарий не подходит.
 
 # Changelog
 
+- 2026-07-13: first CI run passed; private-repository branch protection was
+  unavailable on the current GitHub plan.
+- 2026-07-13: added read-only GitHub Actions CI contract for quality and tests.
 - 2026-07-01: accepted spec for AI-assisted Git publication workflow.

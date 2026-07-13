@@ -11,6 +11,8 @@ from scripts.export_onec_odata_samples import _select_collections
 from wb_unit_economics.onec_odata import (
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
+    INPUT_VAT_SAMPLE_COLLECTIONS,
+    TAX_PROFILE_SAMPLE_COLLECTIONS,
     OnecODataClient,
     OnecODataSettings,
     OnecSampleCollection,
@@ -342,13 +344,14 @@ def test_heavy_document_filters_posted_locally_and_reduces_batch_on_timeout(
     assert [request.url.params["$top"] for request in requested] == ["5", "1", "1"]
     assert requested[-1].url.params["$orderby"] == "Date asc,Ref_Key asc"
     assert requested[-1].url.params["$filter"] == "Posted eq true"
-    assert requested[-1].url.params["$select"] == ",".join(
-        collection.select_fields
-    )
+    assert requested[-1].url.params["$select"] == ",".join(collection.select_fields)
     manifest = json.loads(result.checkpoint_path.read_text(encoding="utf-8"))
     assert manifest["period_filter_mode"] == "local_document_date"
-    assert manifest["detail_mode"] == "header_only"
-    assert result.detail_mode == "header_only"
+    assert manifest["detail_mode"] == "financial_tables"
+    assert result.detail_mode == "financial_tables"
+    assert "Запасы" in collection.select_fields
+    assert "ЗапасыВозвраты" in collection.select_fields
+    assert "Организация_Key" in collection.select_fields
 
 
 def test_stock_movements_filters_nested_period_locally(tmp_path: Path) -> None:
@@ -590,9 +593,7 @@ def test_collection_resume_max_pages_is_new_page_budget(tmp_path: Path) -> None:
         requested.append(request)
         return httpx.Response(200, json={"value": [{"id": "2"}]})
 
-    second_client = OnecODataClient(
-        settings, transport=httpx.MockTransport(next_page)
-    )
+    second_client = OnecODataClient(settings, transport=httpx.MockTransport(next_page))
     try:
         second = export_collection_sample(
             second_client,
@@ -684,3 +685,34 @@ def test_gross_profit_collections_are_explicit_only() -> None:
     assert _select_collections(["sales_register"])[0].collection_name == (
         "AccumulationRegister_Продажи"
     )
+
+
+def test_tax_profile_collections_are_read_only_and_selectable() -> None:
+    by_id = {item.sample_id: item for item in TAX_PROFILE_SAMPLE_COLLECTIONS}
+
+    assert {
+        "tax_kinds",
+        "tax_accruals",
+        "tax_accrual_lines",
+        "vat_sales_book",
+        "vat_purchase_book",
+        "kudir",
+        "tax_registrations",
+    } <= set(by_id)
+    assert "Сумма" not in by_id["tax_accrual_lines"].select_fields
+    assert _select_collections(["vat_sales_book"])[0] == by_id["vat_sales_book"]
+
+
+def test_input_vat_collections_are_read_only_and_selectable() -> None:
+    by_id = {item.sample_id: item for item in INPUT_VAT_SAMPLE_COLLECTIONS}
+
+    assert {
+        "import_expenses",
+        "vat_presented",
+        "vat_deduction_documents",
+        "vat_payment_confirmations",
+    } == set(by_id)
+    assert "Запасы" in by_id["import_expenses"].select_fields
+    assert "Разделы" in by_id["import_expenses"].select_fields
+    assert by_id["vat_presented"].period_field == ""
+    assert _select_collections(["import_expenses"])[0] == by_id["import_expenses"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -11,7 +12,9 @@ from wb_unit_economics.contracts import (
     AccountOrgMapping,
     DataQualityStatus,
     ExpenseAllocationRow,
+    InputVatPolicy,
     MappingStatus,
+    MarketplaceFinanceDailyFact,
     OnecMarketplaceServiceRow,
     OnecReportKind,
     OnecReportProductRow,
@@ -34,7 +37,7 @@ from wb_unit_economics.contracts import (
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 DEFAULT_REPORT_PERIOD_START = date(2026, 3, 1)
 DEFAULT_REPORT_PERIOD_END = date(2026, 6, 17)
-METHODOLOGY_VERSION = "excel-mvp-q2-2026-v6-osno-reconciled"
+METHODOLOGY_VERSION = "excel-mvp-q2-2026-v7-tax-profile"
 GOODS_MOVEMENT_OPERATIONS = {"sale", "sales", "продажа", "return", "возврат"}
 VAT_5_INCLUDED_RATIO = Decimal("5") / Decimal("105")
 USN_1_REVENUE_RATE = Decimal("0.01")
@@ -45,6 +48,7 @@ VAT_INPUT_CONFIRMED = "confirmed"
 VAT_INPUT_PARTIAL = "partial"
 VAT_INPUT_MISSING = "missing"
 VAT_INPUT_MISMATCH = "mismatch"
+VAT_INPUT_MANAGEMENT_ASSUMPTION = "management_assumption"
 VAT_INPUT_DIFF_TOLERANCE = Decimal("1.00")
 VAT_INPUT_SERVICE_RATE = Decimal("22")
 VAT_INPUT_SERVICE_INCLUDED_RATIO = VAT_INPUT_SERVICE_RATE / (
@@ -171,6 +175,7 @@ def _worse_vat_input_completeness(current: str, candidate: str) -> str:
         VAT_INPUT_MISMATCH: 30,
         VAT_INPUT_PARTIAL: 20,
         VAT_INPUT_MISSING: 10,
+        VAT_INPUT_MANAGEMENT_ASSUMPTION: 5,
         VAT_INPUT_CONFIRMED: 0,
     }
     current_key = current if current in priority else VAT_INPUT_CONFIRMED
@@ -369,10 +374,14 @@ def tax_profile_method_supported(tax_profile: TaxProfile) -> bool:
 
 
 def tax_profile_is_confirmed(tax_profile: TaxProfile) -> bool:
-    return (
-        tax_profile.vat_deduction_mode is not VatDeductionMode.UNKNOWN
-        and tax_profile_method_supported(tax_profile)
-    )
+    if (
+        tax_profile.vat_deduction_mode is VatDeductionMode.UNKNOWN
+        or not tax_profile_method_supported(tax_profile)
+    ):
+        return False
+    if tax_profile_is_osno(tax_profile):
+        return True
+    return tax_profile.revenue_tax_rate > 0
 
 
 def _tax_profile_uses_without_vat_pnl(tax_profile: TaxProfile | None) -> bool:
@@ -478,6 +487,18 @@ def _tax_profile_for(
     return None
 
 
+def _input_vat_policy_for(
+    policies_by_org: dict[str, list[InputVatPolicy]],
+    organization_id: str,
+    calculation_date: date,
+) -> InputVatPolicy | None:
+    candidates = policies_by_org.get(organization_id, [])
+    for policy in reversed(candidates):
+        if policy.is_effective_for(calculation_date):
+            return policy
+    return None
+
+
 def _cost_input_vat_value(cost: OnecUnfCostSnapshot | None) -> Decimal | None:
     if cost is None:
         return None
@@ -532,8 +553,7 @@ def _summary_rows_in_report_period(
     return [
         row
         for row in rows or []
-        if row.date_from == date.min
-        or period_start <= row.date_to <= period_end
+        if row.date_from == date.min or period_start <= row.date_to <= period_end
     ]
 
 
@@ -543,11 +563,7 @@ def _expense_bases_in_report_period(
     period_start: date,
     period_end: date,
 ) -> list[WbExpenseAllocationBase]:
-    return [
-        base
-        for base in bases or []
-        if period_start <= base.week_end <= period_end
-    ]
+    return [base for base in bases or [] if period_start <= base.week_end <= period_end]
 
 
 def _service_rows_in_report_period(
@@ -556,11 +572,7 @@ def _service_rows_in_report_period(
     period_start: date,
     period_end: date,
 ) -> list[OnecMarketplaceServiceRow]:
-    return [
-        row
-        for row in rows or []
-        if period_start <= row.week_end <= period_end
-    ]
+    return [row for row in rows or [] if period_start <= row.week_end <= period_end]
 
 
 def _controlled_expense_allocations(
@@ -750,6 +762,21 @@ def _service_input_vat_from_gross(gross_amount: Decimal) -> Decimal:
     if gross_amount == 0:
         return Decimal("0")
     return money(gross_amount * VAT_INPUT_SERVICE_INCLUDED_RATIO)
+
+
+def _management_service_input_vat(
+    snapshot: WbApiSnapshot,
+    controlled_expenses: _ControlledExpenses,
+) -> Decimal:
+    eligible_gross = (
+        snapshot.wb_commission
+        + snapshot.logistics
+        + controlled_expenses.storage.allocated
+        + snapshot.acceptance
+        + controlled_expenses.wb_promotion.allocated
+        + snapshot.acquiring
+    )
+    return _service_input_vat_from_gross(eligible_gross)
 
 
 def _deductible_service_input_vat(allocation: _VatInputAllocation) -> Decimal:
@@ -1362,6 +1389,11 @@ def _report_kind_for_snapshot(
     snapshot: WbApiSnapshot,
     report_kind_by_report_id: dict[str, OnecReportKind] | None = None,
 ) -> tuple[OnecReportKind, DataQualityStatus]:
+    if snapshot.report_type in {1, 2}:
+        return (
+            _summary_report_kind(snapshot.report_type),
+            DataQualityStatus.RELIABLE,
+        )
     if report_kind_by_report_id is None:
         return _onec_report_kind(snapshot.wb_report_id), DataQualityStatus.RELIABLE
     if snapshot.wb_report_id:
@@ -1374,6 +1406,128 @@ def _report_kind_for_snapshot(
     )
 
 
+def _marketplace_finance_daily_facts(
+    grouped: dict[tuple[object, ...], dict[str, object]],
+    *,
+    methodology_version: str,
+) -> list[MarketplaceFinanceDailyFact]:
+    facts: list[MarketplaceFinanceDailyFact] = []
+    cogs_by_report_grain: dict[
+        tuple[object, ...],
+        list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
+    ] = defaultdict(list)
+    for key in sorted(grouped, key=lambda item: tuple(str(value) for value in item)):
+        (
+            client_id,
+            seller_account_id,
+            organization_id,
+            fact_date,
+            marketplace_report_id,
+            document_kind,
+            nm_id,
+            vendor_code,
+            barcode,
+            onec_item_id,
+            sales_model,
+            operation_group,
+        ) = key
+        bucket = grouped[key]
+        hashes = sorted(str(value) for value in bucket["hashes"])
+        source_hash_digest = hashlib.sha256(
+            "\0".join(hashes).encode("utf-8")
+        ).hexdigest()
+        fact = MarketplaceFinanceDailyFact(
+            client_id=str(client_id),
+            seller_account_id=str(seller_account_id),
+            organization_id=str(organization_id),
+            fact_date=fact_date,
+            marketplace_report_id=str(marketplace_report_id),
+            document_kind=str(document_kind),
+            nm_id=nm_id,
+            vendor_code=str(vendor_code),
+            barcode=str(barcode),
+            onec_item_id=str(onec_item_id),
+            sales_model=str(sales_model),
+            operation_group=str(operation_group),
+            sales_quantity=Decimal(bucket["sales_quantity"]),
+            return_quantity=Decimal(bucket["return_quantity"]),
+            quantity=Decimal(bucket["quantity"]),
+            return_amount=money(Decimal(bucket["return_amount"])),
+            net_revenue=money(Decimal(bucket["net_revenue"])),
+            wb_commission=money(Decimal(bucket["wb_commission"])),
+            logistics=money(Decimal(bucket["logistics"])),
+            storage=money(Decimal(bucket["storage"])),
+            acceptance=money(Decimal(bucket["acceptance"])),
+            marketplace_promotion=money(Decimal(bucket["marketplace_promotion"])),
+            penalties_and_holdbacks=money(Decimal(bucket["penalties_and_holdbacks"])),
+            acquiring=money(Decimal(bucket["acquiring"])),
+            cogs=money(Decimal(bucket["cogs"])),
+            vat_input_from_marketplace=money(
+                Decimal(bucket["vat_input_from_marketplace"])
+            ),
+            vat_input_from_1c=money(Decimal(bucket["vat_input_from_1c"])),
+            source_row_count=int(bucket["source_row_count"]),
+            source_hash_digest=source_hash_digest,
+            is_partial_source=bool(bucket["is_partial_source"]),
+            methodology_version=methodology_version,
+        )
+        facts.append(fact)
+        week_start, week_end = week_bounds(fact_date)
+        report_grain = (
+            str(client_id),
+            str(seller_account_id),
+            str(organization_id),
+            week_start,
+            week_end,
+            str(document_kind),
+            nm_id,
+            str(vendor_code),
+            str(barcode),
+            str(onec_item_id),
+            str(sales_model),
+        )
+        cogs_by_report_grain[report_grain].append(
+            (
+                fact,
+                Decimal(bucket["cogs"]),
+                len(facts) - 1,
+            )
+        )
+
+    _reconcile_daily_cogs_to_report_grain(cogs_by_report_grain)
+    return facts
+
+
+def _reconcile_daily_cogs_to_report_grain(
+    grouped: dict[
+        tuple[object, ...],
+        list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
+    ],
+) -> None:
+    """Keep daily COGS cents equal to the report grain after rounding."""
+    cent = Decimal("0.01")
+    for report_grain in sorted(
+        grouped,
+        key=lambda item: tuple(str(value) for value in item),
+    ):
+        entries = grouped[report_grain]
+        target = money(sum((raw_cogs for _, raw_cogs, _ in entries), Decimal("0")))
+        current = sum((fact.cogs for fact, _, _ in entries), Decimal("0"))
+        difference = target - current
+        if difference == 0:
+            continue
+        step = cent if difference > 0 else -cent
+        remaining = int(abs(difference) / cent)
+        candidates = sorted(
+            entries,
+            key=lambda item: (item[1] - item[0].cogs, item[2]),
+            reverse=difference > 0,
+        )
+        for index in range(remaining):
+            fact = candidates[index % len(candidates)][0]
+            fact.cogs = money(fact.cogs + step)
+
+
 def build_unit_economics_report(
     *,
     client_id: str,
@@ -1382,6 +1536,8 @@ def build_unit_economics_report(
     sku_mappings: list[SkuMapping],
     account_org_mapping: list[AccountOrgMapping],
     tax_profiles: list[TaxProfile] | None = None,
+    input_vat_policies: list[InputVatPolicy] | None = None,
+    confirmed_input_vat_org_ids: set[str] | None = None,
     wb_sales_report_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     expense_allocation_bases: list[WbExpenseAllocationBase] | None = None,
     onec_marketplace_service_rows: list[OnecMarketplaceServiceRow] | None = None,
@@ -1390,6 +1546,7 @@ def build_unit_economics_report(
     report_period_start: date = DEFAULT_REPORT_PERIOD_START,
     report_period_end: date = DEFAULT_REPORT_PERIOD_END,
     methodology_version: str = METHODOLOGY_VERSION,
+    daily_facts_sink: list[MarketplaceFinanceDailyFact] | None = None,
 ) -> UnitEconomicsReport:
     generated_at = generated_at or datetime.now(tz=MOSCOW_TZ)
     as_of_date = as_of_date or generated_at.date()
@@ -1418,6 +1575,12 @@ def build_unit_economics_report(
         item.seller_account_id: item.organization_id for item in account_org_mapping
     }
     tax_profiles_by_org = _tax_profiles_by_org(tax_profiles)
+    input_vat_policies_by_org: dict[str, list[InputVatPolicy]] = defaultdict(list)
+    for item in input_vat_policies or []:
+        input_vat_policies_by_org[item.organization_id].append(item)
+    for items in input_vat_policies_by_org.values():
+        items.sort(key=lambda item: item.valid_from)
+    confirmed_input_vat_org_ids = confirmed_input_vat_org_ids or set()
     tax_profile_required = tax_profiles is not None
     mapping_index = _index_mappings(sku_mappings)
     cost_index = _index_costs(cost_snapshots)
@@ -1447,8 +1610,10 @@ def build_unit_economics_report(
     onec_product_grouped: dict[tuple[object, ...], dict[str, object]] = {}
     allocation_grouped: dict[tuple[object, ...], dict[str, object]] = {}
     tax_input_grouped: dict[tuple[object, ...], dict[str, object]] = {}
+    daily_grouped: dict[tuple[object, ...], dict[str, object]] = {}
 
     for snapshot_index, snapshot in enumerate(wb_snapshots):
+        source_row_count = max(1, int(snapshot.source_row_count))
         controlled_expenses = expense_allocations[snapshot_index]
         vat_input_allocation = vat_input_allocations[snapshot_index]
         spp_allocation = spp_allocations[snapshot_index]
@@ -1474,11 +1639,21 @@ def build_unit_economics_report(
         )
         mapping = _find_mapping(snapshot, mapping_index)
         mapped_onec_item_id = mapping.onec_item_id if mapping else None
-        cost = _find_cost(snapshot, mapping, cost_index)
+        cost = _find_cost(
+            snapshot,
+            mapping,
+            cost_index,
+            document_kind=document_kind,
+        )
         tax_profile = _tax_profile_for(
             tax_profiles_by_org,
             snapshot.organization_id,
             week_start,
+        )
+        input_vat_policy = _input_vat_policy_for(
+            input_vat_policies_by_org,
+            snapshot.organization_id,
+            week_end,
         )
         without_vat_pnl = _tax_profile_uses_without_vat_pnl(tax_profile)
         effective_onec_item_id = cost.onec_item_id if cost else mapped_onec_item_id
@@ -1501,17 +1676,45 @@ def build_unit_economics_report(
             if cost_input_vat is not None
             else Decimal("0")
         )
-        service_input_vat = _deductible_service_input_vat(vat_input_allocation)
+        accounting_service_input_vat = _deductible_service_input_vat(
+            vat_input_allocation
+        )
+        management_policy_active = bool(
+            input_vat_policy is not None
+            and input_vat_policy.mode == VAT_INPUT_MANAGEMENT_ASSUMPTION
+        )
+        service_uses_management_scenario = bool(
+            management_policy_active
+            and snapshot.organization_id not in confirmed_input_vat_org_ids
+            and not snapshot.is_partial_source
+            and vat_input_allocation.completeness
+            in {VAT_INPUT_MISSING, VAT_INPUT_PARTIAL}
+        )
+        service_input_vat_scenario = (
+            _management_service_input_vat(snapshot, controlled_expenses)
+            if service_uses_management_scenario
+            else Decimal("0")
+        )
+        service_input_vat = (
+            service_input_vat_scenario
+            if service_uses_management_scenario
+            else accounting_service_input_vat
+        )
         input_vat = product_input_vat + service_input_vat
         cost_input_vat_available = (
             cost_input_vat is not None
-            or cogs == 0
-            or (without_vat_pnl and _cost_value_is_without_vat(cost))
+            or goods_quantity == 0
+            or (
+                not management_policy_active
+                and without_vat_pnl
+                and _cost_value_is_without_vat(cost)
+            )
         )
         service_input_vat_missing = (
             without_vat_pnl
             and _service_vat_required(snapshot, controlled_expenses)
             and vat_input_allocation.completeness == VAT_INPUT_MISSING
+            and not service_uses_management_scenario
         )
         input_vat_available = cost_input_vat_available
         input_vat_completeness = _merge_vat_input_completeness(
@@ -1520,12 +1723,29 @@ def build_unit_economics_report(
             cost_input_vat_missing=not cost_input_vat_available,
             service_input_vat_missing=service_input_vat_missing,
         )
+        product_uses_management_scenario = bool(
+            management_policy_active
+            and cost is not None
+            and cost.input_vat_source.startswith("management_assumption:")
+        )
+        product_input_vat_scenario = (
+            product_input_vat if product_uses_management_scenario else Decimal("0")
+        )
+        if (
+            (product_uses_management_scenario or service_uses_management_scenario)
+            and input_vat_available
+            and not service_input_vat_missing
+            and input_vat_completeness in {VAT_INPUT_CONFIRMED, VAT_INPUT_PARTIAL}
+        ):
+            input_vat_completeness = VAT_INPUT_MANAGEMENT_ASSUMPTION
         revenue_for_pnl = (
             _revenue_without_vat_for_profile(snapshot.net_revenue, tax_profile)
             if without_vat_pnl
             else snapshot.net_revenue
         )
-        service_vat_for_pnl = service_input_vat if without_vat_pnl else Decimal("0")
+        service_vat_for_pnl = (
+            accounting_service_input_vat if without_vat_pnl else Decimal("0")
+        )
         gross_profit = (
             revenue_for_pnl
             - snapshot.wb_commission
@@ -1568,11 +1788,21 @@ def build_unit_economics_report(
                 "penalties_and_holdbacks": Decimal("0"),
                 "acquiring": Decimal("0"),
                 "cogs": Decimal("0"),
+                "unit_costs": set(),
+                "cost_methods": set(),
+                "cost_match_statuses": set(),
+                "cost_source_kinds": set(),
+                "cost_source_period_starts": set(),
+                "cost_source_period_ends": set(),
+                "cost_source_documents": set(),
                 "vat_input": Decimal("0"),
                 "vat_input_from_wb": Decimal("0"),
                 "vat_input_from_1c": Decimal("0"),
+                "vat_input_from_import_scenario": Decimal("0"),
+                "vat_input_from_wb_scenario": Decimal("0"),
                 "vat_input_completeness": VAT_INPUT_CONFIRMED,
                 "vat_input_available": True,
+                "input_vat_modes": set(),
                 "gross_profit": Decimal("0"),
                 "status": DataQualityStatus.RELIABLE,
                 "statuses": set(),
@@ -1599,15 +1829,45 @@ def build_unit_economics_report(
         bucket["penalties_and_holdbacks"] += snapshot.penalties_and_holdbacks
         bucket["acquiring"] += snapshot.acquiring
         bucket["cogs"] += cogs
+        if cost is not None:
+            actual_unit_cost = (
+                _pnl_cost_value(mapping, cost, cost_input_vat)
+                if without_vat_pnl
+                else _usable_cost_value(mapping, cost)
+            )
+            bucket["unit_costs"].add(actual_unit_cost)
+            bucket["cost_methods"].add(cost.cost_method)
+            bucket["cost_match_statuses"].add(
+                _cost_match_status(
+                    cost,
+                    document_kind=document_kind,
+                    period_start=snapshot.period_start,
+                    period_end=snapshot.period_end,
+                )
+            )
+            bucket["cost_source_kinds"].add(cost.source_document_kind)
+            bucket["cost_source_period_starts"].add(cost.effective_from)
+            if cost.effective_to is not None:
+                bucket["cost_source_period_ends"].add(cost.effective_to)
+            bucket["cost_source_documents"].add(cost.source_document)
+        elif goods_quantity != 0:
+            bucket["cost_match_statuses"].add("missing")
         bucket["vat_input"] += input_vat
         bucket["vat_input_from_wb"] += vat_input_allocation.from_wb
         bucket["vat_input_from_1c"] += vat_input_allocation.from_1c
+        bucket["vat_input_from_import_scenario"] += product_input_vat_scenario
+        bucket["vat_input_from_wb_scenario"] += service_input_vat_scenario
         bucket["vat_input_completeness"] = _worse_vat_input_completeness(
             str(bucket["vat_input_completeness"]),
             input_vat_completeness,
         )
         bucket["vat_input_available"] = (
             bucket["vat_input_available"] and input_vat_available
+        )
+        bucket["input_vat_modes"].add(
+            VAT_INPUT_MANAGEMENT_ASSUMPTION
+            if product_uses_management_scenario or service_uses_management_scenario
+            else "accounting_fact"
         )
         bucket["gross_profit"] += gross_profit
         bucket["status"] = _worse_status(bucket["status"], quality_status)
@@ -1679,7 +1939,7 @@ def build_unit_economics_report(
         )
         report_bucket["gross_profit"] += gross_profit
         report_bucket["status"] = _worse_status(report_bucket["status"], quality_status)
-        report_bucket["source_row_count"] += 1
+        report_bucket["source_row_count"] += source_row_count
 
         tax_input_key = (
             snapshot.client_id,
@@ -1702,7 +1962,7 @@ def build_unit_economics_report(
             str(tax_input_bucket["vat_input_completeness"]),
             input_vat_completeness,
         )
-        tax_input_bucket["source_row_count"] += 1
+        tax_input_bucket["source_row_count"] += source_row_count
 
         onec_report_key = (
             snapshot.client_id,
@@ -1779,6 +2039,77 @@ def build_unit_economics_report(
             mapped_onec_item_id=effective_onec_item_id,
             storage=controlled_expenses.storage,
             wb_promotion=controlled_expenses.wb_promotion,
+        )
+
+        if daily_facts_sink is not None:
+            daily_key = (
+                snapshot.client_id,
+                snapshot.seller_account_id,
+                snapshot.organization_id,
+                snapshot.period_start,
+                wb_report_id,
+                document_kind.value,
+                snapshot.nm_id,
+                snapshot.vendor_code,
+                snapshot.barcode,
+                effective_onec_item_id or "",
+                snapshot.sales_model.value,
+                snapshot.operation_type.strip().lower() or "unknown",
+            )
+            daily_bucket = daily_grouped.setdefault(
+                daily_key,
+                {
+                    "sales_quantity": Decimal("0"),
+                    "return_quantity": Decimal("0"),
+                    "quantity": Decimal("0"),
+                    "return_amount": Decimal("0"),
+                    "net_revenue": Decimal("0"),
+                    "wb_commission": Decimal("0"),
+                    "logistics": Decimal("0"),
+                    "storage": Decimal("0"),
+                    "acceptance": Decimal("0"),
+                    "marketplace_promotion": Decimal("0"),
+                    "penalties_and_holdbacks": Decimal("0"),
+                    "acquiring": Decimal("0"),
+                    "cogs": Decimal("0"),
+                    "vat_input_from_marketplace": Decimal("0"),
+                    "vat_input_from_1c": Decimal("0"),
+                    "source_row_count": 0,
+                    "hashes": [],
+                    "is_partial_source": False,
+                },
+            )
+            if goods_quantity > 0:
+                daily_bucket["sales_quantity"] += goods_quantity
+            elif goods_quantity < 0:
+                daily_bucket["return_quantity"] += abs(goods_quantity)
+                daily_bucket["return_amount"] += abs(snapshot.net_revenue)
+            daily_bucket["quantity"] += goods_quantity
+            daily_bucket["net_revenue"] += snapshot.net_revenue
+            daily_bucket["wb_commission"] += snapshot.wb_commission
+            daily_bucket["logistics"] += snapshot.logistics
+            daily_bucket["storage"] += controlled_expenses.storage.allocated
+            daily_bucket["acceptance"] += snapshot.acceptance
+            daily_bucket["marketplace_promotion"] += (
+                controlled_expenses.wb_promotion.allocated
+            )
+            daily_bucket["penalties_and_holdbacks"] += snapshot.penalties_and_holdbacks
+            daily_bucket["acquiring"] += snapshot.acquiring
+            daily_bucket["cogs"] += cogs
+            daily_bucket["vat_input_from_marketplace"] += vat_input_allocation.from_wb
+            daily_bucket["vat_input_from_1c"] += vat_input_allocation.from_1c
+            daily_bucket["source_row_count"] += source_row_count
+            daily_bucket["hashes"].append(snapshot.raw_payload_hash)
+            daily_bucket["is_partial_source"] = bool(
+                daily_bucket["is_partial_source"] or snapshot.is_partial_source
+            )
+
+    if daily_facts_sink is not None:
+        daily_facts_sink.extend(
+            _marketplace_finance_daily_facts(
+                daily_grouped,
+                methodology_version=methodology_version,
+            )
         )
 
     rows = []
@@ -1860,6 +2191,31 @@ def build_unit_economics_report(
                 penalties_and_holdbacks=money(bucket["penalties_and_holdbacks"]),
                 acquiring=money(bucket["acquiring"]),
                 cogs_from_1c_with_extra_costs=money(bucket["cogs"]),
+                unit_cost=_single_or_weighted_unit_cost(
+                    bucket["unit_costs"],
+                    cogs=Decimal(bucket["cogs"]),
+                    quantity=Decimal(bucket["quantity"]),
+                ),
+                cost_method=_joined_cost_lineage(bucket["cost_methods"]),
+                cost_match_status=_worst_cost_match_status(
+                    bucket["cost_match_statuses"]
+                ),
+                cost_source_kind=_joined_cost_lineage(
+                    bucket["cost_source_kinds"]
+                ),
+                cost_source_period_start=(
+                    min(bucket["cost_source_period_starts"])
+                    if bucket["cost_source_period_starts"]
+                    else None
+                ),
+                cost_source_period_end=(
+                    max(bucket["cost_source_period_ends"])
+                    if bucket["cost_source_period_ends"]
+                    else None
+                ),
+                cost_source_document=_joined_cost_lineage(
+                    bucket["cost_source_documents"]
+                ),
                 revenue_without_vat=tax.revenue_without_vat,
                 gross_profit=gross_profit,
                 vat_5_from_revenue=tax.vat,
@@ -1867,10 +2223,22 @@ def build_unit_economics_report(
                 vat_input=tax.vat_input,
                 vat_input_from_wb=money(bucket["vat_input_from_wb"]),
                 vat_input_from_1c=money(bucket["vat_input_from_1c"]),
+                vat_input_from_import_scenario=money(
+                    bucket["vat_input_from_import_scenario"]
+                ),
+                vat_input_from_wb_scenario=money(bucket["vat_input_from_wb_scenario"]),
                 vat_input_difference=money(
                     bucket["vat_input_from_1c"] - bucket["vat_input_from_wb"]
                 ),
                 vat_input_completeness=str(bucket["vat_input_completeness"]),
+                input_vat_mode=(
+                    VAT_INPUT_MANAGEMENT_ASSUMPTION
+                    if VAT_INPUT_MANAGEMENT_ASSUMPTION in bucket["input_vat_modes"]
+                    else "accounting_fact"
+                ),
+                vat_input_confirmed=(
+                    str(bucket["vat_input_completeness"]) == VAT_INPUT_CONFIRMED
+                ),
                 vat_payable=tax.vat_payable,
                 usn_1_from_revenue=tax.revenue_tax,
                 income_tax_kind=tax.income_tax_kind,
@@ -2425,6 +2793,8 @@ def _find_cost(
     snapshot: WbApiSnapshot,
     mapping: SkuMapping | None,
     cost_index: _CostIndex,
+    *,
+    document_kind: OnecReportKind,
 ) -> OnecUnfCostSnapshot | None:
     if mapping is None or not mapping.onec_item_id:
         return None
@@ -2463,6 +2833,11 @@ def _find_cost(
         if len(item_ids) == 1 and len(characteristics) == 1:
             candidates = article_candidates
             article_fallback = True
+    kind_candidates = [
+        item for item in candidates if item.source_document_kind == document_kind.value
+    ]
+    if kind_candidates:
+        candidates = kind_candidates
     effective = [
         item
         for item in candidates
@@ -2494,14 +2869,14 @@ def _find_cost(
                 else max(effective, key=lambda item: item.effective_from)
             )
         if article_fallback:
-            return _mark_cost_needs_review(
+            cost = _mark_cost_needs_review(
                 cost,
                 (
                     "article fallback because mapped 1C item "
                     f"{mapping.onec_item_id} has no cost snapshot"
                 ),
             )
-        return cost
+        return _mark_cross_document_cost_needs_review(cost, document_kind)
     nearest = min(
         candidates,
         key=lambda item: _cost_distance_key(
@@ -2546,7 +2921,70 @@ def _find_cost(
                 f"{mapping.onec_item_id} has no cost snapshot"
             ),
         )
-    return cost
+    return _mark_cross_document_cost_needs_review(cost, document_kind)
+
+
+def _mark_cross_document_cost_needs_review(
+    cost: OnecUnfCostSnapshot,
+    document_kind: OnecReportKind,
+) -> OnecUnfCostSnapshot:
+    if (
+        not cost.source_document_kind
+        or cost.source_document_kind == document_kind.value
+    ):
+        return cost
+    return _mark_cost_needs_review(
+        cost,
+        (
+            "cross-document fallback: requested "
+            f"{document_kind.value}, used {cost.source_document_kind}"
+        ),
+    )
+
+
+def _cost_match_status(
+    cost: OnecUnfCostSnapshot,
+    *,
+    document_kind: OnecReportKind,
+    period_start: date,
+    period_end: date,
+) -> str:
+    if cost.source_document_kind and cost.source_document_kind != document_kind.value:
+        return "cross_kind"
+    if not cost.is_effective_for(period_start, period_end):
+        return "nearest_week"
+    if "needs_review" in cost.cost_method:
+        return "nearest_week"
+    return "exact_week_exact_kind"
+
+
+def _worst_cost_match_status(values: object) -> str:
+    statuses = {str(value) for value in values} if isinstance(values, set) else set()
+    for status in ("missing", "cross_kind", "nearest_week", "exact_week_exact_kind"):
+        if status in statuses:
+            return status
+    return ""
+
+
+def _single_or_weighted_unit_cost(
+    values: object,
+    *,
+    cogs: Decimal,
+    quantity: Decimal,
+) -> Decimal | None:
+    costs = {Decimal(value) for value in values} if isinstance(values, set) else set()
+    if len(costs) == 1:
+        return next(iter(costs))
+    if costs and quantity != 0:
+        return money(cogs / quantity)
+    return None
+
+
+def _joined_cost_lineage(values: object) -> str:
+    if not isinstance(values, set):
+        return ""
+    normalized = {str(value).strip() for value in values if str(value).strip()}
+    return "; ".join(sorted(normalized))
 
 
 def _cost_has_value(cost: OnecUnfCostSnapshot) -> bool:
@@ -2746,7 +3184,7 @@ def _add_to_onec_bucket(
     )
     bucket["gross_profit"] += gross_profit
     bucket["status"] = _worse_status(bucket["status"], quality_status)
-    bucket["source_row_count"] += 1
+    bucket["source_row_count"] += max(1, int(snapshot.source_row_count))
     bucket["wb_report_ids"].add(snapshot.wb_report_id or "Без номера")
     if "hashes" in bucket:
         bucket["hashes"].append(snapshot.raw_payload_hash)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,6 +39,8 @@ class WebSettings(BaseSettings):
     source_refresh_period_start: str = "2026-03-01"
     source_refresh_period_end: str = ""
     source_refresh_rolling_window_days: int = 14
+    source_refresh_incremental_enabled: bool = False
+    source_refresh_incremental_window_days: int = 28
     source_refresh_onec_page_size: int = 5000
     source_refresh_onec_max_pages: int = 200
     source_refresh_wb_limit: int = 100000
@@ -45,6 +48,9 @@ class WebSettings(BaseSettings):
     source_refresh_wb_request_delay_seconds: float = 61.0
     source_refresh_wb_content_request_delay_seconds: float = 0.65
     source_refresh_wb_persist_row_limit: int = 250000
+    source_refresh_raw_db_mode: Literal["legacy", "files_only"] = "legacy"
+    marketplace_daily_facts_enabled: bool = False
+    source_refresh_ozon_files_only_enabled: bool = False
     source_refresh_ozon_page_size: int = 1000
     source_refresh_ozon_max_pages: int = 50
     source_refresh_ozon_request_delay_seconds: float = 1.0
@@ -54,6 +60,8 @@ class WebSettings(BaseSettings):
     source_refresh_retention_daily_runs: int = 3
     source_refresh_retention_full_runs: int = 2
     source_refresh_failed_snapshot_keep: int = 2
+    source_refresh_worker_backend: str = "auto"
+    source_refresh_worker_unit_prefix: str = "shumeiko-source-refresh-worker"
     db_first_reports_enabled: bool = False
     postgres_statement_timeout_ms: int = 15000
     cors_allow_origins: list[str] = Field(default_factory=list)

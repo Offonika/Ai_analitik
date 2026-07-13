@@ -39,6 +39,9 @@ def test_excel_counts_skip_lost_sales_preface_rows(tmp_path: Path) -> None:
     lost.append(["Товаров с днями без остатка", 1])
     lost.append([])
     lost.append(["Кабинет WB", "Товар"])
+    lost.append(
+        [None, "Рассчитано только за доступный период", "partial_provider_window"]
+    )
     lost.append(["Кабинет A", "Товар 1"])
     workbook.save(workbook_path)
 

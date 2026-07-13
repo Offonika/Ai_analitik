@@ -6,7 +6,7 @@ audience: ["engineering", "consultant"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-07-10"
+updated_at: "2026-07-13"
 ---
 
 # Назначение
@@ -144,6 +144,22 @@ Git, Markdown-документы, общий чат или письма.
 
 `СебестоимостьБезНДС` использовать только для сверочного отчета, не как основной
 расчет.
+
+Сформировать локальный план исправления документных расходов WB и 1С для уже
+сохранённого DB-first отчёта:
+
+```bash
+.venv/bin/python scripts/export_marketplace_expense_action_plan.py \
+  --report-id <report_run_id> \
+  --period-start 2026-04-01 \
+  --period-end 2026-04-30 \
+  --output-dir reports/marketplace-expense-action-plan/<timestamp>
+```
+
+Команда создаёт `problem_weeks.csv`, `artifact.json` и `report_notes.json`.
+Эти файлы содержат клиентские суммы и номера документов, поэтому внутри
+репозитория скрипт разрешает сохранять их только в игнорируемых каталогах
+`reports/` или `data/`.
 
 # Приемочные заметки
 

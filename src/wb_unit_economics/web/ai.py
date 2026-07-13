@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.models import AiThread, ReportRun, User
-from wb_unit_economics.web.refresh import AutoRefreshBusyError, AutoRefreshDisabledError
+from wb_unit_economics.web.refresh import (
+    AutoRefreshBusyError,
+    AutoRefreshDisabledError,
+    AutoRefreshUnavailableError,
+)
 from wb_unit_economics.web.settings import WebSettings
 
 LIMITATIONS = [
@@ -98,9 +102,7 @@ class AiAnalyst:
             status = "ok"
         else:
             title = "Ответ собран локально"
-            message = (
-                "Ответ собран по расчетной витрине. Внешние системы не менялись."
-            )
+            message = "Ответ собран по расчетной витрине. Внешние системы не менялись."
             status = "fallback"
         repository.add_ai_event(
             db,
@@ -237,7 +239,8 @@ class AiAnalyst:
                 {
                     "role": "developer",
                     "content": (
-                        "Ты AI-аналитик read-only кабинета WB/1C юнит-экономики. "
+                        "Ты AI-аналитик кабинета WB/1C юнит-экономики "
+                        "без права изменять данные. "
                         "Отвечай по-русски. Используй только whitelisted function "
                         "tools, не придумывай себестоимость, маппинг, остатки или "
                         "причины возвратов. В каждом ответе явно покажи ограничения: "
@@ -412,9 +415,7 @@ class AiAnalyst:
             "limitations": self._limitations(summary),
         }
 
-    def _search_sku(
-        self, db: Session, report: ReportRun, query: str
-    ) -> dict[str, Any]:
+    def _search_sku(self, db: Session, report: ReportRun, query: str) -> dict[str, Any]:
         result = repository.query_report_rows(
             db,
             report,
@@ -510,7 +511,7 @@ class AiAnalyst:
             "period": summary["meta"]["period"],
             "monthly": summary.get("monthly", []),
             "note": (
-                "Сравнение сейчас выполняется внутри одного report_run по месяцам. "
+                "Сравнение сейчас выполняется внутри одного расчёта отчёта по месяцам. "
                 "Между разными расчетами сравнение появится после накопления истории."
             ),
             "limitations": self._limitations(summary),
@@ -543,17 +544,15 @@ class AiAnalyst:
         if refresh:
             if refresh.get("newReportRunId"):
                 refresh_line = (
-                    "\n\n1С дозагружена read-only, создан новый расчет: "
+                    "\n\n1С дозагружена без изменения данных, создан новый расчёт: "
                     f"{refresh['newReportRunId']}. Старый отчет не менялся."
                 )
             else:
                 refresh_reason = (
-                    refresh.get("message")
-                    or refresh.get("status")
-                    or "нужна проверка"
+                    refresh.get("message") or refresh.get("status") or "нужна проверка"
                 )
                 refresh_line = (
-                    "\n\n1С auto-refresh не создал новый расчет: "
+                    "\n\nАвтоматическое обновление 1С не создало новый расчёт: "
                     f"{refresh_reason}."
                 )
         return (
@@ -637,7 +636,8 @@ class AiAnalyst:
                             "Отвечай только готовым Markdown без служебных "
                             "комментариев. Обязательные разделы: Ключевой вывод, "
                             "Факты, Что требует проверки, Ограничения, Следующий шаг. "
-                            "Не упоминай tool names, debug/status labels, raw data, "
+                            "Не упоминай названия инструментов, отладочные метки, "
+                            "служебные статусы и исходные данные, "
                             "скрытые рассуждения и неподтвержденные причины возвратов. "
                             "Не обещай запись во внешние системы."
                         ),
@@ -663,9 +663,7 @@ class AiAnalyst:
         except Exception:
             return None
 
-    def _normalize_client_draft(
-        self, content: str, summary: dict[str, Any]
-    ) -> str:
+    def _normalize_client_draft(self, content: str, summary: dict[str, Any]) -> str:
         lines = [
             line
             for line in content.splitlines()
@@ -741,7 +739,7 @@ class AiAnalyst:
                 "reviewStatus": "needs_staff",
                 "message": (
                     "Для дозагрузки 1С нужна проверка консультанта. "
-                    "Клиентский доступ не запускает refresh."
+                    "Клиентский доступ не запускает обновление данных."
                 ),
                 "limitations": LIMITATIONS,
             }
@@ -749,7 +747,10 @@ class AiAnalyst:
             return {
                 "status": "unavailable",
                 "reviewStatus": "needs_configuration",
-                "message": "Auto-refresh service не подключен. Данные не менялись.",
+                "message": (
+                    "Сервис автоматического обновления не подключён. "
+                    "Данные не менялись."
+                ),
                 "limitations": LIMITATIONS,
             }
         repository.add_ai_event(
@@ -757,8 +758,8 @@ class AiAnalyst:
             thread=thread,
             user=user,
             event_type="tool_progress",
-            title="Дозагружаю 1С read-only",
-            message="Запускаю read-only OData job. Raw payload не попадет в чат.",
+            title="Дозагружаю 1С без изменения данных",
+            message="Запускаю чтение OData. Исходные данные не попадут в чат.",
             status="running",
             tool_name="refresh_onec_and_rebuild_report",
             visibility="staff",
@@ -786,14 +787,29 @@ class AiAnalyst:
                 "message": str(exc),
                 "limitations": LIMITATIONS,
             }
+        except AutoRefreshUnavailableError as exc:
+            return {
+                "status": "unavailable",
+                "reviewStatus": "needs_review",
+                "message": str(exc),
+                "limitations": LIMITATIONS,
+            }
         repository.add_ai_event(
             db,
             thread=thread,
             user=user,
             event_type="tool_progress",
-            title="Пересчитываю отчет",
+            title=(
+                "Обновление поставлено в очередь"
+                if job.get("status") == "queued"
+                else "Пересчитываю отчет"
+            ),
             message=(
-                "Собираю новый report_run. Текущий отчет остается как есть."
+                "Отдельный процесс обновит 1С и соберёт новый расчёт. "
+                "Текущий отчёт остаётся без изменений."
+                if job.get("status") == "queued"
+                else "Собираю новый расчёт отчёта. "
+                "Текущий отчёт остаётся без изменений."
             ),
             status="ok" if job.get("newReportRunId") else job.get("status", "ok"),
             tool_name="refresh_onec_and_rebuild_report",
@@ -808,8 +824,8 @@ class AiAnalyst:
                 event_type="tool_completed",
                 title="Создан новый отчет",
                 message=(
-                    "Новый расчет создан и доступен в selector. "
-                    "Старый report_run не менялся."
+                    "Новый расчёт создан и доступен для выбора. "
+                    "Старый расчёт отчёта не менялся."
                 ),
                 status=job.get("status", "ok"),
                 tool_name="refresh_onec_and_rebuild_report",
@@ -842,8 +858,8 @@ class AiAnalyst:
             "sourceReportRunId": job.get("sourceReportRunId"),
             "collections": job.get("collections", []),
             "limitations": [
-                "Дозагрузка 1С выполняется только read-only.",
-                "Старый report_run не изменяется.",
+                "Дозагрузка 1С выполняется без изменения исходных данных.",
+                "Старый расчёт отчёта не изменяется.",
                 (
                     "Частичные 1С-коллекции помечаются partial_source, "
                     "без подстановки нулей."
@@ -855,8 +871,13 @@ class AiAnalyst:
         if job.get("newReportRunId"):
             return f"Создан новый отчет {job['newReportRunId']}."
         if job.get("status") == "failed":
-            return "Auto-refresh завершился ошибкой. Данные не изменялись."
-        return job.get("errorMessage") or "Auto-refresh не создал новый отчет."
+            return (
+                "Автоматическое обновление завершилось ошибкой. Данные не изменялись."
+            )
+        return (
+            job.get("errorMessage")
+            or "Автоматическое обновление не создало новый отчёт."
+        )
 
     def _refresh_event_payload(self, job: dict[str, Any]) -> dict[str, Any]:
         collections = job.get("collections") or []
@@ -904,16 +925,26 @@ class AiAnalyst:
     def _tool_start_message(self, tool_name: str) -> str:
         return {
             "get_report_summary": "Беру период, маржу, статусы и ограничения.",
-            "search_sku": "Ищу совпадения по товару, артикулу, barcode или nmId.",
+            "search_sku": (
+                "Ищу совпадения по товару, артикулу, штрихкоду или номеру WB."
+            ),
             "get_loss_drivers": "Сортирую строки с отрицательной прибылью.",
-            "get_data_quality_issues": "Собираю статусы missing/needs_review.",
+            "get_data_quality_issues": (
+                "Собираю строки с отсутствующими данными и требующие проверки."
+            ),
             "compare_periods": "Сравниваю месяцы внутри текущего расчета.",
             "draft_management_report": "Собираю выводы из уже посчитанных фактов.",
-            "verify_onec_cost": "Запрашиваю read-only проверку, если она включена.",
-            "verify_wb_card": "Запрашиваю read-only проверку, если она включена.",
-            "verify_wb_stock": "Запрашиваю read-only проверку, если она включена.",
+            "verify_onec_cost": (
+                "Запрашиваю проверку без изменения данных, если она включена."
+            ),
+            "verify_wb_card": (
+                "Запрашиваю проверку без изменения данных, если она включена."
+            ),
+            "verify_wb_stock": (
+                "Запрашиваю проверку без изменения данных, если она включена."
+            ),
             "refresh_onec_and_rebuild_report": (
-                "Проверяю роль, feature flag и запускаю отдельный read-only job."
+                "Проверяю роль, разрешение функции и запускаю отдельное чтение данных."
             ),
         }.get(tool_name, "Проверяю разрешенный источник.")
 
@@ -927,7 +958,7 @@ class AiAnalyst:
         if tool_name.startswith("verify_"):
             return output.get("message") or "Проверка завершена."
         if tool_name == "refresh_onec_and_rebuild_report":
-            return output.get("message") or "Auto-refresh завершен."
+            return output.get("message") or "Автоматическое обновление завершено."
         if tool_name == "draft_management_report":
             return "Черновик отчета готов."
         return "Готово."
@@ -1066,7 +1097,7 @@ class AiAnalyst:
                 "query": {
                     "type": "string",
                     "description": (
-                        "Товар, артикул, barcode или nmId для поиска в отчете."
+                        "Товар, артикул, штрихкод или номер WB для поиска в отчёте."
                     ),
                 }
             },
@@ -1078,7 +1109,10 @@ class AiAnalyst:
             "properties": {
                 "lookup": {
                     "type": "string",
-                    "description": "Артикул, barcode или nmId для read-only проверки.",
+                    "description": (
+                        "Артикул, штрихкод или номер WB для проверки "
+                        "без изменения данных."
+                    ),
                 }
             },
             "required": ["lookup"],
@@ -1102,7 +1136,9 @@ class AiAnalyst:
             {
                 "type": "function",
                 "name": "get_report_summary",
-                "description": "Вернуть краткую KPI-сводку текущего report_run.",
+                "description": (
+                    "Вернуть краткую сводку показателей текущего расчёта отчёта."
+                ),
                 "parameters": empty,
                 "strict": True,
             },
@@ -1110,7 +1146,8 @@ class AiAnalyst:
                 "type": "function",
                 "name": "search_sku",
                 "description": (
-                    "Найти SKU/товары по названию, артикулу, barcode или nmId."
+                    "Найти SKU или товары по названию, артикулу, штрихкоду "
+                    "или номеру WB."
                 ),
                 "parameters": text_param,
                 "strict": True,
@@ -1153,8 +1190,8 @@ class AiAnalyst:
                 "type": "function",
                 "name": "verify_onec_cost",
                 "description": (
-                    "Запросить read-only проверку себестоимости 1С, если "
-                    "live checks включены."
+                    "Запросить проверку себестоимости 1С без изменения данных, если "
+                    "проверки подключений включены."
                 ),
                 "parameters": lookup_param,
                 "strict": True,
@@ -1163,8 +1200,8 @@ class AiAnalyst:
                 "type": "function",
                 "name": "verify_wb_card",
                 "description": (
-                    "Запросить read-only проверку карточки WB, если "
-                    "live checks включены."
+                    "Запросить проверку карточки WB без изменения данных, если "
+                    "проверки подключений включены."
                 ),
                 "parameters": lookup_param,
                 "strict": True,
@@ -1173,8 +1210,8 @@ class AiAnalyst:
                 "type": "function",
                 "name": "verify_wb_stock",
                 "description": (
-                    "Запросить read-only проверку остатка WB, если "
-                    "live checks включены."
+                    "Запросить проверку остатка WB без изменения данных, если "
+                    "проверки подключений включены."
                 ),
                 "parameters": lookup_param,
                 "strict": True,
@@ -1186,9 +1223,9 @@ class AiAnalyst:
                     "Staff-only tool: если включен SHUMEYKO_AUTO_REFRESH_ENABLED "
                     "и вопрос связан с missing_cost, missing_mapping, needs_review, "
                     "partial_source, себестоимостью, маппингом, 1С-сверкой, "
-                    "ОПиУ, партиями, услугами или остатками, выполнить read-only "
-                    "1С OData refresh, пересобрать workbook и создать новый "
-                    "report_run. Старый отчет не изменять."
+                    "ОПиУ, партиями, услугами или остатками, прочитать данные 1С "
+                    "через OData, пересобрать рабочую книгу и создать новый "
+                    "расчёт отчёта. Старый отчёт не изменять."
                 ),
                 "parameters": refresh_param,
                 "strict": True,

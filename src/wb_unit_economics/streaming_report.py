@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import ctypes
+import gc
+import multiprocessing
 import shutil
 import tempfile
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 from wb_unit_economics.calculation import (
@@ -15,6 +20,8 @@ from wb_unit_economics.calculation import (
 )
 from wb_unit_economics.contracts import (
     AccountOrgMapping,
+    InputVatPolicy,
+    MarketplaceFinanceDailyFact,
     OnecMarketplaceServiceRow,
     OnecUnfCostSnapshot,
     ReportStatus,
@@ -34,6 +41,7 @@ class StreamedUnitEconomicsBuild:
     wb_rows: int
     bucket_count: int
     spool_dir: Path
+    daily_facts: list[MarketplaceFinanceDailyFact]
 
 
 def build_streamed_unit_economics_report(
@@ -47,6 +55,8 @@ def build_streamed_unit_economics_report(
     expense_allocation_bases: list[WbExpenseAllocationBase] | None = None,
     onec_marketplace_service_rows: list[OnecMarketplaceServiceRow] | None = None,
     tax_profiles: list[TaxProfile] | None = None,
+    input_vat_policies: list[InputVatPolicy] | None = None,
+    confirmed_input_vat_org_ids: set[str] | None = None,
     generated_at: datetime,
     report_period_start: date,
     report_period_end: date,
@@ -54,10 +64,158 @@ def build_streamed_unit_economics_report(
     methodology_version: str = METHODOLOGY_VERSION,
     stream_cache_dir: Path | None = None,
     keep_stream_cache: bool = False,
+    collect_daily_facts: bool = True,
 ) -> StreamedUnitEconomicsBuild:
+    prepared = prepare_streamed_wb_spool(
+        wb_finance_dir=wb_finance_dir,
+        client_id=client_id,
+        account_org_mapping=account_org_mapping,
+        report_period_start=report_period_start,
+        report_period_end=report_period_end,
+        stream_cache_dir=stream_cache_dir,
+        keep_stream_cache=keep_stream_cache,
+    )
+    return build_streamed_unit_economics_from_spool(
+        prepared=prepared,
+        client_id=client_id,
+        cost_snapshots=cost_snapshots,
+        sku_mappings=sku_mappings,
+        account_org_mapping=account_org_mapping,
+        wb_sales_report_summary_rows=wb_sales_report_summary_rows,
+        expense_allocation_bases=expense_allocation_bases,
+        onec_marketplace_service_rows=onec_marketplace_service_rows,
+        tax_profiles=tax_profiles,
+        input_vat_policies=input_vat_policies,
+        confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
+        generated_at=generated_at,
+        as_of_date=as_of_date,
+        report_period_start=report_period_start,
+        report_period_end=report_period_end,
+        methodology_version=methodology_version,
+        collect_daily_facts=collect_daily_facts,
+    )
+
+
+@dataclass
+class PreparedStreamedWbSpool:
+    spool: _Spool
+    spool_dir: Path
+    keep_stream_cache: bool
+    cleaned: bool = False
+
+    def cleanup(self) -> None:
+        if self.cleaned:
+            return
+        self.cleaned = True
+        if not self.keep_stream_cache:
+            shutil.rmtree(self.spool_dir, ignore_errors=True)
+
+    def __del__(self) -> None:
+        with suppress(Exception):  # pragma: no cover - interpreter shutdown safety
+            self.cleanup()
+
+
+def prepare_streamed_wb_spool(
+    *,
+    wb_finance_dir: Path,
+    client_id: str,
+    account_org_mapping: Iterable[AccountOrgMapping],
+    report_period_start: date,
+    report_period_end: date,
+    stream_cache_dir: Path | None = None,
+    keep_stream_cache: bool = False,
+    isolate_process: bool = False,
+) -> PreparedStreamedWbSpool:
     cache_root = stream_cache_dir or Path("data/.cache/wb_stream_rebuild")
     cache_root.mkdir(parents=True, exist_ok=True)
     spool_dir = Path(tempfile.mkdtemp(prefix="stream-", dir=cache_root))
+    try:
+        mapping_items = list(account_org_mapping)
+        spool = (
+            _spool_wb_snapshots_isolated(
+                wb_finance_dir=wb_finance_dir,
+                client_id=client_id,
+                account_org_mapping=mapping_items,
+                report_period_start=report_period_start,
+                report_period_end=report_period_end,
+                spool_dir=spool_dir,
+            )
+            if isolate_process
+            else _spool_wb_snapshots(
+                wb_finance_dir=wb_finance_dir,
+                client_id=client_id,
+                account_org_mapping=mapping_items,
+                report_period_start=report_period_start,
+                report_period_end=report_period_end,
+                spool_dir=spool_dir,
+            )
+        )
+        return PreparedStreamedWbSpool(
+            spool=spool,
+            spool_dir=spool_dir,
+            keep_stream_cache=keep_stream_cache,
+        )
+    except BaseException:
+        if not keep_stream_cache:
+            shutil.rmtree(spool_dir, ignore_errors=True)
+        raise
+
+
+def _spool_wb_snapshots_isolated(
+    *,
+    wb_finance_dir: Path,
+    client_id: str,
+    account_org_mapping: list[AccountOrgMapping],
+    report_period_start: date,
+    report_period_end: date,
+    spool_dir: Path,
+) -> _Spool:
+    context = multiprocessing.get_context("spawn")
+    receive, send = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_isolated_spool_worker,
+        args=(
+            send,
+            wb_finance_dir,
+            client_id,
+            account_org_mapping,
+            report_period_start,
+            report_period_end,
+            spool_dir,
+        ),
+        name="wb-finance-spool",
+    )
+    process.start()
+    send.close()
+    try:
+        while process.is_alive() and not receive.poll(1):
+            process.join(timeout=1)
+        if not receive.poll():
+            process.join()
+            raise RuntimeError(
+                f"isolated WB spool exited without a result: {process.exitcode}"
+            )
+        status, payload = receive.recv()
+        process.join()
+        if status != "ok" or not isinstance(payload, _Spool):
+            raise RuntimeError(f"isolated WB spool failed: {payload}")
+        return payload
+    finally:
+        receive.close()
+        if process.is_alive():
+            process.terminate()
+            process.join()
+
+
+def _isolated_spool_worker(
+    send: Connection,
+    wb_finance_dir: Path,
+    client_id: str,
+    account_org_mapping: list[AccountOrgMapping],
+    report_period_start: date,
+    report_period_end: date,
+    spool_dir: Path,
+) -> None:
     try:
         spool = _spool_wb_snapshots(
             wb_finance_dir=wb_finance_dir,
@@ -67,9 +225,37 @@ def build_streamed_unit_economics_report(
             report_period_end=report_period_end,
             spool_dir=spool_dir,
         )
-        report = _build_report_from_spool(
+        send.send(("ok", spool))
+    except Exception as exc:
+        send.send(("error", exc.__class__.__name__))
+    finally:
+        send.close()
+
+
+def build_streamed_unit_economics_from_spool(
+    *,
+    prepared: PreparedStreamedWbSpool,
+    client_id: str,
+    cost_snapshots: list[OnecUnfCostSnapshot],
+    sku_mappings: list[SkuMapping],
+    account_org_mapping: list[AccountOrgMapping],
+    wb_sales_report_summary_rows: list[WbSalesReportSummaryRow] | None = None,
+    expense_allocation_bases: list[WbExpenseAllocationBase] | None = None,
+    onec_marketplace_service_rows: list[OnecMarketplaceServiceRow] | None = None,
+    tax_profiles: list[TaxProfile] | None = None,
+    input_vat_policies: list[InputVatPolicy] | None = None,
+    confirmed_input_vat_org_ids: set[str] | None = None,
+    generated_at: datetime,
+    report_period_start: date,
+    report_period_end: date,
+    as_of_date: date | None = None,
+    methodology_version: str = METHODOLOGY_VERSION,
+    collect_daily_facts: bool = True,
+) -> StreamedUnitEconomicsBuild:
+    try:
+        report, daily_facts = _build_report_from_spool(
             client_id=client_id,
-            spool=spool,
+            spool=prepared.spool,
             cost_snapshots=cost_snapshots,
             sku_mappings=sku_mappings,
             account_org_mapping=account_org_mapping,
@@ -77,21 +263,24 @@ def build_streamed_unit_economics_report(
             expense_allocation_bases=expense_allocation_bases or [],
             onec_marketplace_service_rows=onec_marketplace_service_rows or [],
             tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
+            confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
             generated_at=generated_at,
             as_of_date=as_of_date,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
             methodology_version=methodology_version,
+            collect_daily_facts=collect_daily_facts,
         )
         return StreamedUnitEconomicsBuild(
             report=report,
-            wb_rows=spool.rows_in_report_period,
-            bucket_count=len(spool.buckets),
-            spool_dir=spool_dir,
+            wb_rows=prepared.spool.rows_in_report_period,
+            bucket_count=len(prepared.spool.buckets),
+            spool_dir=prepared.spool_dir,
+            daily_facts=daily_facts,
         )
     finally:
-        if not keep_stream_cache:
-            shutil.rmtree(spool_dir, ignore_errors=True)
+        prepared.cleanup()
 
 
 @dataclass(frozen=True)
@@ -145,6 +334,8 @@ def _spool_wb_snapshots(
                 if source_coverage_end is None
                 else max(source_coverage_end, snapshot.period_end)
             )
+            if rows_seen % 100_000 == 0:
+                _release_stream_memory()
             week_start, week_end = week_bounds(snapshot.period_start)
             if not report_period_start <= week_end <= report_period_end:
                 continue
@@ -166,6 +357,7 @@ def _spool_wb_snapshots(
     finally:
         for handle in handles.values():
             handle.close()
+        _release_stream_memory()
 
     buckets = [
         _Bucket(
@@ -197,18 +389,22 @@ def _build_report_from_spool(
     expense_allocation_bases: list[WbExpenseAllocationBase],
     onec_marketplace_service_rows: list[OnecMarketplaceServiceRow],
     tax_profiles: list[TaxProfile] | None,
+    input_vat_policies: list[InputVatPolicy] | None,
+    confirmed_input_vat_org_ids: set[str] | None,
     generated_at: datetime,
     as_of_date: date | None,
     report_period_start: date,
     report_period_end: date,
     methodology_version: str,
-) -> UnitEconomicsReport:
+    collect_daily_facts: bool,
+) -> tuple[UnitEconomicsReport, list[MarketplaceFinanceDailyFact]]:
     rows = []
     report_reconciliation_rows = []
     onec_report_reconciliation_rows = []
     onec_report_product_rows = []
     expense_allocation_rows = []
     tax_input_reconciliation_rows = []
+    daily_facts: list[MarketplaceFinanceDailyFact] = []
     for bucket in spool.buckets:
         snapshots = _read_bucket(bucket.path)
         partial = build_unit_economics_report(
@@ -230,11 +426,14 @@ def _build_report_from_spool(
                 bucket,
             ),
             tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
+            confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
             generated_at=generated_at,
             as_of_date=as_of_date,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
             methodology_version=methodology_version,
+            daily_facts_sink=daily_facts if collect_daily_facts else None,
         )
         rows.extend(partial.rows)
         report_reconciliation_rows.extend(partial.report_reconciliation_rows)
@@ -242,9 +441,11 @@ def _build_report_from_spool(
         onec_report_product_rows.extend(partial.onec_report_product_rows)
         expense_allocation_rows.extend(partial.expense_allocation_rows)
         tax_input_reconciliation_rows.extend(partial.tax_input_reconciliation_rows)
+        del snapshots, partial
+        _release_stream_memory()
 
     effective_as_of = as_of_date or generated_at.date()
-    return UnitEconomicsReport(
+    report = UnitEconomicsReport(
         client_id=client_id,
         report_period_start=report_period_start,
         report_period_end=report_period_end,
@@ -329,6 +530,7 @@ def _build_report_from_spool(
             ),
         ),
     )
+    return report, daily_facts
 
 
 def _read_bucket(path: Path) -> list[WbApiSnapshot]:
@@ -338,6 +540,17 @@ def _read_bucket(path: Path) -> list[WbApiSnapshot]:
             if line.strip():
                 snapshots.append(WbApiSnapshot.model_validate_json(line))
     return snapshots
+
+
+def _release_stream_memory() -> None:
+    """Release parser arenas between bounded streaming batches when supported."""
+
+    gc.collect()
+    try:
+        malloc_trim = ctypes.CDLL(None).malloc_trim
+    except (AttributeError, OSError):
+        return
+    malloc_trim(0)
 
 
 def _summary_rows_for_bucket(

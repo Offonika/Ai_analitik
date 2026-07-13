@@ -241,6 +241,154 @@ DEFAULT_SAMPLE_COLLECTIONS = (
     ),
 )
 
+TAX_PROFILE_SAMPLE_COLLECTIONS = (
+    OnecSampleCollection(
+        sample_id="tax_kinds",
+        collection_name="Catalog_ВидыНалогов",
+        purpose="Виды налогов 1С для подтверждения системы и объекта налога.",
+        page_size=1000,
+        select_fields=("Ref_Key", "Description", "DeletionMark"),
+    ),
+    OnecSampleCollection(
+        sample_id="tax_accruals",
+        collection_name="Document_НачислениеНалогов",
+        purpose="Проведенные начисления налогов по организациям 1С.",
+        params={"$filter": "Posted eq true"},
+        period_filter_mode="local_document_date",
+        page_size=1000,
+        order_by="Date asc,Ref_Key asc",
+        select_fields=(
+            "Ref_Key",
+            "Date",
+            "Posted",
+            "DeletionMark",
+            "Организация_Key",
+        ),
+        detail_mode="header_only",
+    ),
+    OnecSampleCollection(
+        sample_id="tax_accrual_lines",
+        collection_name="Document_НачислениеНалогов_Налоги",
+        purpose="Виды налогов в проведенных начислениях 1С без денежных сумм.",
+        page_size=1000,
+        select_fields=("Ref_Key", "LineNumber", "ВидНалога_Key"),
+    ),
+    OnecSampleCollection(
+        sample_id="vat_sales_book",
+        collection_name="AccumulationRegister_НДСЗаписиКнигиПродаж_RecordType",
+        purpose="Фактические ставки НДС в книге продаж по организациям 1С.",
+        page_size=1000,
+        order_by="Period asc",
+        select_fields=(
+            "Period",
+            "LineNumber",
+            "Active",
+            "Организация_Key",
+            "СтавкаНДС",
+            "НДС",
+        ),
+    ),
+    OnecSampleCollection(
+        sample_id="vat_purchase_book",
+        collection_name="AccumulationRegister_НДСЗаписиКнигиПокупок_RecordType",
+        purpose="Книга покупок для диагностики входного НДС по организациям 1С.",
+        page_size=1000,
+        order_by="Period asc",
+        select_fields=(
+            "Period",
+            "LineNumber",
+            "Active",
+            "Организация_Key",
+            "СтавкаНДС",
+            "НДС",
+        ),
+    ),
+    OnecSampleCollection(
+        sample_id="kudir",
+        collection_name="AccumulationRegister_КнигаУчетаДоходовИРасходов_RecordType",
+        purpose="Наличие КУДиР как дополнительный учетный признак УСН.",
+        page_size=1000,
+        order_by="Period asc",
+        select_fields=(
+            "Period",
+            "LineNumber",
+            "Active",
+            "Организация_Key",
+            "ВидЗаписи",
+        ),
+    ),
+    OnecSampleCollection(
+        sample_id="tax_registrations",
+        collection_name="Catalog_РегистрацииВНалоговомОргане",
+        purpose="Регистрация организации в налоговом органе для диагностики ставки.",
+        page_size=1000,
+        select_fields=("Ref_Key", "Code", "DeletionMark"),
+    ),
+)
+
+INPUT_VAT_SAMPLE_COLLECTIONS = (
+    OnecSampleCollection(
+        sample_id="import_expenses",
+        collection_name="Document_РасходыПриИмпорте",
+        purpose=(
+            "Проведенные расходы при импорте с товарными строками, разделами "
+            "и признаками предъявления НДС к вычету."
+        ),
+        params={"$filter": "Posted eq true"},
+        period_filter_mode="local_document_date",
+        page_size=20,
+        min_page_size=2,
+        order_by="Date asc,Ref_Key asc",
+        select_fields=(
+            "Ref_Key",
+            "Date",
+            "Number",
+            "Posted",
+            "DeletionMark",
+            "Организация_Key",
+            "СуммаДокумента",
+            "НДСВключатьВСтоимость",
+            "НДСПредъявленКВычету",
+            "Запасы",
+            "Разделы",
+        ),
+        detail_mode="financial_tables",
+        request_timeout_seconds=120,
+    ),
+    OnecSampleCollection(
+        sample_id="vat_presented",
+        collection_name="AccumulationRegister_НДСПредъявленный_RecordType",
+        purpose="Предъявленный входящий НДС по организациям и документам 1С.",
+        page_size=1000,
+        order_by="Period asc",
+    ),
+    OnecSampleCollection(
+        sample_id="vat_deduction_documents",
+        collection_name="Document_ОтражениеНДСКВычету",
+        purpose="Проведенные документы отражения НДС к вычету.",
+        params={"$filter": "Posted eq true"},
+        period_filter_mode="local_document_date",
+        page_size=100,
+        min_page_size=10,
+        order_by="Date asc,Ref_Key asc",
+        detail_mode="financial_tables",
+    ),
+    OnecSampleCollection(
+        sample_id="vat_payment_confirmations",
+        collection_name="Document_ПодтверждениеОплатыНДСВБюджет",
+        purpose=(
+            "Подтверждения оплаты импортного НДС в бюджет; банковский платеж "
+            "сам по себе суммой вычета не считается."
+        ),
+        params={"$filter": "Posted eq true"},
+        period_filter_mode="local_document_date",
+        page_size=100,
+        min_page_size=10,
+        order_by="Date asc,Ref_Key asc",
+        detail_mode="financial_tables",
+    ),
+)
+
 GROSS_PROFIT_SAMPLE_COLLECTIONS = (
     OnecSampleCollection(
         sample_id="sales_register",
@@ -310,8 +458,8 @@ GROSS_PROFIT_SAMPLE_COLLECTIONS = (
         sample_id="commissioner_reports",
         collection_name="Document_ОтчетКомиссионера",
         purpose=(
-            "Заголовки отчетов комиссионера: входящий номер WB reportId, "
-            "дата и сумма документа для точной сверки с 1С."
+            "Отчеты комиссионера с товарными строками: входящий номер "
+            "маркетплейса, дата, сумма и детализация для сверки с 1С."
         ),
         params={"$filter": "Posted eq true"},
         period_filter_mode="local_document_date",
@@ -326,13 +474,16 @@ GROSS_PROFIT_SAMPLE_COLLECTIONS = (
             "DeletionMark",
             "Комментарий",
             "НомерВходящегоДокумента",
+            "Организация_Key",
             "Контрагент_Key",
             "СуммаДокумента",
             "СуммаДокументаВозврат",
             "СуммаДокументаСУчетомВознаграждения",
             "СуммаВознаграждения",
+            "Запасы",
+            "ЗапасыВозвраты",
         ),
-        detail_mode="header_only",
+        detail_mode="financial_tables",
         request_timeout_seconds=120,
     ),
     OnecSampleCollection(
@@ -382,6 +533,9 @@ SERVICE_SAMPLE_COLLECTIONS = (
             "Number",
             "Posted",
             "DeletionMark",
+            "Организация_Key",
+            "Контрагент_Key",
+            "ДатаВходящегоДокумента",
             "НомерВходящегоДокумента",
             "Комментарий",
             "СуммаДокумента",
@@ -540,9 +694,7 @@ def export_collection_sample(
 
     while not complete and len(page_meta) < page_limit:
         try:
-            retry_read_timeouts = not (
-                page_size > min_page_size and not next_link
-            )
+            retry_read_timeouts = not (page_size > min_page_size and not next_link)
             payload, status_code = _fetch_collection_with_retries(
                 client,
                 collection.collection_name,
