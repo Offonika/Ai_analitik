@@ -28,10 +28,12 @@ updated_at: "2026-07-13"
 # Implementation Status
 
 Статус остается `accepted`. CLI, safety-check, pre-commit hook и GitHub Actions
-CI реализованы, а структура CI покрыта контрактными тестами. Удаленная защита
-ветки `main` должна быть включена только после первого успешного run с job
-`quality` и `tests`; до проверки этой настройки spec не переводится в
-`implemented`.
+CI реализованы, структура CI покрыта контрактными тестами, а первый удаленный
+run завершился успешно: `quality` и `tests` (`587 passed`). Попытка включить
+branch protection для приватного репозитория 2026-07-13 вернула GitHub API
+`403`: текущий тариф требует upgrade или публичный репозиторий. Пока защита
+недоступна, CI видим в pull request, но технически не запрещает ручной merge;
+поэтому spec не переводится в `implemented`.
 
 # Goal
 
@@ -138,7 +140,10 @@ Rollout:
    `git config core.hooksPath .githooks`.
 3. Проверить `scripts/ai_git_publish.py --dry-run`.
 4. Дождаться первого успешного `quality` и `tests` в pull request.
-5. Включить для `main` branch protection с обязательными `quality` и `tests`.
+5. Если тариф GitHub поддерживает branch protection для приватного репозитория,
+   включить для `main` обязательные `quality` и `tests`.
+6. До включения защиты применять ручное правило: не сливать PR, пока оба job не
+   завершились успешно.
 
 Rollback:
 
@@ -149,5 +154,7 @@ Rollback:
 
 # Changelog
 
+- 2026-07-13: first CI run passed; private-repository branch protection was
+  unavailable on the current GitHub plan.
 - 2026-07-13: added read-only GitHub Actions CI contract for quality and tests.
 - 2026-07-01: accepted spec for AI-assisted Git publication workflow.
