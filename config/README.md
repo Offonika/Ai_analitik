@@ -61,3 +61,16 @@ GUID-настройки сверки `1С ОПиУ` можно вынести в
 
 Режим также требует `SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true` и
 `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`.
+
+Production rollout задается версионированными systemd drop-ins:
+
+- `deploy/systemd/shumeiko-web.service.d/incremental-refresh.conf` — показывает
+  staff incremental в web и включает обязательные DB-first/daily-facts flags;
+- `deploy/systemd/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf`
+  — разрешает тот же режим отдельному worker;
+- `deploy/systemd/shumeiko-source-refresh-worker@.service.d/marketplace-facts.conf`
+  — сохраняет обязательные daily facts и file-authoritative marketplace contour.
+
+Drop-ins не содержат токены или URL подключений. Удаление обоих
+`incremental-refresh.conf` является feature-flag rollback; созданные
+draft/snapshots при этом сохраняются.

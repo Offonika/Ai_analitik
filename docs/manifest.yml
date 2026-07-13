@@ -287,10 +287,10 @@ documents:
   - path: "docs/runbooks/source-refresh-schedule.md"
     title: "Расписание source refresh WB/1C"
     doc_type: "runbook"
-    status: "draft"
+    status: "active"
     audience: ["engineering", "operations"]
     source_of_truth: false
-    summary: "Установка systemd timers для hourly daily и weekly source refresh через read-only CLI."
+    summary: "Active production runbook для hourly daily, weekly full и staff incremental source refresh через отдельный systemd worker."
   - path: "docs/runbooks/ai-git-workflow.md"
     title: "AI Git workflow"
     doc_type: "runbook"

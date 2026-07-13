@@ -135,8 +135,8 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
   Power Query и Power BI поверх расчетных витрин.
 - `docs/runbooks/web-cabinet-operations.md` — эксплуатация web-кабинета:
   пользователи, импорт report runs, AI, live checks, backup и monitor.
-- `docs/runbooks/source-refresh-schedule.md` — установка systemd timers для
-  daily/weekly source refresh WB/1C.
+- `docs/runbooks/source-refresh-schedule.md` — active runbook для systemd
+  timers, отдельного worker и staff incremental source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
   локальные проверки, GitHub CI, коммит, push и pre-commit hook.
 
