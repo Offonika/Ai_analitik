@@ -4358,6 +4358,7 @@ def replace_marketplace_finance_daily_facts(
     cabinet_ids: Mapping[str, str] | None = None,
     coverage_start: date | None = None,
     coverage_end: date | None = None,
+    report_keys: Iterable[tuple[str, str]] = (),
 ) -> int:
     marketplace = marketplace.strip().lower()
     if marketplace not in {"wb", "ozon"}:
@@ -4367,6 +4368,13 @@ def replace_marketplace_finance_daily_facts(
     coverage_end = coverage_end or refresh_run.period_end
     if coverage_start > coverage_end:
         raise ValueError("daily facts coverage start must not be after end")
+    replacement_report_keys = sorted(
+        {
+            (str(seller_account_id).strip(), str(report_id).strip())
+            for seller_account_id, report_id in report_keys
+            if str(seller_account_id).strip() and str(report_id).strip()
+        }
+    )
     loaded_at = security.utcnow()
     values: list[dict[str, Any]] = []
     for fact in facts:
@@ -4443,18 +4451,33 @@ def replace_marketplace_finance_daily_facts(
         values=values,
         grain_field="grain_hash",
     )
+    replacement_scope = [
+        MarketplaceFinanceDailyFact.source_refresh_run_id == refresh_run.id,
+        and_(
+            MarketplaceFinanceDailyFact.fact_date >= coverage_start,
+            MarketplaceFinanceDailyFact.fact_date <= coverage_end,
+        ),
+    ]
+    if replacement_report_keys:
+        replacement_scope.append(
+            or_(
+                *(
+                    and_(
+                        MarketplaceFinanceDailyFact.seller_account_id
+                        == seller_account_id,
+                        MarketplaceFinanceDailyFact.marketplace_report_id
+                        == report_id,
+                    )
+                    for seller_account_id, report_id in replacement_report_keys
+                )
+            )
+        )
     db.execute(
         delete(MarketplaceFinanceDailyFact).where(
             MarketplaceFinanceDailyFact.tenant_id == refresh_run.tenant_id,
             MarketplaceFinanceDailyFact.client_id == refresh_run.client_id,
             MarketplaceFinanceDailyFact.marketplace == marketplace,
-            or_(
-                MarketplaceFinanceDailyFact.source_refresh_run_id == refresh_run.id,
-                and_(
-                    MarketplaceFinanceDailyFact.fact_date >= coverage_start,
-                    MarketplaceFinanceDailyFact.fact_date <= coverage_end,
-                ),
-            ),
+            or_(*replacement_scope),
         )
     )
     if staged_values:

@@ -2361,6 +2361,11 @@ def test_preflight_panel_appears_before_analytics(tmp_path: Path) -> None:
 def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
+    health = client.get("/api/health")
+    assert health.status_code == 200
+    assert health.json()["backendBuildId"] == "20260713-overview-sales-v1"
+    assert health.json()["staticBuildId"] == "20260713-overview-sales-v1"
+
     page = client.get("/")
     assert page.status_code == 200
     assert "Кабинет отчета" in page.text
@@ -2479,9 +2484,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260713-reconciliation-incremental-v1" in cabinet.text
+        "styles.css?v=20260713-overview-sales-v1" in cabinet.text
     )
-    assert "app.js?v=20260713-reconciliation-incremental-v1" in cabinet.text
+    assert "app.js?v=20260713-overview-sales-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -2561,6 +2566,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'class="control-room report-page-section"' in cabinet.text
     assert 'class="decision-strip readiness-neutral"' in cabinet.text
     assert 'class="panel money-strip report-page-section"' in cabinet.text
+    assert 'id="secondary-kpi-section"' in cabinet.text
+    assert 'id="secondary-kpi-grid"' in cabinet.text
+    assert "Дополнительные показатели" in cabinet.text
+    assert "analytics-chart-wide sales-trend-card" in cabinet.text
+    assert "sales-trend-chart" in cabinet.text
     assert 'class="decision-support-grid report-page-section"' in cabinet.text
     assert 'class="panel preflight-panel report-page-section"' in cabinet.text
     assert "Готовность, деньги и следующий шаг по клиенту" not in cabinet.text
@@ -2589,15 +2599,23 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="next-action-button"' in cabinet.text
     assert 'id="client-output-button"' in cabinet.text
     assert 'class="brand-lockup is-info"' in cabinet.text
-    assert 'class="topbar-action-group topbar-action-group-primary"' in cabinet.text
-    assert 'class="topbar-action-group topbar-action-group-management"' in cabinet.text
-    assert 'class="topbar-action-group topbar-action-group-session"' in cabinet.text
+    assert 'class="workspace-sidebar"' in cabinet.text
+    assert 'data-workspace-nav="overview"' in cabinet.text
+    assert 'data-workspace-nav="checks"' in cabinet.text
+    assert 'data-workspace-nav="tables"' in cabinet.text
+    assert 'id="workspace-actions-menu"' in cabinet.text
     assert 'class="secondary-button session-button"' in cabinet.text
     assert "Отчёт для клиента" in cabinet.text
     assert "Текст для клиента" not in cabinet.text
-    assert "Клиентский вывод" not in cabinet.text
+    assert "Клиентский вывод" in cabinet.text
+    assert 'id="cost-review-workflow"' in cabinet.text
+    assert 'data-check-panel="cost"' in cabinet.text
+    assert "Найти строки" in cabinet.text
+    assert "Проверить себестоимость" in cabinet.text
+    assert "Подтвердить" in cabinet.text
     assert 'id="ai-open-button"' in cabinet.text
     assert 'class="ai-assistant-icon"' in cabinet.text
+    assert 'id="ai-context-strip"' in cabinet.text
     assert "AI-аналитик" in cabinet.text
     assert "Помощник без изменения данных" in cabinet.text
     assert "или готовности" in cabinet.text
@@ -2705,9 +2723,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Комиссионер, выкупы и расходы: что сходится и что проверить." in app_js.text
     assert "Сверка Ozon ↔ 1C" not in app_js.text
     assert "Комиссионер, выкупы и расходы по статьям." not in app_js.text
-    assert 'els.moneyTrendTitle.textContent = "Динамика денег";' in app_js.text
+    assert 'els.moneyTrendTitle.textContent = "Динамика продаж";' in app_js.text
     assert (
-        'els.moneyTrendCopy.textContent = "Выручка, прибыль и маржа по месяцам.";'
+        '"Выручка, маржинальный доход, маржа и количество продаж по месяцам."'
         in app_js.text
     )
     assert "renderOzonMartKpis" not in app_js.text
@@ -2846,6 +2864,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "renderLossDriversChart" in app_js.text
     assert "renderReturnsChart" in app_js.text
     assert "renderColumnChart" in app_js.text
+    assert "sales-trend-svg" in app_js.text
+    assert "sales-trend-crosshair" in app_js.text
+    assert "compactMonthLabel" in app_js.text
     assert "profitAndLossTable" in app_js.text
     assert "analytics-column-chart" in app_js.text
     assert "analytics-pl-table" in app_js.text
@@ -2864,7 +2885,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
         'label: showRevenueWithVat ? "Выручка WB без НДС" : "Выручка WB"'
         in app_js.text
     )
-    assert 'label: "Выручка WB по товарным строкам, с НДС"' in app_js.text
+    assert '"Выручка WB с НДС"' in app_js.text
     assert '"Выручка 1С с НДС"' in app_js.text
     assert "onecRevenueWithVat" in app_js.text
     assert "wbDocumentRevenueWithVat" in app_js.text
@@ -2873,8 +2894,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert '"Сверка комиссионера WB ↔ 1С"' in app_js.text
     assert '"Выкупы: первичка WB ↔ 1С"' in app_js.text
     assert '"Себестоимость продаж 1С"' in app_js.text
-    assert '"Себестоимость товарного P&L WB"' in app_js.text
-    assert '"Расходы WB в товарном P&L"' in app_js.text
+    assert '"Себестоимость 1С"' in app_js.text
+    assert '"Расходы WB"' in app_js.text
     assert '"Услуги WB по документам 1С"' in app_js.text
     assert '"Сверка расходов WB ↔ 1С"' in app_js.text
     assert "openMarketplaceExpenseReconciliationWidget" in app_js.text
@@ -2902,12 +2923,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "taxInputPage" in app_js.text
     assert "monthStart" in app_js.text
     assert "isPartial" in app_js.text
-    assert "Чистые продажи WB, шт" in app_js.text
-    assert "Продажи WB до возвратов, шт" in app_js.text
+    assert "Чистые продажи WB" in app_js.text
+    assert "Продажи WB" in app_js.text
     assert "Возвратность" in app_js.text
     assert "Выручка / продажа" in app_js.text
     assert "item.unitProfit" in app_js.text
-    assert "Убыточных продаж" in app_js.text
+    assert "Убыточные строки" in app_js.text
     assert "Штрафы без продаж" in app_js.text
     assert "Финансовая проверка не пройдена" in app_js.text
     assert 'profitDisplay: profit === null ? "не рассчитано" : ""' in app_js.text
@@ -2981,6 +3002,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "openClientOutputWidget" in app_js.text
     assert "openIntegrationsWidget" in app_js.text
     assert "openMappingWidget" in app_js.text
+    assert 'return "#checks/cost"' in app_js.text
+    assert 'dataWorkspace' not in app_js.text
+    assert "configureWorkspaceFromLocation" in app_js.text
+    assert "renderCostReview" in app_js.text
+    assert "toggleCostReviewAcknowledgement" in app_js.text
+    assert "renderAiContext" in app_js.text
     assert (
         'openMappingWidget({ marketplace: "wb", status: "review", search: "" })'
         in app_js.text

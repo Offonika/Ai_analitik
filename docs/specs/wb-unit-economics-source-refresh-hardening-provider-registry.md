@@ -388,6 +388,21 @@ snapshot для воспроизводимости и не меняет публ
 Отдельная persisted parity повторно читает рабочую таблицу и сравнивает ее с
 отфильтрованными generated facts.
 
+Incremental материализует заменяемое окно из текущего raw WB и текущего
+report-list overlay. Технический период materialization расширяется до
+полных границ недель, содержащих
+`date_from..max(date_to, create_date)` относящихся к окну ведомостей. В рабочую
+витрину входят строки календарного интервала
+`source_window_start..source_window_end`, а также строки тех же стабильных
+`seller_account_id + marketplace_report_id`, даже если дата операции вышла за
+календарную границу ведомости. Замена выполняется по интервалу и по этим
+report keys. При сборке
+отчета facts выбираются по полному composite report-list `base + current
+overlay`, а стабильная пара кабинета и report ID восстанавливает исходные
+`date_from/date_to` ведомости вместо повторного определения недели по дате
+операции. Это сохраняет граничные weekly documents без повторного расчета всей
+raw-истории.
+
 Staging digest считается потоково в том же canonical JSON формате, что и
 целостный список, без создания дополнительных полных копий многомиллионной
 витрины в памяти. Удаление временной загрузки выполняется ограниченными batch,
@@ -518,6 +533,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-13: fixed incremental daily-facts replacement and report selection to
+  preserve operations outside a calendar boundary when their stable report ID
+  belongs to the replaced WB statement window.
 - 2026-07-13: accepted the feature-flagged 28-day `incremental` WB + 1C mode,
   daily-facts report input, composite coverage lineage, serialized client
   refreshes and explicit `needs_full_refresh` fallback contract.

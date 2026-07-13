@@ -20,11 +20,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from scripts.build_excel_mvp_from_snapshots import build_excel_mvp_from_args
-from wb_unit_economics.calculation import METHODOLOGY_VERSION
+from wb_unit_economics.calculation import METHODOLOGY_VERSION, week_bounds
 from wb_unit_economics.contracts import (
     MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactContract,
 )
@@ -1260,11 +1260,15 @@ class SourceRefreshService:
             wb_summary_rows: list[WbSalesReportSummaryRow] | None = None
             if mode == "incremental":
                 contributing_runs = self._daily_fact_contributing_runs(db, refresh_run)
-                wb_daily_facts = self._daily_facts_for_report(db, refresh_run)
                 wb_summary_rows = self._incremental_wb_summary_rows(
                     refresh_run,
                     base_refresh_run=base_refresh_run,
                     current_report_list_dir=wb_report_list_dir,
+                )
+                wb_daily_facts = self._daily_facts_for_report(
+                    db,
+                    refresh_run,
+                    wb_summary_rows=wb_summary_rows,
                 )
             report_snapshot_set_id = self._report_snapshot_set_id(
                 refresh_run,
@@ -2879,10 +2883,32 @@ class SourceRefreshService:
             source_root=self.settings.source_refresh_root_path,
         )
 
+        replacement_summary_rows = self._incremental_wb_summary_rows(
+            refresh_run,
+            base_refresh_run=None,
+            current_report_list_dir=wb_report_list_dir,
+        )
+        coverage_start = refresh_run.source_window_start or refresh_run.period_start
+        coverage_end = refresh_run.source_window_end or refresh_run.period_end
+        materialization_boundary_dates = [
+            coverage_start,
+            coverage_end,
+            *(item.date_from for item in replacement_summary_rows),
+            *(item.date_to for item in replacement_summary_rows),
+            *(item.create_date for item in replacement_summary_rows),
+        ]
+        materialization_period_start = week_bounds(
+            min(materialization_boundary_dates)
+        )[0]
+        materialization_period_end = week_bounds(
+            max(materialization_boundary_dates)
+        )[1]
+
         args = argparse.Namespace(
             client_id=refresh_run.client_id,
             wb_finance_dir=wb_finance_dir,
             wb_finance_source="files-stream",
+            wb_sales_report_summary_rows=replacement_summary_rows,
             stream_cache_dir=(
                 Path("data/.cache/source_refresh_stream") / refresh_run.id
             ),
@@ -2908,12 +2934,8 @@ class SourceRefreshService:
             wb_stock_history_dir=wb_stock_history_dir,
             onec_stock_dir=onec_dir,
             onec_opiu_config=None,
-            report_period_start=(
-                refresh_run.source_window_start or refresh_run.period_start
-            ),
-            report_period_end=(
-                refresh_run.source_window_end or refresh_run.period_end
-            ),
+            report_period_start=materialization_period_start,
+            report_period_end=materialization_period_end,
             cost_amount_field="Сумма",
             sales_cost_amount_field="auto",
             source_refresh_run_id=refresh_run.id,
@@ -2975,6 +2997,7 @@ class SourceRefreshService:
             refresh_run,
             build,
             calculation_parity=calculation_parity,
+            replacement_summary_rows=replacement_summary_rows,
         )
         _commit_source_refresh_progress(db)
 
@@ -2985,15 +3008,42 @@ class SourceRefreshService:
         build: dict[str, Any],
         *,
         calculation_parity: dict[str, Any] | None = None,
+        replacement_summary_rows: Iterable[WbSalesReportSummaryRow] | None = None,
     ) -> None:
         all_daily_facts = list(build.get("daily_facts", []))
         parity = _wb_daily_fact_parity(build, all_daily_facts)
         coverage_start = refresh_run.source_window_start or refresh_run.period_start
         coverage_end = refresh_run.source_window_end or refresh_run.period_end
+        replacement_report_keys = (
+            {
+                (
+                    str(item.seller_account_id).strip(),
+                    str(item.marketplace_report_id).strip(),
+                )
+                for item in all_daily_facts
+                if str(item.seller_account_id).strip()
+                and str(item.marketplace_report_id).strip()
+            }
+            if replacement_summary_rows is None
+            else {
+                (
+                    str(item.seller_account_id).strip(),
+                    str(item.report_id).strip(),
+                )
+                for item in replacement_summary_rows
+                if str(item.seller_account_id).strip()
+                and str(item.report_id).strip()
+            }
+        )
         daily_facts = [
             item
             for item in all_daily_facts
             if coverage_start <= item.fact_date <= coverage_end
+            or (
+                item.seller_account_id,
+                item.marketplace_report_id,
+            )
+            in replacement_report_keys
         ]
         daily_fact_count = repository.replace_marketplace_finance_daily_facts(
             db,
@@ -3006,6 +3056,7 @@ class SourceRefreshService:
             ),
             coverage_start=coverage_start,
             coverage_end=coverage_end,
+            report_keys=replacement_report_keys,
         )
         persisted_parity = _persisted_daily_facts_parity(
             db,
@@ -3048,7 +3099,38 @@ class SourceRefreshService:
         self,
         db: Session,
         refresh_run: SourceRefreshRun,
+        *,
+        wb_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
     ) -> list[MarketplaceFinanceDailyFactContract]:
+        report_keys = sorted(
+            {
+                (
+                    str(item.seller_account_id).strip(),
+                    str(item.report_id).strip(),
+                )
+                for item in wb_summary_rows
+                if str(item.seller_account_id).strip()
+                and str(item.report_id).strip()
+            }
+        )
+        report_scope = and_(
+            MarketplaceFinanceDailyFactModel.fact_date
+            >= refresh_run.period_start,
+            MarketplaceFinanceDailyFactModel.fact_date <= refresh_run.period_end,
+        )
+        if report_keys:
+            report_scope = or_(
+                report_scope,
+                *(
+                    and_(
+                        MarketplaceFinanceDailyFactModel.seller_account_id
+                        == seller_account_id,
+                        MarketplaceFinanceDailyFactModel.marketplace_report_id
+                        == report_id,
+                    )
+                    for seller_account_id, report_id in report_keys
+                ),
+            )
         rows = list(
             db.scalars(
                 select(MarketplaceFinanceDailyFactModel)
@@ -3058,10 +3140,7 @@ class SourceRefreshService:
                     MarketplaceFinanceDailyFactModel.client_id
                     == refresh_run.client_id,
                     MarketplaceFinanceDailyFactModel.marketplace == "wb",
-                    MarketplaceFinanceDailyFactModel.fact_date
-                    >= refresh_run.period_start,
-                    MarketplaceFinanceDailyFactModel.fact_date
-                    <= refresh_run.period_end,
+                    report_scope,
                 )
                 .order_by(
                     MarketplaceFinanceDailyFactModel.fact_date,
@@ -3272,7 +3351,12 @@ class SourceRefreshService:
             self.settings.marketplace_daily_facts_enabled
             and wb_daily_facts is None
         ):
-            self._save_wb_daily_facts(db, refresh_run, build)
+            self._save_wb_daily_facts(
+                db,
+                refresh_run,
+                build,
+                replacement_summary_rows=wb_summary_rows,
+            )
         report = repository.save_report_marts(
             db,
             build["payload"],

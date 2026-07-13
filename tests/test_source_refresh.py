@@ -1772,6 +1772,111 @@ def test_incremental_refresh_reuses_valid_full_daily_facts_base(
     )
 
 
+def test_incremental_materialization_uses_exact_window_and_report_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    captured: dict[str, object] = {}
+    import scripts.rebuild_report_from_sources as rebuild
+
+    monkeypatch.setattr(
+        source_refresh,
+        "_reverify_collection_raw_integrity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_build(args, **_kwargs):
+        captured["args"] = args
+        return {"daily_facts": []}
+
+    monkeypatch.setattr(rebuild, "build_db_first_payload", fake_build)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-materialization-context",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="base",
+        )
+        repository.update_source_refresh_run(
+            db,
+            base,
+            status="report_created",
+            finished_at=datetime.now().astimezone(),
+        )
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="incremental-materialization-context",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="incremental",
+        )
+        refresh_run.base_source_refresh_run_id = base.id
+        refresh_run.source_window_start = date(2026, 5, 21)
+        refresh_run.source_window_end = date(2026, 6, 17)
+        expected_period_start = date(2026, 5, 18)
+        expected_period_end = date(2026, 6, 21)
+        current_summary = SimpleNamespace(
+            seller_account_id="seller",
+            report_id="current-summary",
+            date_from=date(2026, 6, 12),
+            date_to=date(2026, 6, 17),
+            create_date=date(2026, 6, 18),
+        )
+        service = SourceRefreshService(settings)
+        monkeypatch.setattr(
+            service,
+            "_incremental_wb_summary_rows",
+            lambda *_args, **_kwargs: [current_summary],
+        )
+        monkeypatch.setattr(
+            service,
+            "_calculation_sku_mappings",
+            lambda *_args, **_kwargs: [],
+        )
+
+        def fake_save(*_args, **kwargs):
+            captured["save_kwargs"] = kwargs
+
+        monkeypatch.setattr(service, "_save_wb_daily_facts", fake_save)
+        service._materialize_wb_daily_facts(
+            db,
+            refresh_run,
+            wb_finance_dir=tmp_path,
+            onec_dir=tmp_path,
+            wb_report_list_dir=tmp_path,
+            wb_cards_dir=tmp_path,
+            wb_stock_history_dir=tmp_path,
+        )
+
+    args = captured["args"]
+    assert args.report_period_start == expected_period_start
+    assert args.report_period_end == expected_period_end
+    assert args.wb_sales_report_summary_rows == [current_summary]
+    assert captured["save_kwargs"]["replacement_summary_rows"] == [
+        current_summary
+    ]
+
+
 def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path

@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260713-reconciliation-incremental-v1"
+      content="20260713-overview-sales-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260713-reconciliation-incremental-v1"
+      href="/static/styles.css?v=20260713-overview-sales-v1"
     />
   </head>
   <body>
@@ -46,20 +46,55 @@
       </section>
 
       <section id="cabinet-view" class="cabinet-view" hidden>
-        <header class="topbar">
-          <div class="brand-lockup is-info" aria-live="polite" aria-atomic="true">
-            <p class="eyebrow">Шумейко · WB / Ozon / 1C</p>
-            <h1 id="report-title">Пульт подготовки отчета</h1>
-            <p id="report-subtitle" class="topbar-subtitle"></p>
+        <aside class="workspace-sidebar" aria-label="Навигация кабинета">
+          <div class="workspace-brand">
+            <span class="workspace-brand-mark" aria-hidden="true">
+              <img src="/static/icons/chart-bar.svg" alt="" />
+            </span>
+            <span class="workspace-brand-copy">AI-аналитик<br />отчётов</span>
+          </div>
+          <nav class="workspace-nav" aria-label="Разделы отчёта">
+            <button type="button" data-workspace-nav="overview" aria-current="page">
+              <img src="/static/icons/house.svg" alt="" aria-hidden="true" />
+              <span>Обзор</span>
+            </button>
+            <button type="button" data-workspace-nav="checks">
+              <img src="/static/icons/shield-check.svg" alt="" aria-hidden="true" />
+              <span>Проверки</span>
+              <span id="checks-nav-count" class="workspace-nav-count" hidden></span>
+            </button>
+            <button type="button" data-workspace-nav="tables">
+              <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
+              <span>Таблицы</span>
+            </button>
             <button
-              id="report-load-retry-button"
+              id="client-output-button"
               type="button"
-              class="report-load-retry secondary-button"
+              class="report-only-control"
+              aria-haspopup="dialog"
+              aria-controls="client-output-widget-overlay"
+            >
+              <img src="/static/icons/file-text.svg" alt="" aria-hidden="true" />
+              <span class="workspace-nav-full-label">Клиентский вывод</span>
+              <span class="workspace-nav-short-label">Вывод</span>
+            </button>
+          </nav>
+          <div class="workspace-sidebar-footer">
+            <button
+              id="integrations-open-button"
+              type="button"
+              aria-haspopup="dialog"
+              aria-controls="integrations-widget-overlay"
               hidden
             >
-              Повторить
+              <img src="/static/icons/gear.svg" alt="" aria-hidden="true" />
+              <span>Настройки</span>
             </button>
           </div>
+        </aside>
+
+        <div class="workspace-main">
+        <header class="topbar">
           <div class="topbar-controls">
             <label class="client-switcher">
               <span>Клиент</span>
@@ -80,18 +115,11 @@
               <span>Дата конца</span>
               <input id="topbar-period-end" type="date" aria-label="Дата конца периода" />
             </label>
-            <div class="topbar-actions" aria-label="Действия кабинета">
-              <div class="topbar-action-group topbar-action-group-primary">
-                <button
-                  id="client-output-button"
-                  type="button"
-                  class="report-only-control"
-                  aria-haspopup="dialog"
-                  aria-controls="client-output-widget-overlay"
-                  data-tooltip="Открыть отчёт для клиента."
-                >
-                  Отчёт для клиента
-                </button>
+            <details id="workspace-actions-menu" class="workspace-actions-menu">
+              <summary aria-label="Дополнительные действия">
+                <img src="/static/icons/dots-three-vertical.svg" alt="" aria-hidden="true" />
+              </summary>
+              <div class="topbar-actions" aria-label="Действия кабинета">
                 <button
                   id="report-build-button"
                   type="button"
@@ -111,51 +139,6 @@
                   Скачать Excel
                 </a>
                 <button
-                  id="ai-open-button"
-                  type="button"
-                  class="secondary-button report-only-control ai-assistant-button"
-                  aria-haspopup="dialog"
-                  aria-controls="ai-widget-overlay"
-                  aria-label="Открыть AI-аналитика"
-                  data-tooltip="Открыть AI-аналитика поверх уже рассчитанных фактов."
-                >
-                  <svg
-                    class="ai-assistant-icon"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
-                    focusable="false"
-                  >
-                    <path d="M12 3v3" />
-                    <circle cx="12" cy="2.5" r="1" />
-                    <rect x="4.5" y="6" width="15" height="13" rx="4" />
-                    <path d="M8.5 11h.01M15.5 11h.01M9 15h6M4.5 11H3v4h1.5M19.5 11H21v4h-1.5" />
-                  </svg>
-                  <span>AI-аналитик</span>
-                </button>
-                <button
-                  id="reconciliation-open-button"
-                  type="button"
-                  class="secondary-button report-only-control"
-                  aria-haspopup="dialog"
-                  aria-controls="reconciliation-hub-overlay"
-                  data-tooltip="Открыть сверку WB и 1С: документы, себестоимость, расходы маркетплейса и выкупы."
-                >
-                  Сверка WB ↔ 1С
-                </button>
-              </div>
-              <div class="topbar-action-group topbar-action-group-management">
-                <button
-                  id="integrations-open-button"
-                  type="button"
-                  class="secondary-button"
-                  aria-haspopup="dialog"
-                  aria-controls="integrations-widget-overlay"
-                  data-tooltip="Открыть подключения WB, Ozon и 1C только для чтения."
-                  hidden
-                >
-                  Интеграции
-                </button>
-                <button
                   id="new-client-button"
                   type="button"
                   class="secondary-button"
@@ -166,8 +149,6 @@
                 >
                   Добавить клиента
                 </button>
-              </div>
-              <div class="topbar-action-group topbar-action-group-session">
                 <button
                   id="logout-button"
                   type="button"
@@ -176,13 +157,42 @@
                   Выход
                 </button>
               </div>
-            </div>
+            </details>
           </div>
         </header>
+
+        <section class="workspace-header">
+          <div class="brand-lockup is-info" aria-live="polite" aria-atomic="true">
+            <p class="eyebrow">Шумейко · WB / Ozon / 1C</p>
+            <h1 id="report-title">Пульт подготовки отчета</h1>
+            <p id="report-subtitle" class="topbar-subtitle"></p>
+            <button
+              id="report-load-retry-button"
+              type="button"
+              class="report-load-retry secondary-button"
+              hidden
+            >
+              Повторить
+            </button>
+          </div>
+          <button
+            id="ai-open-button"
+            type="button"
+            class="report-only-control ai-assistant-button"
+            aria-haspopup="dialog"
+            aria-controls="ai-widget-overlay"
+            aria-label="Открыть AI-аналитика"
+          >
+            <img class="ai-assistant-icon" src="/static/icons/robot.svg" alt="" aria-hidden="true" />
+            <span>AI-аналитик</span>
+          </button>
+        </section>
 
         <section
           id="source-refresh-panel"
           class="panel full-width source-refresh-panel source-refresh-main"
+          data-workspace-panel="checks"
+          data-check-panel="summary"
           aria-labelledby="source-refresh-title"
           hidden
         >
@@ -269,14 +279,21 @@
           <div id="source-refresh-collections" class="source-refresh-collections"></div>
         </section>
 
-        <section class="panel money-strip report-page-section" aria-labelledby="kpi-title">
+        <section class="panel money-strip report-page-section" data-workspace-panel="overview" aria-labelledby="kpi-title">
           <div class="panel-header">
             <div>
               <p id="kpi-eyebrow" class="eyebrow">Основной расчёт</p>
               <h2 id="kpi-title">Юнит-экономика WB</h2>
             </div>
           </div>
-          <div id="kpi-grid" class="metric-grid command-metrics"></div>
+          <div id="kpi-grid" class="metric-grid command-metrics primary-kpi-grid"></div>
+          <details id="secondary-kpi-section" class="secondary-kpi-section">
+            <summary>
+              <span>Дополнительные показатели</span>
+              <small>Налоги, возвраты и контрольные метрики</small>
+            </summary>
+            <div id="secondary-kpi-grid" class="metric-grid secondary-kpi-grid"></div>
+          </details>
           <section id="onec-kpi-section" class="kpi-control-section" aria-labelledby="onec-kpi-title">
             <div class="panel-header kpi-control-header">
               <div>
@@ -292,6 +309,7 @@
         <section
           id="ozon-diagnostics-panel"
           class="panel full-width ozon-preview-panel"
+          data-workspace-panel="overview"
           aria-labelledby="ozon-preview-title"
           hidden
         >
@@ -451,6 +469,8 @@
 
         <section
           class="decision-support-grid report-page-section"
+          data-workspace-panel="checks"
+          data-check-panel="summary"
           aria-label="Подготовка и проверки"
         >
           <section
@@ -465,7 +485,18 @@
                   Загружаем качество строк и список проверок.
                 </p>
               </div>
-              <button id="review-rows-button" type="button">Открыть проблемные строки</button>
+              <div class="preflight-actions">
+                <button id="review-rows-button" type="button">Открыть проблемные строки</button>
+                <button
+                  id="reconciliation-open-button"
+                  type="button"
+                  class="secondary-button report-only-control"
+                  aria-haspopup="dialog"
+                  aria-controls="reconciliation-hub-overlay"
+                >
+                  Сверка WB ↔ 1С
+                </button>
+              </div>
             </div>
             <div class="quality-progress" aria-label="Доля строк OK">
               <span id="quality-progress-fill"></span>
@@ -515,8 +546,71 @@
         </section>
 
         <section
+          id="cost-review-workflow"
+          class="panel full-width cost-review-workflow"
+          data-workspace-panel="checks"
+          data-check-panel="cost"
+          aria-labelledby="cost-review-title"
+        >
+          <div class="cost-review-heading">
+            <div>
+              <button id="cost-review-back" type="button" class="text-button">
+                Назад к обзору
+              </button>
+              <div class="cost-review-title-row">
+                <h2 id="cost-review-title">Проверка себестоимости 1С</h2>
+                <span id="cost-review-status" class="status-pill">Загрузка</span>
+              </div>
+              <p id="cost-review-summary" class="muted">
+                Загружаем строки, которые требуют подтверждения.
+              </p>
+            </div>
+            <div class="cost-review-actions">
+              <button id="cost-review-open-rows" type="button">
+                <img src="/static/icons/magnifying-glass.svg" alt="" aria-hidden="true" />
+                <span>Открыть строки</span>
+              </button>
+              <button id="cost-review-mark" type="button" class="secondary-button">
+                Отметить просмотренным
+              </button>
+            </div>
+          </div>
+          <ol class="cost-review-stepper" aria-label="Этапы проверки себестоимости">
+            <li id="cost-step-find">
+              <span class="cost-step-marker">1</span>
+              <span><strong>Найти строки</strong><small>Определить позиции без подтверждённой себестоимости</small></span>
+            </li>
+            <li id="cost-step-review">
+              <span class="cost-step-marker">2</span>
+              <span><strong>Проверить себестоимость</strong><small>Сопоставить строки с данными 1С</small></span>
+            </li>
+            <li id="cost-step-confirm">
+              <span class="cost-step-marker">3</span>
+              <span><strong>Подтвердить</strong><small>Зафиксировать локальную проверку аналитика</small></span>
+            </li>
+          </ol>
+          <div class="cost-review-grid">
+            <section class="cost-review-issues" aria-labelledby="cost-review-issues-title">
+              <h3 id="cost-review-issues-title">Что требует проверки</h3>
+              <ul id="cost-review-reasons" class="reason-list"></ul>
+            </section>
+            <aside class="cost-review-guide" aria-labelledby="cost-review-guide-title">
+              <h3 id="cost-review-guide-title">Как проверить</h3>
+              <ol>
+                <li><strong>Откройте строки.</strong><span>Перейдите к списку позиций без подтверждённой себестоимости.</span></li>
+                <li><strong>Сопоставьте с 1С.</strong><span>Проверьте номенклатуру, документ и период себестоимости.</span></li>
+                <li><strong>Пересоберите отчёт.</strong><span>Расчётный статус изменится только после исправления источника.</span></li>
+              </ol>
+            </aside>
+          </div>
+          <div id="cost-review-metrics" class="metric-grid cost-review-metrics"></div>
+          <p id="cost-review-note" class="cost-review-note" role="status"></p>
+        </section>
+
+        <section
           id="analytics-panel"
           class="panel full-width analytics-panel report-page-section"
+          data-workspace-panel="overview"
           aria-labelledby="analytics-title"
         >
           <div class="panel-header">
@@ -547,12 +641,12 @@
             <div id="data-trust-grid" class="metric-grid data-trust-grid"></div>
           </div>
           <div class="analytics-grid" aria-label="Аналитические визуализации">
-            <article class="analytics-chart" aria-labelledby="money-trend-title">
+            <article class="analytics-chart analytics-chart-wide sales-trend-card" aria-labelledby="money-trend-title">
               <div class="analytics-chart-header">
-                <h3 id="money-trend-title">Динамика денег</h3>
-                <p>Выручка, прибыль и маржа по месяцам.</p>
+                <h3 id="money-trend-title">Динамика продаж</h3>
+                <p>Выручка, маржинальный доход, маржа и количество продаж по месяцам.</p>
               </div>
-              <div id="money-trend-chart" class="analytics-chart-body"></div>
+              <div id="money-trend-chart" class="analytics-chart-body sales-trend-chart"></div>
             </article>
             <article class="analytics-chart" aria-labelledby="unit-pl-title">
               <div class="analytics-chart-header">
@@ -592,7 +686,7 @@
           </div>
         </section>
 
-        <section class="control-room report-page-section" aria-labelledby="overview-title">
+        <section class="control-room report-page-section" data-workspace-panel="overview" aria-labelledby="overview-title">
           <div id="readiness-card" class="decision-strip readiness-neutral">
             <div class="decision-main">
               <div class="decision-status">
@@ -686,6 +780,7 @@
 
         <section
           class="panel full-width detail-workspace report-page-section"
+          data-workspace-panel="tables"
           aria-labelledby="details-title"
         >
           <div class="panel-header">
@@ -866,15 +961,15 @@
                 Месяц 1С
                 <select id="filter-month" name="month"></select>
               </label>
-              <label>
+              <label class="global-filter-shadow">
                 Начало
                 <input id="filter-period-start" name="period_start" type="date" />
               </label>
-              <label>
+              <label class="global-filter-shadow">
                 Конец
                 <input id="filter-period-end" name="period_end" type="date" />
               </label>
-              <label>
+              <label class="global-filter-shadow">
                 Кабинет
                 <select id="filter-cabinet" name="cabinet"></select>
               </label>
@@ -923,7 +1018,8 @@
               </table>
             </div>
           </section>
-        </section>
+          </section>
+        </div>
       </section>
 
       <div
@@ -952,6 +1048,20 @@
               </button>
             </div>
           </div>
+          <section id="ai-context-strip" class="ai-context-strip" aria-labelledby="ai-context-title">
+            <div class="ai-context-heading">
+              <div>
+                <p class="eyebrow">Контекст текущего отчёта</p>
+                <h3 id="ai-context-title">Факты для вопроса</h3>
+              </div>
+              <span id="ai-context-readiness" class="status-pill">Нет отчёта</span>
+            </div>
+            <div id="ai-context-metrics" class="metric-grid ai-context-metrics"></div>
+            <div id="ai-context-bars" class="ai-context-bars"></div>
+            <p id="ai-context-empty" class="analytics-empty">
+              Выберите клиента и дождитесь загрузки отчёта — здесь появится краткий контекст.
+            </p>
+          </section>
           <div class="quick-questions" aria-label="Быстрые вопросы AI">
             <button type="button" data-ai-question="Что самое важное по убыточности?">
               Что убыточно?
@@ -1851,7 +1961,7 @@
       </div>
     </main>
     <script
-      src="/static/app.js?v=20260713-reconciliation-incremental-v1"
+      src="/static/app.js?v=20260713-overview-sales-v1"
       defer
     ></script>
   </body>

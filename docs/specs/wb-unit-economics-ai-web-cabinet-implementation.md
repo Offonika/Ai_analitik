@@ -313,6 +313,14 @@ Readiness v1 rules:
 UI readiness behavior:
 
 - unauthenticated visitor sees only the login shell and no report data;
+- the authenticated cabinet uses one analyst workspace shell with a persistent
+  navigation rail and four user-facing entries: `Обзор`, `Проверки`, `Таблицы`
+  and `Клиентский вывод`; `Настройки` is shown only to `consultant/admin` and
+  opens the existing integrations widget rather than a new page;
+- the browser URL may expose UI-only fragments `#overview`, `#checks`,
+  `#checks/cost` and `#tables`; they do not add server routes or API contracts,
+  invalid fragments fall back to `#overview`, and browser Back/Forward restores
+  the visible workspace without reloading report facts;
 - after login, UI shows a client switcher when the user has more than one
   available client;
 - `consultant/admin` can create a new client workspace from the topbar; after
@@ -322,9 +330,10 @@ UI readiness behavior:
   and AI context;
 - if a user has exactly one client, UI may load the latest available report for
   that client automatically;
-- topbar includes quick filters for `Кабинет WB`, `Дата начала` and
-  `Дата конца`, synchronized with the detailed row filters for cabinet,
-  `period_start` and `period_end`;
+- the compact context bar is the only visible global control for client,
+  marketplace cabinet, period start and period end; the detailed row workspace
+  keeps only table-local search/status/business filters while its hidden cabinet
+  and date controls remain synchronized for backward-compatible requests;
 - topbar does not expose an `Отчет` selector; selecting a client loads the
   current available report slice automatically;
 - report meta, source freshness and client hierarchy are not repeated as a
@@ -334,15 +343,16 @@ UI readiness behavior:
   success, review/warning and blocking/error information; the action area keeps
   report, management and session actions in separate responsive groups so
   `Выход` does not drift when action labels or available staff actions change;
-- topbar action `Отчёт для клиента` opens the staff/client output state as a
+- navigation entry `Клиентский вывод` opens the staff/client output state as a
   modal widget over the current report instead of scrolling to a lower report
   section;
-- topbar action `Интеграции` opens read-only WB/1C tenant connections as a
+- staff navigation entry `Настройки` opens read-only WB/Ozon/1C tenant
+  connections as a
   modal widget over the current report instead of scrolling to a lower report
   section or navigating away; the compatible `/integrations` deep link opens
   the same widget after the current client context loads;
-- for `consultant/admin`, the main report page shows a separate `Данные и расчёт`
-  panel immediately below the client/cabinet/period controls and before KPIs.
+- for `consultant/admin`, the `Проверки` workspace shows a separate
+  `Данные и расчёт` panel before the quality task board.
   It loads independently from the integrations widget and exposes current
   source-refresh status, stages, collection statuses, fallback mapping upload,
   readiness check and the primary `Обновить и пересчитать` action. The
@@ -351,7 +361,7 @@ UI readiness behavior:
   source-refresh modes such as `daily`/`full`, and terms such as `refresh`,
   `mapping`, `read-only`, `readiness`, `fallback`, `lineage` and `snapshot` are
   translated without changing their internal API values or stored contracts;
-- topbar action `AI-аналитик` is visually emphasized with a robot icon and opens
+- workspace action `AI-аналитик` is visually emphasized with a library icon and opens
   the AI analyst as a modal widget over the current report instead of scrolling
   to a lower report section or navigating away; the compatible `/ai` deep link
   opens the same widget after the current client report loads;
@@ -384,6 +394,14 @@ UI readiness behavior:
   which moves it to `Готово к отправке` as a local workflow acknowledgement for
   the current report but does not mutate source data, calculation facts,
   readiness score or report status;
+- missing 1C cost opens the local `#checks/cost` workflow instead of turning the
+  whole report into a wizard. Its stepper is `Найти строки` ->
+  `Проверить себестоимость` -> `Подтвердить`; it derives counts from
+  `quality.missingCostRows`, opens the existing `missingCost` drilldown and uses
+  the existing report-scoped browser acknowledgement. The confirmation must
+  explicitly state that it does not mutate 1C, source snapshots, calculations,
+  readiness or publication status. The stepper is not shown for Ozon mode or
+  unrelated checks;
 - обычный `publish_report` остается строгим и отклоняет report с блокерами;
   отдельный staff-only `POST /api/reports/{report_id}/publish-with-tasks`
   требует явного подтверждения и причины, атомарно переключает current и пишет
@@ -442,6 +460,10 @@ UI readiness behavior:
   monetary delta is expected because the bases differ. The additive endpoint
   `/api/reports/{id}/buyout-reconciliation` does not change source data or the
   existing reconciliation URLs.
+- the AI widget remains a modal overlay and may render a compact visual context
+  strip from already loaded `summary.kpis`, `summary.quality` and readiness;
+  this presentation does not change the AI request, SSE or response contracts
+  and must show an explicit empty state when report facts are unavailable.
   the existing generic document-load reconciliation remains below the
   financial block for quantity, payout and completeness controls; the
   `Юнит-экономика` tab keeps filters for search, status, period start/end,
@@ -520,6 +542,20 @@ UI readiness behavior:
   `summary.liquidityRows` and `summary.kpis`: grouped column charts for money
   dynamics, a P&L-style unit economics table, horizontal bars for top losses
   and return columns with return-rate context;
+- начиная с v2.33 первый уровень `Обзора` показывает семь основных KPI:
+  выручку WB без НДС, себестоимость 1С, расходы WB, маржинальный доход, маржу,
+  продажи и возвратность. Выручка с НДС, чистые продажи, возвраты, выручка на
+  продажу, убыточные строки, штрафы и налоговый мост остаются доступны в
+  раскрываемом блоке `Дополнительные показатели`; если налоговый профиль не
+  применён, шесть пустых налоговых карточек заменяются одной явной карточкой
+  статуса без подмены значений нулями;
+- `Динамика продаж` занимает всю ширину аналитического блока и повторяет
+  принятый в управленческой витрине визуальный принцип: продажи показаны
+  нейтральными столбцами, выручка и маржинальный доход — отдельными линиями,
+  маржа — линией по правой процентной шкале. Прогноз не выводится без
+  подтверждённого источника. Каждый месяц доступен мышью и клавиатурой,
+  показывает точные значения во всплывающей подсказке и открывает существующую
+  месячную детализацию; API, формулы и состав `summary.monthly` не меняются;
 - `Аналитика` also works as a review navigator: a compact
   `Что разобрать первым` row prioritizes missing 1C cost, mapping, WB ↔ 1C
   reconciliation, loss rows, lost sales and returns. For `consultant/admin`,
@@ -1121,6 +1157,13 @@ Large-report loading:
 
 # Changelog
 
+- 2026-07-13: v2.33 reduced the overview to seven primary KPIs, grouped
+  secondary and tax indicators into one disclosure, and replaced the compact
+  money columns with a full-width accessible sales dynamics chart using only
+  existing monthly facts.
+- 2026-07-13: v2.32 introduced the analyst workspace shell, UI-only workspace
+  fragments, one global filter context, a local missing-cost stepper and a
+  compact read-only report context inside the existing AI overlay.
 - 2026-07-13: v2.31 moved the full preflight quality-control panel above
   `Аналитика`, preserving its diagnostics, task board and problem-row action.
 - 2026-07-11: v2.30 introduced canonical client-company aliases, a hard
