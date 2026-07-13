@@ -5,13 +5,46 @@ domain: "marketplace-analytics"
 audience: ["engineering", "agent"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-01"
+updated_at: "2026-07-13"
 ---
 
 # AI Git workflow
 
 Этот runbook описывает безопасный цикл разработки с ИИ: проверить, закоммитить и
 опубликовать изменения без попадания секретов и клиентских артефактов в Git.
+
+# GitHub CI
+
+`.github/workflows/ci.yml` запускается автоматически для pull request в `main`,
+push в `main` и вручную через GitHub Actions. Workflow не использует repository
+secrets и получает только `contents: read`.
+
+Блокирующие job:
+
+- `quality` — Ruff, JavaScript syntax, whitespace, specs, manifest, LLM-docs,
+  DOCX/OpenAPI contracts, no-secrets и Git safety;
+- `tests` — полный `pytest` на Python 3.12.
+
+Проверка внешних URL запускается внутри `quality`, но помечена
+`continue-on-error`: временный `401/403/429`, timeout или недоступность внешнего
+сайта не блокируют merge.
+
+Посмотреть состояние PR:
+
+```bash
+gh pr checks <pr-number> --watch
+```
+
+Посмотреть последние CI runs и логи ошибки:
+
+```bash
+gh run list --workflow=ci.yml
+gh run view <run-id> --log-failed
+```
+
+После первого успешного run включить для `main` branch protection и сделать
+job `quality` и `tests` обязательными. До этого отсутствие красных checks не
+является доказательством, что CI запускался.
 
 # First-Time Setup
 
@@ -93,6 +126,7 @@ git pull --ff-only
 - не читать и не показывать `.env`;
 - держать Git-коммиты маленькими;
 - запускать `scripts/ai_git_publish.py` после завершенного рабочего шага;
+- перед merge проверять оба CI job: `quality` и `tests`;
 - если поведение не описано в spec, сначала обновлять spec.
 
 Отдельный Codex skill стоит создавать позже, когда workflow стабилизируется и

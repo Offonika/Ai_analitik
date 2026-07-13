@@ -71,6 +71,7 @@ ONEC_ODATA_TIMEOUT_SECONDS=30
 
 ```text
 /opt/shumeyko-partners-wb-unit-economics/
+  .github/          # GitHub Actions CI для pull request и main
   .env              # реальные локальные ключи, не коммитить
   .env.example      # пример без секретов
   config/           # non-secret настройки клиентов и методики

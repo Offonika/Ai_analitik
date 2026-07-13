@@ -98,7 +98,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | Source refresh DB retention | `docs/specs/source-refresh-database-retention.md` | accepted | Меняются правила хранения raw snapshot rows PostgreSQL или процедура освобождения диска. |
 | Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
 | Month close pilot | `docs/specs/month-close-control-pilot.md` | draft | Нужно понять пилотный read-only контур закрытия месяца: онлайн-ОСВ, налоги, ЕНС, НДС, скрины и процессные подтверждения до CRM. |
-| AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, hooks, Git checks или commit/push workflow. |
+| AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
 
 # Клиентский пакет
@@ -138,7 +138,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/runbooks/source-refresh-schedule.md` — установка systemd timers для
   daily/weekly source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
-  проверки, коммит, push и локальный pre-commit hook.
+  локальные проверки, GitHub CI, коммит, push и pre-commit hook.
 
 # Решения
 
