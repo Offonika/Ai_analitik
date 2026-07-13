@@ -9461,15 +9461,10 @@ function renderActionInsights(target, summary = {}) {
 }
 
 function actionInsightItems(summary = {}) {
-  const quality = summary.quality || {};
   const kpis = summary.kpis || {};
   const liquidityRows = asArray(summary.liquidityRows);
   const lostSales = asArray(summary.lostSales);
   const items = [];
-  const missingCost = Number(quality.missingCostRows || 0);
-  const mapping = Number(quality.mappingRows || 0);
-  const onecIssues = Number(quality.documentReconciliationIssues || 0);
-  const missingOnec = Number(quality.documentReconciliationMissingOnec || 0);
   const lossRows = Number(kpis.lossRows || 0);
   const lossAmount = liquidityRows
     .filter((row) => Number(row.profit || 0) < 0)
@@ -9479,33 +9474,6 @@ function actionInsightItems(summary = {}) {
   const returns = Number(kpis.returns || 0);
   const sales = Number(kpis.sales || 0);
 
-  if (missingCost) {
-    items.push({
-      title: "Себестоимость 1С",
-      value: `${number(missingCost)} строк`,
-      copy: "Нет подтвержденной себестоимости.",
-      action: { name: "missingCost" },
-      tone: "review",
-    });
-  }
-  if (mapping) {
-    items.push({
-      title: "Сопоставление WB ↔ 1C",
-      value: `${number(mapping)} строк`,
-      copy: "Есть товары без надежного сопоставления.",
-      action: { name: "missingMapping" },
-      tone: "review",
-    });
-  }
-  if (onecIssues || missingOnec) {
-    items.push({
-      title: "Сверка WB ↔ 1С",
-      value: onecIssues ? `${number(onecIssues)} к проверке` : `${number(missingOnec)} без 1С`,
-      copy: "Проверьте дельты, выплаты и документы.",
-      action: { name: "onecReconciliationDelta" },
-      tone: "review",
-    });
-  }
   if (lossRows) {
     items.push({
       title: "Убыточные строки",

@@ -2478,7 +2478,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon: расчет экономики" in cabinet.text
     assert "Ozon: расчет и сверка" not in cabinet.text
     assert "Ошибки Ozon" in cabinet.text
-    assert "Что разобрать первым" in cabinet.text
+    assert "Финансовые сигналы" in cabinet.text
     assert "Итоги P&amp;L" not in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
