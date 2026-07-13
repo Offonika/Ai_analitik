@@ -10,12 +10,20 @@ source_of_truth: true
 truth_scope: source-refresh
 truth_priority: 100
 related_code:
+  - src/wb_unit_economics/calculation.py
+  - src/wb_unit_economics/contracts.py
   - src/wb_unit_economics/web/app.py
+  - src/wb_unit_economics/web/database.py
+  - src/wb_unit_economics/web/repository.py
   - src/wb_unit_economics/web/source_refresh.py
   - src/wb_unit_economics/web/providers.py
   - src/wb_unit_economics/web/static/app.js
+  - scripts/rebuild_report_from_sources.py
   - scripts/prune_source_refresh.py
 related_tests:
+  - tests/test_calculation.py
+  - tests/test_marketplace_daily_facts.py
+  - tests/test_web_database.py
   - tests/test_web_app.py
   - tests/test_source_refresh.py
   - tests/test_provider_registry.py
@@ -382,6 +390,17 @@ WB Finance и Ozon всегда сначала сохраняют immutable raw-
 `source_snapshot_set_id` и methodology version. Она не заменяет immutable raw
 snapshot для воспроизводимости и не меняет публичный web API.
 
+Дневной факт хранит уже рассчитанные COGS, контролируемые расходы, входной НДС
+WB/1С, выбранный для P&L сервисный входной НДС и распределенную скидку СПП. При
+DB-first rebuild эти значения считаются предрассчитанными: расчет не применяет
+к ним повторное распределение, не выбирает повторно между WB- и 1С-источником
+НДС и не пересчитывает COGS из округленной дневной quantity. Report-list
+по-прежнему задает тип документа, дату ведомости и контрольные totals, но не
+меняет сохраненное распределение между строками. Для существующей БД поля
+`spp_discount` и `accounting_service_input_vat` добавляются аддитивной
+идемпотентной миграцией; после миграции нужен новый `full`, потому что прежние
+дневные факты не содержат эти исторические аллокации.
+
 Замена выполняется через staging/load-id и всегда охватывает полный заявленный
 интервал `period_start..period_end`, включая пустой хвост. До promotion staging
 проверяются grain/count/digest; delete+promotion выполняются одной транзакцией.
@@ -535,6 +554,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-13: persisted the allocated SPP discount and marked daily-fact COGS,
+  controlled expenses and input VAT as precomputed during DB-first rebuild, so
+  incremental output does not repeat cent-sensitive allocations.
 - 2026-07-13: fixed incremental daily-facts replacement and report selection to
   preserve operations outside a calendar boundary when their stable report ID
   belongs to the replaced WB statement window.

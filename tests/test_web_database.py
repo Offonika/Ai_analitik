@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy import inspect, text
 
 from wb_unit_economics.web.database import (
+    _ensure_marketplace_finance_daily_fact_columns,
     _ensure_source_load_columns,
     _ensure_source_refresh_resume_columns,
     make_engine,
@@ -72,3 +73,24 @@ def test_source_load_incremental_lineage_migration_is_idempotent(
         "coverage_end",
         "lineage_role",
     }.issubset(columns)
+
+
+def test_daily_fact_preallocated_fields_migration_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'legacy-daily-facts.sqlite3'}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE marketplace_finance_daily_facts (id INTEGER PRIMARY KEY)"
+            )
+        )
+
+    _ensure_marketplace_finance_daily_fact_columns(engine)
+    _ensure_marketplace_finance_daily_fact_columns(engine)
+
+    columns = {
+        item["name"]
+        for item in inspect(engine).get_columns("marketplace_finance_daily_facts")
+    }
+    assert {"spp_discount", "accounting_service_input_vat"}.issubset(columns)

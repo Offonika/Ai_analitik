@@ -26,7 +26,7 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_07_13_incremental_source_refresh"
+DB_FIRST_SCHEMA_VERSION = "2026_07_13_incremental_daily_fact_parity"
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -98,6 +98,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_source_load_columns(engine)
     _ensure_source_refresh_resume_columns(engine)
     _ensure_marketplace_operation_fact_columns(engine)
+    _ensure_marketplace_finance_daily_fact_columns(engine)
     _ensure_tax_profile_columns(engine)
     _ensure_multi_client_columns(engine)
     _ensure_multi_client_indexes(engine)
@@ -129,8 +130,7 @@ def _schema_migration_at_least(engine: Engine, version: str) -> bool:
             return bool(
                 connection.execute(
                     text(
-                        f"SELECT 1 FROM {table_name} "
-                        "WHERE version >= :version LIMIT 1"
+                        f"SELECT 1 FROM {table_name} WHERE version >= :version LIMIT 1"
                     ),
                     {"version": version},
                 ).scalar()
@@ -329,9 +329,10 @@ def _ensure_report_reconciliation_monthly_columns(engine: Engine) -> None:
                 "mp_expenses_delta",
             )
             for column in nullable_columns:
-                if column not in existing_columns or existing_columns[column].get(
-                    "nullable"
-                ) is True:
+                if (
+                    column not in existing_columns
+                    or existing_columns[column].get("nullable") is True
+                ):
                     continue
                 connection.execute(
                     text(
@@ -446,6 +447,34 @@ def _ensure_marketplace_operation_fact_columns(engine: Engine) -> None:
     if not missing:
         return
     table_name = _table_name(engine, "marketplace_operation_facts")
+    with engine.begin() as connection:
+        for column, definition in missing:
+            connection.execute(
+                text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+            )
+
+
+def _ensure_marketplace_finance_daily_fact_columns(engine: Engine) -> None:
+    """Add preallocated calculation fields to an existing deployment."""
+    schema = _schema(engine)
+    existing = {
+        column["name"]
+        for column in inspect(engine).get_columns(
+            "marketplace_finance_daily_facts", schema=schema
+        )
+    }
+    column_specs = {
+        "spp_discount": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+        "accounting_service_input_vat": "NUMERIC(20, 2) NOT NULL DEFAULT 0",
+    }
+    missing = [
+        (column, definition)
+        for column, definition in column_specs.items()
+        if column not in existing
+    ]
+    if not missing:
+        return
+    table_name = _table_name(engine, "marketplace_finance_daily_facts")
     with engine.begin() as connection:
         for column, definition in missing:
             connection.execute(
@@ -589,8 +618,7 @@ def _ensure_tax_profile_columns(engine: Engine) -> None:
                 if column not in existing:
                     connection.execute(
                         text(
-                            f"ALTER TABLE {table_name} "
-                            f"ADD COLUMN {column} {definition}"
+                            f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}"
                         )
                     )
 

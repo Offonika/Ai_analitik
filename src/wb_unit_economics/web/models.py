@@ -96,9 +96,7 @@ class ClientCompany(Base):
             "client_id",
             "onec_organization_id",
             unique=True,
-            postgresql_where=text(
-                "onec_organization_id <> '' AND status = 'active'"
-            ),
+            postgresql_where=text("onec_organization_id <> '' AND status = 'active'"),
             sqlite_where=text("onec_organization_id <> '' AND status = 'active'"),
         ),
         {"schema": "wb_unit_economics"},
@@ -141,12 +139,8 @@ class ClientCompanyAlias(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(
-        ForeignKey("wb_unit_economics.tenants.id")
-    )
-    client_id: Mapped[str] = mapped_column(
-        ForeignKey("wb_unit_economics.clients.id")
-    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
     client_company_id: Mapped[str] = mapped_column(
         ForeignKey("wb_unit_economics.client_companies.id", ondelete="CASCADE")
     )
@@ -289,9 +283,7 @@ class OrganizationInputVatPolicy(Base):
         ForeignKey("wb_unit_economics.client_companies.id")
     )
     organization_id: Mapped[str] = mapped_column(String, nullable=False)
-    mode: Mapped[str] = mapped_column(
-        String, nullable=False, default="accounting_fact"
-    )
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="accounting_fact")
     product_vat_basis: Mapped[str] = mapped_column(
         String, nullable=False, default="sales_cost_difference"
     )
@@ -647,9 +639,7 @@ class ReportUnitRow(Base):
     cost: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric)
     cost_method: Mapped[str] = mapped_column(String, nullable=False, default="")
-    cost_match_status: Mapped[str] = mapped_column(
-        String, nullable=False, default=""
-    )
+    cost_match_status: Mapped[str] = mapped_column(String, nullable=False, default="")
     cost_source_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
     cost_source_period_start: Mapped[date | None] = mapped_column(Date)
     cost_source_period_end: Mapped[date | None] = mapped_column(Date)
@@ -798,9 +788,7 @@ class ReportMarketplaceExpenseRow(Base):
         Numeric, nullable=False, default=0
     )
     vat: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
-    amount_with_vat: Mapped[Decimal] = mapped_column(
-        Numeric, nullable=False, default=0
-    )
+    amount_with_vat: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     source_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
     match_status: Mapped[str] = mapped_column(String, nullable=False, default="")
     source_row_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
@@ -928,9 +916,7 @@ class SourceLoad(Base):
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     coverage_start: Mapped[date | None] = mapped_column(Date)
     coverage_end: Mapped[date | None] = mapped_column(Date)
-    lineage_role: Mapped[str] = mapped_column(
-        String, nullable=False, default="current"
-    )
+    lineage_role: Mapped[str] = mapped_column(String, nullable=False, default="current")
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -1130,6 +1116,9 @@ class MarketplaceFinanceDailyFact(Base):
     return_amount: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
+    spp_discount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
     net_revenue: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
@@ -1157,6 +1146,9 @@ class MarketplaceFinanceDailyFact(Base):
         Numeric(20, 2), nullable=False, default=0
     )
     vat_input_from_1c: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    accounting_service_input_vat: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
     source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

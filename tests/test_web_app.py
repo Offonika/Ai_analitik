@@ -2363,8 +2363,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260713-overview-sales-v1"
-    assert health.json()["staticBuildId"] == "20260713-overview-sales-v1"
+    assert health.json()["backendBuildId"] == "20260713-cogs-review-v1"
+    assert health.json()["staticBuildId"] == "20260713-cogs-review-v1"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2484,9 +2484,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260713-overview-sales-v1" in cabinet.text
+        "styles.css?v=20260713-cogs-review-v1" in cabinet.text
     )
-    assert "app.js?v=20260713-overview-sales-v1" in cabinet.text
+    assert "app.js?v=20260713-cogs-review-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -5440,7 +5440,7 @@ def test_tax_profile_review_is_not_counted_as_missing_cost(tmp_path: Path) -> No
     summary = client.get("/api/reports/report-1/summary").json()
 
     assert summary["quality"]["missingCostRows"] == 0
-    assert "missing_cost" not in {
+    assert "cogs_reconciliation_failed" not in {
         reason["code"] for reason in summary["readiness"]["reviewReasons"]
     }
 
@@ -5802,7 +5802,7 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     ]
     assert {reason["code"] for reason in summary["readiness"]["reviewReasons"]} == {
         "partial_period",
-        "missing_cost",
+        "cogs_reconciliation_failed",
         "client_draft_missing",
     }
 
@@ -7210,6 +7210,92 @@ def test_management_input_vat_is_review_task_not_publication_blocker(
     assert "vat_input_management_assumption" in review_codes
 
 
+def test_source_backed_missing_cost_is_review_only_not_publication_blocker(
+    tmp_path: Path,
+) -> None:
+    payload = ready_payload()
+    payload["lostSales"] = []
+    payload["unitRows"][0] = {
+        **payload["unitRows"][0],
+        "status": "Себестоимость 1С требует сверки",
+        "statusReason": "Себестоимость взята из ближайшей доступной недели 1С",
+        "lossDriver": "Себестоимость 1С требует сверки",
+    }
+    payload["unitRows"][1] = {
+        **payload["unitRows"][1],
+        "status": "Нет себестоимости 1С",
+        "statusReason": "Нет действующей себестоимости 1С",
+        "lossDriver": "Нет себестоимости 1С",
+        "cost": 0,
+    }
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        report = import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="cost-review-only",
+            publication_status="draft",
+            publish=False,
+        )
+        refresh = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="cost-review-only-source",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 30),
+            reason="cost review readiness test",
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh,
+            status="needs_review",
+            finished_at=repository.security.utcnow(),
+        )
+        db.add(
+            SourceLoad(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="",
+                report_run_id=report.id,
+                source_refresh_run_id=refresh.id,
+                required=False,
+                publication_required=False,
+                source_type="sku_mapping",
+                source_label="Сопоставление WB ↔ 1С",
+                status="loaded",
+                snapshot_hash="cost-review-only-hash",
+                row_count=2,
+                loaded_at=repository.security.utcnow(),
+            )
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        publication_codes = {
+            item["code"] for item in repository.report_publication_blockers(db, report)
+        }
+
+    blocker_codes = {item["code"] for item in readiness["blockingReasons"]}
+    cost_review = next(
+        item
+        for item in readiness["reviewReasons"]
+        if item["code"] == "cogs_reconciliation_failed"
+    )
+    assert "cogs_reconciliation_failed" not in blocker_codes
+    assert "cogs_reconciliation_failed" not in publication_codes
+    assert cost_review["count"] == 2
+    assert cost_review["costRequiresReviewRows"] == 1
+    assert cost_review["costAbsentRows"] == 1
+
+
 def test_wb_finance_lineage_must_cover_first_closing_week() -> None:
     report = SimpleNamespace(
         period_start=date(2026, 4, 1),
@@ -7441,7 +7527,6 @@ def test_non_osno_report_still_checks_common_financial_blockers() -> None:
             "storage_and_acceptance": 0,
         },
         tax_context={"profiles": [{"status": "ready"}]},
-        missing_cost_count=0,
         document_reconciliation_issue_count=0,
     )
     codes = {item["code"] for item in blockers}

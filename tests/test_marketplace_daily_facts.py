@@ -208,8 +208,7 @@ def test_daily_facts_replace_only_explicit_incremental_window() -> None:
         )
 
     assert [
-        (row.fact_date, row.source_refresh_run_id, row.net_revenue)
-        for row in rows
+        (row.fact_date, row.source_refresh_run_id, row.net_revenue) for row in rows
     ] == [
         (date(2026, 7, 5), "refresh-1", Decimal("100.00")),
         (date(2026, 7, 10), "refresh-incremental", Decimal("225.00")),
@@ -312,6 +311,10 @@ def test_daily_facts_recreate_wb_snapshot_grain_and_source_count() -> None:
             "source_row_count": 7,
             "storage": Decimal("4.50"),
             "marketplace_promotion": Decimal("3.25"),
+            "cogs": Decimal("10.50"),
+            "vat_input_from_1c": Decimal("2.25"),
+            "accounting_service_input_vat": Decimal("1.50"),
+            "spp_discount": Decimal("1.75"),
         }
     )
 
@@ -322,6 +325,11 @@ def test_daily_facts_recreate_wb_snapshot_grain_and_source_count() -> None:
     assert snapshots[0].source_row_count == 7
     assert snapshots[0].storage == Decimal("4.50")
     assert snapshots[0].wb_promotion == Decimal("3.25")
+    assert snapshots[0].preallocated_finance is True
+    assert snapshots[0].precomputed_cogs == Decimal("10.50")
+    assert snapshots[0].precomputed_vat_input_from_1c == Decimal("2.25")
+    assert snapshots[0].precomputed_accounting_service_input_vat == Decimal("1.50")
+    assert snapshots[0].precomputed_spp_discount == Decimal("1.75")
 
 
 def test_daily_facts_keep_operation_date_as_calculation_week_source() -> None:

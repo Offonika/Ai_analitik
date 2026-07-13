@@ -3217,10 +3217,7 @@ def active_conflicting_source_refresh_run(
     )
     if client_id:
         statement = statement.where(SourceRefreshRun.client_id == client_id)
-    return db.scalar(
-        statement
-        .order_by(SourceRefreshRun.created_at.desc())
-    )
+    return db.scalar(statement.order_by(SourceRefreshRun.created_at.desc()))
 
 
 def latest_source_refresh_run(
@@ -3368,9 +3365,7 @@ def create_source_refresh_run(
             "snapshotSetId": snapshot_set_id,
             "periodStart": period_start.isoformat(),
             "periodEnd": period_end.isoformat(),
-            "sourceWindowStart": (
-                source_window_start or period_start
-            ).isoformat(),
+            "sourceWindowStart": (source_window_start or period_start).isoformat(),
             "sourceWindowEnd": (source_window_end or period_end).isoformat(),
             "resumedFromRunId": resumed_from_run.id if resumed_from_run else None,
             "baseSourceRefreshRunId": (
@@ -4421,6 +4416,7 @@ def replace_marketplace_finance_daily_facts(
                 "return_quantity": fact.return_quantity,
                 "quantity": fact.quantity,
                 "return_amount": fact.return_amount,
+                "spp_discount": fact.spp_discount,
                 "net_revenue": fact.net_revenue,
                 "wb_commission": fact.wb_commission,
                 "logistics": fact.logistics,
@@ -4432,6 +4428,7 @@ def replace_marketplace_finance_daily_facts(
                 "cogs": fact.cogs,
                 "vat_input_from_marketplace": fact.vat_input_from_marketplace,
                 "vat_input_from_1c": fact.vat_input_from_1c,
+                "accounting_service_input_vat": fact.accounting_service_input_vat,
                 "source_row_count": fact.source_row_count,
                 "source_hash_digest": fact.source_hash_digest,
                 "grain_hash": grain_hash,
@@ -4465,8 +4462,7 @@ def replace_marketplace_finance_daily_facts(
                     and_(
                         MarketplaceFinanceDailyFact.seller_account_id
                         == seller_account_id,
-                        MarketplaceFinanceDailyFact.marketplace_report_id
-                        == report_id,
+                        MarketplaceFinanceDailyFact.marketplace_report_id == report_id,
                     )
                     for seller_account_id, report_id in replacement_report_keys
                 )
@@ -11427,8 +11423,7 @@ def _safe_source_refresh_message(refresh_run: SourceRefreshRun) -> str:
         )
     if refresh_run.status == "needs_full_refresh":
         return (
-            "Инкрементальное обновление не запущено: нужна полная "
-            "пересборка истории."
+            "Инкрементальное обновление не запущено: нужна полная пересборка истории."
         )
     if refresh_run.status == "failed":
         return (
@@ -11894,9 +11889,7 @@ def replace_source_loads_from_refresh(
         for item in contributing_runs
         if item.id not in {refresh_run.id, getattr(base_refresh_run, "id", None)}
     ]
-    source_items: list[
-        tuple[SourceRefreshRun, SourceRefreshCollection, str]
-    ] = []
+    source_items: list[tuple[SourceRefreshRun, SourceRefreshCollection, str]] = []
     incremental_composite_types = {
         "wb_finance_detail",
         "wb_sales_report_list",
@@ -12307,8 +12300,7 @@ def _unit_row(
         week=datetime.fromisoformat(week).date() if week else None,
         accounting_period_date=date_or_none(item.get("accountingPeriodDate")),
         accounting_period_source=(
-            as_text(item.get("accountingPeriodSource"))
-            or "wb_week_end_fallback"
+            as_text(item.get("accountingPeriodSource")) or "wb_week_end_fallback"
         ),
         month=as_text(item.get("month")),
         document_report=as_text(item.get("documentReport")),
@@ -12642,9 +12634,9 @@ def apply_wb_buyout_primary_documents(
             source_row.wb_cabinet_id or payload.get("wbCabinetId") or ""
         ).strip()
         by_run_key[(source_row.refresh_run_id, cabinet_id, report_id)] = source_row
-        by_run_report_id.setdefault(
-            (source_row.refresh_run_id, report_id), []
-        ).append(source_row)
+        by_run_report_id.setdefault((source_row.refresh_run_id, report_id), []).append(
+            source_row
+        )
 
     rows = list(
         db.scalars(
@@ -12666,7 +12658,8 @@ def apply_wb_buyout_primary_documents(
             for run in ordered_runs
             if row_period_end is None
             or (
-                (run.source_window_start or run.period_start) <= row_period_end
+                (run.source_window_start or run.period_start)
+                <= row_period_end
                 <= (run.source_window_end or run.period_end)
             )
         ]
@@ -12676,9 +12669,7 @@ def apply_wb_buyout_primary_documents(
             # to answer. Absence in that overlay is a real missing document and
             # must not be hidden by stale primary data from the full base.
             source_run = applicable_runs[0]
-            source_row = by_run_key.get(
-                (source_run.id, row.wb_cabinet_id, report_id)
-            )
+            source_row = by_run_key.get((source_run.id, row.wb_cabinet_id, report_id))
             if source_row is None:
                 candidates = by_run_report_id.get((source_run.id, report_id), [])
                 source_row = candidates[0] if len(candidates) == 1 else None
@@ -13354,15 +13345,6 @@ def report_readiness_payload(
         ]
     )
 
-    if missing_cost_count:
-        review_reasons.append(
-            _readiness_reason(
-                "missing_cost",
-                "Есть строки без подтвержденной себестоимости 1С.",
-                missing_cost_count,
-            )
-        )
-        score -= 15
     if mapping_count:
         review_reasons.append(
             _readiness_reason(
@@ -13406,6 +13388,22 @@ def report_readiness_payload(
         tax_context=resolved_tax_context,
         source_refresh_backed=source_refresh_backed,
     )
+    if missing_cost_count:
+        review_reasons.append(
+            _readiness_reason(
+                "cogs_reconciliation_failed",
+                "Себестоимость 1С требует сверки.",
+                missing_cost_count,
+                affectedRevenue=float(
+                    financial_stats.get("missing_cost_affected_revenue") or 0
+                ),
+                costRequiresReviewRows=int(
+                    financial_stats.get("cost_requires_review_rows") or 0
+                ),
+                costAbsentRows=int(financial_stats.get("cost_absent_rows") or 0),
+            )
+        )
+        score -= 15
     management_vat_rows = int(
         financial_stats.get("vat_input_management_assumption_rows") or 0
     )
@@ -13434,7 +13432,6 @@ def report_readiness_payload(
         source_loads=source_loads,
         stats=financial_stats,
         tax_context=resolved_tax_context,
-        missing_cost_count=missing_cost_count,
         document_reconciliation_issue_count=document_reconciliation_issue_count,
     )
     if _has_readiness_reason(
@@ -16729,7 +16726,8 @@ def _readiness_next_action(
             "Сверить управленческий входящий НДС с книгой покупок 1С."
         ),
         "cogs_reconciliation_failed": (
-            "Закрыть себестоимость без НДС и сопоставление WB-1С."
+            "Сверить себестоимость 1С; Excel можно формировать и публиковать "
+            "с явным предупреждением."
         ),
         "source_lineage_failed": "Повторить обязательные загрузки источников.",
         "required_wb_expense_source_missing": (
@@ -16778,7 +16776,6 @@ def _financial_integrity_blockers(
     source_loads: list[SourceLoad],
     stats: Mapping[str, Any],
     tax_context: Mapping[str, Any],
-    missing_cost_count: int,
     document_reconciliation_issue_count: int,
 ) -> list[dict[str, Any]]:
     source_refresh_backed = bool(report.source_snapshot_set_id) or any(
@@ -16840,19 +16837,6 @@ def _financial_integrity_blockers(
                     vat_unconfirmed,
                 )
             )
-
-    if source_refresh_backed and missing_cost_count:
-        affected_revenue = float(stats["missing_cost_affected_revenue"])
-        blockers.append(
-            _readiness_reason(
-                "cogs_reconciliation_failed",
-                "Себестоимость 1С не подтверждена.",
-                missing_cost_count,
-                affected_revenue=float(affected_revenue),
-                costRequiresReviewRows=int(stats.get("cost_requires_review_rows") or 0),
-                costAbsentRows=int(stats.get("cost_absent_rows") or 0),
-            )
-        )
 
     report_type_fallback_count = int(stats["report_type_fallback_rows"])
     if report_type_fallback_count:
@@ -17326,9 +17310,7 @@ def _missing_cost_reason_breakdown(
         select(
             reason_expr.label("reason"),
             func.count().label("row_count"),
-            func.coalesce(func.sum(ReportUnitRow.revenue), 0).label(
-                "affected_revenue"
-            ),
+            func.coalesce(func.sum(ReportUnitRow.revenue), 0).label("affected_revenue"),
         )
         .where(*conditions)
         .group_by(reason_expr)
@@ -17462,12 +17444,8 @@ def query_marketplace_expense_reconciliation(
                 ReportUnitRow.wb_cabinet_id,
                 ReportUnitRow.cabinet,
                 ReportUnitRow.organization,
-                func.coalesce(func.sum(ReportUnitRow.promotion), 0).label(
-                    "promotion"
-                ),
-                func.coalesce(func.sum(ReportUnitRow.penalties), 0).label(
-                    "penalties"
-                ),
+                func.coalesce(func.sum(ReportUnitRow.promotion), 0).label("promotion"),
+                func.coalesce(func.sum(ReportUnitRow.penalties), 0).label("penalties"),
                 func.coalesce(
                     func.sum(
                         ReportUnitRow.commission
@@ -17616,9 +17594,7 @@ def query_marketplace_expense_reconciliation(
         else:
             delta = onec_amount - wb_amount
             group_status = (
-                "matched"
-                if abs(delta) <= MARKETPLACE_EXPENSE_TOLERANCE
-                else "mismatch"
+                "matched" if abs(delta) <= MARKETPLACE_EXPENSE_TOLERANCE else "mismatch"
             )
         labels = group_labels.get(key, {})
         groups.append(
@@ -18119,8 +18095,7 @@ def query_cogs_reconciliation(
         )
         document_conditions.append(
             or_(
-                ReportDocumentReconciliationRow.client_company_id
-                == client_company_id,
+                ReportDocumentReconciliationRow.client_company_id == client_company_id,
                 ReportDocumentReconciliationRow.organization == client_company_id,
             )
         )
@@ -18136,9 +18111,7 @@ def query_cogs_reconciliation(
         )
     ]
     document_rows = list(
-        db.scalars(
-            select(ReportDocumentReconciliationRow).where(*document_conditions)
-        )
+        db.scalars(select(ReportDocumentReconciliationRow).where(*document_conditions))
     )
 
     pnl_by_kind = {"commissioner": Decimal("0"), "buyout": Decimal("0")}
@@ -18180,17 +18153,11 @@ def query_cogs_reconciliation(
     commissioner_same_scope_delta = (
         same_scope_by_kind["commissioner"] - pnl_by_kind["commissioner"]
     )
-    buyout_boundary_delta = (
-        calendar_by_kind["buyout"] - same_scope_by_kind["buyout"]
-    )
-    buyout_same_scope_delta = (
-        same_scope_by_kind["buyout"] - pnl_by_kind["buyout"]
-    )
+    buyout_boundary_delta = calendar_by_kind["buyout"] - same_scope_by_kind["buyout"]
+    buyout_same_scope_delta = same_scope_by_kind["buyout"] - pnl_by_kind["buyout"]
     pnl_cogs = pnl_by_kind["commissioner"] + pnl_by_kind["buyout"]
     onec_cogs = (
-        calendar_by_kind["commissioner"]
-        + calendar_by_kind["buyout"]
-        + adjustment_delta
+        calendar_by_kind["commissioner"] + calendar_by_kind["buyout"] + adjustment_delta
     )
     delta = onec_cogs - pnl_cogs
     explained_delta = (
@@ -18202,9 +18169,7 @@ def query_cogs_reconciliation(
     )
     unexplained_delta = delta - explained_delta
 
-    cost_review_rows = [
-        row for row in pnl_rows if _unit_row_cost_requires_review(row)
-    ]
+    cost_review_rows = [row for row in pnl_rows if _unit_row_cost_requires_review(row)]
     cost_absent_rows = [row for row in pnl_rows if _unit_row_cost_absent(row)]
     context_supported = bool(pnl_rows) and all(
         bool(row.cost_match_status) or row.net_qty == 0 for row in pnl_rows
@@ -18245,18 +18210,12 @@ def query_cogs_reconciliation(
             "pnlCommissionerCogs": _json_number(pnl_by_kind["commissioner"]),
             "pnlBuyoutCogs": _json_number(pnl_by_kind["buyout"]),
             "onecCogs": _json_number(onec_cogs),
-            "onecCommissionerCogs": _json_number(
-                calendar_by_kind["commissioner"]
-            ),
+            "onecCommissionerCogs": _json_number(calendar_by_kind["commissioner"]),
             "onecBuyoutCogs": _json_number(calendar_by_kind["buyout"]),
             "onecAdjustments": _json_number(adjustment_delta),
             "delta": _json_number(delta),
-            "commissionerBoundaryDelta": _json_number(
-                commissioner_boundary_delta
-            ),
-            "commissionerSameScopeDelta": _json_number(
-                commissioner_same_scope_delta
-            ),
+            "commissionerBoundaryDelta": _json_number(commissioner_boundary_delta),
+            "commissionerSameScopeDelta": _json_number(commissioner_same_scope_delta),
             "buyoutBoundaryDelta": _json_number(buyout_boundary_delta),
             "buyoutSameScopeDelta": _json_number(buyout_same_scope_delta),
             "adjustmentDelta": _json_number(adjustment_delta),
@@ -18431,15 +18390,13 @@ def _cogs_reconciliation_items(
         elif abs(same_scope_delta) > FINANCIAL_RECONCILIATION_TOLERANCE:
             status = "Проверить стоимость"
             reason = (
-                "Себестоимость совпадающей недели WB отличается от итога "
-                "документа 1С."
+                "Себестоимость совпадающей недели WB отличается от итога документа 1С."
             )
             action = "Открыть строки себестоимости и проверить цену/допрасходы 1С."
         else:
             status = "Сходится"
             reason = (
-                "Себестоимость недели воспроизводится на одинаковой "
-                "периодической базе."
+                "Себестоимость недели воспроизводится на одинаковой периодической базе."
             )
             action = "Действий не требуется."
         items.append(
@@ -19647,9 +19604,7 @@ def _row_period_condition(
             ReportUnitRow.accounting_period_date >= period_start
         )
     if period_end:
-        accounting_conditions.append(
-            ReportUnitRow.accounting_period_date <= period_end
-        )
+        accounting_conditions.append(ReportUnitRow.accounting_period_date <= period_end)
     week_conditions = [
         ReportUnitRow.accounting_period_date.is_(None),
         ReportUnitRow.week.is_not(None),

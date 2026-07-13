@@ -7170,6 +7170,24 @@ function openMissingCostAction() {
   }
 }
 
+function openOnecReconciliationAction(options = {}) {
+  if (options.deltaOnly) {
+    els.onecFilterDeltaOnly.checked = true;
+  }
+  openReconciliationHub("documents");
+  if (options.deltaOnly) {
+    applyOnecReconciliationFilters();
+  }
+}
+
+function openMissingMappingAction() {
+  if (isStaffUser()) {
+    openMappingWidget({ marketplace: "wb", status: "review", search: "" });
+  } else {
+    openDrilldownWidget("missingMapping");
+  }
+}
+
 function onNextAction() {
   const action = els.nextActionButton.dataset.action || "reasons";
   if (action === "missingCost") {
@@ -9576,20 +9594,11 @@ function runAnalyticsAction(action, data = {}) {
     return;
   }
   if (action === "missingMapping") {
-    if (isStaffUser()) {
-      openMappingWidget({ marketplace: "wb", status: "review", search: "" });
-    } else {
-      openDrilldownWidget("missingMapping");
-    }
+    openMissingMappingAction();
     return;
   }
   if (action === "onecReconciliationDelta") {
-    els.onecFilterDeltaOnly.checked = true;
-    selectDetailTab("onecReconciliation");
-    if (state.onecReconciliationLoaded) {
-      loadOnecReconciliation(currentClientLoadContext());
-    }
-    scrollToDetailPanel("onecReconciliation");
+    openOnecReconciliationAction({ deltaOnly: true });
     return;
   }
   if (action === "rowsPreset") {
@@ -11171,7 +11180,7 @@ function costReconciliationGuide(reason = {}) {
     ? `${number(requiresReview)} рассчитаны по ближайшей себестоимости и требуют сверки; ${number(absent)} без действующей себестоимости 1С.`
     : "Расшифровка разделит временную себестоимость и товары, где стоимостной слой не найден.";
   return {
-    hint: `${breakdown} Блокер исчезнет только после обновления данных 1С и пересборки отчёта.`,
+    hint: `${breakdown} Это предупреждение не мешает формировать, скачивать и публиковать Excel; после обновления 1С и пересборки оно исчезнет.`,
     label: total
       ? `Открыть ${number(total)} строк себестоимости`
       : "Открыть проверку себестоимости",
@@ -11185,11 +11194,7 @@ function runReasonAction(action) {
     return;
   }
   if (action === "missingMapping") {
-    if (isStaffUser()) {
-      openMappingWidget({ marketplace: "wb", status: "review", search: "" });
-    } else {
-      openDrilldownWidget("missingMapping");
-    }
+    openMissingMappingAction();
     return;
   }
   if (action === "reviewRows") {
@@ -11201,7 +11206,7 @@ function runReasonAction(action) {
     return;
   }
   if (action === "onecReconciliation") {
-    openReconciliationHub("documents");
+    openOnecReconciliationAction();
     return;
   }
   if (action === "integrations") {
