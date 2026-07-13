@@ -1877,6 +1877,64 @@ def test_incremental_materialization_uses_exact_window_and_report_boundaries(
     ]
 
 
+def test_daily_facts_report_selection_includes_opening_partial_week(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="opening-partial-week",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 17),
+            user=user,
+            source_report=report,
+            reason="opening partial week",
+        )
+        facts = [
+            MarketplaceFinanceDailyFact(
+                client_id=report.client_id,
+                seller_account_id="seller",
+                organization_id="org",
+                fact_date=fact_date,
+                marketplace_report_id=f"report-{fact_date.isoformat()}",
+                document_kind="commissioner_report",
+                source_row_count=1,
+                source_hash_digest=str(index) * 64,
+                methodology_version="test-v1",
+            )
+            for index, fact_date in enumerate(
+                (date(2026, 2, 22), date(2026, 2, 23), date(2026, 3, 1)),
+                start=1,
+            )
+        ]
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            refresh_run,
+            facts,
+            marketplace="wb",
+            coverage_start=date(2026, 2, 22),
+            coverage_end=date(2026, 6, 17),
+        )
+        selected = SourceRefreshService(settings)._daily_facts_for_report(
+            db,
+            refresh_run,
+        )
+
+    assert [item.fact_date for item in selected] == [
+        date(2026, 2, 23),
+        date(2026, 3, 1),
+    ]
+
+
 def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path

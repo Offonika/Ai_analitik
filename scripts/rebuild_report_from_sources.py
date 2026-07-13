@@ -32,7 +32,6 @@ from wb_unit_economics.contracts import (
     VatDeductionMode,
     VatMode,
     WbApiSnapshot,
-    WbSalesReportSummaryRow,
 )
 from wb_unit_economics.mapping import (
     build_sku_mapping_from_articles,
@@ -308,10 +307,7 @@ def build_db_first_payload(
         supplied_daily_facts = getattr(args, "wb_daily_facts", None)
         if supplied_daily_facts is None:
             raise ValueError("daily-facts source requires wb_daily_facts")
-        wb_snapshots = _wb_snapshots_from_daily_facts(
-            supplied_daily_facts,
-            wb_sales_report_summary_rows=wb_summary_rows,
-        )
+        wb_snapshots = _wb_snapshots_from_daily_facts(supplied_daily_facts)
     else:
         wb_snapshots = []
     if args.wb_finance_source != "files-stream" and not wb_snapshots:
@@ -500,16 +496,9 @@ def build_db_first_payload(
 
 def _wb_snapshots_from_daily_facts(
     facts: list[MarketplaceFinanceDailyFact],
-    *,
-    wb_sales_report_summary_rows: list[WbSalesReportSummaryRow] | None = None,
 ) -> list[WbApiSnapshot]:
     """Recreate the calculation grain without rereading immutable WB raw pages."""
     loaded_at = datetime.now().astimezone()
-    summary_periods = {
-        (item.seller_account_id, item.report_id): (item.date_from, item.date_to)
-        for item in wb_sales_report_summary_rows or []
-        if item.seller_account_id and item.report_id
-    }
     snapshots: list[WbApiSnapshot] = []
     for fact in facts:
         sales_model_text = str(fact.sales_model or SalesModel.FBO.value).lower()
@@ -522,17 +511,13 @@ def _wb_snapshots_from_daily_facts(
             "commissioner_report": 1,
             "buyout_notice": 2,
         }.get(str(fact.document_kind))
-        period_start, period_end = summary_periods.get(
-            (fact.seller_account_id, fact.marketplace_report_id),
-            (fact.fact_date, fact.fact_date),
-        )
         snapshots.append(
             WbApiSnapshot(
                 client_id=fact.client_id,
                 seller_account_id=fact.seller_account_id,
                 organization_id=fact.organization_id,
-                period_start=period_start,
-                period_end=period_end,
+                period_start=fact.fact_date,
+                period_end=fact.fact_date,
                 source_endpoint="marketplace_finance_daily_facts",
                 loaded_at=loaded_at,
                 wb_document_id=(

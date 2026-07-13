@@ -7155,19 +7155,25 @@ function preliminaryPeriodNotice(readiness, quality) {
   return "";
 }
 
+function openMissingCostAction() {
+  if (shouldUseOzonWorkingView()) {
+    // Ozon clients get the legacy drilldown, not the new cost-review
+    // workflow — see the matching note in selectWorkspace(). Shared by
+    // onNextAction/runAnalyticsAction/runReasonAction so the three entry
+    // points can't drift out of sync again.
+    openDrilldownWidget("missingCost");
+  } else {
+    selectWorkspace("checks", {
+      checkView: "cost",
+      updateLocation: true,
+    });
+  }
+}
+
 function onNextAction() {
   const action = els.nextActionButton.dataset.action || "reasons";
   if (action === "missingCost") {
-    if (shouldUseOzonWorkingView()) {
-      // Ozon clients get the legacy drilldown, not the new cost-review
-      // workflow — see the matching note in selectWorkspace().
-      openDrilldownWidget("missingCost");
-    } else {
-      selectWorkspace("checks", {
-        checkView: "cost",
-        updateLocation: true,
-      });
-    }
+    openMissingCostAction();
     return;
   }
   if (action === "clientOutput") {
@@ -9566,7 +9572,7 @@ function onAnalyticsAction(event) {
 
 function runAnalyticsAction(action, data = {}) {
   if (action === "missingCost") {
-    openDrilldownWidget("missingCost");
+    openMissingCostAction();
     return;
   }
   if (action === "missingMapping") {
@@ -11175,16 +11181,7 @@ function costReconciliationGuide(reason = {}) {
 
 function runReasonAction(action) {
   if (action === "missingCost") {
-    if (shouldUseOzonWorkingView()) {
-      // Ozon clients get the legacy drilldown, not the new cost-review
-      // workflow — see the matching note in selectWorkspace().
-      openDrilldownWidget("missingCost");
-    } else {
-      selectWorkspace("checks", {
-        checkView: "cost",
-        updateLocation: true,
-      });
-    }
+    openMissingCostAction();
     return;
   }
   if (action === "missingMapping") {

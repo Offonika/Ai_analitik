@@ -10,10 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from scripts.rebuild_report_from_sources import _wb_snapshots_from_daily_facts
-from wb_unit_economics.contracts import (
-    MarketplaceFinanceDailyFact,
-    WbSalesReportSummaryRow,
-)
+from wb_unit_economics.contracts import MarketplaceFinanceDailyFact
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
 from wb_unit_economics.web.models import (
@@ -327,29 +324,15 @@ def test_daily_facts_recreate_wb_snapshot_grain_and_source_count() -> None:
     assert snapshots[0].wb_promotion == Decimal("3.25")
 
 
-def test_daily_facts_restore_statement_week_from_stable_report_key() -> None:
+def test_daily_facts_keep_operation_date_as_calculation_week_source() -> None:
     fact = _daily_fact(
         net_revenue="125",
         fact_date=date(2026, 7, 13),
     )
-    summary = WbSalesReportSummaryRow(
-        client_id="client",
-        seller_account_id="seller",
-        account_name="Seller",
-        report_id="report",
-        date_from=date(2026, 7, 6),
-        date_to=date(2026, 7, 12),
-        create_date=date(2026, 7, 13),
-        raw_payload_hash="b" * 64,
-    )
+    snapshots = _wb_snapshots_from_daily_facts([fact])
 
-    snapshots = _wb_snapshots_from_daily_facts(
-        [fact],
-        wb_sales_report_summary_rows=[summary],
-    )
-
-    assert snapshots[0].period_start == summary.date_from
-    assert snapshots[0].period_end == summary.date_to
+    assert snapshots[0].period_start == fact.fact_date
+    assert snapshots[0].period_end == fact.fact_date
     assert snapshots[0].raw_payload_hash == fact.source_hash_digest
 
 

@@ -3113,10 +3113,12 @@ class SourceRefreshService:
                 and str(item.report_id).strip()
             }
         )
+        fact_period_start = week_bounds(refresh_run.period_start)[0]
+        fact_period_end = week_bounds(refresh_run.period_end)[1]
         report_scope = and_(
             MarketplaceFinanceDailyFactModel.fact_date
-            >= refresh_run.period_start,
-            MarketplaceFinanceDailyFactModel.fact_date <= refresh_run.period_end,
+            >= fact_period_start,
+            MarketplaceFinanceDailyFactModel.fact_date <= fact_period_end,
         )
         if report_keys:
             report_scope = or_(
