@@ -26,7 +26,7 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_07_12_marketplace_expense_reconciliation"
+DB_FIRST_SCHEMA_VERSION = "2026_07_13_incremental_source_refresh"
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -351,6 +351,9 @@ def _ensure_source_load_columns(engine: Engine) -> None:
         "source_refresh_run_id": "VARCHAR",
         "required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
         "publication_required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",
+        "coverage_start": "DATE",
+        "coverage_end": "DATE",
+        "lineage_role": "VARCHAR NOT NULL DEFAULT 'current'",
     }
     missing = [
         (column, definition)
@@ -378,6 +381,8 @@ def _ensure_source_refresh_resume_columns(engine: Engine) -> None:
             "worker_id": "VARCHAR NOT NULL DEFAULT ''",
             "failure_code": "VARCHAR NOT NULL DEFAULT ''",
             "heartbeat_at": "TIMESTAMP WITH TIME ZONE",
+            "source_window_start": "DATE",
+            "source_window_end": "DATE",
         },
         "source_refresh_collections": {
             "publication_required": f"BOOLEAN NOT NULL DEFAULT {bool_default}",

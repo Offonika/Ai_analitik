@@ -2451,12 +2451,16 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     )
     assert 'data-detail-tab="liquidity"' in cabinet.text
     assert 'data-detail-tab="lostSales"' in cabinet.text
-    assert 'data-detail-tab="onecReconciliation"' in cabinet.text
+    assert 'aria-controls="reconciliation-hub-overlay"' in cabinet.text
+    assert 'id="reconciliation-hub-overlay"' in cabinet.text
+    assert 'data-reconciliation-tab="documents"' in cabinet.text
+    assert 'data-reconciliation-tab="cogs"' in cabinet.text
+    assert 'data-reconciliation-tab="expenses"' in cabinet.text
+    assert 'data-reconciliation-tab="buyouts"' in cabinet.text
     assert 'data-detail-tab="products"' in cabinet.text
     assert 'id="integration-provider-tabs"' in cabinet.text
     assert 'data-integration-provider-filter="ozon_api"' in cabinet.text
     assert 'id="ozon-diagnostics-panel"' in cabinet.text
-    assert 'id="ozon-excel-link"' in cabinet.text
     assert 'id="ozon-preview-rows"' in cabinet.text
     assert 'id="ozon-issue-list"' in cabinet.text
     assert 'id="ozon-vitrine-status"' in cabinet.text
@@ -2473,9 +2477,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "Excel Ozon" in cabinet.text
-    assert "styles.css?v=20260713-ux-quickwins-v1" in cabinet.text
-    assert "app.js?v=20260713-ux-quickwins-v1" in cabinet.text
+    assert (
+        "styles.css?v=20260713-reconciliation-incremental-v1" in cabinet.text
+    )
+    assert "app.js?v=20260713-reconciliation-incremental-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -2512,7 +2517,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     )
     assert 'data-detail-panel="liquidity"' in cabinet.text
     assert 'data-detail-panel="lostSales"' in cabinet.text
-    assert 'data-detail-panel="onecReconciliation"' in cabinet.text
+    assert 'data-reconciliation-panel="documents"' in cabinet.text
+    assert 'data-reconciliation-panel="cogs"' in cabinet.text
+    assert 'data-reconciliation-panel="expenses"' in cabinet.text
+    assert 'data-reconciliation-panel="buyouts"' in cabinet.text
     assert 'data-detail-panel="products"' in cabinet.text
     assert 'data-row-preset="returns"' in cabinet.text
     assert 'id="onec-reconciliation-filter-form"' in cabinet.text
@@ -2528,6 +2536,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="source-refresh-panel"' in cabinet.text
     assert 'id="source-refresh-mapping-form"' in cabinet.text
     assert 'id="source-refresh-steps"' in cabinet.text
+    assert 'id="source-refresh-incremental-run"' in cabinet.text
     assert 'id="source-refresh-full-run"' in cabinet.text
     assert 'id="source-refresh-ozon-run"' in cabinet.text
     assert cabinet.text.index('id="source-refresh-panel"') < cabinet.text.index(
@@ -2539,7 +2548,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Данные и расчёт" in cabinet.text
     assert "Сопоставление клиента" in cabinet.text
     assert "Проверить готовность" in cabinet.text
-    assert "Обновить и пересчитать" in cabinet.text
+    assert "Обновить последние данные" in cabinet.text
+    assert "Полная пересборка истории" in cabinet.text
     assert "Обновить статус" in cabinet.text
     assert "Обновление данных маркетплейса" not in cabinet.text
     assert 'id="mapping-upload-form"' not in cabinet.text
@@ -3375,6 +3385,9 @@ def test_client_mapping_file_upload_and_source_refresh_controls(
         settings_overrides={
             "source_refresh_mapping_dir": str(mapping_dir),
             "source_refresh_enabled": True,
+            "source_refresh_incremental_enabled": True,
+            "marketplace_daily_facts_enabled": True,
+            "db_first_reports_enabled": True,
         },
     )
     client.app.state.source_refresh_service = fake_refresh
@@ -3402,6 +3415,23 @@ def test_client_mapping_file_upload_and_source_refresh_controls(
     assert fake_refresh.calls[-1]["dry_run"] is True
     assert fake_refresh.calls[-1]["tenant_id"] == "shumeyko"
     assert fake_refresh.calls[-1]["client_id"] == "shumeyko"
+
+    incremental = client.post(
+        "/api/clients/shumeyko/source-refresh",
+        json={"mode": "incremental", "dry_run": True},
+    )
+
+    assert incremental.status_code == 200
+    assert incremental.json()["incrementalEnabled"] is True
+    assert fake_refresh.calls[-1]["mode"] == "incremental"
+    assert fake_refresh.calls[-1]["dry_run"] is True
+
+    incremental_latest = client.get(
+        "/api/clients/shumeyko/source-refresh/latest?mode=incremental"
+    )
+    assert incremental_latest.status_code == 200
+    assert incremental_latest.json()["incrementalEnabled"] is True
+    assert incremental_latest.json()["incrementalWindowDays"] == 28
 
     ozon_only = client.post(
         "/api/clients/shumeyko/source-refresh",

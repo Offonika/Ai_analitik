@@ -27,9 +27,11 @@ from wb_unit_economics.contracts import (
     AccountOrgMapping,
     InputVatPolicy,
     MarketplaceFinanceDailyFact,
+    SalesModel,
     TaxProfile,
     VatDeductionMode,
     VatMode,
+    WbApiSnapshot,
 )
 from wb_unit_economics.mapping import (
     build_sku_mapping_from_articles,
@@ -288,6 +290,11 @@ def build_db_first_payload(
             client_id=args.client_id,
             account_org_mapping=account_mapping,
         )
+    elif args.wb_finance_source == "daily-facts":
+        supplied_daily_facts = getattr(args, "wb_daily_facts", None)
+        if supplied_daily_facts is None:
+            raise ValueError("daily-facts source requires wb_daily_facts")
+        wb_snapshots = _wb_snapshots_from_daily_facts(supplied_daily_facts)
     else:
         wb_snapshots = []
     if args.wb_finance_source != "files-stream" and not wb_snapshots:
@@ -367,13 +374,18 @@ def build_db_first_payload(
             client_id=args.client_id,
             amount_field=args.cost_amount_field,
         )
+    supplied_summary_rows = getattr(args, "wb_sales_report_summary_rows", None)
     wb_summary_rows = (
-        load_wb_sales_report_summary_rows(
-            args.wb_report_list_dir, client_id=args.client_id
+        list(supplied_summary_rows)
+        if supplied_summary_rows is not None
+        else (
+            load_wb_sales_report_summary_rows(
+                args.wb_report_list_dir, client_id=args.client_id
+            )
+            if args.wb_report_list_dir
+            and (args.wb_report_list_dir / "manifest.json").exists()
+            else []
         )
-        if args.wb_report_list_dir
-        and (args.wb_report_list_dir / "manifest.json").exists()
-        else []
     )
     expense_allocation_bases = load_wb_expense_allocation_bases(
         client_id=args.client_id,
@@ -444,9 +456,11 @@ def build_db_first_payload(
             daily_facts_sink=daily_facts,
         )
         wb_row_count = len(wb_snapshots)
-        wb_source_row_count = len(wb_snapshots)
+        wb_source_row_count = sum(
+            max(1, int(item.source_row_count)) for item in wb_snapshots
+        )
         wb_report_period_row_count = sum(
-            1
+            max(1, int(item.source_row_count))
             for item in wb_snapshots
             if report_period_start
             <= week_bounds(item.period_start)[1]
@@ -478,6 +492,61 @@ def build_db_first_payload(
         "cost_candidates": len(cost_snapshots),
         "sku_mappings": len(sku_mappings),
     }
+
+
+def _wb_snapshots_from_daily_facts(
+    facts: list[MarketplaceFinanceDailyFact],
+) -> list[WbApiSnapshot]:
+    """Recreate the calculation grain without rereading immutable WB raw pages."""
+    loaded_at = datetime.now().astimezone()
+    snapshots: list[WbApiSnapshot] = []
+    for fact in facts:
+        sales_model_text = str(fact.sales_model or SalesModel.FBO.value).lower()
+        sales_model = (
+            SalesModel(sales_model_text)
+            if sales_model_text in {item.value for item in SalesModel}
+            else SalesModel.FBO
+        )
+        report_type = {
+            "commissioner_report": 1,
+            "buyout_notice": 2,
+        }.get(str(fact.document_kind))
+        snapshots.append(
+            WbApiSnapshot(
+                client_id=fact.client_id,
+                seller_account_id=fact.seller_account_id,
+                organization_id=fact.organization_id,
+                period_start=fact.fact_date,
+                period_end=fact.fact_date,
+                source_endpoint="marketplace_finance_daily_facts",
+                loaded_at=loaded_at,
+                wb_document_id=(
+                    f"{fact.marketplace_report_id}:{fact.fact_date.isoformat()}"
+                ),
+                wb_report_id=fact.marketplace_report_id,
+                report_type=report_type,
+                nm_id=fact.nm_id,
+                vendor_code=fact.vendor_code,
+                barcode=fact.barcode,
+                sales_model=sales_model,
+                operation_type=fact.operation_group or "unknown",
+                quantity=fact.quantity,
+                net_revenue=fact.net_revenue,
+                wb_commission=fact.wb_commission,
+                logistics=fact.logistics,
+                storage=fact.storage,
+                acceptance=fact.acceptance,
+                wb_promotion=fact.marketplace_promotion,
+                penalties_and_holdbacks=fact.penalties_and_holdbacks,
+                acquiring=fact.acquiring,
+                vat_input_from_wb=fact.vat_input_from_marketplace,
+                advertising=Decimal("0"),
+                raw_payload_hash=fact.source_hash_digest,
+                is_partial_source=fact.is_partial_source,
+                source_row_count=max(1, int(fact.source_row_count)),
+            )
+        )
+    return snapshots
 
 
 def _confirmed_input_vat_org_ids(
@@ -562,7 +631,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wb-finance-source",
-        choices=["files", "files-stream", "postgres"],
+        choices=["files", "files-stream", "daily-facts", "postgres"],
         default="files",
     )
     parser.add_argument(

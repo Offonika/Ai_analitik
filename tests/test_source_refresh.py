@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 from openpyxl import Workbook
 from sqlalchemy.exc import OperationalError
 
+from wb_unit_economics.contracts import MarketplaceFinanceDailyFact
 from wb_unit_economics.onec_odata import (
     OnecODataMetadataCheckResult,
     OnecSampleExportResult,
@@ -1552,6 +1553,223 @@ def test_daily_refresh_materializes_daily_facts_when_enabled(
     assert payload["status"] == "needs_review"
     assert seen["daily_facts_run_id"] == payload["id"]
     assert Path(seen["daily_facts_wb_dir"]).name == "wb_finance"
+
+
+def test_incremental_refresh_uses_28_day_window_and_requires_full_base(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = True
+    monkeypatch.setattr(
+        source_refresh,
+        "_incremental_yesterday",
+        lambda: date(2026, 6, 17),
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = service._create_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="incremental test",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 2),
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+        assert isinstance(refresh_run, SourceRefreshRun)
+        assert refresh_run.source_window_start == date(2026, 5, 21)
+        assert refresh_run.source_window_end == date(2026, 6, 17)
+        assert refresh_run.period_start == report.period_start
+        assert refresh_run.period_end == date(2026, 6, 17)
+
+        payload = service._execute_run(db, refresh_run, user=user)
+
+    assert payload["status"] == "needs_full_refresh"
+    assert payload["failureCode"] == "incremental_base_unavailable"
+
+
+def test_incremental_refresh_requires_db_first_reports(tmp_path: Path) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = False
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        with pytest.raises(
+            source_refresh.SourceRefreshConfigError,
+            match="DB_FIRST_REPORTS_ENABLED",
+        ):
+            service._create_refresh_run(
+                db,
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                mode="incremental",
+                credential_source="tenant",
+                dry_run=False,
+                user=user,
+                source_report=report,
+                reason="incremental test",
+                period_start=report.period_start,
+                period_end=date(2026, 6, 17),
+                resume_mode="never",
+                resume_from_run_id=None,
+            )
+
+
+def test_incremental_refresh_reuses_valid_full_daily_facts_base(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = True
+    monkeypatch.setattr(
+        source_refresh,
+        "_incremental_yesterday",
+        lambda: date(2026, 6, 17),
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base_root = settings.source_refresh_root_path / "full-incremental-base"
+        finance_dir = base_root / "wb_finance"
+        finance_dir.mkdir(parents=True)
+        (finance_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "seller_account_id": "WB_ACCOUNT_9",
+                            "status": "no_data",
+                            "page_index": 1,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-incremental-base",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="full base",
+        )
+        repository.update_source_refresh_run(
+            db,
+            base,
+            status="report_created",
+            root_dir=str(base_root),
+            finished_at=datetime.now().astimezone(),
+        )
+        finance_collection = repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            snapshot_hash="wb-base-hash",
+            raw_path=str(finance_dir),
+            payload={
+                "sourceCoverageStart": report.period_start.isoformat(),
+                "sourceCoverageEnd": report.period_end.isoformat(),
+                "dailyFacts": {
+                    "status": "materialized",
+                    "parity": {"status": "aggregate_only"},
+                    "persistedParity": {"status": "matched"},
+                }
+            },
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_product_cards",
+            source_label="WB cards",
+            required=True,
+            status="loaded",
+            snapshot_hash="cards-base-hash",
+        )
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            base,
+            [
+                MarketplaceFinanceDailyFact(
+                    client_id=report.client_id,
+                    seller_account_id="WB_ACCOUNT_9",
+                    organization_id="1C_ORG_1",
+                    fact_date=report.period_start,
+                    marketplace_report_id="WB-BASE",
+                    document_kind="commissioner_report",
+                    source_row_count=1,
+                    source_hash_digest="base-fact-hash",
+                    methodology_version=source_refresh.METHODOLOGY_VERSION,
+                )
+            ],
+            marketplace="wb",
+        )
+        db.commit()
+
+        service = SourceRefreshService(settings)
+        refresh_run = service._create_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="incremental",
+            period_start=None,
+            period_end=None,
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+        finance_collection.payload = {
+            **finance_collection.payload,
+            "sourceCoverageStart": (
+                report.period_start + timedelta(days=1)
+            ).isoformat(),
+        }
+        coverage_issue = service._daily_facts_coverage_issue(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            period_start=report.period_start,
+            period_end=report.period_start,
+        )
+
+    assert isinstance(refresh_run, SourceRefreshRun)
+    assert refresh_run.mode == "incremental"
+    assert refresh_run.base_source_refresh_run_id == base.id
+    assert coverage_issue == (
+        f"daily_facts_coverage_gap:{report.period_start.isoformat()}"
+    )
 
 
 def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
@@ -3170,6 +3388,51 @@ def test_source_refresh_daily_blocks_when_full_is_active(
     assert payload["status"] == "blocked_active_refresh"
 
 
+def test_source_refresh_incremental_blocks_when_daily_is_active(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_incremental_enabled = True
+    settings.marketplace_daily_facts_enabled = True
+    settings.db_first_reports_enabled = True
+    monkeypatch.setattr(
+        source_refresh,
+        "_incremental_yesterday",
+        lambda: date(2026, 6, 17),
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        active = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="active-daily-run",
+            period_start=date(2026, 6, 4),
+            period_end=date(2026, 6, 17),
+            user=user,
+            source_report=report,
+        )
+        db.commit()
+        service = SourceRefreshService(settings)
+        payload = service.run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="incremental",
+            user=user,
+            source_report=report,
+        )
+
+    assert payload["status"] == "blocked_active_refresh"
+    assert payload["blockedByRunId"] == active.id
+
+
 def test_source_refresh_low_disk_guard_skips_external_reads(tmp_path: Path) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
@@ -4218,6 +4481,198 @@ def test_composite_report_source_loads_keep_wb_base_and_current_onec_lineage(
 
     assert loads["wb_finance_detail"].source_refresh_run_id == base.id
     assert loads["onec_tax_profiles"].source_refresh_run_id == current.id
+    assert loads["wb_finance_detail"].lineage_role == "base"
+    assert loads["wb_finance_detail"].coverage_start == report.period_start
+    assert loads["wb_finance_detail"].coverage_end == report.period_end
+    assert loads["onec_tax_profiles"].lineage_role == "current"
+    assert loads["onec_tax_profiles"].coverage_start == report.period_start
+    assert loads["onec_tax_profiles"].coverage_end == report.period_end
+
+
+def test_incremental_snapshot_set_hash_includes_source_snapshots(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="base-run",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            reason="base",
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="current-run",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            base_source_refresh_run=base,
+            reason="current",
+            enforce_active_check=False,
+        )
+        repository.add_source_refresh_collection(
+            db,
+            base,
+            source_type="wb_finance_detail",
+            source_label="WB",
+            required=True,
+            status="loaded",
+            snapshot_hash="wb-hash",
+            row_count=1,
+        )
+        onec = repository.add_source_refresh_collection(
+            db,
+            current,
+            source_type="onec_odata",
+            source_label="1C",
+            required=True,
+            status="loaded",
+            snapshot_hash="onec-hash-v1",
+            row_count=1,
+        )
+        first = service._report_snapshot_set_id(
+            current,
+            base_refresh_run=base,
+        )
+        onec.snapshot_hash = "onec-hash-v2"
+        second = service._report_snapshot_set_id(
+            current,
+            base_refresh_run=base,
+        )
+
+    assert first.startswith("composite-")
+    assert second.startswith("composite-")
+    assert first != second
+
+
+def test_incremental_source_loads_keep_only_composed_base_and_overlay_sources(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-incremental-lineage",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=report.period_start,
+            source_window_end=report.period_end,
+            user=user,
+            reason="base",
+        )
+        overlay = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="previous-incremental-lineage",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=date(2026, 5, 1),
+            source_window_end=report.period_end,
+            user=user,
+            reason="overlay",
+            enforce_active_check=False,
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="current-incremental-lineage",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=date(2026, 5, 21),
+            source_window_end=report.period_end,
+            user=user,
+            base_source_refresh_run=base,
+            reason="current",
+            enforce_active_check=False,
+        )
+        for run in (base, overlay, current):
+            for source_type in ("wb_finance_detail", "wb_stock_history_daily"):
+                repository.add_source_refresh_collection(
+                    db,
+                    run,
+                    source_type=source_type,
+                    source_label=source_type,
+                    required=source_type == "wb_finance_detail",
+                    status="loaded",
+                    snapshot_hash=f"{run.id}-{source_type}",
+                    row_count=1,
+                )
+        repository.add_source_refresh_collection(
+            db,
+            current,
+            source_type="onec_odata",
+            source_label="1C",
+            required=True,
+            status="loaded",
+            snapshot_hash="onec-current",
+            row_count=1,
+        )
+
+        repository.replace_source_loads_from_refresh(
+            db,
+            report,
+            current,
+            base_refresh_run=base,
+            contributing_runs=[base, overlay, current],
+        )
+        loads = list(
+            db.query(SourceLoad)
+            .filter_by(report_run_id=report.id)
+            .order_by(SourceLoad.id)
+        )
+
+    assert len(loads) == 5
+    assert {
+        (item.source_type, item.lineage_role) for item in loads
+    } == {
+        ("wb_finance_detail", "base"),
+        ("wb_finance_detail", "overlay"),
+        ("wb_finance_detail", "current"),
+        ("wb_stock_history_daily", "current"),
+        ("onec_odata", "current"),
+    }
+    finance_coverage = {
+        item.lineage_role: (item.coverage_start, item.coverage_end)
+        for item in loads
+        if item.source_type == "wb_finance_detail"
+    }
+    assert finance_coverage == {
+        "base": (report.period_start, report.period_end),
+        "overlay": (date(2026, 5, 1), report.period_end),
+        "current": (date(2026, 5, 21), report.period_end),
+    }
 
 
 def test_replace_report_source_load_uses_exact_registered_stock_collection(

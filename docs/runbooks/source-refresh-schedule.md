@@ -26,6 +26,14 @@ Shumeyko. Расписание запускает только read-only CLI
 - Daily refresh: каждый час в `*:15 MSK`, режим `daily`.
 - Weekly full refresh: понедельник в `08:15 MSK`, режим `full`.
 
+`incremental` — ручной staff-режим между ними. Он повторно читает последние
+`28` дней WB, свежую 1C за полный отчетный период, атомарно заменяет окно daily
+facts и создает новый immutable draft без чтения всей raw-истории. Режим
+включается только после shadow parity флагом
+`SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_ENABLED=true`. При отсутствии полной базы,
+разрыве coverage или ошибке parity возвращается `needs_full_refresh`; полный
+refresh автоматически не запускается.
+
 Самостоятельный режим `onec-only` без `source_report_id` используется для
 диагностики/перезагрузки 1С raw snapshots и не создаёт отчёт. Если явно передан
 исходный отчёт, система создаёт только staff-черновик: переиспользует полный

@@ -24,11 +24,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from scripts.build_excel_mvp_from_snapshots import build_excel_mvp_from_args
+from wb_unit_economics.calculation import METHODOLOGY_VERSION
 from wb_unit_economics.contracts import (
     MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactContract,
 )
 from wb_unit_economics.contracts import (
     SkuMapping,
+    WbSalesReportSummaryRow,
 )
 from wb_unit_economics.onec_odata import (
     DEFAULT_SAMPLE_COLLECTIONS,
@@ -87,6 +89,7 @@ from wb_unit_economics.wb_finance import (
     export_wb_finance,
     export_wb_sales_report_list,
     load_wb_finance_export_results,
+    load_wb_sales_report_summary_rows,
     resume_wb_finance_export,
     wb_finance_export_is_complete,
 )
@@ -112,10 +115,23 @@ from wb_unit_economics.web.models import (
 )
 from wb_unit_economics.web.settings import WebSettings
 
-SOURCE_REFRESH_MODES = {"daily", "weekly", "full", "onec-only", "ozon-only"}
+SOURCE_REFRESH_MODES = {
+    "daily",
+    "incremental",
+    "weekly",
+    "full",
+    "onec-only",
+    "ozon-only",
+}
+
+
+def _incremental_yesterday() -> date:
+    return datetime.now(tz=MOSCOW_TZ).date() - timedelta(days=1)
+
+
 SOURCE_REFRESH_RESUME_MODES = {"auto", "never"}
-ONEC_RESUME_MODES = {"daily", "weekly", "full", "onec-only"}
-WB_REQUIRED_MODES = {"daily", "weekly", "full"}
+ONEC_RESUME_MODES = {"daily", "incremental", "weekly", "full", "onec-only"}
+WB_REQUIRED_MODES = {"daily", "incremental", "weekly", "full"}
 OZON_REQUIRED_MODES = {"ozon-only"}
 OZON_OPTIONAL_MODES = {"daily", "weekly", "full"}
 OZON_TYPED_FILE_AUTHORITATIVE_TYPES = {
@@ -462,7 +478,65 @@ class SourceRefreshService:
         if source_report is not None and source_report.tenant_id != tenant_id:
             raise PermissionError("source report tenant mismatch")
 
+        resolved_client_id = client_id or (
+            source_report.client_id
+            if source_report
+            else repository.client_id_for_tenant(tenant_id)
+        )
+
         base_source_refresh_run: SourceRefreshRun | None = None
+        source_window_start: date | None = None
+        source_window_end: date | None = None
+        if mode == "incremental":
+            if not self.settings.source_refresh_incremental_enabled and not dry_run:
+                raise SourceRefreshDisabledError(
+                    "Инкрементальное обновление выключено feature flag."
+                )
+            if not self.settings.marketplace_daily_facts_enabled and not dry_run:
+                raise SourceRefreshConfigError(
+                    "incremental requires MARKETPLACE_DAILY_FACTS_ENABLED=true"
+                )
+            if not self.settings.db_first_reports_enabled and not dry_run:
+                raise SourceRefreshConfigError(
+                    "incremental requires DB_FIRST_REPORTS_ENABLED=true"
+                )
+            if source_report is None:
+                source_report = db.scalar(
+                    select(ReportRun)
+                    .where(
+                        ReportRun.tenant_id == tenant_id,
+                        ReportRun.client_id == resolved_client_id,
+                        ReportRun.publication_status == "published",
+                        ReportRun.is_current.is_(True),
+                    )
+                    .order_by(ReportRun.generated_at.desc())
+                )
+            if source_report is None:
+                raise SourceRefreshConfigError(
+                    "incremental requires the current published report"
+                )
+            # The composite report always extends the current published report
+            # through yesterday. Request dates must not silently change its base.
+            period_start = source_report.period_start
+            period_end = _incremental_yesterday()
+            source_window_end = period_end
+            source_window_start = max(
+                period_start,
+                period_end
+                - timedelta(
+                    days=max(
+                        1,
+                        self.settings.source_refresh_incremental_window_days,
+                    )
+                    - 1
+                ),
+            )
+            base_source_refresh_run = self.find_incremental_base_refresh(
+                db,
+                source_report,
+                source_window_start=source_window_start,
+                credential_source=credential_source,
+            )
         if source_report is not None and mode == "onec-only":
             period_start = period_start or source_report.period_start
             period_end = period_end or source_report.period_end
@@ -479,16 +553,13 @@ class SourceRefreshService:
         default_period_start, default_period_end = self._period_for_mode(mode)
         period_start = period_start or default_period_start
         period_end = period_end or default_period_end
+        source_window_start = source_window_start or period_start
+        source_window_end = source_window_end or period_end
         if period_start > period_end:
             raise SourceRefreshConfigError(
                 "source refresh period_start must not be after period_end"
             )
         snapshot_set_id = self._snapshot_set_id(mode)
-        resolved_client_id = client_id or (
-            source_report.client_id
-            if source_report
-            else repository.client_id_for_tenant(tenant_id)
-        )
         resumed_from_run = self._resolve_resume_run(
             db,
             tenant_id=tenant_id,
@@ -506,18 +577,21 @@ class SourceRefreshService:
                 db,
                 tenant_id=tenant_id,
                 mode=mode,
+                client_id=resolved_client_id,
             )
             if conflict is not None:
                 return self._create_blocked_run(
                     db,
                     tenant_id=tenant_id,
-                    client_id=client_id,
+                    client_id=resolved_client_id,
                     mode=mode,
                     credential_source=credential_source,
                     dry_run=dry_run,
                     snapshot_set_id=snapshot_set_id,
                     period_start=period_start,
                     period_end=period_end,
+                    source_window_start=source_window_start,
+                    source_window_end=source_window_end,
                     user=user,
                     source_report=source_report,
                     base_source_refresh_run=base_source_refresh_run,
@@ -539,7 +613,9 @@ class SourceRefreshService:
                 snapshot_set_id=snapshot_set_id,
                 period_start=period_start,
                 period_end=period_end,
-                client_id=client_id,
+                source_window_start=source_window_start,
+                source_window_end=source_window_end,
+                client_id=resolved_client_id,
                 user=user,
                 source_report=source_report,
                 resumed_from_run=resumed_from_run,
@@ -580,6 +656,204 @@ class SourceRefreshService:
             if self._full_wb_refresh_is_reusable(db, candidate, source_report):
                 return candidate
         return None
+
+    def find_incremental_base_refresh(
+        self,
+        db: Session,
+        source_report: ReportRun,
+        *,
+        source_window_start: date,
+        credential_source: str = "tenant",
+    ) -> SourceRefreshRun | None:
+        required_coverage_end = source_window_start - timedelta(days=1)
+        candidates = list(
+            db.scalars(
+                select(SourceRefreshRun)
+                .where(
+                    SourceRefreshRun.tenant_id == source_report.tenant_id,
+                    SourceRefreshRun.client_id == source_report.client_id,
+                    SourceRefreshRun.mode == "full",
+                    SourceRefreshRun.credential_source == credential_source,
+                    SourceRefreshRun.period_start <= source_report.period_start,
+                    SourceRefreshRun.period_end
+                    >= min(required_coverage_end, source_report.period_end),
+                    SourceRefreshRun.finished_at.is_not(None),
+                    SourceRefreshRun.status.in_(
+                        {"report_created", "needs_review", "source_loaded"}
+                    ),
+                )
+                .order_by(SourceRefreshRun.created_at.desc())
+            )
+        )
+        allowed_root = self.settings.source_refresh_root_path.resolve()
+        for candidate in candidates:
+            if not candidate.root_dir:
+                continue
+            candidate_root = Path(candidate.root_dir).resolve()
+            if (
+                not candidate_root.is_relative_to(allowed_root)
+                or not candidate_root.is_dir()
+            ):
+                continue
+            finance = next(
+                (
+                    item
+                    for item in candidate.collections
+                    if item.source_type == "wb_finance_detail"
+                ),
+                None,
+            )
+            cards = next(
+                (
+                    item
+                    for item in candidate.collections
+                    if item.source_type == "wb_product_cards"
+                ),
+                None,
+            )
+            if finance is None or cards is None:
+                continue
+            daily_facts = dict((finance.payload or {}).get("dailyFacts") or {})
+            if (
+                finance.status not in MANDATORY_OK_STATUSES
+                or cards.status not in MANDATORY_OK_STATUSES
+                or daily_facts.get("status") != "materialized"
+                or (daily_facts.get("parity") or {}).get("status")
+                != "aggregate_only"
+                or (daily_facts.get("persistedParity") or {}).get("status")
+                != "matched"
+            ):
+                continue
+            if not self._wb_collection_manifest_is_complete(finance):
+                continue
+            if self._daily_facts_coverage_issue(
+                db,
+                tenant_id=source_report.tenant_id,
+                client_id=source_report.client_id,
+                period_start=source_report.period_start,
+                period_end=required_coverage_end,
+            ) is None:
+                return candidate
+        return None
+
+    def _daily_fact_contributing_runs(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+    ) -> list[SourceRefreshRun]:
+        run_ids = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel.source_refresh_run_id)
+                .where(
+                    MarketplaceFinanceDailyFactModel.tenant_id
+                    == refresh_run.tenant_id,
+                    MarketplaceFinanceDailyFactModel.client_id
+                    == refresh_run.client_id,
+                    MarketplaceFinanceDailyFactModel.marketplace == "wb",
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    >= refresh_run.period_start,
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    <= refresh_run.period_end,
+                )
+                .distinct()
+            )
+        )
+        return [
+            item
+            for item in db.scalars(
+                select(SourceRefreshRun).where(SourceRefreshRun.id.in_(run_ids))
+            )
+            if item is not None
+        ]
+
+    def _daily_facts_coverage_issue(
+        self,
+        db: Session,
+        *,
+        tenant_id: str,
+        client_id: str,
+        period_start: date,
+        period_end: date,
+    ) -> str | None:
+        if period_end < period_start:
+            return None
+        fact_conditions = (
+            MarketplaceFinanceDailyFactModel.tenant_id == tenant_id,
+            MarketplaceFinanceDailyFactModel.client_id == client_id,
+            MarketplaceFinanceDailyFactModel.marketplace == "wb",
+            MarketplaceFinanceDailyFactModel.fact_date >= period_start,
+            MarketplaceFinanceDailyFactModel.fact_date <= period_end,
+        )
+        if db.scalar(
+            select(MarketplaceFinanceDailyFactModel.id)
+            .where(*fact_conditions)
+            .limit(1)
+        ) is None:
+            return "daily_facts_empty"
+        if db.scalar(
+            select(MarketplaceFinanceDailyFactModel.id)
+            .where(
+                *fact_conditions,
+                MarketplaceFinanceDailyFactModel.is_partial_source.is_(True),
+            )
+            .limit(1)
+        ) is not None:
+            return "daily_facts_partial_source"
+        run_ids = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel.source_refresh_run_id)
+                .where(*fact_conditions)
+                .distinct()
+            )
+        )
+        runs = list(
+            db.scalars(
+                select(SourceRefreshRun).where(SourceRefreshRun.id.in_(run_ids))
+            )
+        )
+        intervals: list[tuple[date, date]] = []
+        for item in runs:
+            coverage_start = item.source_window_start or item.period_start
+            coverage_end = item.source_window_end or item.period_end
+            finance_collection = next(
+                (
+                    collection
+                    for collection in item.collections
+                    if collection.source_type == "wb_finance_detail"
+                ),
+                None,
+            )
+            finance_payload = (
+                dict(finance_collection.payload or {})
+                if finance_collection is not None
+                else {}
+            )
+            try:
+                coverage_start = date.fromisoformat(
+                    str(finance_payload["sourceCoverageStart"])
+                )
+                coverage_end = date.fromisoformat(
+                    str(finance_payload["sourceCoverageEnd"])
+                )
+            except (KeyError, TypeError, ValueError):
+                pass
+            intervals.append(
+                (
+                    max(period_start, coverage_start),
+                    min(period_end, coverage_end),
+                )
+            )
+        intervals.sort()
+        cursor = period_start
+        for start, end in intervals:
+            if end < cursor:
+                continue
+            if start > cursor:
+                return f"daily_facts_coverage_gap:{cursor.isoformat()}"
+            cursor = max(cursor, end + timedelta(days=1))
+            if cursor > period_end:
+                return None
+        return f"daily_facts_coverage_gap:{cursor.isoformat()}"
 
     def _full_wb_refresh_is_reusable(
         self,
@@ -709,6 +983,8 @@ class SourceRefreshService:
         dry_run = refresh_run.dry_run
         period_start = refresh_run.period_start
         period_end = refresh_run.period_end
+        source_window_start = refresh_run.source_window_start or period_start
+        source_window_end = refresh_run.source_window_end or period_end
         source_report = (
             db.get(ReportRun, refresh_run.source_report_run_id)
             if refresh_run.source_report_run_id
@@ -742,6 +1018,23 @@ class SourceRefreshService:
                         status="blocked_low_disk",
                         error_message=disk_issue["error_message"],
                     )
+            if mode == "incremental" and (
+                source_report is None or base_refresh_run is None
+            ):
+                repository.update_source_refresh_run(
+                    db,
+                    refresh_run,
+                    failure_code="incremental_base_unavailable",
+                )
+                return self._finish_without_report(
+                    db,
+                    refresh_run,
+                    status="needs_full_refresh",
+                    error_message=(
+                        "Compatible full daily-facts base is unavailable; "
+                        "run a full refresh."
+                    ),
+                )
             credentials = self._credentials(
                 db,
                 tenant_id=tenant_id,
@@ -765,8 +1058,8 @@ class SourceRefreshService:
                     refresh_run=refresh_run,
                     credentials=credentials,
                     root_dir=root_dir,
-                    period_start=period_start,
-                    period_end=period_end,
+                    period_start=source_window_start,
+                    period_end=source_window_end,
                     mode=mode,
                 ),
                 include_external=False,
@@ -825,8 +1118,8 @@ class SourceRefreshService:
                     refresh_run=refresh_run,
                     credentials=credentials,
                     root_dir=root_dir,
-                    period_start=period_start,
-                    period_end=period_end,
+                    period_start=source_window_start,
+                    period_end=source_window_end,
                     mode=mode,
                 ),
                 include_external=True,
@@ -881,7 +1174,7 @@ class SourceRefreshService:
                     error_message="Mandatory source refresh collection failed.",
                 )
             if (
-                mode == "daily"
+                mode in {"daily", "incremental"}
                 and self.settings.marketplace_daily_facts_enabled
                 and wb_finance_dir is not None
                 and onec_dir is not None
@@ -895,6 +1188,26 @@ class SourceRefreshService:
                     wb_cards_dir=wb_cards_dir,
                     wb_stock_history_dir=wb_stock_history_dir,
                 )
+            if mode == "incremental":
+                coverage_issue = self._daily_facts_coverage_issue(
+                    db,
+                    tenant_id=refresh_run.tenant_id,
+                    client_id=refresh_run.client_id,
+                    period_start=refresh_run.period_start,
+                    period_end=refresh_run.period_end,
+                )
+                if coverage_issue:
+                    repository.update_source_refresh_run(
+                        db,
+                        refresh_run,
+                        failure_code="incremental_daily_facts_coverage_gap",
+                    )
+                    return self._finish_without_report(
+                        db,
+                        refresh_run,
+                        status="needs_full_refresh",
+                        error_message=coverage_issue,
+                    )
             if mode == "ozon-only":
                 status = (
                     "needs_review"
@@ -942,9 +1255,25 @@ class SourceRefreshService:
 
             repository.update_source_refresh_run(db, refresh_run, status="rebuilding")
             _commit_source_refresh_progress(db)
+            contributing_runs: list[SourceRefreshRun] = []
+            wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None
+            wb_summary_rows: list[WbSalesReportSummaryRow] | None = None
+            if mode == "incremental":
+                contributing_runs = self._daily_fact_contributing_runs(db, refresh_run)
+                wb_daily_facts = self._daily_facts_for_report(db, refresh_run)
+                wb_summary_rows = self._incremental_wb_summary_rows(
+                    refresh_run,
+                    base_refresh_run=base_refresh_run,
+                    current_report_list_dir=wb_report_list_dir,
+                )
             report_snapshot_set_id = self._report_snapshot_set_id(
                 refresh_run,
-                base_refresh_run=base_refresh_run if composite_rebuild else None,
+                base_refresh_run=(
+                    base_refresh_run
+                    if composite_rebuild or mode == "incremental"
+                    else None
+                ),
+                contributing_runs=contributing_runs,
             )
             if self.settings.db_first_reports_enabled:
                 new_report, workbook_path = self._build_db_first_report(
@@ -957,7 +1286,14 @@ class SourceRefreshService:
                     wb_cards_dir=wb_cards_dir,
                     wb_stock_history_dir=wb_stock_history_dir,
                     source_snapshot_set_id=report_snapshot_set_id,
-                    base_refresh_run=(base_refresh_run if composite_rebuild else None),
+                    base_refresh_run=(
+                        base_refresh_run
+                        if composite_rebuild or mode == "incremental"
+                        else None
+                    ),
+                    contributing_runs=contributing_runs,
+                    wb_daily_facts=wb_daily_facts,
+                    wb_summary_rows=wb_summary_rows,
                 )
             else:
                 workbook_path = self._build_workbook(
@@ -992,9 +1328,19 @@ class SourceRefreshService:
                 db,
                 new_report,
                 primary_document_refresh,
+                source_runs=(
+                    contributing_runs
+                    if mode == "incremental"
+                    else ()
+                ),
             )
             _commit_source_refresh_progress(db)
-            self._attach_source_loads(db, new_report, refresh_run)
+            self._attach_source_loads(
+                db,
+                new_report,
+                refresh_run,
+                contributing_runs=contributing_runs,
+            )
             mapping_report_scope = repository.reconcile_report_mapping_source_load(
                 db, new_report
             )
@@ -1118,6 +1464,8 @@ class SourceRefreshService:
         snapshot_set_id: str,
         period_start: date,
         period_end: date,
+        source_window_start: date,
+        source_window_end: date,
         user: User | None,
         source_report: ReportRun | None,
         base_source_refresh_run: SourceRefreshRun | None,
@@ -1135,6 +1483,8 @@ class SourceRefreshService:
             snapshot_set_id=snapshot_set_id,
             period_start=period_start,
             period_end=period_end,
+            source_window_start=source_window_start,
+            source_window_end=source_window_end,
             client_id=client_id,
             user=user,
             source_report=source_report,
@@ -1161,7 +1511,21 @@ class SourceRefreshService:
         for collector in self._collector_plan(context.mode):
             if include_external == (collector.source_type == "sku_mapping"):
                 continue
-            result = collector.collect(self, context)
+            collector_context = context
+            if context.mode == "incremental" and collector.source_type in {
+                "onec_odata",
+                "wb_stock_history_daily",
+            }:
+                collector_context = CollectorContext(
+                    db=context.db,
+                    refresh_run=context.refresh_run,
+                    credentials=context.credentials,
+                    root_dir=context.root_dir,
+                    period_start=context.refresh_run.period_start,
+                    period_end=context.refresh_run.period_end,
+                    mode=context.mode,
+                )
+            result = collector.collect(self, collector_context)
             if result.output_dir is not None:
                 output_dirs[collector.source_type] = result.output_dir
             if collector.source_type == "sku_mapping":
@@ -1188,7 +1552,7 @@ class SourceRefreshService:
                 source_type="wb_finance_detail",
                 label="WB Finance sales report details",
                 required=True,
-                modes=frozenset({"daily", "weekly", "full"}),
+                modes=frozenset({"daily", "incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_finance,
             ),
@@ -1196,7 +1560,7 @@ class SourceRefreshService:
                 source_type="wb_sales_report_list",
                 label="WB Finance sales report list",
                 required=False,
-                modes=frozenset({"weekly", "full"}),
+                modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_report_list,
             ),
@@ -1204,7 +1568,7 @@ class SourceRefreshService:
                 source_type="wb_redeem_notifications",
                 label="WB primary redeem notifications",
                 required=False,
-                modes=frozenset({"weekly", "full"}),
+                modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_redeem_notifications,
             ),
@@ -1212,7 +1576,7 @@ class SourceRefreshService:
                 source_type="wb_product_cards",
                 label="WB product cards",
                 required=True,
-                modes=frozenset({"daily", "weekly", "full"}),
+                modes=frozenset({"daily", "incremental", "weekly", "full"}),
                 roles=frozenset(WB_FINANCE_REFRESH_ROLES),
                 collect=_collect_wb_product_cards,
             ),
@@ -1220,7 +1584,7 @@ class SourceRefreshService:
                 source_type="wb_stock_history_daily",
                 label="WB daily stock history",
                 required=False,
-                modes=frozenset({"weekly", "full"}),
+                modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_STOCK_HISTORY_REFRESH_ROLES),
                 collect=_collect_wb_stock_history,
             ),
@@ -2544,8 +2908,12 @@ class SourceRefreshService:
             wb_stock_history_dir=wb_stock_history_dir,
             onec_stock_dir=onec_dir,
             onec_opiu_config=None,
-            report_period_start=refresh_run.period_start,
-            report_period_end=refresh_run.period_end,
+            report_period_start=(
+                refresh_run.source_window_start or refresh_run.period_start
+            ),
+            report_period_end=(
+                refresh_run.source_window_end or refresh_run.period_end
+            ),
             cost_amount_field="Сумма",
             sales_cost_amount_field="auto",
             source_refresh_run_id=refresh_run.id,
@@ -2620,10 +2988,12 @@ class SourceRefreshService:
     ) -> None:
         all_daily_facts = list(build.get("daily_facts", []))
         parity = _wb_daily_fact_parity(build, all_daily_facts)
+        coverage_start = refresh_run.source_window_start or refresh_run.period_start
+        coverage_end = refresh_run.source_window_end or refresh_run.period_end
         daily_facts = [
             item
             for item in all_daily_facts
-            if refresh_run.period_start <= item.fact_date <= refresh_run.period_end
+            if coverage_start <= item.fact_date <= coverage_end
         ]
         daily_fact_count = repository.replace_marketplace_finance_daily_facts(
             db,
@@ -2634,6 +3004,8 @@ class SourceRefreshService:
                 refresh_run,
                 source_type="wb_finance_detail",
             ),
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
         )
         persisted_parity = _persisted_daily_facts_parity(
             db,
@@ -2672,6 +3044,97 @@ class SourceRefreshService:
         }
         db.flush()
 
+    def _daily_facts_for_report(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+    ) -> list[MarketplaceFinanceDailyFactContract]:
+        rows = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel)
+                .where(
+                    MarketplaceFinanceDailyFactModel.tenant_id
+                    == refresh_run.tenant_id,
+                    MarketplaceFinanceDailyFactModel.client_id
+                    == refresh_run.client_id,
+                    MarketplaceFinanceDailyFactModel.marketplace == "wb",
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    >= refresh_run.period_start,
+                    MarketplaceFinanceDailyFactModel.fact_date
+                    <= refresh_run.period_end,
+                )
+                .order_by(
+                    MarketplaceFinanceDailyFactModel.fact_date,
+                    MarketplaceFinanceDailyFactModel.grain_hash,
+                )
+            )
+        )
+        if not rows:
+            raise SourceRefreshConfigError(
+                "incremental daily-facts report input is empty"
+            )
+        field_names = MarketplaceFinanceDailyFactContract.model_fields
+        return [
+            MarketplaceFinanceDailyFactContract.model_validate(
+                {name: getattr(row, name) for name in field_names}
+            )
+            for row in rows
+        ]
+
+    def _incremental_wb_summary_rows(
+        self,
+        refresh_run: SourceRefreshRun,
+        *,
+        base_refresh_run: SourceRefreshRun | None,
+        current_report_list_dir: Path | None,
+    ) -> list[WbSalesReportSummaryRow]:
+        rows_by_key: dict[tuple[str, str, int | None], WbSalesReportSummaryRow] = {}
+        if base_refresh_run is not None:
+            base_dir = self._optional_collection_raw_dir(
+                base_refresh_run,
+                "wb_sales_report_list",
+            )
+            if base_dir is not None:
+                _reverify_collection_raw_integrity(
+                    base_refresh_run,
+                    source_type="wb_sales_report_list",
+                    raw_path=base_dir,
+                    source_root=self.settings.source_refresh_root_path,
+                )
+                for row in load_wb_sales_report_summary_rows(
+                    base_dir,
+                    client_id=refresh_run.client_id,
+                ):
+                    if row.date_to < (
+                        refresh_run.source_window_start or refresh_run.period_start
+                    ):
+                        rows_by_key[
+                            (row.seller_account_id, row.report_id, row.report_type)
+                        ] = row
+        if current_report_list_dir is not None:
+            _reverify_collection_raw_integrity(
+                refresh_run,
+                source_type="wb_sales_report_list",
+                raw_path=current_report_list_dir,
+                source_root=self.settings.source_refresh_root_path,
+            )
+            for row in load_wb_sales_report_summary_rows(
+                current_report_list_dir,
+                client_id=refresh_run.client_id,
+            ):
+                rows_by_key[
+                    (row.seller_account_id, row.report_id, row.report_type)
+                ] = row
+        return sorted(
+            rows_by_key.values(),
+            key=lambda row: (
+                row.date_to,
+                row.seller_account_id,
+                row.report_id,
+                row.report_type or 0,
+            ),
+        )
+
     def _build_db_first_report(
         self,
         db: Session,
@@ -2685,6 +3148,9 @@ class SourceRefreshService:
         wb_stock_history_dir: Path | None,
         source_snapshot_set_id: str,
         base_refresh_run: SourceRefreshRun | None,
+        contributing_runs: Iterable[SourceRefreshRun] = (),
+        wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None,
+        wb_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     ) -> tuple[ReportRun, Path]:
         from scripts.export_report_artifacts import export_report_artifacts
         from scripts.rebuild_report_from_sources import (
@@ -2692,7 +3158,11 @@ class SourceRefreshService:
             build_db_first_payload,
         )
 
-        integrity_refresh_run = base_refresh_run or refresh_run
+        integrity_refresh_run = (
+            refresh_run
+            if wb_daily_facts is not None
+            else base_refresh_run or refresh_run
+        )
         if wb_finance_dir is not None:
             _reverify_collection_raw_integrity(
                 integrity_refresh_run,
@@ -2728,11 +3198,16 @@ class SourceRefreshService:
                 )
             ),
             wb_finance_dir=wb_finance_dir,
-            wb_finance_source="files-stream",
+            wb_finance_source=(
+                "daily-facts" if wb_daily_facts is not None else "files-stream"
+            ),
+            wb_daily_facts=wb_daily_facts,
+            wb_sales_report_summary_rows=wb_summary_rows,
             stream_cache_dir=Path("data/.cache/source_refresh_stream") / refresh_run.id,
             keep_stream_cache=False,
             marketplace_daily_facts_enabled=(
                 self.settings.marketplace_daily_facts_enabled
+                and wb_daily_facts is None
             ),
             postgres_db_name="shumeyko_wb_unit_economics",
             postgres_host="",
@@ -2793,7 +3268,10 @@ class SourceRefreshService:
             tax_profiles=tax_profiles,
             input_vat_policies=input_vat_policies,
         )
-        if self.settings.marketplace_daily_facts_enabled:
+        if (
+            self.settings.marketplace_daily_facts_enabled
+            and wb_daily_facts is None
+        ):
             self._save_wb_daily_facts(db, refresh_run, build)
         report = repository.save_report_marts(
             db,
@@ -2810,6 +3288,7 @@ class SourceRefreshService:
             report,
             refresh_run,
             base_refresh_run=base_refresh_run,
+            contributing_runs=contributing_runs,
         )
         _validate_marts(build["payload"])
         db.commit()
@@ -2843,6 +3322,8 @@ class SourceRefreshService:
         db: Session,
         report: ReportRun,
         refresh_run: SourceRefreshRun,
+        *,
+        contributing_runs: Iterable[SourceRefreshRun] = (),
     ) -> None:
         base_refresh_run = (
             db.get(SourceRefreshRun, refresh_run.base_source_refresh_run_id)
@@ -2854,6 +3335,7 @@ class SourceRefreshService:
             report,
             refresh_run,
             base_refresh_run=base_refresh_run,
+            contributing_runs=contributing_runs,
         )
 
     def _required_collection_raw_dir(
@@ -2889,15 +3371,43 @@ class SourceRefreshService:
         refresh_run: SourceRefreshRun,
         *,
         base_refresh_run: SourceRefreshRun | None,
+        contributing_runs: Iterable[SourceRefreshRun] = (),
     ) -> str:
-        if base_refresh_run is None:
+        contributors = sorted(
+            {
+                item
+                for item in contributing_runs
+                if item.id != refresh_run.id
+                and item.id != getattr(base_refresh_run, "id", None)
+            },
+            key=lambda item: (item.created_at, item.id),
+        )
+        if base_refresh_run is None and not contributors:
             return refresh_run.snapshot_set_id
-        digest = hashlib.sha256(
-            (
-                f"wb:{base_refresh_run.id}:{base_refresh_run.snapshot_set_id}\n"
-                f"onec:{refresh_run.id}:{refresh_run.snapshot_set_id}"
-            ).encode()
-        ).hexdigest()[:20]
+        lineage = [f"methodology:{METHODOLOGY_VERSION}"]
+
+        def add_run(role: str, run: SourceRefreshRun) -> None:
+            lineage.append(f"{role}:run:{run.snapshot_set_id}")
+            lineage.extend(
+                f"{role}:source:{item.source_type}:{item.snapshot_hash}"
+                for item in sorted(
+                    run.collections,
+                    key=lambda collection: (
+                        collection.source_type,
+                        collection.wb_cabinet_id,
+                        collection.id,
+                    ),
+                )
+                if item.status in MANDATORY_OK_STATUSES | REVIEW_STATUSES
+                and item.snapshot_hash
+            )
+
+        if base_refresh_run is not None:
+            add_run("base", base_refresh_run)
+        for contributor in contributors:
+            add_run("overlay", contributor)
+        add_run("current", refresh_run)
+        digest = hashlib.sha256("\n".join(lineage).encode()).hexdigest()[:20]
         return f"composite-{digest}"
 
     def _mandatory_failed(self, refresh_run: SourceRefreshRun) -> bool:

@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy import inspect, text
 
 from wb_unit_economics.web.database import (
+    _ensure_source_load_columns,
     _ensure_source_refresh_resume_columns,
     make_engine,
 )
@@ -50,4 +51,24 @@ def test_source_refresh_worker_and_lineage_migration_is_idempotent(
         "worker_id",
         "failure_code",
         "heartbeat_at",
+        "source_window_start",
+        "source_window_end",
     }.issubset(run_columns)
+
+
+def test_source_load_incremental_lineage_migration_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'legacy-loads.sqlite3'}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE source_loads (id INTEGER PRIMARY KEY)"))
+
+    _ensure_source_load_columns(engine)
+    _ensure_source_load_columns(engine)
+
+    columns = {item["name"] for item in inspect(engine).get_columns("source_loads")}
+    assert {
+        "coverage_start",
+        "coverage_end",
+        "lineage_role",
+    }.issubset(columns)

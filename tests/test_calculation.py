@@ -4,6 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from scripts.rebuild_report_from_sources import _wb_snapshots_from_daily_facts
 from tests.fixtures import (
     CLIENT_ID,
     account_org_mapping,
@@ -1295,6 +1296,76 @@ def test_storage_and_promotion_use_separate_api_base_when_loaded() -> None:
     assert allocations["Хранение"].source_row_count == 3
     assert allocations["WB Продвижение"].api_base_amount == Decimal("100.00")
     assert allocations["WB Продвижение"].allocated_amount == Decimal("15.00")
+
+
+def test_aggregated_wb_snapshot_preserves_raw_source_row_count() -> None:
+    snapshot = wb_snapshots()[0].model_copy(update={"source_row_count": 7})
+    daily_facts = []
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[snapshot],
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+        daily_facts_sink=daily_facts,
+    )
+
+    assert report.report_reconciliation_rows[0].source_row_count == 7
+    assert report.tax_input_reconciliation_rows[0].source_row_count == 7
+    assert daily_facts[0].source_row_count == 7
+
+
+def test_daily_fact_rebuild_preserves_full_financial_calculation() -> None:
+    generated_at = datetime(
+        2026,
+        6,
+        16,
+        12,
+        0,
+        tzinfo=ZoneInfo("Europe/Moscow"),
+    )
+    daily_facts = []
+    source_report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=wb_snapshots(),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=generated_at,
+        as_of_date=date(2026, 6, 16),
+        daily_facts_sink=daily_facts,
+    )
+    rebuilt_report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=_wb_snapshots_from_daily_facts(daily_facts),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=generated_at,
+        as_of_date=date(2026, 6, 16),
+    )
+
+    def financial_payload(report):
+        payload = report.model_dump(mode="json")
+        payload.pop("source_coverage_end", None)
+
+        def remove_raw_hashes(value):
+            if isinstance(value, dict):
+                return {
+                    key: remove_raw_hashes(item)
+                    for key, item in value.items()
+                    if key != "source_snapshot_hashes"
+                }
+            if isinstance(value, list):
+                return [remove_raw_hashes(item) for item in value]
+            return value
+
+        return remove_raw_hashes(payload)
+
+    assert financial_payload(rebuilt_report) == financial_payload(source_report)
 
 
 def test_product_level_mapping_matches_size_level_wb_sku() -> None:

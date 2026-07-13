@@ -2067,6 +2067,15 @@ button.action-insight-card {
   width: min(1840px, calc(100vw - 48px));
 }
 
+.reconciliation-hub-widget {
+  width: min(1840px, calc(100vw - 48px));
+  overflow: auto;
+}
+
+.reconciliation-hub-tabs {
+  margin-bottom: 16px;
+}
+
 .cogs-reconciliation-table {
   min-width: 1580px;
 }

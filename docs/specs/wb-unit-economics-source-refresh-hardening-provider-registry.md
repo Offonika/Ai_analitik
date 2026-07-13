@@ -149,9 +149,40 @@ TXT/TSV/CSV upload остается только emergency fallback и импо�
 План режимов:
 
 - `daily`: mapping, WB product cards, WB finance, 1C OData;
+- `incremental`: mapping, WB product cards, WB finance за последние `28`
+  календарных дней, WB report list, optional WB primary redeem notifications,
+  свежая provider-window история остатков и 1C OData; режим атомарно заменяет
+  окно `marketplace_finance_daily_facts` и создает полный immutable staff draft
+  из накопленной дневной витрины без перечитывания полной raw-истории;
 - `weekly` и `full`: mapping, WB product cards, WB finance, WB report list,
   optional WB primary redeem notifications, 1C OData;
 - `onec-only`: mapping, 1C OData.
+
+`daily` остается source-only обновлением и не создает отчет. `incremental`
+доступен только при `SHUMEYKO_SOURCE_REFRESH_INCREMENTAL_ENABLED=true` и
+`MARKETPLACE_DAILY_FACTS_ENABLED=true`, а сборка выполняется только при
+`DB_FIRST_REPORTS_ENABLED=true`. Отчетный период incremental начинается
+с даты начала текущего опубликованного отчета и заканчивается вчерашним днем;
+отдельные `source_window_start/source_window_end` фиксируют фактически повторно
+прочитанные последние `28` дней. Ozon в incremental не входит и продолжает
+обновляться отдельным `ozon-only` действием.
+
+Перед внешним чтением incremental обязан найти совместимый завершенный `full`,
+проверить materialized/persisted parity дневной витрины и непрерывность
+заявленных coverage-интервалов. После загрузки окно заменяется целиком, включая
+удаление исчезнувших строк. Затем полный P&L строится из
+`marketplace_finance_daily_facts`, а себестоимость всех строк заново подбирается
+по свежему снимку 1C. Небольшие WB document sources объединяются по правилу
+`base до границы + current overlay`; stock history используется только из
+свежего provider window без экстраполяции. Если базы нет, coverage разорван или
+parity не подтвержден, run завершается `needs_full_refresh`; скрытый fallback на
+`full` запрещен.
+
+Составной lineage хранит `coverage_start/coverage_end` и `lineage_role` со
+значениями `base`, `overlay` или `current` в `SourceLoad`. Composite
+`source_snapshot_set_id` является детерминированным hash версии методики,
+базового full и всех contributing WB overlay, mapping и 1C snapshots. Retention
+защищает каждый run, на который ссылается хотя бы один `SourceLoad`.
 
 `onec-only` без `source_report_run_id` остается source-only загрузкой. Если
 указан исходный отчет, режим обязан создать новый immutable staff draft: новый
@@ -428,6 +459,8 @@ mutual-settlement сохраняет документные строки, а buy
 - `/api/health` показывает `degraded` при свежем завершенном failed refresh,
   в том числе пока следующий run еще active.
 - Active full блокирует daily статусом `blocked_active_refresh`.
+- Все `daily/incremental/weekly/full` одного клиента сериализованы: scheduler не
+  может заменить daily-facts окно во время incremental rebuild.
 - Provider registry отдает WB/1C metadata и default roles.
 - `/api/integrations` совместим по `items` и содержит `providers`.
 - staff-only mapping service сохраняет решения и импорт кандидатов без
@@ -435,7 +468,13 @@ mutual-settlement сохраняет документные строки, а buy
 - Source refresh проверяет mapping service, а отсутствие старой папки
   `data/onec_marketplace_mapping` не считается самостоятельным blocker.
 - `/api/clients/{client_id}/source-refresh` staff-only запускает dry-run или
-  `full` refresh и возвращает safe payload последнего run.
+  `full`/`incremental` refresh и возвращает safe payload последнего run;
+- два последовательных incremental run повторяемы, не создают дублей и на
+  текущем production объеме завершаются не более чем за `10` минут;
+- incremental и full на одинаковых frozen sources совпадают до копейки по KPI,
+  строкам, налогам, себестоимости, расходам, сверкам, lost sales и Excel;
+- отсутствие compatible full, разрыв coverage или неподтвержденный parity дает
+  `needs_full_refresh` и отдельное действие полной пересборки, не скрытый full;
 - production `full` из web продолжает выполняться после рестарта web-сервиса;
   повторный worker не может одновременно забрать уже выполняющийся run.
 - full-refresh не выполняется через FastAPI `BackgroundTasks`; health и статика
@@ -479,6 +518,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-13: accepted the feature-flagged 28-day `incremental` WB + 1C mode,
+  daily-facts report input, composite coverage lineage, serialized client
+  refreshes and explicit `needs_full_refresh` fallback contract.
 - 2026-07-12: lowered the independent worker memory ceiling to 3 GiB, limited
   worker swap to 1 GiB and enabled systemd-oomd preference so a heavy refresh
   fails safely instead of exhausting the whole server and breaking SSH.

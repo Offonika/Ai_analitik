@@ -1613,6 +1613,7 @@ def build_unit_economics_report(
     daily_grouped: dict[tuple[object, ...], dict[str, object]] = {}
 
     for snapshot_index, snapshot in enumerate(wb_snapshots):
+        source_row_count = max(1, int(snapshot.source_row_count))
         controlled_expenses = expense_allocations[snapshot_index]
         vat_input_allocation = vat_input_allocations[snapshot_index]
         spp_allocation = spp_allocations[snapshot_index]
@@ -1938,7 +1939,7 @@ def build_unit_economics_report(
         )
         report_bucket["gross_profit"] += gross_profit
         report_bucket["status"] = _worse_status(report_bucket["status"], quality_status)
-        report_bucket["source_row_count"] += 1
+        report_bucket["source_row_count"] += source_row_count
 
         tax_input_key = (
             snapshot.client_id,
@@ -1961,7 +1962,7 @@ def build_unit_economics_report(
             str(tax_input_bucket["vat_input_completeness"]),
             input_vat_completeness,
         )
-        tax_input_bucket["source_row_count"] += 1
+        tax_input_bucket["source_row_count"] += source_row_count
 
         onec_report_key = (
             snapshot.client_id,
@@ -2097,7 +2098,7 @@ def build_unit_economics_report(
             daily_bucket["cogs"] += cogs
             daily_bucket["vat_input_from_marketplace"] += vat_input_allocation.from_wb
             daily_bucket["vat_input_from_1c"] += vat_input_allocation.from_1c
-            daily_bucket["source_row_count"] += 1
+            daily_bucket["source_row_count"] += source_row_count
             daily_bucket["hashes"].append(snapshot.raw_payload_hash)
             daily_bucket["is_partial_source"] = bool(
                 daily_bucket["is_partial_source"] or snapshot.is_partial_source
@@ -3183,7 +3184,7 @@ def _add_to_onec_bucket(
     )
     bucket["gross_profit"] += gross_profit
     bucket["status"] = _worse_status(bucket["status"], quality_status)
-    bucket["source_row_count"] += 1
+    bucket["source_row_count"] += max(1, int(snapshot.source_row_count))
     bucket["wb_report_ids"].add(snapshot.wb_report_id or "Без номера")
     if "hashes" in bucket:
         bucket["hashes"].append(snapshot.raw_payload_hash)

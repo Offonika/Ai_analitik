@@ -94,6 +94,17 @@ const els = {
   reportWizardDownload: document.querySelector("#report-wizard-download"),
   reportWizardSubmit: document.querySelector("#report-wizard-submit"),
   aiOpenButton: document.querySelector("#ai-open-button"),
+  reconciliationOpenButton: document.querySelector(
+    "#reconciliation-open-button",
+  ),
+  reconciliationHubOverlay: document.querySelector(
+    "#reconciliation-hub-overlay",
+  ),
+  reconciliationHubClose: document.querySelector("#reconciliation-hub-close"),
+  reconciliationHubTabs: document.querySelectorAll("[data-reconciliation-tab]"),
+  reconciliationHubPanels: document.querySelectorAll(
+    "[data-reconciliation-panel]",
+  ),
   integrationsOpenButton: document.querySelector("#integrations-open-button"),
   newClientButton: document.querySelector("#new-client-button"),
   newClientWidgetOverlay: document.querySelector("#new-client-widget-overlay"),
@@ -125,12 +136,6 @@ const els = {
   drilldownTableWrap: document.querySelector("#drilldown-table-wrap"),
   drilldownRowsHead: document.querySelector("#drilldown-rows-head"),
   drilldownRows: document.querySelector("#drilldown-rows"),
-  buyoutReconciliationOverlay: document.querySelector(
-    "#buyout-reconciliation-overlay",
-  ),
-  buyoutReconciliationClose: document.querySelector(
-    "#buyout-reconciliation-close",
-  ),
   buyoutReconciliationCount: document.querySelector(
     "#buyout-reconciliation-count",
   ),
@@ -142,12 +147,6 @@ const els = {
   ),
   buyoutReconciliationRows: document.querySelector(
     "#buyout-reconciliation-rows",
-  ),
-  cogsReconciliationOverlay: document.querySelector(
-    "#cogs-reconciliation-overlay",
-  ),
-  cogsReconciliationClose: document.querySelector(
-    "#cogs-reconciliation-close",
   ),
   cogsReconciliationCount: document.querySelector(
     "#cogs-reconciliation-count",
@@ -162,12 +161,6 @@ const els = {
     "#cogs-reconciliation-rows",
   ),
   cogsCostIssueRows: document.querySelector("#cogs-cost-issue-rows"),
-  marketplaceExpenseReconciliationOverlay: document.querySelector(
-    "#marketplace-expense-reconciliation-overlay",
-  ),
-  marketplaceExpenseReconciliationClose: document.querySelector(
-    "#marketplace-expense-reconciliation-close",
-  ),
   marketplaceExpenseReconciliationCount: document.querySelector(
     "#marketplace-expense-reconciliation-count",
   ),
@@ -263,6 +256,9 @@ const els = {
   sourceRefreshMappingStatus: document.querySelector("#source-refresh-mapping-status"),
   sourceRefreshUploadSubmit: document.querySelector("#source-refresh-upload-submit"),
   sourceRefreshDryRun: document.querySelector("#source-refresh-dry-run"),
+  sourceRefreshIncrementalRun: document.querySelector(
+    "#source-refresh-incremental-run",
+  ),
   sourceRefreshFullRun: document.querySelector("#source-refresh-full-run"),
   sourceRefreshOzonRun: document.querySelector("#source-refresh-ozon-run"),
   sourceRefreshReload: document.querySelector("#source-refresh-reload"),
@@ -433,9 +429,18 @@ function init() {
   els.sourceRefreshDryRun.addEventListener("click", () =>
     runClientSourceRefresh({ dryRun: true }),
   );
-  els.sourceRefreshFullRun.addEventListener("click", () =>
-    runClientSourceRefresh({ dryRun: false }),
+  els.sourceRefreshIncrementalRun?.addEventListener("click", () =>
+    runClientSourceRefresh({ dryRun: false, mode: "incremental" }),
   );
+  els.sourceRefreshFullRun.addEventListener("click", () => {
+    const period = sourcePeriodText(state.latestSourceRefresh || {});
+    const confirmed = window.confirm(
+      `Полностью перескачать историю${period === "-" ? "" : ` за ${period}`}? Обычно это занимает 30–40 минут.`,
+    );
+    if (confirmed) {
+      runClientSourceRefresh({ dryRun: false, mode: "full" });
+    }
+  });
   if (els.sourceRefreshOzonRun) {
     els.sourceRefreshOzonRun.addEventListener("click", () =>
       runClientSourceRefresh({ dryRun: false, mode: "ozon-only" }),
@@ -536,32 +541,19 @@ function init() {
       closeDrilldownWidget();
     }
   });
-  els.buyoutReconciliationClose.addEventListener(
-    "click",
-    closeBuyoutReconciliationWidget,
+  els.reconciliationOpenButton?.addEventListener("click", () =>
+    openReconciliationHub("documents"),
   );
-  els.buyoutReconciliationOverlay.addEventListener("click", (event) => {
-    if (event.target === els.buyoutReconciliationOverlay) {
-      closeBuyoutReconciliationWidget();
+  els.reconciliationHubClose?.addEventListener("click", closeReconciliationHub);
+  els.reconciliationHubOverlay?.addEventListener("click", (event) => {
+    if (event.target === els.reconciliationHubOverlay) {
+      closeReconciliationHub();
     }
   });
-  els.cogsReconciliationClose.addEventListener(
-    "click",
-    closeCogsReconciliationWidget,
-  );
-  els.cogsReconciliationOverlay.addEventListener("click", (event) => {
-    if (event.target === els.cogsReconciliationOverlay) {
-      closeCogsReconciliationWidget();
-    }
-  });
-  els.marketplaceExpenseReconciliationClose.addEventListener(
-    "click",
-    closeMarketplaceExpenseReconciliationWidget,
-  );
-  els.marketplaceExpenseReconciliationOverlay.addEventListener("click", (event) => {
-    if (event.target === els.marketplaceExpenseReconciliationOverlay) {
-      closeMarketplaceExpenseReconciliationWidget();
-    }
+  els.reconciliationHubTabs.forEach((button) => {
+    button.addEventListener("click", () =>
+      selectReconciliationHubTab(button.dataset.reconciliationTab || "documents"),
+    );
   });
   els.drilldownTabs.forEach((button) => {
     button.addEventListener("click", () =>
@@ -1322,39 +1314,62 @@ function closeDrilldownWidget(options = {}) {
 }
 
 function openBuyoutReconciliationWidget() {
-  if (!state.reportId) {
-    return;
-  }
-  openWidgetOverlay(els.buyoutReconciliationOverlay);
-  loadBuyoutReconciliation();
+  openReconciliationHub("buyouts");
 }
 
 function closeBuyoutReconciliationWidget(options = {}) {
-  closeWidgetOverlay(els.buyoutReconciliationOverlay, options);
+  closeReconciliationHub(options);
 }
 
 function openCogsReconciliationWidget() {
-  if (!state.reportId) {
-    return;
-  }
-  openWidgetOverlay(els.cogsReconciliationOverlay);
-  loadCogsReconciliation();
+  openReconciliationHub("cogs");
 }
 
 function closeCogsReconciliationWidget(options = {}) {
-  closeWidgetOverlay(els.cogsReconciliationOverlay, options);
+  closeReconciliationHub(options);
 }
 
 function openMarketplaceExpenseReconciliationWidget() {
-  if (!state.reportId) {
-    return;
-  }
-  openWidgetOverlay(els.marketplaceExpenseReconciliationOverlay);
-  loadMarketplaceExpenseReconciliation();
+  openReconciliationHub("expenses");
 }
 
 function closeMarketplaceExpenseReconciliationWidget(options = {}) {
-  closeWidgetOverlay(els.marketplaceExpenseReconciliationOverlay, options);
+  closeReconciliationHub(options);
+}
+
+function openReconciliationHub(tab = "documents") {
+  if (!state.reportId) {
+    return;
+  }
+  openWidgetOverlay(els.reconciliationHubOverlay);
+  selectReconciliationHubTab(tab);
+}
+
+function closeReconciliationHub(options = {}) {
+  closeWidgetOverlay(els.reconciliationHubOverlay, options);
+}
+
+function selectReconciliationHubTab(tab) {
+  const selected = ["documents", "cogs", "expenses", "buyouts"].includes(tab)
+    ? tab
+    : "documents";
+  els.reconciliationHubTabs.forEach((button) => {
+    const active = button.dataset.reconciliationTab === selected;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  els.reconciliationHubPanels.forEach((panel) => {
+    const active = panel.dataset.reconciliationPanel === selected;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+  if (selected === "cogs") {
+    loadCogsReconciliation();
+  } else if (selected === "expenses") {
+    loadMarketplaceExpenseReconciliation();
+  } else if (selected === "buyouts") {
+    loadBuyoutReconciliation();
+  }
 }
 
 async function loadMarketplaceExpenseReconciliation() {
@@ -2005,9 +2020,7 @@ function closeAllWidgets() {
   closeMappingWidget({ restoreFocus: false });
   closeNewClientWidget({ restoreFocus: false });
   closeDrilldownWidget({ restoreFocus: false });
-  closeBuyoutReconciliationWidget({ restoreFocus: false });
-  closeCogsReconciliationWidget({ restoreFocus: false });
-  closeMarketplaceExpenseReconciliationWidget({ restoreFocus: false });
+  closeReconciliationHub({ restoreFocus: false });
   state.activeWidgetOverlay = null;
   restoreWidgetFocus();
 }
@@ -2022,9 +2035,7 @@ function updateWidgetBodyState() {
       !els.mappingWidgetOverlay.hidden ||
       !els.newClientWidgetOverlay.hidden ||
       !els.drilldownWidgetOverlay.hidden ||
-      !els.buyoutReconciliationOverlay.hidden ||
-      !els.cogsReconciliationOverlay.hidden ||
-      !els.marketplaceExpenseReconciliationOverlay.hidden,
+      !els.reconciliationHubOverlay.hidden,
   );
 }
 
@@ -2058,9 +2069,7 @@ function currentOpenWidgetOverlay() {
     els.mappingWidgetOverlay,
     els.newClientWidgetOverlay,
     els.drilldownWidgetOverlay,
-    els.buyoutReconciliationOverlay,
-    els.cogsReconciliationOverlay,
-    els.marketplaceExpenseReconciliationOverlay,
+    els.reconciliationHubOverlay,
   ].find((overlay) => overlay && !overlay.hidden) || null;
 }
 
@@ -3253,6 +3262,9 @@ async function loadSourceRefreshStatus(context = {}) {
     state.activeSourceRefresh = payload.activeRun || null;
     state.latestSourceRefreshAttempt = payload.latestAttempt || null;
     state.latestSourceRefresh = state.activeSourceRefresh || payload.latest || null;
+    if (els.sourceRefreshIncrementalRun) {
+      els.sourceRefreshIncrementalRun.hidden = !payload.incrementalEnabled;
+    }
     renderSourceRefreshControl(
       state.latestSourceRefresh,
       state.latestSourceRefreshAttempt,
@@ -3999,7 +4011,7 @@ function reportFreshnessSubtitle(meta, refresh) {
 function excelBusyTooltip(refresh) {
   const status = normalize(refresh?.status);
   const mode = normalize(refresh?.mode);
-  if (status === "rebuilding" || mode === "full") {
+  if (status === "rebuilding" || ["incremental", "full"].includes(mode)) {
     return "Идет сборка нового Excel. Откройте статус обновления.";
   }
   return "Идет обновление источников. Откройте статус обновления данных.";
@@ -4049,7 +4061,7 @@ function timestampMs(value) {
 }
 
 function sourceRefreshCreatesReport(mode) {
-  return ["full", "weekly", "onec-only"].includes(normalize(mode));
+  return ["incremental", "full", "weekly", "onec-only"].includes(normalize(mode));
 }
 
 function sourceRefreshAppearsStalled(refresh) {
@@ -4209,6 +4221,36 @@ function renderSourceRefreshSteps(refresh) {
 
 function sourceRefreshSteps(refresh) {
   const status = normalize(refresh?.status);
+  const isIncremental = normalize(refresh?.mode) === "incremental";
+  if (isIncremental) {
+    const stage = normalize(refresh?.progress?.stage);
+    const stageIndex = {
+      queued: 0,
+      wb_finance: 0,
+      onec: 2,
+      mapping: 2,
+      rebuilding: 3,
+      complete: 4,
+    }[stage] ?? (refresh?.newReportRunId ? 4 : 0);
+    const labels = [
+      "Загрузка последних 28 дней",
+      "Замена окна",
+      "Пересчёт 1С",
+      "Сборка отчёта",
+      "Готово к проверке",
+    ];
+    return labels.map((label, index) => ({
+      label,
+      state:
+        index < stageIndex
+          ? "done"
+          : index === stageIndex
+            ? refresh?.finishedAt && !refresh?.newReportRunId
+              ? "pending"
+              : "active"
+            : "pending",
+    }));
+  }
   const isOzonOnly = normalize(refresh?.mode) === "ozon-only";
   const createsReport = sourceRefreshCreatesReport(refresh?.mode);
   const hasSelectedMapping = Boolean(els.sourceRefreshMappingFile?.files?.[0]);
@@ -5326,7 +5368,9 @@ async function runClientSourceRefresh({
         ? "Не удалось проверить готовность обновления источников."
         : mode === "ozon-only"
           ? "Не удалось загрузить служебную витрину Ozon + 1C."
-        : "Не удалось запустить полное обновление источников.",
+          : mode === "incremental"
+            ? "Не удалось запустить обновление последних данных."
+            : "Не удалось запустить полное обновление источников.",
     );
     els.sourceRefreshStatus.textContent = safeMessage;
     els.reportWizardStatus.className = "report-wizard-status is-blocked";
@@ -5347,6 +5391,9 @@ function sourceRefreshStartText({ dryRun, mode }) {
   if (mode === "ozon-only") {
     return "Загружаем служебную витрину Ozon + 1C без обязательного WB. Клиентский отчет не публикуется.";
   }
+  if (mode === "incremental") {
+    return "Загружаем последние 28 дней WB и свежую 1С. После сборки откроется новый черновик.";
+  }
   return "Запускаем полное обновление. Это может занять время.";
 }
 
@@ -5358,6 +5405,9 @@ function sourceRefreshReason({ dryRun, mode, origin = "integrations" }) {
   if (mode === "ozon-only") {
     return `Ручная загрузка служебной витрины Ozon + 1C из ${location}`;
   }
+  if (mode === "incremental") {
+    return `Ручное инкрементальное обновление WB + 1С из ${location}`;
+  }
   return `Ручное полное обновление из ${location}`;
 }
 
@@ -5365,6 +5415,7 @@ function setSourceRefreshButtonsBusy(busy) {
   [
     els.sourceRefreshUploadSubmit,
     els.sourceRefreshDryRun,
+    els.sourceRefreshIncrementalRun,
     els.sourceRefreshFullRun,
     els.sourceRefreshOzonRun,
     els.sourceRefreshReload,
@@ -5379,6 +5430,7 @@ function setSourceRefreshActiveLock(active) {
   [
     els.sourceRefreshUploadSubmit,
     els.sourceRefreshDryRun,
+    els.sourceRefreshIncrementalRun,
     els.sourceRefreshFullRun,
     els.sourceRefreshOzonRun,
   ]
@@ -11445,6 +11497,7 @@ function sourceRefreshModeText(mode) {
   const value = normalize(mode);
   return {
     daily: "ежедневный",
+    incremental: "последние 28 дней",
     full: "полный",
     "onec-only": "только 1С",
     "ozon-only": "диагностика Ozon",
@@ -11560,6 +11613,9 @@ function sourceStatusText(status) {
   }
   if (value === "blocked_active_refresh") {
     return "Обновление уже выполняется";
+  }
+  if (value === "needs_full_refresh") {
+    return "Нужна полная пересборка";
   }
   if (value === "needs_configuration") {
     return "Нужна настройка";

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from scripts.rebuild_report_from_sources import _wb_snapshots_from_daily_facts
 from wb_unit_economics.contracts import MarketplaceFinanceDailyFact
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
@@ -152,6 +153,87 @@ def test_daily_facts_replace_full_window_across_different_runs() -> None:
     assert [(row.fact_date, row.source_refresh_run_id) for row in rows] == [
         (date(2026, 7, 5), "refresh-2")
     ]
+
+
+def test_daily_facts_replace_only_explicit_incremental_window() -> None:
+    session_factory, first_run = _context()
+    now = datetime(2026, 7, 11, tzinfo=UTC)
+    second_run = SourceRefreshRun(
+        id="refresh-incremental",
+        tenant_id=first_run.tenant_id,
+        client_id=first_run.client_id,
+        mode="incremental",
+        credential_source="tenant",
+        dry_run=False,
+        status="source_loaded",
+        snapshot_set_id="snapshot-incremental",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 14),
+        source_window_start=date(2026, 7, 8),
+        source_window_end=date(2026, 7, 14),
+        created_at=now,
+        updated_at=now,
+    )
+    with session_factory() as db:
+        db.add(second_run)
+        db.commit()
+        first = db.get(SourceRefreshRun, first_run.id)
+        second = db.get(SourceRefreshRun, second_run.id)
+        assert first is not None and second is not None
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            first,
+            [
+                _daily_fact(net_revenue="100", fact_date=date(2026, 7, 5)),
+                _daily_fact(net_revenue="200", fact_date=date(2026, 7, 10)),
+            ],
+            marketplace="wb",
+        )
+        db.commit()
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            second,
+            [_daily_fact(net_revenue="225", fact_date=date(2026, 7, 10))],
+            marketplace="wb",
+            coverage_start=second.source_window_start,
+            coverage_end=second.source_window_end,
+        )
+        db.commit()
+        rows = list(
+            db.scalars(
+                select(MarketplaceFinanceDailyFactModel).order_by(
+                    MarketplaceFinanceDailyFactModel.fact_date
+                )
+            )
+        )
+
+    assert [
+        (row.fact_date, row.source_refresh_run_id, row.net_revenue)
+        for row in rows
+    ] == [
+        (date(2026, 7, 5), "refresh-1", Decimal("100.00")),
+        (date(2026, 7, 10), "refresh-incremental", Decimal("225.00")),
+    ]
+
+
+def test_daily_facts_recreate_wb_snapshot_grain_and_source_count() -> None:
+    fact = _daily_fact(net_revenue="125")
+    fact = fact.model_copy(
+        update={
+            "source_row_count": 7,
+            "storage": Decimal("4.50"),
+            "marketplace_promotion": Decimal("3.25"),
+        }
+    )
+
+    snapshots = _wb_snapshots_from_daily_facts([fact])
+
+    assert len(snapshots) == 1
+    assert snapshots[0].period_start == fact.fact_date
+    assert snapshots[0].source_row_count == 7
+    assert snapshots[0].storage == Decimal("4.50")
+    assert snapshots[0].wb_promotion == Decimal("3.25")
+    assert snapshots[0].raw_payload_hash == fact.source_hash_digest
 
 
 def test_operation_facts_replace_source_snapshot_without_duplicates() -> None:

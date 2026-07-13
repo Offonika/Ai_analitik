@@ -108,7 +108,17 @@ CALCULABLE_OZON_REFRESH_STATUSES = {
 }
 OZON_DRAFT_LINEAGE_TYPE = "ozon_mart_snapshot"
 OZON_DRAFT_METHODOLOGY_VERSION = "ozon-unit-economics-mart-v2"
-BLOCKED_SOURCE_REFRESH_STATUSES = {"blocked_active_refresh", "blocked_low_disk"}
+BLOCKED_SOURCE_REFRESH_STATUSES = {
+    "blocked_active_refresh",
+    "blocked_low_disk",
+    "needs_full_refresh",
+}
+DAILY_FACT_MUTATING_SOURCE_REFRESH_MODES = {
+    "daily",
+    "incremental",
+    "weekly",
+    "full",
+}
 READINESS_REVIEW_RATIO = 0.20
 READINESS_REVIEW_MIN_ROWS = 3
 REPORT_ROWS_MAX_LIMIT = 1000
@@ -3191,18 +3201,24 @@ def active_conflicting_source_refresh_run(
     *,
     tenant_id: str,
     mode: str,
+    client_id: str | None = None,
 ) -> SourceRefreshRun | None:
-    modes = {mode}
-    if mode == "daily":
-        modes.add("full")
+    modes = (
+        DAILY_FACT_MUTATING_SOURCE_REFRESH_MODES
+        if mode in DAILY_FACT_MUTATING_SOURCE_REFRESH_MODES
+        else {mode}
+    )
+    statement = select(SourceRefreshRun)
+    statement = statement.where(
+        SourceRefreshRun.tenant_id == tenant_id,
+        SourceRefreshRun.mode.in_(modes),
+        SourceRefreshRun.status.in_(ACTIVE_SOURCE_REFRESH_STATUSES),
+        SourceRefreshRun.finished_at.is_(None),
+    )
+    if client_id:
+        statement = statement.where(SourceRefreshRun.client_id == client_id)
     return db.scalar(
-        select(SourceRefreshRun)
-        .where(
-            SourceRefreshRun.tenant_id == tenant_id,
-            SourceRefreshRun.mode.in_(modes),
-            SourceRefreshRun.status.in_(ACTIVE_SOURCE_REFRESH_STATUSES),
-            SourceRefreshRun.finished_at.is_(None),
-        )
+        statement
         .order_by(SourceRefreshRun.created_at.desc())
     )
 
@@ -3271,6 +3287,8 @@ def create_source_refresh_run(
     snapshot_set_id: str,
     period_start: date,
     period_end: date,
+    source_window_start: date | None = None,
+    source_window_end: date | None = None,
     client_id: str | None = None,
     user: User | None = None,
     source_report: ReportRun | None = None,
@@ -3282,17 +3300,27 @@ def create_source_refresh_run(
 ) -> SourceRefreshRun:
     if user is not None:
         require_staff(user, tenant_id)
+    resolved_client_id = client_id or (
+        source_report.client_id if source_report else client_id_for_tenant(tenant_id)
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"source-refresh:{tenant_id}:{resolved_client_id}"},
+        )
     existing = (
-        active_conflicting_source_refresh_run(db, tenant_id=tenant_id, mode=mode)
+        active_conflicting_source_refresh_run(
+            db,
+            tenant_id=tenant_id,
+            mode=mode,
+            client_id=resolved_client_id,
+        )
         if enforce_active_check
         else None
     )
     if existing is not None:
         raise ValueError("source refresh already active for this tenant")
     now = security.utcnow()
-    resolved_client_id = client_id or (
-        source_report.client_id if source_report else client_id_for_tenant(tenant_id)
-    )
     refresh_run = SourceRefreshRun(
         id=new_id("source_refresh"),
         tenant_id=tenant_id,
@@ -3316,6 +3344,8 @@ def create_source_refresh_run(
         snapshot_set_id=snapshot_set_id,
         period_start=period_start,
         period_end=period_end,
+        source_window_start=source_window_start or period_start,
+        source_window_end=source_window_end or period_end,
         root_dir="",
         workbook_path="",
         error_message="",
@@ -3338,6 +3368,10 @@ def create_source_refresh_run(
             "snapshotSetId": snapshot_set_id,
             "periodStart": period_start.isoformat(),
             "periodEnd": period_end.isoformat(),
+            "sourceWindowStart": (
+                source_window_start or period_start
+            ).isoformat(),
+            "sourceWindowEnd": (source_window_end or period_end).isoformat(),
             "resumedFromRunId": resumed_from_run.id if resumed_from_run else None,
             "baseSourceRefreshRunId": (
                 base_source_refresh_run.id if base_source_refresh_run else None
@@ -4322,13 +4356,17 @@ def replace_marketplace_finance_daily_facts(
     *,
     marketplace: str,
     cabinet_ids: Mapping[str, str] | None = None,
+    coverage_start: date | None = None,
+    coverage_end: date | None = None,
 ) -> int:
     marketplace = marketplace.strip().lower()
     if marketplace not in {"wb", "ozon"}:
         raise ValueError("unsupported marketplace daily facts provider")
     cabinet_ids = cabinet_ids or {}
-    coverage_start = refresh_run.period_start
-    coverage_end = refresh_run.period_end
+    coverage_start = coverage_start or refresh_run.period_start
+    coverage_end = coverage_end or refresh_run.period_end
+    if coverage_start > coverage_end:
+        raise ValueError("daily facts coverage start must not be after end")
     loaded_at = security.utcnow()
     values: list[dict[str, Any]] = []
     for fact in facts:
@@ -4807,6 +4845,12 @@ def source_refresh_run_payload(
         "snapshotSetId": refresh_run.snapshot_set_id,
         "periodStart": refresh_run.period_start.isoformat(),
         "periodEnd": refresh_run.period_end.isoformat(),
+        "sourceWindowStart": (
+            refresh_run.source_window_start or refresh_run.period_start
+        ).isoformat(),
+        "sourceWindowEnd": (
+            refresh_run.source_window_end or refresh_run.period_end
+        ).isoformat(),
         "rootDir": refresh_run.root_dir if include_sensitive else "",
         "workbookPath": refresh_run.workbook_path if include_sensitive else "",
         "errorMessage": (
@@ -11358,6 +11402,11 @@ def _safe_source_refresh_message(refresh_run: SourceRefreshRun) -> str:
             "Обновление данных не запущено: недостаточно свободного места "
             "для снимка данных."
         )
+    if refresh_run.status == "needs_full_refresh":
+        return (
+            "Инкрементальное обновление не запущено: нужна полная "
+            "пересборка истории."
+        )
     if refresh_run.status == "failed":
         return (
             "Последнее обновление данных не создало отчёт: "
@@ -11804,6 +11853,7 @@ def replace_source_loads_from_refresh(
     refresh_run: SourceRefreshRun,
     *,
     base_refresh_run: SourceRefreshRun | None = None,
+    contributing_runs: Iterable[SourceRefreshRun] = (),
 ) -> None:
     if (
         refresh_run.tenant_id != report.tenant_id
@@ -11816,21 +11866,64 @@ def replace_source_loads_from_refresh(
         or base_refresh_run.client_id != report.client_id
     ):
         raise ValueError("base source refresh does not belong to report client")
-    source_items: list[tuple[SourceRefreshRun, SourceRefreshCollection]] = []
+    contributors = [
+        item
+        for item in contributing_runs
+        if item.id not in {refresh_run.id, getattr(base_refresh_run, "id", None)}
+    ]
+    source_items: list[
+        tuple[SourceRefreshRun, SourceRefreshCollection, str]
+    ] = []
+    incremental_composite_types = {
+        "wb_finance_detail",
+        "wb_sales_report_list",
+        "wb_redeem_notifications",
+    }
     if base_refresh_run is not None:
         source_items.extend(
-            (base_refresh_run, item)
+            (base_refresh_run, item, "base")
             for item in base_refresh_run.collections
             if item.source_type.startswith("wb_")
+            and (
+                refresh_run.mode != "incremental"
+                or item.source_type in incremental_composite_types
+            )
         )
-    current_types = {item.source_type for item in refresh_run.collections}
-    source_items = [
-        (run, item)
-        for run, item in source_items
-        if item.source_type not in current_types
-    ]
-    source_items.extend((refresh_run, item) for item in refresh_run.collections)
-    for source_run, item in source_items:
+    for contributor in contributors:
+        source_items.extend(
+            (contributor, item, "overlay")
+            for item in contributor.collections
+            if item.source_type.startswith("wb_")
+            and (
+                refresh_run.mode != "incremental"
+                or item.source_type in incremental_composite_types
+            )
+        )
+    if (
+        base_refresh_run is not None
+        and not contributors
+        and refresh_run.mode != "incremental"
+    ):
+        current_types = {item.source_type for item in refresh_run.collections}
+        source_items = [
+            (run, item, role)
+            for run, item, role in source_items
+            if item.source_type not in current_types
+        ]
+    source_items.extend(
+        (refresh_run, item, "current") for item in refresh_run.collections
+    )
+    seen_collection_ids: set[int] = set()
+    for source_run, item, lineage_role in source_items:
+        if item.id in seen_collection_ids:
+            continue
+        seen_collection_ids.add(item.id)
+        if item.source_type.startswith("wb_"):
+            coverage_start = source_run.source_window_start or source_run.period_start
+            coverage_end = source_run.source_window_end or source_run.period_end
+        else:
+            coverage_start = source_run.period_start
+            coverage_end = source_run.period_end
         db.add(
             SourceLoad(
                 tenant_id=source_run.tenant_id,
@@ -11845,6 +11938,9 @@ def replace_source_loads_from_refresh(
                 status=item.status,
                 snapshot_hash=item.snapshot_hash,
                 row_count=item.row_count,
+                coverage_start=coverage_start,
+                coverage_end=coverage_end,
+                lineage_role=lineage_role,
                 loaded_at=item.loaded_at,
             )
         )
@@ -12479,12 +12575,15 @@ def apply_wb_buyout_primary_documents(
     db: Session,
     report: ReportRun,
     refresh_run: SourceRefreshRun,
+    *,
+    source_runs: Iterable[SourceRefreshRun] = (),
 ) -> dict[str, int]:
     """Attach persisted WB redeem-notification totals to an immutable report mart."""
+    run_ids = {refresh_run.id, *(item.id for item in source_runs)}
     source_rows = list(
         db.scalars(
             select(SourceSnapshotRow).where(
-                SourceSnapshotRow.refresh_run_id == refresh_run.id,
+                SourceSnapshotRow.refresh_run_id.in_(run_ids),
                 SourceSnapshotRow.source_type == "wb_redeem_notifications",
             )
         )
@@ -17392,7 +17491,10 @@ def query_marketplace_expense_reconciliation(
     source_loaded = source_row_count > 0
     source_kinds = sorted({row.source_kind for row in service_rows if row.source_kind})
     groups: list[dict[str, Any]] = []
-    all_keys = sorted(set(wb_groups) | set(onec_groups), key=lambda key: tuple(str(x) for x in key))
+    all_keys = sorted(
+        set(wb_groups) | set(onec_groups),
+        key=lambda key: tuple(str(value) for value in key),
+    )
     for key in all_keys:
         week_start, week_end, company_id, cabinet_id, group_name = key
         wb_amount = wb_groups.get(key, Decimal("0"))
@@ -17446,7 +17548,9 @@ def query_marketplace_expense_reconciliation(
     else:
         overall_status = "matched"
     delta_total = (
-        onec_with_vat - wb_document_total if source_loaded and context_supported else None
+        onec_with_vat - wb_document_total
+        if source_loaded and context_supported
+        else None
     )
 
     items = [_marketplace_expense_payload(row) for row in service_rows]
@@ -17467,7 +17571,11 @@ def query_marketplace_expense_reconciliation(
                 }
             )
     if status:
-        items = [item for item in items if item.get("status") == status or item.get("matchStatus") == status]
+        items = [
+            item
+            for item in items
+            if item.get("status") == status or item.get("matchStatus") == status
+        ]
     if delta_only:
         items = [
             item
@@ -17564,7 +17672,9 @@ def _marketplace_expense_payload(row: ReportMarketplaceExpenseRow) -> dict[str, 
         "sourceKind": row.source_kind,
         "matchStatus": row.match_status,
         "status": (
-            "matched" if row.match_status == "matched_marketplace_pair" else row.match_status
+            "matched"
+            if row.match_status == "matched_marketplace_pair"
+            else row.match_status
         ),
         "nextAction": (
             "Документ включён в сверку."
@@ -19900,6 +20010,13 @@ def report_freshness_payload(
                 "sourceRefreshRunId": item.source_refresh_run_id,
                 "required": item.required,
                 "publicationRequired": item.publication_required,
+                "coverageStart": (
+                    item.coverage_start.isoformat() if item.coverage_start else None
+                ),
+                "coverageEnd": (
+                    item.coverage_end.isoformat() if item.coverage_end else None
+                ),
+                "lineageRole": item.lineage_role,
                 "loadedAt": item.loaded_at.isoformat(),
             }
             for item in loads

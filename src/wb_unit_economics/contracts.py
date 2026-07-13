@@ -179,6 +179,7 @@ class WbApiSnapshot(ProjectModel):
     raw_payload_hash: str
     original_sale_date: date | None = None
     is_partial_source: bool = False
+    source_row_count: int = Field(default=1, ge=1)
 
     @field_validator(
         "quantity",

@@ -39,6 +39,8 @@ class WebSettings(BaseSettings):
     source_refresh_period_start: str = "2026-03-01"
     source_refresh_period_end: str = ""
     source_refresh_rolling_window_days: int = 14
+    source_refresh_incremental_enabled: bool = False
+    source_refresh_incremental_window_days: int = 28
     source_refresh_onec_page_size: int = 5000
     source_refresh_onec_max_pages: int = 200
     source_refresh_wb_limit: int = 100000

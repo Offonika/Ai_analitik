@@ -926,6 +926,11 @@ class SourceLoad(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    coverage_start: Mapped[date | None] = mapped_column(Date)
+    coverage_end: Mapped[date | None] = mapped_column(Date)
+    lineage_role: Mapped[str] = mapped_column(
+        String, nullable=False, default="current"
+    )
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -978,6 +983,8 @@ class SourceRefreshRun(Base):
     snapshot_set_id: Mapped[str] = mapped_column(String, nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    source_window_start: Mapped[date | None] = mapped_column(Date)
+    source_window_end: Mapped[date | None] = mapped_column(Date)
     root_dir: Mapped[str] = mapped_column(String, nullable=False, default="")
     workbook_path: Mapped[str] = mapped_column(String, nullable=False, default="")
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")

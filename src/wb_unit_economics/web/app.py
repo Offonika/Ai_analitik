@@ -255,7 +255,7 @@ class TenantIntegrationActionRequest(BaseModel):
 class SourceRefreshRequest(BaseModel):
     mode: str = Field(
         default="full",
-        pattern="^(daily|weekly|full|onec-only|ozon-only)$",
+        pattern="^(daily|incremental|weekly|full|onec-only|ozon-only)$",
     )
     dry_run: bool = False
     reason: str = Field(default="", max_length=4000)
@@ -383,6 +383,7 @@ def create_app(
             "needs_configuration",
             "blocked_active_refresh",
             "blocked_low_disk",
+            "needs_full_refresh",
         }
         health_refresh = (
             latest_completed_refresh
@@ -558,7 +559,14 @@ def create_app(
             client_id=client_id,
         )
         _require_staff_or_403(current, tenant_id)
-        if mode and mode not in {"daily", "weekly", "full", "onec-only", "ozon-only"}:
+        if mode and mode not in {
+            "daily",
+            "incremental",
+            "weekly",
+            "full",
+            "onec-only",
+            "ozon-only",
+        }:
             raise HTTPException(
                 status_code=400,
                 detail="unsupported source refresh mode",
@@ -580,6 +588,14 @@ def create_app(
                     refresh_run,
                     source_root=runtime_settings.source_refresh_root_path,
                 )
+        payload["incrementalEnabled"] = bool(
+            runtime_settings.source_refresh_incremental_enabled
+            and runtime_settings.marketplace_daily_facts_enabled
+            and runtime_settings.db_first_reports_enabled
+        )
+        payload["incrementalWindowDays"] = int(
+            runtime_settings.source_refresh_incremental_window_days
+        )
         return payload
 
     @app.get("/api/reports/{report_id}/ozon-diagnostics")
@@ -1022,7 +1038,11 @@ def create_app(
         reason = payload.reason.strip() or (
             "Ручная проверка готовности обновления источников"
             if payload.dry_run
-            else "Ручное полное обновление источников из веб-кабинета"
+            else (
+                "Ручное инкрементальное обновление источников из веб-кабинета"
+                if payload.mode == "incremental"
+                else "Ручное полное обновление источников из веб-кабинета"
+            )
         )
         try:
             if payload.dry_run:
@@ -1080,6 +1100,11 @@ def create_app(
             if refresh_run is not None
             else refresh_payload,
         }
+        response["incrementalEnabled"] = bool(
+            runtime_settings.source_refresh_incremental_enabled
+            and runtime_settings.marketplace_daily_facts_enabled
+            and runtime_settings.db_first_reports_enabled
+        )
         if refresh_run is not None:
             response["latest"]["progress"] = source_refresh_progress_payload(
                 refresh_run,
