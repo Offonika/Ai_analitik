@@ -53,6 +53,12 @@ Production environment задает `SHUMEYKO_RUNTIME_ENVIRONMENT=production`,
 отдельную test БД/report root/source root и по умолчанию
 `SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false`.
 
+Если test БД принадлежит отдельной PostgreSQL-роли, перед запуском
+`scripts/create_runtime_env_files.py --apply` нужно передать ее полный URL через
+одноразовую переменную окружения `SHUMEYKO_TEST_DATABASE_URL`. Скрипт проверит,
+что URL ведет в БД из `--test-database`, и не выведет URL или пароль. После
+команды переменную нужно удалить из shell environment.
+
 После restore production backup в test БД сначала выполнить dry-run, затем
 применение sanitization только через test EnvironmentFile:
 

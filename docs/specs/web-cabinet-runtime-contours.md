@@ -35,6 +35,10 @@ deployment pointer.
 session cookie, environment file, report root и source-refresh root всегда
 различаются. Test работает от отдельного непривилегированного system user без
 Linux capabilities и постоянно показывает заметную маркировку окружения.
+Если PostgreSQL использует отдельную test-роль, ее полный database URL
+передается генератору environment-файлов только через одноразовую переменную
+`SHUMEYKO_TEST_DATABASE_URL`. Генератор обязан проверить имя test БД и не
+выводить URL или пароль в stdout/stderr.
 
 # Configuration And API
 
@@ -97,3 +101,5 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 
 - 2026-07-15: accepted разделение production/test, DB clone sanitization,
   immutable promotion и zero-downtime cutover.
+- 2026-07-15: зафиксирована безопасная передача URL отдельной PostgreSQL-роли
+  test-контура без вывода секрета.

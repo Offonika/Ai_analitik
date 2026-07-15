@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -69,3 +70,50 @@ def test_runtime_env_generator_removes_production_secrets_from_test(
     assert test_values["SHUMEYKO_SESSION_SECRET"] != "session-secret"
     assert production.stat().st_mode & 0o777 == 0o600
     assert test.stat().st_mode & 0o777 == 0o600
+
+
+def test_runtime_env_generator_accepts_separate_test_database_role(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.env"
+    production = tmp_path / "production.env"
+    test = tmp_path / "test.env"
+    source.write_text(
+        'SHUMEYKO_DATABASE_URL="postgresql+psycopg://prod-app:placeholder@db/prod"\n',
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            str(ROOT / "scripts/create_runtime_env_files.py"),
+            "--source",
+            str(source),
+            "--production-output",
+            str(production),
+            "--test-output",
+            str(test),
+            "--apply",
+        ),
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "SHUMEYKO_TEST_DATABASE_URL": (
+                "postgresql+psycopg://test-app:placeholder@db/"
+                "shumeyko_web_cabinet_test"
+            ),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "placeholder" not in result.stdout
+    test_values = _read_env(test)
+    assert test_values["SHUMEYKO_DATABASE_URL"].startswith(
+        "postgresql+psycopg://test-app:"
+    )
+    assert test_values["SHUMEYKO_DATABASE_URL"].endswith(
+        "/shumeyko_web_cabinet_test"
+    )

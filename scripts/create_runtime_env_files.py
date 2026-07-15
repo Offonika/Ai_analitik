@@ -69,9 +69,18 @@ def main() -> int:
     database_url = values.get("SHUMEYKO_DATABASE_URL", "")
     if not database_url:
         raise SystemExit("Source environment has no SHUMEYKO_DATABASE_URL")
-    test_database_url = make_url(database_url).set(
-        database=args.test_database
-    ).render_as_string(hide_password=False)
+    test_database_override = os.environ.get("SHUMEYKO_TEST_DATABASE_URL", "").strip()
+    if test_database_override:
+        test_url = make_url(test_database_override)
+        if str(test_url.database or "") != args.test_database:
+            raise SystemExit(
+                "SHUMEYKO_TEST_DATABASE_URL must target --test-database"
+            )
+        test_database_url = test_url.render_as_string(hide_password=False)
+    else:
+        test_database_url = make_url(database_url).set(
+            database=args.test_database
+        ).render_as_string(hide_password=False)
 
     production = dict(values)
     production.update(
