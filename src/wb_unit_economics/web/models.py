@@ -449,6 +449,10 @@ class ReportRun(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
     client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
     client_name: Mapped[str] = mapped_column(String, nullable=False)
+    report_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="marketplace_unit_economics"
+    )
+    organization_id: Mapped[str | None] = mapped_column(String)
     title: Mapped[str] = mapped_column(String, nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
@@ -500,6 +504,36 @@ class ReportRun(Base):
     artifacts: Mapped[list[ReportArtifact]] = relationship(
         back_populates="report",
         cascade="all, delete-orphan",
+    )
+
+
+class MonthCloseControlReport(Base):
+    __tablename__ = "month_close_control_reports"
+    __table_args__ = {"schema": "wb_unit_economics"}
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    contract_version: Mapped[str] = mapped_column(String, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class TaxLoadReport(Base):
+    __tablename__ = "tax_load_reports"
+    __table_args__ = {"schema": "wb_unit_economics"}
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    contract_version: Mapped[str] = mapped_column(String, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
@@ -940,6 +974,14 @@ class SourceRefreshRun(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
     client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    target_report_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="marketplace_unit_economics"
+    )
+    organization_id: Mapped[str | None] = mapped_column(String)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    generation_stage: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
     requested_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("wb_unit_economics.users.id")
     )
@@ -989,6 +1031,35 @@ class SourceRefreshRun(Base):
     )
 
 
+class ReportGenerationRequest(Base):
+    __tablename__ = "report_generation_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "client_id",
+            "idempotency_key",
+            name="uq_report_generation_request_key",
+        ),
+        Index(
+            "ix_report_generation_requests_run",
+            "generation_run_id",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    generation_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class SourceRefreshCollection(Base):
     __tablename__ = "source_refresh_collections"
     __table_args__ = (
@@ -1008,6 +1079,7 @@ class SourceRefreshCollection(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
     client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    organization_id: Mapped[str | None] = mapped_column(String)
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     source_label: Mapped[str] = mapped_column(String, nullable=False)
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -1630,11 +1702,17 @@ class AiThread(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id")
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.users.id"))
     report_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("wb_unit_economics.report_runs.id")
     )
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    scope_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -1650,6 +1728,7 @@ class AiMessage(Base):
     )
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    chatkit_item_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     tool_name: Mapped[str] = mapped_column(String, nullable=False, default="")
     citations: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(

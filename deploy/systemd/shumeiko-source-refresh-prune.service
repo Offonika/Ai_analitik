@@ -6,9 +6,9 @@ ConditionPathIsDirectory=/data/shumeyko/source_refresh
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
-EnvironmentFile=/etc/shumeiko-web.env
-ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/prune_source_refresh.py --source-root /data/shumeyko/source_refresh --daily-keep 3 --full-keep 2 --protect-snapshot-set daily-20260712-065846 --apply
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/prune_source_refresh.py --source-root /data/shumeyko/source_refresh --daily-keep 3 --full-keep 2 --protect-snapshot-set daily-20260712-065846 --apply
 Nice=10
 IOSchedulingClass=idle
 NoNewPrivileges=true

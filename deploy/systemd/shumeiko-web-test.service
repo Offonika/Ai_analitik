@@ -1,0 +1,31 @@
+[Unit]
+Description=Shumeyko Analytics Test Web API
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+Requires=postgresql@16-main.service
+
+[Service]
+Type=simple
+User=shumeyko-test
+Group=shumeyko-test
+UMask=0027
+WorkingDirectory=/opt/shumeyko-runtime/test/current
+EnvironmentFile=/etc/shumeiko-web-test.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/shumeyko-runtime/test/current/src
+ExecStart=/opt/shumeyko-runtime/test/current/.venv/bin/python -m uvicorn wb_unit_economics.web.app:app --host 127.0.0.1 --port 8098 --workers 1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=2G
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/data/shumeyko/test
+InaccessiblePaths=/data/shumeyko/source_refresh /opt/shumeyko-partners-wb-unit-economics/reports /var/backups/shumeiko-web
+
+[Install]
+WantedBy=multi-user.target

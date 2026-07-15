@@ -18,7 +18,9 @@ from scripts.docs_metadata import (  # noqa: E402
     string_list,
 )
 from scripts.validate_documentation_contracts import (  # noqa: E402
+    UserGuideContractParser,
     validate_excel_sheet_contract,
+    validate_user_guide_contract,
 )
 from wb_unit_economics.document_exports import markdown_sha256  # noqa: E402
 
@@ -45,6 +47,32 @@ def test_superseded_documents_have_replacement_and_banner() -> None:
 
 def test_excel_sheet_contract_matches_code() -> None:
     assert validate_excel_sheet_contract() == []
+
+
+def test_user_guide_contract_matches_primary_interface() -> None:
+    assert validate_user_guide_contract() == []
+
+
+def test_user_guide_contract_rejects_undocumented_workspace() -> None:
+    parser = UserGuideContractParser()
+    parser.feed('<button data-workspace-nav="new-section">Новый раздел</button>')
+
+    assert "button: expected data-guide-entry='sections'" in parser.failures
+    assert "button: guide description is missing" in parser.failures
+
+
+def test_user_guide_contract_rejects_undocumented_source_refresh_action() -> None:
+    parser = UserGuideContractParser()
+    parser.feed(
+        '<div class="source-refresh-actions">'
+        '<button id="new-refresh-action">Новая загрузка</button>'
+        "</div>"
+    )
+
+    assert (
+        "new-refresh-action: expected data-guide-entry='checks'" in parser.failures
+    )
+    assert "new-refresh-action: guide description is missing" in parser.failures
 
 
 def test_manifest_metadata_parity_validator() -> None:

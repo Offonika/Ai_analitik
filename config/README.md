@@ -7,7 +7,7 @@ status: active
 source_of_truth: true
 truth_scope: configuration
 truth_priority: 100
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Config
@@ -62,8 +62,25 @@ GUID-настройки сверки `1С ОПиУ` можно вынести в
 Режим также требует `SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true` и
 `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`.
 
+Каталог web-отчетов управляется non-secret настройкой
+`SHUMEYKO_ENABLED_REPORT_KINDS`. Безопасный default —
+`marketplace_unit_economics`. Staff-only advisory rollout выполняется поэтапно:
+сначала добавляется `month_close_control`, после проверки — `tax_load`.
+Откат удаляет новый вид из списка и не удаляет report runs, snapshots или audit.
+
 Production rollout задается версионированными systemd drop-ins:
 
+- `/etc/shumeiko-web-prod.env` и `/etc/shumeiko-web-test.env` всегда раздельны;
+- production использует `SHUMEYKO_RUNTIME_ENVIRONMENT=production`, test —
+  `SHUMEYKO_RUNTIME_ENVIRONMENT=test`;
+- test задает отдельные `SHUMEYKO_DATABASE_URL`,
+  `SHUMEYKO_SESSION_COOKIE_NAME`, `SHUMEYKO_ALLOWED_EXPORT_ROOT` и
+  `SHUMEYKO_SOURCE_REFRESH_ROOT`, запрещает client login и по умолчанию
+  отключает `SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED`;
+- `deploy/systemd/shumeiko-web.service.d/accounting-report-kinds.conf` и
+  одноименный worker drop-in — безопасный initial rollout: новые бухгалтерские
+  виды установлены, но выключены; включение выполняется добавлением
+  `month_close_control`, затем `tax_load` после контрольных сверок;
 - `deploy/systemd/shumeiko-web.service.d/incremental-refresh.conf` — показывает
   staff incremental в web и включает обязательные DB-first/daily-facts flags;
 - `deploy/systemd/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf`
@@ -74,3 +91,14 @@ Production rollout задается версионированными systemd d
 Drop-ins не содержат токены или URL подключений. Удаление обоих
 `incremental-refresh.conf` является feature-flag rollback; созданные
 draft/snapshots при этом сохраняются.
+
+AI runtime настраивается только через runtime env:
+
+- `SHUMEYKO_OPENAI_MODEL` — модель Responses API;
+- `SHUMEYKO_OPENAI_TIMEOUT_SECONDS=60` — общий timeout одного запроса;
+- `SHUMEYKO_CHATKIT_ENABLED=false` — опциональный custom-server UI transport;
+- `SHUMEYKO_CHATKIT_DOMAIN_KEY` — публичный domain key ChatKit web component.
+
+OpenAI API key остается секретом и в этот каталог не попадает. ChatKit включают
+только вместе с domain key после staff acceptance; без feature flag штатным
+transport остается `/messages/stream`. Attachments и внешние actions отключены.

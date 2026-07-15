@@ -1,0 +1,22 @@
+[Unit]
+Description=Shumeyko Analytics Production Web API
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+Requires=postgresql@16-main.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/shumeyko-runtime/prod/current/src
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python -m uvicorn wb_unit_economics.web.app:app --host 127.0.0.1 --port 8097 --workers 1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+MemoryMax=2G
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

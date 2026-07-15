@@ -13,10 +13,10 @@ related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py
 related_tests: [tests/test_web_app.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
-related_specs: [docs/specs/marketplace-1c-mapping-service.md]
+related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cabinet-runtime-contours.md]
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Implementation Status
@@ -29,9 +29,13 @@ updated_at: "2026-07-13"
 # Goal
 
 Реализовать production-рамку пилота продукта `AI-аналитик отчетов` на
-`shumeiko.offonika.ru`: авторизация, tenant boundary, хранение расчетных витрин в
+`analitika.offonika.ru`: авторизация, tenant boundary, хранение расчетных витрин в
 PostgreSQL, управляемый Excel export и AI-аналитик отчетов поверх уже
 рассчитанных данных.
+
+`shumeiko.offonika.ru` является staff-only test-контуром. Точные runtime,
+данные, promotion и rollback boundaries закреплены в
+`docs/specs/web-cabinet-runtime-contours.md`.
 
 `Shumeyko v2` остается техническим именем пилотного WB/1C контура. Продуктовое
 имя для повторного использования и упаковки: `AI-аналитик отчетов`.
@@ -72,6 +76,12 @@ PostgreSQL, управляемый Excel export и AI-аналитик отче�
   остаются совместимыми deep-link shell для открытия соответствующего виджета
   поверх отчета, `/static/*` отдает локальные CSS/JS assets, а все данные
   отчета загружаются только через защищенные `/api/*`;
+- встроенная вкладка `Инструкция` (`#guide`) для авторизованного пользователя:
+  она собирает разделы и действия из тех же названий и help-описаний, которые
+  использует текущий UI, фильтрует staff-only действия по роли и не содержит
+  отдельной вручную синхронизируемой копии навигации; contract test требует
+  guide metadata для каждого верхнеуровневого раздела и действия кабинета, а
+  также для статуса, этапов и всех основных действий `Данные и расчёт`;
 - формирование фирменного клиентского аналитического отчета из Excel MVP в
   Markdown, DOCX и PDF, если на сервере доступен PDF-конвертер;
 - AI-аналитик отчетов через OpenAI Responses API и серверные read-only tools;
@@ -161,6 +171,15 @@ Tenant остается границей безопасности и хране�
   `tenant_id`, `report_run_id`, optional `thread_id`, `author_user_id`,
   `revision`, `status`, `source`, `content`, `instruction`, safe `evidence`,
   `limitations`, `created_at`, `updated_at`.
+
+Начиная с v2.41 каждый новый `ai_thread` обязательно и неизменно связан с
+`tenant_id`, `client_id`, `report_run_id`, создавшим его `user_id`, safe
+`scope` текущего отбора и детерминированным `scope_hash`. Диалог доступен только
+его владельцу; роль `admin` сама по себе не дает доступа к тексту чужого
+диалога. Thread без конкретного report run не создается (`409`), а legacy thread
+без report run архивируется миграцией. Любой optional `thread_id` в клиентском
+черновике или refresh обязан совпадать с `report_id`, иначе операция возвращает
+`409`.
 
 Plaintext-секреты внешних систем не хранятся в таблицах. Для tenant
 integrations допустим только encrypted ciphertext, полученный runtime-ключом
@@ -302,25 +321,49 @@ Readiness v1 rules:
   client draft state; draft-related reasons are included only for
   `consultant/admin`.
 
-Финансовые причины всегда являются блокирующими: смешение методов P&L,
+Финансовые причины являются блокирующими для публикации, замены текущего отчёта
+и клиентских рекомендаций: смешение методов P&L,
 расхождение `profit` и `profitBeforeTax` до НДФЛ, неподтвержденный входящий НДС,
 незакрытая себестоимость, неуспешный обязательный source lineage, отсутствие
 подтверждения нулевых хранения/приемки, незакрытая независимая месячная или
 документная сверка. При наличии такой причины UI показывает точный заголовок
 `Финансовая проверка не пройдена`, а клиентский AI не формирует рекомендации и
-возвращает HTTP 409.
+возвращает HTTP 409. Эти причины не останавливают расчёт витрины, KPI и P&L и не
+скрывают уже рассчитанные показатели в кабинете. Если расчётные факты доступны,
+UI показывает их с пометкой `Предварительный расчёт: есть замечания к качеству
+данных`; отсутствующие значения остаются явными `null`/`не рассчитано` и не
+подменяются нулями.
 
 UI readiness behavior:
 
 - unauthenticated visitor sees only the login shell and no report data;
+- начиная с v2.36 боковая навигация содержит вкладку `Инструкция`. Страница
+  показывает рекомендуемый старт, назначение разделов и доступные действия,
+  но не загружает отдельные report data. Карточки инструкции формируются в
+  браузере из `data-guide-*` metadata живых контролов: видимое название берется
+  из самого элемента, пояснение хранится рядом с ним, а staff-only карточки
+  выводятся только для `consultant/admin`. Новый верхнеуровневый раздел или
+  пункт меню действий без guide metadata считается contract regression;
+- начиная с v2.38 `Инструкция` содержит отдельный нумерованный сценарий для
+  вкладки `Проверки`: прочитать сводку запуска, проверить этапы и карточки
+  источников, выполнить readiness-only проверку, при необходимости обновить
+  клиентское сопоставление, использовать incremental refresh как обычный
+  сценарий, запускать Ozon-only только для служебной витрины Ozon + 1С, а full
+  refresh — только для первичной или восстановительной пересборки истории.
+  `Обновить статус` только перечитывает состояние последнего запуска. После
+  завершения пользователь переходит к `Что проверить в отчете`, проблемным
+  строкам и сверке WB ↔ 1С. Названия кнопок в инструкции берутся из живых
+  controls, а contract regression блокирует новое действие блока
+  `source-refresh-actions` без `data-guide-*` пояснения;
 - the authenticated cabinet uses one analyst workspace shell with a persistent
-  navigation rail and four user-facing entries: `Обзор`, `Проверки`, `Таблицы`
-  and `Клиентский вывод`; `Настройки` is shown only to `consultant/admin` and
-  opens the existing integrations widget rather than a new page;
+  navigation rail and four page entries: `Обзор`, `Проверки`, `Таблицы` and
+  `Инструкция`; `Клиентский вывод` remains a report action, while `Настройки`
+  is shown only to `consultant/admin` and opens the existing integrations
+  widget rather than a new page;
 - the browser URL may expose UI-only fragments `#overview`, `#checks`,
-  `#checks/cost` and `#tables`; they do not add server routes or API contracts,
-  invalid fragments fall back to `#overview`, and browser Back/Forward restores
-  the visible workspace without reloading report facts;
+  `#checks/cost`, `#tables` and `#guide`; they do not add server routes or API
+  contracts, invalid fragments fall back to `#overview`, and browser
+  Back/Forward restores the visible workspace without reloading report facts;
 - after login, UI shows a client switcher when the user has more than one
   available client;
 - `consultant/admin` can create a new client workspace from the topbar; after
@@ -533,29 +576,76 @@ UI readiness behavior:
   coverage for either the report period or the explicitly displayed common
   provider window. `lostSalesCoverage` exposes `fullCoverage`,
   `calculationPeriodStart`, `calculationPeriodEnd` and `extrapolated=false`;
-- `Контроль перед отправкой` appears after `Показатели` and Ozon diagnostics,
-  immediately before `Аналитика`, so line-quality blockers and the problem-row
-  action are visible before financial interpretation; `Аналитика` remains
-  before the readiness command board. v1 renders embedded dependency-free
+- начиная с v2.35 первый экран `Обзора` использует фиксированную иерархию:
+  один блок основных KPI, затем `Аналитика` с динамикой продаж первым графиком,
+  затем readiness command board. `Дополнительные показатели`, `Статус исходных
+  данных` и подробный `Контроль 1С` находятся во вкладке `Проверки`; два набора
+  карточек раскрываются по запросу и по умолчанию не увеличивают высоту экрана;
+- `Контроль перед отправкой` находится во вкладке `Проверки` рядом с контролем
+  источников и расширенными показателями, так что line-quality blockers и
+  problem-row action не конкурируют с финансовой интерпретацией на `Обзоре`.
+  v1 renders embedded dependency-free
   visualizations from
   `summary.monthly`, `summary.expenses`, `summary.lostSales`,
   `summary.liquidityRows` and `summary.kpis`: grouped column charts for money
   dynamics, a P&L-style unit economics table, horizontal bars for top losses
   and return columns with return-rate context;
-- начиная с v2.33 первый уровень `Обзора` показывает семь основных KPI:
-  выручку WB без НДС, себестоимость 1С, расходы WB, маржинальный доход, маржу,
-  продажи и возвратность. Выручка с НДС, чистые продажи, возвраты, выручка на
+- начиная с v2.37 первый уровень `Обзора` показывает восемь основных KPI:
+  в первом ряду — выручку WB без НДС, себестоимость 1С, расходы WB,
+  маржинальный доход и маржу; во втором — `Итого к перечислению`, продажи и
+  возвратность. `Итого к перечислению` является суммой сохранённых
+  `forPaySum` финансовых отчётов WB в текущем срезе и показывается справочно:
+  это не подтверждение фактического банковского платежа и не источник выплаты
+  1С. Если `forPaySum` отсутствует во всех строках, KPI остаётся `null`, а не
+  подменяется расчётом `выручка − расходы`. Выручка с НДС, чистые продажи,
+  возвраты, выручка на
   продажу, убыточные строки, штрафы и налоговый мост остаются доступны в
-  раскрываемом блоке `Дополнительные показатели`; если налоговый профиль не
+  раскрываемом блоке `Дополнительные показатели` во вкладке `Проверки`; если
+  налоговый профиль не
   применён, шесть пустых налоговых карточек заменяются одной явной карточкой
-  статуса без подмены значений нулями;
+  статуса без подмены значений нулями. Карточка выручки WB показывает вторичной
+  строкой календарную выручку 1С с НДС или явный статус её отсутствия; это не
+  превращает разные базы в одну сумму и не дублируется отдельной карточкой;
+- начиная с v2.39 основной блок `Показатели` содержит десять KPI в фиксированной
+  сетке 5×2: выручка WB без НДС, себестоимость 1С, расходы WB, маржинальный
+  доход и маржа; затем прибыль после налогов, рентабельность после налогов,
+  `Итого к перечислению`, продажи WB и возвратность. Карточка прибыли после
+  налогов переносится из `Дополнительных показателей` и не дублируется там.
+  `kpis.marginAfterTax` равен `profitAfterTax / revenue_for_pnl` только при
+  применённом налоговом профиле, сходящемся налоговом мосте и ненулевой базе
+  выручки; иначе значение остаётся `null`. Для ОСНО обе карточки явно сообщают
+  `По юнит-экономике · НДФЛ ИП не включён`; НДС к уплате остаётся отдельным
+  обязательством и повторно не уменьшает товарный P&L. Если профиль не применён
+  или мост не сходится, обе карточки показывают `Не рассчитано`, а не оценку;
+- начиная с v2.40 основные KPI-карточки используют компактную типографику без
+  сокращения финансовых названий и без изменения значений: заголовок имеет
+  размер `14px`, зону высотой `36px` и занимает не более двух строк; значение
+  имеет размер `clamp(22px, 1.55vw, 26px)`, а на мобильном экране — `19px`.
+  Высота карточки составляет `142px`, внутренние отступы сохраняются. Денежные,
+  процентные и количественные значения, а также состояние `Не рассчитано`, не
+  разрываются между строками (`white-space: nowrap`, `overflow-wrap: normal`,
+  `word-break: keep-all`) и используют табличные цифры. Адаптивная сетка
+  содержит пять колонок при ширине от `1180px`, три колонки в диапазоне
+  `761–1179px` и две колонки до `760px`; страница и карточки не создают
+  горизонтальную прокрутку. Подсказка открывается по наведению и клавиатурному
+  фокусу, ограничена шириной `320px` и выравнивается внутрь viewport для первой
+  и последней карточек каждого ряда. Публичные API и формулы KPI не меняются;
+- `/api/reports/{id}/rows` возвращает в корневом `kpis` тот же полный набор
+  агрегатов, что и в `analytics.kpis`. В частности, `Расходы WB` и
+  `Итого к перечислению` не должны исчезать после автоматического применения
+  фильтров. Расходы WB берутся из рассчитанного товарного P&L на применённой
+  налоговой базе; наличие или отсутствие документов услуг 1С влияет только на
+  отдельную бухгалтерскую сверку и не обнуляет этот KPI;
 - `Динамика продаж` занимает всю ширину аналитического блока и повторяет
   принятый в управленческой витрине визуальный принцип: продажи показаны
   нейтральными столбцами, выручка и маржинальный доход — отдельными линиями,
   маржа — линией по правой процентной шкале. Прогноз не выводится без
   подтверждённого источника. Каждый месяц доступен мышью и клавиатурой,
   показывает точные значения во всплывающей подсказке и открывает существующую
-  месячную детализацию; API, формулы и состав `summary.monthly` не меняются;
+  месячную детализацию. График честно показывает месяцы текущего загруженного
+  отчёта и подписывает их диапазон; если в отчёте есть 12 месяцев, диапазон
+  обозначается как год. Месяцы вне `summary.monthly` не достраиваются и не
+  прогнозируются; API, формулы и состав `summary.monthly` не меняются;
 - `Аналитика` also works as a review navigator: a compact
   `Что разобрать первым` row prioritizes missing 1C cost, mapping, WB ↔ 1C
   reconciliation, loss rows, lost sales and returns. For `consultant/admin`,
@@ -861,6 +951,42 @@ AI-аналитик в кабинете показывает не raw reasoning 
 дополнительные служебные labels tool names/status, но не raw prompts, SQL,
 секреты, payload внешних API или скрытые рассуждения модели.
 
+### AI core v2.41
+
+- OpenAI вызывается до deterministic fallback; fallback не запускает tools
+  заранее и переиспользует уже полученный результат tool call после ошибки
+  модели. Один function call, включая `refresh_onec_and_rebuild_report`, может
+  быть исполнен не более одного раза в рамках одного ответа.
+- В повторный Responses request передаются SDK output-items без `model_dump()`:
+  response-only поля (`status`, `namespace`) не попадают в новый input.
+- Запросы используют `store=false`,
+  `include=["reasoning.encrypted_content"]`, hashed `safety_identifier` и
+  runtime timeout. Шифрованное reasoning-состояние не сохраняется в БД или UI.
+- Контекст содержит не более 20 последних user/assistant сообщений и не более
+  32 000 символов. Текущий вопрос не дублируется.
+- KPI, readiness, quality и месячная динамика берутся из канонического
+  `report_summary_payload`; SQL-поиск строк используется только для ограниченной
+  evidence-выборки. Отсутствующая прибыль после налогов остается `null` и
+  выводится как `не рассчитано`, а не как ноль.
+- Assistant message сохраняет safe `citations`: `reportId`, `clientId`,
+  `scopeHash`, имя server tool и только отображаемые идентификаторы evidence
+  строк. Raw payload, prompt, SQL и reasoning в citations не допускаются.
+- Ограничение неполного месяца строится из `meta.periodStatus`; статическая
+  формулировка про июнь запрещена для другого периода.
+- `/api/health` публикует только безопасные AI runtime metadata: факт настройки,
+  имя модели и состояние feature flag ChatKit, но не ключи или prompts.
+
+### ChatKit boundary v2.41
+
+ChatKit является опциональной заменой только UI/transport слоя. По умолчанию
+`SHUMEYKO_CHATKIT_ENABLED=false`, штатный SSE остается активным. При включении
+разрешена только custom self-hosted server integration с существующей
+same-origin session, CSRF/tenant/report/owner проверками и теми же серверными
+tools. Agent Builder workflow и Agents SDK не являются источником финансовой
+логики. Attachments и внешние actions отключены. До отдельного acceptance теста
+feature flag не включается в production; `/api/ai/config` сообщает UI выбранный
+transport и ограничения, не раскрывая конфигурацию OpenAI.
+
 ## Tenant Integrations
 
 Ключи клиента живут в контуре tenant, а не в профиле пользователя или
@@ -950,7 +1076,7 @@ OpenAI key остается сервисным runtime secret; клиентск�
 
 # Security And Rollout
 
-- Use HTTPS on `shumeiko.offonika.ru`.
+- Use HTTPS on `analitika.offonika.ru` и `shumeiko.offonika.ru`.
 - Set session cookies as `HttpOnly`, `Secure`, `SameSite=Lax`.
 - Keep `X-Robots-Tag: noindex, nofollow, noarchive`.
 - Serve `/api/*` through nginx to the FastAPI service.
@@ -965,7 +1091,7 @@ OpenAI key остается сервисным runtime secret; клиентск�
 - Bootstrap users manually by server-side script or admin command, never from
   public registration.
 - Store OpenAI and external API keys only in runtime environment such as
-  `/etc/shumeiko-web.env`; never put keys in Git, Markdown, HTML or JSON
+  `/etc/shumeiko-web-prod.env`; never put keys in Git, Markdown, HTML or JSON
   artifacts.
 - Set `SHUMEYKO_INTEGRATION_SECRET_KEY` before using tenant live checks; rotate
   it only with a separate migration/re-save procedure for encrypted tenant
@@ -1060,9 +1186,18 @@ Large-report loading:
 - Loss navigation separates product-margin losses, returns, penalty incidents
   without sales and rows with unconfirmed COGS.
 - A report with a financial blocker shows `Финансовая проверка не пройдена`,
-  cannot generate client recommendations and cannot replace the current report.
+  keeps available KPI and P&L values visible with a preliminary data-quality
+  notice, cannot generate client recommendations and cannot replace the current
+  report.
 - `/`, `/cabinet`, `/ai` and `/integrations` serve a lightweight UI shell that
   does not embed report data before authenticated API calls.
+- `#guide` открывает встроенную инструкцию; ее названия разделов и действий
+  совпадают с текущими UI controls, а клиентская роль не видит staff-only
+  карточки `Настройки` и `Добавить клиента`.
+- Для `consultant/admin` инструкция по `Проверкам` различает обычное обновление
+  последних данных, Ozon-only витрину и редкую полную пересборку, объясняет
+  значения сводки/этапов/карточек источников и заканчивается разбором
+  проблемных строк; клиентская роль не видит staff-only source-refresh actions.
 - UI displays `ready`, `needs_review`, `partial_period`, `partial_source`,
   `source_coverage_gap` and `failed` states with stable mobile layout and safe
   text rendering.
@@ -1152,11 +1287,43 @@ Large-report loading:
 - Import tests from an Excel-derived dashboard payload.
 - Frontend smoke: login/authenticated API load, filters, AI widget and mobile
   overflow.
+- Frontend guide contract: hash routing и sidebar state для `#guide`, генерация
+  карточек безопасными DOM methods, role filtering и обязательное
+  `data-guide-*` покрытие верхней навигации, фильтров, action menu и всех кнопок
+  `source-refresh-actions`; отдельный negative test отклоняет новую кнопку
+  `Данные и расчёт` без пользовательского пояснения.
 - Deployment smoke: HTTPS 200, `/api/health`, secure headers, no public data
   artifacts.
 
 # Changelog
 
+- 2026-07-14: v2.40 сделал десять основных KPI компактными и устойчивыми к
+  разрыву чисел, закрепил адаптивную сетку 5/3/2 и ограниченные viewport
+  подсказки при наведении и клавиатурном фокусе без изменения API и формул.
+- 2026-07-14: v2.39 добавил в основной блок прибыль и рентабельность после
+  налогов, закрепил десять KPI в сетке 5×2, nullable `marginAfterTax` и
+  корректный мост для ОСНО без повторного вычитания НДС и без распределения
+  НДФЛ ИП по товарному P&L.
+- 2026-07-14: v2.38 подробно описал в `Инструкции` работу с вкладкой
+  `Проверки`: сводку, этапы, карточки источников, readiness-only проверку,
+  сопоставление, обычное incremental-обновление, Ozon-only, редкую полную
+  пересборку, обновление статуса и последующий разбор проблемных строк;
+  contract test требует описание для каждого основного source-refresh action.
+- 2026-07-14: v2.37 восстановил расходы WB после применения фильтров, выровняв
+  корневой `kpis` endpoint `/rows` с `analytics.kpis`, и добавил справочный KPI
+  `Итого к перечислению` как сумму сохранённых `forPaySum`; основной блок стал
+  сеткой 5 финансовых + 3 операционных показателя.
+- 2026-07-14: v2.36 добавил встроенную роль-зависимую страницу `Инструкция`,
+  которая автоматически собирает актуальные названия разделов и действий из
+  metadata живого интерфейса; contract test блокирует новые верхнеуровневые
+  элементы без пользовательского пояснения.
+- 2026-07-14: v2.35 упорядочил `Обзор` как KPI → аналитика → готовность,
+  перенёс дополнительные KPI, доверие к данным и подробный контроль 1С в
+  `Проверки`, добавил 1С-выручку вторичной строкой основной карточки выручки и
+  явную подпись фактически загруженного месячного диапазона на графике.
+- 2026-07-13: v2.34 made financial data-quality issues non-blocking for KPI and
+  P&L calculation/display: available values remain visible with a preliminary
+  warning while publication and client-recommendation gates remain unchanged.
 - 2026-07-13: v2.33 reduced the overview to seven primary KPIs, grouped
   secondary and tax indicators into one disclosure, and replaced the compact
   money columns with a full-width accessible sales dynamics chart using only

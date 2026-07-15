@@ -62,21 +62,21 @@ deploy/systemd/shumeiko-source-refresh-worker@.service.d/incremental-refresh.con
 deploy/systemd/shumeiko-source-refresh-worker@.service.d/marketplace-facts.conf
 deploy/systemd/shumeiko-source-refresh-watchdog.service
 deploy/systemd/shumeiko-source-refresh-watchdog.timer
-deploy/systemd/shumeiko-web.service.d/incremental-refresh.conf
+deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf
 ```
 
 Оба service-файла используют:
 
-- `WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics`;
+- `WorkingDirectory=/opt/shumeyko-runtime/prod/current`;
 - проектный `.venv/bin/python`;
-- `EnvironmentFile=/etc/shumeiko-web.env`;
+- `EnvironmentFile=/etc/shumeiko-web-prod.env`;
 - `SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko` как безопасный tenant по умолчанию.
 
 Ручной запуск из web, совместимая кнопка 1С, AI-команда, пересборка после
 загрузки сопоставления и production daily/weekly выполняют отдельный шаблон
 `shumeiko-source-refresh-worker@<run_id>.service`. Web-процесс только создаёт
 `queued` run и запускает unit; чтение источников и сборка отчёта внутри
-`shumeiko-web.service` запрещены. Watchdog раз в минуту проверяет heartbeat.
+`shumeiko-web-prod.service` запрещены. Watchdog раз в минуту проверяет heartbeat.
 Локальный `cli:<pid>:<run_id>` fallback разрешён только для SQLite/dev; stale
 CLI run восстанавливается лишь после подтверждения отсутствия процесса.
 
@@ -95,13 +95,13 @@ refresh доступы должны приходить из encrypted tenant int
 sudo cp deploy/systemd/shumeiko-source-refresh-*.service /etc/systemd/system/
 sudo cp deploy/systemd/shumeiko-source-refresh-*.timer /etc/systemd/system/
 sudo install -d /etc/systemd/system/shumeiko-source-refresh-worker@.service.d
-sudo install -d /etc/systemd/system/shumeiko-web.service.d
+sudo install -d /etc/systemd/system/shumeiko-web-prod.service.d
 sudo cp deploy/systemd/shumeiko-source-refresh-worker@.service.d/*.conf \
   /etc/systemd/system/shumeiko-source-refresh-worker@.service.d/
-sudo cp deploy/systemd/shumeiko-web.service.d/incremental-refresh.conf \
-  /etc/systemd/system/shumeiko-web.service.d/
+sudo cp deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf \
+  /etc/systemd/system/shumeiko-web-prod.service.d/
 sudo systemctl daemon-reload
-sudo systemctl restart shumeiko-web.service
+sudo systemctl restart shumeiko-web-prod.service
 sudo systemctl enable --now shumeiko-source-refresh-watchdog.timer
 sudo systemctl enable --now shumeiko-source-refresh-daily.timer
 sudo systemctl enable --now shumeiko-source-refresh-weekly.timer
@@ -125,11 +125,11 @@ Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=<tenant_id>
 daily-facts и DB-first. Rollback не требует изменения файла с секретами:
 
 ```bash
-sudo rm /etc/systemd/system/shumeiko-web.service.d/incremental-refresh.conf
+sudo rm /etc/systemd/system/shumeiko-web-prod.service.d/incremental-refresh.conf
 sudo rm \
   /etc/systemd/system/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf
 sudo systemctl daemon-reload
-sudo systemctl restart shumeiko-web.service
+sudo systemctl restart shumeiko-web-prod.service
 ```
 
 Перед rollback убедиться, что incremental worker не активен. Уже созданные

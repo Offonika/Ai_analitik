@@ -1,14 +1,14 @@
 [Unit]
 Description=Shumeyko WB/1C weekly full source refresh
-After=network-online.target postgresql@16-main.service shumeiko-web.service
+After=network-online.target postgresql@16-main.service shumeiko-web-prod.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
-EnvironmentFile=/etc/shumeiko-web.env
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
 Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko
-ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode full --reason "systemd weekly full source refresh"
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode full --reason "systemd weekly full source refresh"
 MemoryHigh=512M
 MemoryMax=1G
 MemorySwapMax=256M

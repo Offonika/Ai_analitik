@@ -1,0 +1,13 @@
+[Unit]
+Description=Shumeyko production cabinet health check
+After=shumeiko-web-prod.service
+Requires=shumeiko-web-prod.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/check_runtime_health.py --url http://127.0.0.1:8097/api/health --environment production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

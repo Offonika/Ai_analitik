@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_07_13_incremental_daily_fact_parity"
+DB_FIRST_SCHEMA_VERSION = "2026_07_14_accounting_evidence_v2"
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -91,6 +92,8 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
             connection.execute(text("CREATE SCHEMA IF NOT EXISTS wb_unit_economics"))
     Base.metadata.create_all(engine)
     _ensure_report_run_db_first_columns(engine)
+    _ensure_multi_report_columns_and_indexes(engine)
+    _ensure_accounting_evidence_columns_and_indexes(engine)
     _ensure_report_unit_row_columns(engine)
     _ensure_report_lost_sales_columns(engine)
     _ensure_report_reconciliation_monthly_columns(engine)
@@ -101,6 +104,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_marketplace_finance_daily_fact_columns(engine)
     _ensure_tax_profile_columns(engine)
     _ensure_multi_client_columns(engine)
+    _ensure_ai_thread_scope_columns(engine)
     _ensure_multi_client_indexes(engine)
     if run_backfill and schema_version(engine) != DB_FIRST_SCHEMA_VERSION:
         if not _schema_migration_at_least(engine, MULTI_CLIENT_BACKFILL_VERSION):
@@ -200,6 +204,399 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
         for column, definition in missing:
             connection.execute(
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+            )
+
+
+def _ensure_ai_thread_scope_columns(engine: Engine) -> None:
+    """Add immutable report/client scope to legacy AI threads."""
+
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    if "ai_threads" not in inspector.get_table_names(schema=schema):
+        return
+    existing = {
+        column["name"]
+        for column in inspector.get_columns("ai_threads", schema=schema)
+    }
+    json_default = "'{}'" if schema is None else "'{}'::json"
+    timestamp_type = "DATETIME" if schema is None else "TIMESTAMP WITH TIME ZONE"
+    specs = {
+        "client_id": "VARCHAR",
+        "scope": f"JSON NOT NULL DEFAULT {json_default}",
+        "scope_hash": "VARCHAR NOT NULL DEFAULT ''",
+        "archived_at": timestamp_type,
+    }
+    table_name = _table_name(engine, "ai_threads")
+    report_table = _table_name(engine, "report_runs")
+    with engine.begin() as connection:
+        for column, definition in specs.items():
+            if column not in existing:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+                )
+        connection.execute(
+            text(
+                f"UPDATE {table_name} SET client_id = ("
+                f"SELECT client_id FROM {report_table} "
+                f"WHERE {report_table}.id = {table_name}.report_run_id"
+                ") WHERE client_id IS NULL AND report_run_id IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                f"UPDATE {table_name} SET archived_at = CURRENT_TIMESTAMP "
+                "WHERE report_run_id IS NULL AND archived_at IS NULL"
+            )
+        )
+
+    message_existing = {
+        column["name"]
+        for column in inspect(engine).get_columns("ai_messages", schema=schema)
+    }
+    if "chatkit_item_id" not in message_existing:
+        message_table = _table_name(engine, "ai_messages")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {message_table} ADD COLUMN chatkit_item_id "
+                    "VARCHAR NOT NULL DEFAULT ''"
+                )
+            )
+
+
+def _ensure_multi_report_columns_and_indexes(engine: Engine) -> None:
+    """Add, backfill, and index the multi-report identity in a safe order."""
+
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    report_columns = {
+        column["name"] for column in inspector.get_columns("report_runs", schema=schema)
+    }
+    report_specs = {
+        "report_kind": ("VARCHAR NOT NULL DEFAULT 'marketplace_unit_economics'"),
+        "organization_id": "VARCHAR",
+    }
+    report_table = _table_name(engine, "report_runs")
+    refresh_table = _table_name(engine, "source_refresh_runs")
+    with engine.begin() as connection:
+        for column, definition in report_specs.items():
+            if column not in report_columns:
+                connection.execute(
+                    text(f"ALTER TABLE {report_table} ADD COLUMN {column} {definition}")
+                )
+        connection.execute(
+            text(
+                f"UPDATE {report_table} "
+                "SET report_kind = 'marketplace_unit_economics' "
+                "WHERE report_kind IS NULL OR report_kind = ''"
+            )
+        )
+
+    inspector = inspect(engine)
+    refresh_columns = {
+        column["name"]
+        for column in inspector.get_columns("source_refresh_runs", schema=schema)
+    }
+    refresh_specs = {
+        "target_report_kind": ("VARCHAR NOT NULL DEFAULT 'marketplace_unit_economics'"),
+        "organization_id": "VARCHAR",
+        "idempotency_key": "VARCHAR NOT NULL DEFAULT ''",
+    }
+    with engine.begin() as connection:
+        for column, definition in refresh_specs.items():
+            if column not in refresh_columns:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {refresh_table} ADD COLUMN {column} {definition}"
+                    )
+                )
+
+        # Existing publication logic allowed only one current report per client,
+        # so the backfilled legacy scope is already unique. The cleanup is still
+        # deterministic for manually repaired databases before indexes are added.
+        organization_scope_sql = (
+            "CASE WHEN report_kind = 'marketplace_unit_economics' THEN '' "
+            "ELSE COALESCE(organization_id, '') END"
+        )
+        duplicates = connection.execute(
+            text(
+                f"SELECT tenant_id, client_id, report_kind, "
+                f"{organization_scope_sql}, COUNT(*) "
+                f"FROM {report_table} WHERE is_current = TRUE "
+                "GROUP BY tenant_id, client_id, report_kind, "
+                f"{organization_scope_sql} HAVING COUNT(*) > 1"
+            )
+        ).fetchall()
+        for tenant_id, client_id, report_kind, organization_id, _count in duplicates:
+            organization_filter = (
+                ""
+                if report_kind == "marketplace_unit_economics"
+                else "AND COALESCE(organization_id, '') = :organization_id "
+            )
+            rows = connection.execute(
+                text(
+                    f"SELECT id FROM {report_table} "
+                    "WHERE tenant_id = :tenant_id AND client_id = :client_id "
+                    "AND report_kind = :report_kind "
+                    f"{organization_filter}"
+                    "AND is_current = TRUE "
+                    "ORDER BY generated_at DESC, created_at DESC, id DESC"
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "client_id": client_id,
+                    "report_kind": report_kind,
+                    "organization_id": organization_id,
+                },
+            ).fetchall()
+            for (report_id,) in rows[1:]:
+                connection.execute(
+                    text(
+                        f"UPDATE {report_table} SET is_current = FALSE, "
+                        "publication_status = CASE "
+                        "WHEN publication_status = 'published' THEN 'superseded' "
+                        "ELSE publication_status END WHERE id = :report_id"
+                    ),
+                    {"report_id": report_id},
+                )
+
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_report_runs_current_marketplace "
+                f"ON {report_table} (tenant_id, client_id, report_kind) "
+                "WHERE is_current = TRUE "
+                "AND report_kind = 'marketplace_unit_economics'"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_report_runs_current_accounting "
+                f"ON {report_table} "
+                "(tenant_id, client_id, report_kind, organization_id) "
+                "WHERE is_current = TRUE "
+                "AND report_kind IN ('month_close_control', 'tax_load') "
+                "AND organization_id IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_source_refresh_idempotency "
+                f"ON {refresh_table} (tenant_id, client_id, idempotency_key) "
+                "WHERE idempotency_key <> ''"
+            )
+        )
+
+
+def _ensure_accounting_evidence_columns_and_indexes(engine: Engine) -> None:
+    """Backfill organization-scoped evidence before enforcing uniqueness."""
+
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    collection_table = _table_name(engine, "source_refresh_collections")
+    refresh_table = _table_name(engine, "source_refresh_runs")
+    request_table = _table_name(engine, "report_generation_requests")
+    collection_columns = {
+        column["name"]
+        for column in inspector.get_columns("source_refresh_collections", schema=schema)
+    }
+    refresh_columns = {
+        column["name"]
+        for column in inspector.get_columns("source_refresh_runs", schema=schema)
+    }
+    with engine.begin() as connection:
+        if "organization_id" not in collection_columns:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {collection_table} ADD COLUMN organization_id VARCHAR"
+                )
+            )
+        if "generation_stage" not in refresh_columns:
+            connection.execute(
+                text(
+                    f"ALTER TABLE {refresh_table} ADD COLUMN generation_stage "
+                    "VARCHAR NOT NULL DEFAULT ''"
+                )
+            )
+
+        evidence_rows = connection.execute(
+            text(
+                f"SELECT id, refresh_run_id, source_type, payload, loaded_at "
+                f"FROM {collection_table} "
+                "WHERE source_type IN "
+                "('month_close_control_evidence', 'tax_load_evidence') "
+                "AND (organization_id IS NULL OR organization_id = '')"
+            )
+        ).fetchall()
+        snapshot_row_table = _table_name(engine, "source_snapshot_rows")
+        for (
+            collection_id,
+            refresh_run_id,
+            source_type,
+            raw_payload,
+            loaded_at,
+        ) in evidence_rows:
+            payload = raw_payload
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    payload = {}
+            if not isinstance(payload, dict):
+                continue
+            normalized = payload.get("normalizedEvidence")
+            organization_id = ""
+            if isinstance(normalized, dict):
+                organization_id = str(normalized.get("organizationId") or "").strip()
+            organization_id = (
+                organization_id or str(payload.get("organizationId") or "").strip()
+            )
+            if organization_id:
+                existing = connection.execute(
+                    text(
+                        f"SELECT id, loaded_at FROM {collection_table} "
+                        "WHERE refresh_run_id = :refresh_run_id "
+                        "AND source_type = :source_type "
+                        "AND organization_id = :organization_id "
+                        "AND id <> :collection_id "
+                        "ORDER BY loaded_at DESC, id DESC LIMIT 1"
+                    ),
+                    {
+                        "refresh_run_id": refresh_run_id,
+                        "source_type": source_type,
+                        "organization_id": organization_id,
+                        "collection_id": collection_id,
+                    },
+                ).fetchone()
+                if existing is not None:
+                    current_key = (str(loaded_at or ""), int(collection_id))
+                    existing_key = (str(existing[1] or ""), int(existing[0]))
+                    discarded_id = (
+                        existing[0] if current_key > existing_key else collection_id
+                    )
+                    connection.execute(
+                        text(
+                            f"DELETE FROM {snapshot_row_table} "
+                            "WHERE collection_id = :collection_id"
+                        ),
+                        {"collection_id": discarded_id},
+                    )
+                    connection.execute(
+                        text(
+                            f"DELETE FROM {collection_table} WHERE id = :collection_id"
+                        ),
+                        {"collection_id": discarded_id},
+                    )
+                    if discarded_id == collection_id:
+                        continue
+                connection.execute(
+                    text(
+                        f"UPDATE {collection_table} SET organization_id = "
+                        ":organization_id "
+                        "WHERE id = :collection_id"
+                    ),
+                    {
+                        "organization_id": organization_id,
+                        "collection_id": collection_id,
+                    },
+                )
+
+        duplicates = connection.execute(
+            text(
+                f"SELECT refresh_run_id, source_type, organization_id, COUNT(*) "
+                f"FROM {collection_table} WHERE source_type IN "
+                "('month_close_control_evidence', 'tax_load_evidence') "
+                "AND organization_id IS NOT NULL AND organization_id <> '' "
+                "GROUP BY refresh_run_id, source_type, organization_id "
+                "HAVING COUNT(*) > 1"
+            )
+        ).fetchall()
+        for refresh_run_id, source_type, organization_id, _count in duplicates:
+            rows = connection.execute(
+                text(
+                    f"SELECT id FROM {collection_table} "
+                    "WHERE refresh_run_id = :refresh_run_id "
+                    "AND source_type = :source_type "
+                    "AND organization_id = :organization_id "
+                    "ORDER BY loaded_at DESC, id DESC"
+                ),
+                {
+                    "refresh_run_id": refresh_run_id,
+                    "source_type": source_type,
+                    "organization_id": organization_id,
+                },
+            ).fetchall()
+            for (collection_id,) in rows[1:]:
+                connection.execute(
+                    text(
+                        f"DELETE FROM {snapshot_row_table} "
+                        "WHERE collection_id = :collection_id"
+                    ),
+                    {"collection_id": collection_id},
+                )
+                connection.execute(
+                    text(f"DELETE FROM {collection_table} WHERE id = :collection_id"),
+                    {"collection_id": collection_id},
+                )
+
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "uq_source_refresh_accounting_evidence "
+                f"ON {collection_table} "
+                "(refresh_run_id, source_type, organization_id) "
+                "WHERE source_type IN "
+                "('month_close_control_evidence', 'tax_load_evidence') "
+                "AND organization_id IS NOT NULL AND organization_id <> ''"
+            )
+        )
+
+        legacy_requests = connection.execute(
+            text(
+                "SELECT id, tenant_id, client_id, idempotency_key, "
+                "target_report_kind, organization_id, period_start, period_end, "
+                f"created_at FROM {refresh_table} "
+                "WHERE mode = 'report-generation' AND idempotency_key <> ''"
+            )
+        ).fetchall()
+        for row in legacy_requests:
+            fingerprint_payload = {
+                "reportKind": str(row[4] or ""),
+                "organizationId": str(row[5] or ""),
+                "periodStart": str(row[6] or ""),
+                "periodEnd": str(row[7] or ""),
+            }
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    fingerprint_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            request_id = hashlib.sha256(
+                f"{row[1]}:{row[2]}:{row[3]}".encode()
+            ).hexdigest()
+            connection.execute(
+                text(
+                    f"INSERT INTO {request_table} "
+                    "(id, tenant_id, client_id, idempotency_key, "
+                    "request_fingerprint, generation_run_id, created_at) "
+                    "VALUES (:id, :tenant_id, :client_id, :idempotency_key, "
+                    ":request_fingerprint, :generation_run_id, :created_at) "
+                    "ON CONFLICT (tenant_id, client_id, idempotency_key) DO NOTHING"
+                ),
+                {
+                    "id": request_id,
+                    "tenant_id": row[1],
+                    "client_id": row[2],
+                    "idempotency_key": row[3],
+                    "request_fingerprint": fingerprint,
+                    "generation_run_id": row[0],
+                    "created_at": row[8] or datetime.now(UTC),
+                },
             )
 
 

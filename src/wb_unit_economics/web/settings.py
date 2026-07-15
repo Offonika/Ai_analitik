@@ -16,6 +16,9 @@ class WebSettings(BaseSettings):
     )
 
     database_url: str = "sqlite:///data/web/shumeyko_web.sqlite3"
+    runtime_environment: Literal["development", "production", "test"] = (
+        "development"
+    )
     session_secret: str = "dev-only-change-me"
     session_cookie_name: str = "shumeyko_session"
     session_ttl_hours: int = 12
@@ -25,7 +28,13 @@ class WebSettings(BaseSettings):
     default_report_workbook: str = "reports/shumeyko_wb_excel_mvp.xlsx"
     openai_model: str = "gpt-5.5"
     openai_api_key: str = ""
+    openai_timeout_seconds: float = 60.0
+    chatkit_enabled: bool = False
+    chatkit_domain_key: str = ""
     integration_secret_key: str = ""
+    client_login_enabled: bool = True
+    external_integrations_enabled: bool = True
+    maintenance_message: str = ""
     integration_check_timeout_seconds: float = 10.0
     live_checks_enabled: bool = False
     onec_live_check_mode: str = "odata"
@@ -43,6 +52,7 @@ class WebSettings(BaseSettings):
     source_refresh_incremental_window_days: int = 28
     source_refresh_onec_page_size: int = 5000
     source_refresh_onec_max_pages: int = 200
+    accounting_recordtype_page_size: int = 10000
     source_refresh_wb_limit: int = 100000
     source_refresh_wb_max_pages: int = 50
     source_refresh_wb_request_delay_seconds: float = 61.0
@@ -63,6 +73,7 @@ class WebSettings(BaseSettings):
     source_refresh_worker_backend: str = "auto"
     source_refresh_worker_unit_prefix: str = "shumeiko-source-refresh-worker"
     db_first_reports_enabled: bool = False
+    enabled_report_kinds: str = "marketplace_unit_economics"
     postgres_statement_timeout_ms: int = 15000
     cors_allow_origins: list[str] = Field(default_factory=list)
 
@@ -89,3 +100,9 @@ class WebSettings(BaseSettings):
     @property
     def source_refresh_mapping_path(self) -> Path:
         return Path(self.source_refresh_mapping_dir).resolve()
+
+    @property
+    def enabled_report_kind_set(self) -> set[str]:
+        from wb_unit_economics.web.report_kinds import enabled_report_kind_set
+
+        return enabled_report_kind_set(self.enabled_report_kinds)

@@ -1,7 +1,15 @@
 const state = {
+  runtimeEnvironment: "development",
+  maintenanceMessage: "",
   user: null,
   clients: [],
   clientId: null,
+  reportKinds: [],
+  reportKind: "marketplace_unit_economics",
+  organizationId: "",
+  periodMonth: "",
+  scenario: null,
+  generationIdempotencyKey: "",
   reports: [],
   reportId: null,
   clientLoadToken: 0,
@@ -37,6 +45,8 @@ const state = {
   sourceRefreshAutoOpenRunId: "",
   aiThreadId: null,
   aiBusy: false,
+  chatkitEnabled: false,
+  chatkitDomainKey: "",
   onecReconciliationLoaded: false,
   rowPreset: "",
   taxInputPage: 0,
@@ -66,6 +76,7 @@ const EXCEL_REBUILD_SOURCE_REFRESH_STATUSES = new Set([
 ]);
 
 const els = {
+  runtimeBanner: document.querySelector("#runtime-banner"),
   loginView: document.querySelector("#login-view"),
   cabinetView: document.querySelector("#cabinet-view"),
   brandLockup: document.querySelector(".brand-lockup"),
@@ -75,9 +86,23 @@ const els = {
   reportSubtitle: document.querySelector("#report-subtitle"),
   reportLoadRetryButton: document.querySelector("#report-load-retry-button"),
   workspaceNavButtons: document.querySelectorAll("[data-workspace-nav]"),
+  guideStartList: document.querySelector("#guide-start-list"),
+  guideSectionsList: document.querySelector("#guide-sections-list"),
+  guideActionsList: document.querySelector("#guide-actions-list"),
+  guideChecksList: document.querySelector("#guide-checks-list"),
+  userGuideStatus: document.querySelector("#user-guide-status"),
   workspaceActionsMenu: document.querySelector("#workspace-actions-menu"),
   checksNavCount: document.querySelector("#checks-nav-count"),
   clientSelect: document.querySelector("#client-select"),
+  reportKindSelect: document.querySelector("#report-kind-select"),
+  reportOrganizationSwitcher: document.querySelector("#report-organization-switcher"),
+  reportOrganizationSelect: document.querySelector("#report-organization-select"),
+  reportMonthSwitcher: document.querySelector("#report-month-switcher"),
+  reportMonth: document.querySelector("#report-month"),
+  marketplaceReportControls: document.querySelectorAll(".marketplace-report-control"),
+  accountingScenarioOverview: document.querySelector("#accounting-scenario-overview"),
+  accountingScenarioChecks: document.querySelector("#accounting-scenario-checks"),
+  accountingScenarioTables: document.querySelector("#accounting-scenario-tables"),
   topbarCabinetSelect: document.querySelector("#topbar-cabinet-select"),
   topbarPeriodStart: document.querySelector("#topbar-period-start"),
   topbarPeriodEnd: document.querySelector("#topbar-period-end"),
@@ -103,10 +128,10 @@ const els = {
   reconciliationOpenButton: document.querySelector(
     "#reconciliation-open-button",
   ),
-  reconciliationHubOverlay: document.querySelector(
-    "#reconciliation-hub-overlay",
+  reconciliationHubPanel: document.querySelector(
+    "#reconciliation-hub-panel",
   ),
-  reconciliationHubClose: document.querySelector("#reconciliation-hub-close"),
+  reconciliationHubBack: document.querySelector("#reconciliation-hub-back"),
   reconciliationHubTabs: document.querySelectorAll("[data-reconciliation-tab]"),
   reconciliationHubPanels: document.querySelectorAll(
     "[data-reconciliation-panel]",
@@ -260,6 +285,9 @@ const els = {
   aiInput: document.querySelector("#ai-input"),
   aiSendButton: document.querySelector("#ai-send-button"),
   aiError: document.querySelector("#ai-error"),
+  aiWorkspace: document.querySelector(".ai-workspace"),
+  chatkitShell: document.querySelector("#chatkit-shell"),
+  chatkitElement: document.querySelector("#chatkit-element"),
   aiContextReadiness: document.querySelector("#ai-context-readiness"),
   aiContextMetrics: document.querySelector("#ai-context-metrics"),
   aiContextBars: document.querySelector("#ai-context-bars"),
@@ -417,7 +445,10 @@ function init() {
     });
   });
   window.addEventListener("hashchange", () => configureWorkspaceFromLocation());
-  window.addEventListener("popstate", () => configureWorkspaceFromLocation());
+  window.addEventListener("popstate", () => {
+    configureWorkspaceFromLocation();
+    restoreReportContextFromLocation();
+  });
   els.costReviewBack.addEventListener("click", () =>
     selectWorkspace("overview", { updateLocation: true }),
   );
@@ -427,17 +458,26 @@ function init() {
   els.costReviewMark.addEventListener("click", toggleCostReviewAcknowledgement);
   els.workspaceActionsMenu.addEventListener("click", (event) => {
     if (event.target.closest("button, a")) {
-      window.setTimeout(() => els.workspaceActionsMenu.removeAttribute("open"), 0);
+      window.setTimeout(closeWorkspaceActionsMenu, 0);
     }
   });
   document.addEventListener("click", (event) => {
     if (!els.workspaceActionsMenu.contains(event.target)) {
-      els.workspaceActionsMenu.removeAttribute("open");
+      closeWorkspaceActionsMenu();
     }
   });
   els.loginForm.addEventListener("submit", onLogin);
   els.logoutButton.addEventListener("click", onLogout);
   els.clientSelect.addEventListener("change", () => selectClient(els.clientSelect.value));
+  els.reportKindSelect.addEventListener("change", () =>
+    selectReportKind(els.reportKindSelect.value),
+  );
+  els.reportOrganizationSelect.addEventListener("change", () =>
+    selectReportOrganization(els.reportOrganizationSelect.value),
+  );
+  els.reportMonth.addEventListener("change", () =>
+    selectReportMonth(els.reportMonth.value),
+  );
   els.reportLoadRetryButton.addEventListener("click", retryCurrentReportLoad);
   els.topbarCabinetSelect.addEventListener("change", () =>
     applyTopbarFilter("cabinet"),
@@ -594,12 +634,9 @@ function init() {
   els.reconciliationOpenButton?.addEventListener("click", () =>
     openReconciliationHub("documents"),
   );
-  els.reconciliationHubClose?.addEventListener("click", closeReconciliationHub);
-  els.reconciliationHubOverlay?.addEventListener("click", (event) => {
-    if (event.target === els.reconciliationHubOverlay) {
-      closeReconciliationHub();
-    }
-  });
+  els.reconciliationHubBack?.addEventListener("click", () =>
+    selectWorkspace("checks", { checkView: "summary", updateLocation: true }),
+  );
   els.reconciliationHubTabs.forEach((button) => {
     button.addEventListener("click", () =>
       selectReconciliationHubTab(button.dataset.reconciliationTab || "documents"),
@@ -612,6 +649,7 @@ function init() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      closeWorkspaceActionsMenu();
       closeAllWidgets();
       return;
     }
@@ -792,9 +830,11 @@ function selectDetailTab(tab = "products") {
 }
 
 async function boot() {
+  await loadRuntimeStatus();
   try {
     state.user = await api("/api/me");
     showCabinet();
+    await configureAiTransport();
     await loadClients();
   } catch (error) {
     showLogin();
@@ -803,6 +843,125 @@ async function boot() {
         ? ""
         : "Не удалось проверить сессию. Обновите страницу или войдите заново.";
   }
+}
+
+async function loadRuntimeStatus() {
+  try {
+    const payload = await api("/api/health");
+    state.runtimeEnvironment = String(
+      payload.runtimeEnvironment || "development",
+    );
+    state.maintenanceMessage = String(payload.maintenanceMessage || "").trim();
+    renderRuntimeBanner();
+  } catch (error) {
+    state.runtimeEnvironment = "development";
+    state.maintenanceMessage = "";
+    renderRuntimeBanner();
+  }
+}
+
+async function configureAiTransport() {
+  try {
+    const config = await api("/api/ai/config");
+    state.chatkitEnabled = Boolean(
+      config.chatkitEnabled && config.chatkitDomainKey,
+    );
+    state.chatkitDomainKey = String(config.chatkitDomainKey || "");
+    if (!state.chatkitEnabled) {
+      return;
+    }
+    await loadChatKitScript();
+    els.chatkitElement.setOptions({
+      api: {
+        url: "/api/chatkit",
+        domainKey: state.chatkitDomainKey,
+        fetch: chatkitFetch,
+      },
+      locale: "ru",
+      initialThread: null,
+      frameTitle: "AI-аналитик отчета",
+      disclaimer: {
+        text: "AI использует только расчетную витрину и не изменяет данные WB/1С.",
+      },
+    });
+    els.chatkitShell.hidden = false;
+    els.aiWorkspace.hidden = true;
+  } catch (error) {
+    state.chatkitEnabled = false;
+    els.chatkitShell.hidden = true;
+    els.aiWorkspace.hidden = false;
+  }
+}
+
+function loadChatKitScript() {
+  if (customElements.get("openai-chatkit")) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.platform.openai.com/deployments/chatkit/chatkit.js";
+    script.async = true;
+    script.addEventListener("load", resolve, { once: true });
+    script.addEventListener("error", reject, { once: true });
+    document.head.append(script);
+  });
+}
+
+async function chatkitFetch(input, init) {
+  const request = new Request(input, init);
+  let body = await request.clone().json();
+  if (body.type === "threads.create") {
+    body = {
+      ...body,
+      metadata: {
+        ...(body.metadata || {}),
+        reportId: state.reportId,
+        clientId: state.clientId,
+        scope: currentAiScope(),
+      },
+    };
+  }
+  return fetch(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+    signal: request.signal,
+  });
+}
+
+function currentAiScope() {
+  return {
+    reportKind: state.reportKind,
+    organizationId: state.organizationId,
+    periodMonth: state.periodMonth,
+    query: els.filterQuery?.value || "",
+    status: els.filterStatus?.value || "",
+    preset: state.rowPreset || "",
+    periodStart: els.filterPeriodStart?.value || "",
+    periodEnd: els.filterPeriodEnd?.value || "",
+    cabinet: els.filterCabinet?.value || "",
+    organization: els.filterOrganization?.value || "",
+    scheme: els.filterScheme?.value || "",
+  };
+}
+
+function renderRuntimeBanner() {
+  if (!els.runtimeBanner) {
+    return;
+  }
+  const isTest = state.runtimeEnvironment === "test";
+  const messages = [];
+  if (isTest) {
+    messages.push("Тестовый контур — только для внутренней проверки команды.");
+  }
+  if (state.maintenanceMessage) {
+    messages.push(state.maintenanceMessage);
+  }
+  els.runtimeBanner.textContent = messages.join(" ");
+  els.runtimeBanner.hidden = messages.length === 0;
+  els.runtimeBanner.classList.toggle("runtime-banner-test", isTest);
+  document.body.dataset.runtimeEnvironment = state.runtimeEnvironment;
 }
 
 function isIntegrationsPage() {
@@ -831,6 +990,7 @@ function configurePageMode() {
   if (aiPage && state.user && state.reportId) {
     openAiWidget({ focus: false });
   }
+  syncReportKindSurface();
 }
 
 function workspaceFromLocation() {
@@ -844,8 +1004,14 @@ function workspaceFromLocation() {
   if (value === "checks/cost") {
     return { workspace: "checks", checkView: "cost", valid: true };
   }
+  if (value === "checks/reconciliation") {
+    return { workspace: "checks", checkView: "reconciliation", valid: true };
+  }
   if (value === "tables") {
     return { workspace: "tables", checkView: "summary", valid: true };
+  }
+  if (value === "guide") {
+    return { workspace: "guide", checkView: "summary", valid: true };
   }
   return { workspace: "overview", checkView: "summary", valid: false };
 }
@@ -862,17 +1028,22 @@ function configureWorkspaceFromLocation(options = {}) {
 }
 
 function selectWorkspace(workspace = "overview", options = {}) {
-  const allowed = new Set(["overview", "checks", "tables"]);
+  const allowed = new Set(["overview", "checks", "tables", "guide"]);
+  const allowedCheckViews = new Set(["cost", "reconciliation"]);
   state.workspace = allowed.has(workspace) ? workspace : "overview";
   state.checkView =
-    state.workspace === "checks" && options.checkView === "cost"
-      ? "cost"
+    state.workspace === "checks" && allowedCheckViews.has(options.checkView)
+      ? options.checkView
       : "summary";
   // The cost-review workflow only understands WB's weekly missing-cost model;
   // Ozon clients fall back to the "summary" check view (and its own
   // missing-cost drilldown, see onNextAction) until an Ozon-specific cost
   // review is designed.
   if (state.checkView === "cost" && shouldUseOzonWorkingView()) {
+    state.checkView = "summary";
+  }
+  // The reconciliation hub has nothing to compare without a loaded report.
+  if (state.checkView === "reconciliation" && !state.reportId) {
     state.checkView = "summary";
   }
   els.cabinetView.dataset.activeWorkspace = state.workspace;
@@ -899,6 +1070,9 @@ function workspaceHash(workspace, checkView) {
   if (workspace === "checks" && checkView === "cost") {
     return "#checks/cost";
   }
+  if (workspace === "checks" && checkView === "reconciliation") {
+    return "#checks/reconciliation";
+  }
   return `#${workspace || "overview"}`;
 }
 
@@ -917,6 +1091,104 @@ function replaceWorkspaceLocation(workspace, checkView) {
   updateWorkspaceLocation(workspace, checkView, true);
 }
 
+function closeWorkspaceActionsMenu() {
+  if (!els.workspaceActionsMenu.open) {
+    return;
+  }
+  els.workspaceActionsMenu.removeAttribute("open");
+}
+
+function compactGuideText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function currentGuideRole() {
+  const selectedRole = compactGuideText(selectedClient()?.role).toLowerCase();
+  if (["client", "consultant", "admin"].includes(selectedRole)) {
+    return selectedRole;
+  }
+  const roles = asArray(state.user?.tenants)
+    .map((tenant) => compactGuideText(tenant.role).toLowerCase())
+    .filter(Boolean);
+  if (roles.includes("admin")) {
+    return "admin";
+  }
+  if (roles.includes("consultant")) {
+    return "consultant";
+  }
+  return "client";
+}
+
+function guideEntryVisibleForRole(source, role) {
+  const allowedRoles = compactGuideText(source.dataset.guideRoles)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return !allowedRoles.length || allowedRoles.includes(role);
+}
+
+function guideEntryTitle(source) {
+  const explicit = compactGuideText(source.dataset.guideLabel);
+  if (explicit) {
+    return explicit;
+  }
+  const directLabel = [...source.children].find(
+    (child) => child.tagName === "SPAN" && !child.classList.contains("workspace-nav-count"),
+  );
+  return compactGuideText(
+    directLabel?.textContent || source.textContent || source.getAttribute("aria-label"),
+  );
+}
+
+function guideEntryDescription(source) {
+  return compactGuideText(
+    source.dataset.guideDescription || source.dataset.tooltip,
+  );
+}
+
+function renderGuideGroup(group, list, role) {
+  const sources = [...document.querySelectorAll(`[data-guide-entry="${group}"]`)]
+    .filter((source) => guideEntryVisibleForRole(source, role))
+    .sort(
+      (left, right) =>
+        Number(left.dataset.guideOrder || 0) - Number(right.dataset.guideOrder || 0),
+    );
+  const cards = sources.map((source) => {
+    const item = document.createElement("li");
+    item.className = "guide-card";
+    const title = document.createElement("h3");
+    title.textContent = guideEntryTitle(source);
+    const description = document.createElement("p");
+    description.textContent = guideEntryDescription(source);
+    item.append(title, description);
+    return item;
+  });
+  list.replaceChildren(...cards);
+}
+
+function renderUserGuide() {
+  if (
+    !els.guideStartList ||
+    !els.guideSectionsList ||
+    !els.guideActionsList ||
+    !els.guideChecksList
+  ) {
+    return;
+  }
+  const role = currentGuideRole();
+  renderGuideGroup("start", els.guideStartList, role);
+  renderGuideGroup("sections", els.guideSectionsList, role);
+  renderGuideGroup("actions", els.guideActionsList, role);
+  renderGuideGroup("checks", els.guideChecksList, role);
+  const roleLabel = {
+    client: "клиента",
+    consultant: "консультанта",
+    admin: "администратора",
+  }[role];
+  els.userGuideStatus.textContent =
+    `Инструкция собрана из текущего интерфейса и учитывает права ${roleLabel}.`;
+}
+
 function renderWorkspaceHeader() {
   const summary = state.summary || {};
   const readiness = summary.readiness || {};
@@ -926,6 +1198,15 @@ function renderWorkspaceHeader() {
     summary.latestSourceRefresh ||
     (state.freshness || {}).latestSourceRefresh;
   const freshnessCopy = reportFreshnessSubtitle(summary.meta || {}, refresh);
+  if (state.workspace === "guide") {
+    renderUserGuide();
+    setTopbarNotice(
+      "Инструкция по работе",
+      "Подсказки собраны из текущих разделов и доступных вам действий кабинета.",
+      "is-info",
+    );
+    return;
+  }
   if (state.workspace === "overview") {
     if (!state.reportId) {
       setTopbarNotice("Пульт подготовки отчета", "Выберите клиента и дождитесь загрузки витрины.");
@@ -1073,7 +1354,7 @@ function closeClientOutputWidget(options = {}) {
   closeWidgetOverlay(els.clientOutputWidgetOverlay, options);
 }
 
-function onReportBuildButtonClick() {
+async function onReportBuildButtonClick() {
   if (!state.clientId) {
     return;
   }
@@ -1085,7 +1366,97 @@ function onReportBuildButtonClick() {
     }
     return;
   }
+  if (isAccountingReportKind()) {
+    await generateAccountingReport();
+    return;
+  }
   openReportWizard();
+}
+
+async function generateAccountingReport() {
+  if (!state.clientId || !state.organizationId || !state.periodMonth) {
+    setTopbarNotice(
+      "Не заполнен контекст отчёта",
+      "Выберите организацию 1С и календарный месяц.",
+      "is-warning",
+    );
+    return;
+  }
+  state.generationIdempotencyKey ||= window.crypto?.randomUUID?.()
+    || `report-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  els.reportBuildButton.disabled = true;
+  els.reportBuildButton.classList.add("is-busy");
+  els.reportBuildButton.textContent = "Формируем отчёт";
+  try {
+    const generation = await api(
+      `/api/clients/${encodeURIComponent(state.clientId)}/reports/generate`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": state.generationIdempotencyKey },
+        body: JSON.stringify({
+          reportKind: state.reportKind,
+          organizationId: state.organizationId,
+          periodMonth: state.periodMonth,
+        }),
+      },
+    );
+    if (generation.reportId) {
+      state.generationIdempotencyKey = "";
+      await loadReports(currentClientLoadContext());
+      return;
+    }
+    setTopbarNotice(
+      "Отчёт поставлен в очередь",
+      "Ожидаем завершения; повторный запуск не создаст дубликат.",
+      "is-info",
+    );
+    await waitForAccountingGeneration(
+      generation.generationRunId,
+      currentClientLoadContext(),
+    );
+  } catch (error) {
+    setTopbarNotice(
+      "Не удалось сформировать отчёт",
+      error?.message || "Повторите запрос: исходные данные не изменялись.",
+      "is-blocked",
+    );
+  } finally {
+    updateReportBuildButton();
+  }
+}
+
+async function waitForAccountingGeneration(generationRunId, context) {
+  if (!generationRunId) return;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    if (!isCurrentClientLoad(context)) return;
+    const generation = await api(
+      `/api/report-generations/${encodeURIComponent(generationRunId)}`,
+    );
+    const stageLabels = {
+      queued: ["Отчёт поставлен в очередь", "Ожидаем свободный worker."],
+      refreshing_sources: ["Читаем данные 1С", "Выполняются только read-only GET-запросы."],
+      materializing_evidence: ["Фиксируем evidence", "Собираем воспроизводимый контракт из snapshot-данных."],
+      building_report: ["Строим витрину", "Web и Excel будут читать один сохранённый payload."],
+    };
+    const stageCopy = stageLabels[generation.stage];
+    if (stageCopy) {
+      setTopbarNotice(stageCopy[0], generation.safeMessage || stageCopy[1], "is-info");
+    }
+    if (generation.reportId) {
+      state.generationIdempotencyKey = "";
+      await loadReports(currentClientLoadContext());
+      return;
+    }
+    if (["failed", "error"].includes(String(generation.status || "").toLowerCase())) {
+      throw new Error(generation.safeMessage || "Формирование завершилось ошибкой.");
+    }
+  }
+  setTopbarNotice(
+    "Отчёт ещё формируется",
+    "Можно повторить действие: тот же ключ вернёт исходный запуск без дубликата.",
+    "is-info",
+  );
 }
 
 function openReportWizard() {
@@ -1285,6 +1656,9 @@ function currentClientLoadContext() {
   return {
     clientId: state.clientId,
     clientLoadToken: state.clientLoadToken,
+    reportKind: state.reportKind,
+    organizationId: state.organizationId,
+    periodMonth: state.periodMonth,
   };
 }
 
@@ -1294,6 +1668,12 @@ function isCurrentClientLoad(context = {}) {
   if (clientId && clientId !== state.clientId) {
     return false;
   }
+  if (context.reportKind && context.reportKind !== state.reportKind) return false;
+  if (
+    context.organizationId !== undefined
+    && context.organizationId !== state.organizationId
+  ) return false;
+  if (context.periodMonth && context.periodMonth !== state.periodMonth) return false;
   return clientLoadToken === undefined || clientLoadToken === state.clientLoadToken;
 }
 
@@ -1496,36 +1876,20 @@ function openBuyoutReconciliationWidget() {
   openReconciliationHub("buyouts");
 }
 
-function closeBuyoutReconciliationWidget(options = {}) {
-  closeReconciliationHub(options);
-}
-
 function openCogsReconciliationWidget() {
   openReconciliationHub("cogs");
-}
-
-function closeCogsReconciliationWidget(options = {}) {
-  closeReconciliationHub(options);
 }
 
 function openMarketplaceExpenseReconciliationWidget() {
   openReconciliationHub("expenses");
 }
 
-function closeMarketplaceExpenseReconciliationWidget(options = {}) {
-  closeReconciliationHub(options);
-}
-
 function openReconciliationHub(tab = "documents") {
   if (!state.reportId) {
     return;
   }
-  openWidgetOverlay(els.reconciliationHubOverlay);
+  selectWorkspace("checks", { checkView: "reconciliation", updateLocation: true });
   selectReconciliationHubTab(tab);
-}
-
-function closeReconciliationHub(options = {}) {
-  closeWidgetOverlay(els.reconciliationHubOverlay, options);
 }
 
 function selectReconciliationHubTab(tab) {
@@ -2199,7 +2563,6 @@ function closeAllWidgets() {
   closeMappingWidget({ restoreFocus: false });
   closeNewClientWidget({ restoreFocus: false });
   closeDrilldownWidget({ restoreFocus: false });
-  closeReconciliationHub({ restoreFocus: false });
   state.activeWidgetOverlay = null;
   restoreWidgetFocus();
 }
@@ -2213,8 +2576,7 @@ function updateWidgetBodyState() {
       !els.integrationsWidgetOverlay.hidden ||
       !els.mappingWidgetOverlay.hidden ||
       !els.newClientWidgetOverlay.hidden ||
-      !els.drilldownWidgetOverlay.hidden ||
-      !els.reconciliationHubOverlay.hidden,
+      !els.drilldownWidgetOverlay.hidden,
   );
 }
 
@@ -2248,7 +2610,6 @@ function currentOpenWidgetOverlay() {
     els.mappingWidgetOverlay,
     els.newClientWidgetOverlay,
     els.drilldownWidgetOverlay,
-    els.reconciliationHubOverlay,
   ].find((overlay) => overlay && !overlay.hidden) || null;
 }
 
@@ -2354,7 +2715,8 @@ async function loadClients() {
     }
     return;
   }
-  const savedClientId = savedFilterState().clientId || "";
+  const requestedClientId = reportContextFromLocation().clientId;
+  const savedClientId = requestedClientId || savedFilterState().clientId || "";
   const savedClient = savedClientId
     ? state.clients.find((client) => (client.clientId || client.id) === savedClientId)
     : null;
@@ -2379,7 +2741,183 @@ async function loadClients() {
   }
 }
 
-async function selectClient(clientId) {
+function isAccountingReportKind(kind = state.reportKind) {
+  return ["month_close_control", "tax_load"].includes(kind);
+}
+
+function currentCalendarMonth() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function reportContextFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    clientId: params.get("client_id") || "",
+    reportKind: params.get("report_kind") || "",
+    organizationId: params.get("organization_id") || "",
+    periodMonth: params.get("period_month") || "",
+  };
+}
+
+function updateReportContextLocation({ replace = false } = {}) {
+  const url = new URL(window.location.href);
+  if (state.clientId) {
+    url.searchParams.set("client_id", state.clientId);
+  } else {
+    url.searchParams.delete("client_id");
+  }
+  if (state.reportKind && state.reportKind !== "marketplace_unit_economics") {
+    url.searchParams.set("report_kind", state.reportKind);
+    if (state.organizationId) url.searchParams.set("organization_id", state.organizationId);
+    if (state.periodMonth) url.searchParams.set("period_month", state.periodMonth);
+  } else {
+    url.searchParams.delete("report_kind");
+    url.searchParams.delete("organization_id");
+    url.searchParams.delete("period_month");
+  }
+  window.history[replace ? "replaceState" : "pushState"]({}, "", url);
+}
+
+function accountingOrganizations() {
+  return activeClientCompanies().filter((item) => item.onecOrganizationId);
+}
+
+function renderReportContextControls() {
+  const options = state.reportKinds.map((item) => {
+    const option = document.createElement("option");
+    option.value = item.kind;
+    option.textContent = item.title;
+    return option;
+  });
+  els.reportKindSelect.replaceChildren(...options);
+  els.reportKindSelect.value = state.reportKind;
+  const accounting = isAccountingReportKind();
+  els.reportOrganizationSwitcher.hidden = !accounting;
+  els.reportMonthSwitcher.hidden = !accounting;
+  if (accounting) {
+    const organizations = accountingOrganizations();
+    const organizationOptions = organizations.map((item) => {
+      const option = document.createElement("option");
+      option.value = item.onecOrganizationId;
+      option.textContent = item.label || item.onecOrganizationId;
+      return option;
+    });
+    if (!organizationOptions.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Нет связанной организации 1С";
+      organizationOptions.push(option);
+    }
+    if (!organizations.some((item) => item.onecOrganizationId === state.organizationId)) {
+      state.organizationId = organizations[0]?.onecOrganizationId || "";
+    }
+    els.reportOrganizationSelect.replaceChildren(...organizationOptions);
+    els.reportOrganizationSelect.value = state.organizationId;
+    state.periodMonth ||= currentCalendarMonth();
+    els.reportMonth.value = state.periodMonth;
+  }
+  syncReportKindSurface();
+}
+
+function syncReportKindSurface() {
+  const accounting = isAccountingReportKind();
+  document.body.classList.toggle("accounting-report-mode", accounting);
+  els.marketplaceReportControls.forEach((item) => {
+    item.hidden = accounting;
+  });
+  [
+    els.accountingScenarioOverview,
+    els.accountingScenarioChecks,
+    els.accountingScenarioTables,
+  ].forEach((item) => {
+    if (item) item.hidden = !accounting;
+  });
+  els.clientOutputButton.hidden = accounting;
+  if (!accounting && window.MultiReportScenarios) {
+    window.MultiReportScenarios.clear({
+      overview: els.accountingScenarioOverview,
+      checks: els.accountingScenarioChecks,
+      tables: els.accountingScenarioTables,
+    });
+  }
+}
+
+async function loadReportKinds(context = currentClientLoadContext()) {
+  const payload = await api(
+    `/api/clients/${encodeURIComponent(context.clientId)}/report-kinds`,
+  );
+  if (!isCurrentClientLoad(context)) return;
+  state.reportKinds = payload.reportKinds || [];
+  const location = reportContextFromLocation();
+  const requestedKind = state.reportKinds.some((item) => item.kind === location.reportKind)
+    ? location.reportKind
+    : state.reportKinds.some((item) => item.kind === state.reportKind)
+      ? state.reportKind
+      : state.reportKinds[0]?.kind || "marketplace_unit_economics";
+  state.reportKind = requestedKind;
+  state.organizationId = location.organizationId || state.organizationId || "";
+  state.periodMonth = location.periodMonth || state.periodMonth || currentCalendarMonth();
+  renderReportContextControls();
+  updateReportContextLocation({ replace: true });
+}
+
+function clearReportSelection() {
+  state.reports = [];
+  state.reportId = null;
+  state.summary = null;
+  state.scenario = null;
+  state.freshness = null;
+  updateReportDownloadControl();
+}
+
+async function selectReportKind(kind) {
+  if (!state.reportKinds.some((item) => item.kind === kind)) return;
+  state.reportKind = kind;
+  clearReportSelection();
+  renderReportContextControls();
+  updateReportContextLocation();
+  await loadReports(currentClientLoadContext());
+}
+
+async function selectReportOrganization(organizationId) {
+  state.organizationId = organizationId || "";
+  clearReportSelection();
+  updateReportContextLocation();
+  await loadReports(currentClientLoadContext());
+}
+
+async function selectReportMonth(periodMonth) {
+  state.periodMonth = periodMonth || currentCalendarMonth();
+  clearReportSelection();
+  updateReportContextLocation();
+  await loadReports(currentClientLoadContext());
+}
+
+async function restoreReportContextFromLocation() {
+  const context = reportContextFromLocation();
+  if (context.clientId && context.clientId !== state.clientId) {
+    const available = state.clients.some(
+      (item) => (item.clientId || item.id) === context.clientId,
+    );
+    if (available) {
+      await selectClient(context.clientId, { updateLocation: false });
+      return;
+    }
+  }
+  if (!state.clientId || !state.reportKinds.length) return;
+  const kind = state.reportKinds.some((item) => item.kind === context.reportKind)
+    ? context.reportKind
+    : "marketplace_unit_economics";
+  state.reportKind = kind;
+  state.organizationId = context.organizationId || "";
+  state.periodMonth = context.periodMonth || currentCalendarMonth();
+  clearReportSelection();
+  renderReportContextControls();
+  await loadReports(currentClientLoadContext());
+}
+
+async function selectClient(clientId, { updateLocation = true } = {}) {
   if (!clientId) {
     resetClientScopedState();
     if (isIntegrationsPage()) {
@@ -2406,6 +2944,7 @@ async function selectClient(clientId) {
   els.clientSelect.value = clientId;
   saveSelectedClientId();
   resetClientScopedState({ keepClient: true });
+  if (updateLocation) updateReportContextLocation();
   syncIntegrationsEntryPoint();
   if (!isIntegrationsPage() && !isAiPage()) {
     setEmptyCabinet(
@@ -2413,6 +2952,7 @@ async function selectClient(clientId) {
       "Получаем отчеты выбранного клиентского контура.",
     );
   }
+  await loadReportKinds(currentClientLoadContext());
   await loadReports(currentClientLoadContext());
 }
 
@@ -2429,14 +2969,35 @@ async function loadReports(context = currentClientLoadContext()) {
     }
     return;
   }
+  if (isAccountingReportKind() && !state.organizationId) {
+    clearReportSelection();
+    setEmptyCabinet(
+      "Не выбрана организация 1С",
+      "Свяжите компанию клиента с организацией 1С, чтобы сформировать отчёт.",
+    );
+    syncReportKindSurface();
+    return;
+  }
+  const params = new URLSearchParams({ report_kind: state.reportKind });
+  if (state.organizationId) params.set("organization_id", state.organizationId);
   const payload = await api(
-    `/api/clients/${encodeURIComponent(clientId)}/reports`,
+    `/api/clients/${encodeURIComponent(clientId)}/reports?${params.toString()}`,
   );
   if (!isCurrentClientLoad(context)) {
     return;
   }
   state.reports = payload.items || [];
   if (!state.reports.length) {
+    if (isAccountingReportKind()) {
+      clearReportSelection();
+      setEmptyCabinet(
+        "Отчёт ещё не сформирован",
+        "Выберите организацию и месяц, затем нажмите «Сформировать отчёт». Все бизнес-пробелы останутся предупреждениями.",
+      );
+      syncReportKindSurface();
+      updateReportBuildButton();
+      return;
+    }
     renderFilters(clientScopedFilterOptions());
     await Promise.all([
       loadIntegrations(context),
@@ -2464,7 +3025,20 @@ async function loadReports(context = currentClientLoadContext()) {
     }
     return;
   }
-  await loadReport(state.reports[0].id, context);
+  const selectedReport = isAccountingReportKind()
+    ? state.reports.find((item) => String(item.periodStart || "").startsWith(state.periodMonth))
+    : state.reports[0];
+  if (!selectedReport) {
+    clearReportSelection();
+    setEmptyCabinet(
+      "За выбранный месяц отчёта нет",
+      "Нажмите «Сформировать отчёт», чтобы создать новую предварительную ревизию.",
+    );
+    syncReportKindSurface();
+    updateReportBuildButton();
+    return;
+  }
+  await loadReport(selectedReport.id, context);
 }
 
 async function loadReport(reportId, context = currentClientLoadContext()) {
@@ -2473,9 +3047,30 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   }
   state.reportId = reportId;
   state.aiThreadId = null;
+  if (state.chatkitEnabled) {
+    els.chatkitElement.setThreadId(null).catch(() => {});
+  }
   state.onecReconciliationLoaded = false;
   resetAiPanel();
   els.reportLoadRetryButton.hidden = true;
+  if (isAccountingReportKind()) {
+    try {
+      const scenario = await api(
+        `/api/reports/${encodeURIComponent(reportId)}/scenario`,
+      );
+      if (!isCurrentClientLoad(context) || state.reportId !== reportId) return;
+      state.summary = scenario;
+      state.scenario = scenario;
+      state.freshness = null;
+      renderAccountingScenario(scenario);
+      configurePageMode();
+    } catch (error) {
+      if (!isCurrentClientLoad(context) || state.reportId !== reportId) return;
+      renderReportLoadError();
+      syncReportKindSurface();
+    }
+    return;
+  }
   let summary;
   try {
     summary = await api(`/api/reports/${encodeURIComponent(reportId)}/summary`);
@@ -2514,6 +3109,25 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
     loadSourceRefreshStatus(context),
   ]);
   configurePageMode();
+}
+
+function renderAccountingScenario(payload) {
+  syncReportKindSurface();
+  window.MultiReportScenarios?.render(state.reportKind, payload, {
+    overview: els.accountingScenarioOverview,
+    checks: els.accountingScenarioChecks,
+    tables: els.accountingScenarioTables,
+  });
+  const title = state.reportKinds.find((item) => item.kind === state.reportKind)?.title
+    || "Бухгалтерский отчёт";
+  const status = payload.businessRecommendation || payload.businessStatus || "preliminary";
+  setTopbarNotice(
+    title,
+    `Предварительный staff-only отчёт · ${state.periodMonth} · статус ${status}`,
+    status === "cannot_confirm" ? "is-warning" : "is-info",
+  );
+  updateReportBuildButton();
+  updateReportDownloadControl();
 }
 
 async function loadReportFreshness(reportId, context = currentClientLoadContext()) {
@@ -2624,7 +3238,7 @@ function filteredAnalyticsSummary(payload = {}) {
   return {
     ...(state.summary || {}),
     ...analytics,
-    kpis: payload.kpis || analytics.kpis || {},
+    kpis: analytics.kpis || payload.kpis || {},
     quality: analytics.quality || (state.summary || {}).quality || {},
   };
 }
@@ -2769,6 +3383,15 @@ async function ensureAiThread() {
 async function sendAiQuestion(rawQuestion) {
   const question = String(rawQuestion || "").trim();
   if (!question || state.aiBusy || !state.reportId) {
+    return;
+  }
+  if (state.chatkitEnabled) {
+    try {
+      await els.chatkitElement.sendUserMessage({ text: question });
+    } catch (error) {
+      els.aiError.textContent =
+        "Не удалось получить ответ AI. Данные WB/1С не менялись.";
+    }
     return;
   }
   state.aiBusy = true;
@@ -4177,6 +4800,15 @@ function updateReportBuildButton(refresh = state.latestSourceRefresh) {
     els.reportBuildButton.dataset.tooltip =
       "Скачать текущий опубликованный Excel-отчёт.";
     els.reportBuildButton.disabled = !reportId;
+    return;
+  }
+  if (isAccountingReportKind()) {
+    els.reportBuildButton.textContent = state.reportId
+      ? "Сформировать новую ревизию"
+      : "Сформировать отчёт";
+    els.reportBuildButton.dataset.tooltip =
+      "Создать внутренний advisory draft из read-only данных.";
+    els.reportBuildButton.disabled = !(state.organizationId && state.periodMonth);
     return;
   }
   els.reportBuildButton.textContent = "Сформировать отчёт";
@@ -7681,6 +8313,8 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
   const wbMarketplacePnlExpenses = numberOrNull(
     kpis.wbMarketplacePnlExpenses,
   );
+  const wbForPaySum = numberOrNull(kpis.wbForPaySum);
+  const wbForPayRowCount = Number(kpis.wbForPayRowCount || 0);
   const onecMarketplaceExpensesWithVat = numberOrNull(
     kpis.onecMarketplaceExpensesWithVat,
   );
@@ -7697,6 +8331,10 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
     onecRevenueWithVat === null
       ? "Нет подтверждённых проведённых документов 1С за выбранный период"
       : `По ${number(onecRevenueDocumentCount)} проведённым документам 1С за календарный период`;
+  const onecRevenueSupportingCaption =
+    onecRevenueWithVat === null
+      ? "1С: нет подтверждённой выручки"
+      : `1С: ${money(onecRevenueWithVat)} с НДС · календарный учёт`;
   const wbDocumentRevenueWithVat = numberOrNull(kpis.wbDocumentRevenueWithVat);
   const wbCommissionerRevenueWithVat = numberOrNull(
     kpis.wbCommissionerRevenueWithVat,
@@ -7728,6 +8366,7 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
   const profitAfterTax = numberOrNull(
     kpis.profitAfterTax ?? kpis.profitAfterIncomeTax ?? kpis.profit,
   );
+  const marginAfterTax = numberOrNull(kpis.marginAfterTax);
   const returns = Number(kpis.returns || 0);
   const sales = Number(kpis.sales || 0);
   const lossRows = Number(kpis.lossRows || 0);
@@ -7774,19 +8413,6 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
         ? "ok"
         : "warning",
       "Единый стандарт использует календарную дату проведения 1С. Отчёт комиссионера сравнивается с retailAmountSum WB, а выкуп — с полем «Сумма выкупа» первичного уведомления WB. Без сохранённой первички выкуп не считается проверенным.",
-    ],
-    [
-      "Выручка 1С с НДС",
-      onecRevenueWithVat === null ? "Не рассчитано" : money(onecRevenueWithVat),
-      onecRevenueWithVat === null
-        ? onecRevenueCaption
-        : `${onecRevenueCaption}: комиссионер ${optionalMoney(
-            kpis.onecCommissionerRevenueWithVat,
-          )} + выкупы ${optionalMoney(
-            kpis.onecBuyoutRevenueWithVat,
-          )} + корректировки ${optionalMoney(kpis.onecOtherRevenueWithVat)}`,
-      onecRevenueWithVat === null ? "warning" : "ok",
-      "Σ поля «Сумма» проведённых документов 1С за календарный период: ОтчетКомиссионера, РасходнаяНакладная по выкупам и отдельные корректировки. Дата — дата проведения документа в 1С.",
     ],
     [
       "Количество продаж 1С, шт",
@@ -7893,6 +8519,28 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
     ],
   ];
   const profitUsesRevenueWithoutVat = Boolean(kpis.pnlWithoutVat);
+  const taxBridgeCalculated = kpis.taxBridgeCalculated === true;
+  const profitAfterTaxReady =
+    taxCalculated && taxBridgeCalculated && profitAfterTax !== null;
+  const marginAfterTaxReady =
+    profitAfterTaxReady && marginAfterTax !== null;
+  const osnoWithoutAllocatedNdfl =
+    profitUsesRevenueWithoutVat && kpis.incomeTaxIncluded !== true;
+  const afterTaxStatus = !taxCalculated
+    ? "Налоговый профиль не применён"
+    : !taxBridgeCalculated
+      ? "Налоговый мост требует сверки"
+      : osnoWithoutAllocatedNdfl
+        ? "По юнит-экономике · НДФЛ ИП не включён"
+        : "По применённому налоговому профилю";
+  const afterTaxTone = (value, ready) =>
+    !ready
+      ? "warning"
+      : Number(value) < 0
+        ? "bad"
+        : Number(value) > 0
+          ? "ok"
+          : "info";
   const profitFormula = profitUsesRevenueWithoutVat
     ? "Выручка WB без НДС − себестоимость 1С без НДС − расходы WB без НДС. Налоги ещё не вычтены."
     : "Выручка WB с НДС − себестоимость 1С − расходы WB. Затем отдельно вычитаются исходящий НДС и налог с выручки по профилю 1С.";
@@ -7903,11 +8551,9 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
     [
       "Выручка WB без НДС",
       money(revenue),
-      profitUsesRevenueWithoutVat
-        ? "База товарного P&L"
-        : "Справочно после выделения НДС",
+      onecRevenueSupportingCaption,
       "info",
-      "Выручка WB с НДС − исходящий НДС по строкам отчёта. Для legacy/УСН прибыль до налогов считается от выручки с НДС; для ОСНО — от сопоставимой базы без НДС.",
+      `Выручка WB с НДС − исходящий НДС по строкам отчёта. Для legacy/УСН прибыль до налогов считается от выручки с НДС; для ОСНО — от сопоставимой базы без НДС. ${onecRevenueCaption}; значение 1С показано справочно с НДС и не складывается с WB.`,
     ],
     [
       "Себестоимость 1С",
@@ -7950,6 +8596,35 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
           ? "bad"
           : "ok",
       marginFormula,
+    ],
+    [
+      "Прибыль после налогов",
+      profitAfterTaxReady ? money(profitAfterTax) : "Не рассчитано",
+      afterTaxStatus,
+      afterTaxTone(profitAfterTax, profitAfterTaxReady),
+      osnoWithoutAllocatedNdfl
+        ? "Прибыль товарного P&L после включённых в него налогов. НДС к уплате учитывается отдельно, НДФЛ ИП не распределён по товарам."
+        : "Маржинальный доход до налогов − налоги, включённые в товарный P&L.",
+    ],
+    [
+      "Рентабельность после налогов",
+      marginAfterTaxReady ? percent(marginAfterTax) : "Не рассчитано",
+      profitAfterTaxReady && marginAfterTax === null
+        ? "Нулевая выручка"
+        : afterTaxStatus,
+      afterTaxTone(marginAfterTax, marginAfterTaxReady),
+      profitUsesRevenueWithoutVat
+        ? "Прибыль после налогов ÷ выручка WB без НДС."
+        : "Прибыль после налогов ÷ база выручки применённого налогового профиля.",
+    ],
+    [
+      "Итого к перечислению",
+      wbForPaySum === null ? "Не рассчитано" : money(wbForPaySum),
+      wbForPaySum === null
+        ? "Нет forPaySum в загруженных отчётах WB"
+        : `По ${number(wbForPayRowCount)} финансовым отчётам WB`,
+      wbForPaySum === null ? "warning" : "info",
+      "Σ forPaySum финансовых отчётов WB в выбранном срезе. Это справочная сумма к перечислению продавцу, а не подтверждённый банковский платёж и не выплата по данным 1С.",
     ],
     [
       "Продажи WB",
@@ -8022,8 +8697,7 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       [inputVatLabel, money(kpis.vatInput || 0), managementInputVat ? "Управленческое допущение" : "", managementInputVat ? "warning" : "", managementInputVat ? "Расчётный НДС является сценарием юнит-экономики, а не бухгалтерски подтверждённым вычетом." : "Σ подтверждённого к вычету НДС по себестоимости и услугам."],
       [vatPayableLabel, money(kpis.vatPayable || 0), managementInputVat ? "До бухгалтерской сверки" : "", managementInputVat ? "warning" : "", managementInputVat ? "Исходящий НДС − расчётный входящий НДС." : "Исходящий НДС − входящий НДС к вычету."],
       [revenueTaxLabel, money(kpis.revenueTax || 0), "", "", "Налоговая база по профилю 1С × подтверждённая ставка налога."],
-      ["Всего налогов", money(kpis.totalTax || 0), "", "", "НДС к уплате + налог с выручки + налог на прибыль, если он включён в профиль."],
-      ["Прибыль после налогов", profitAfterTax !== null ? money(profitAfterTax) : "Не рассчитано", kpis.taxBridgeCalculated ? "Налоговый мост сходится" : "Требуется сверка", kpis.taxBridgeCalculated ? "ok" : "warning", "Маржинальный доход до налогов − всего налогов."],
+      ["Всего налогов", money(kpis.totalTax || 0), "", "", "НДС к уплате + налог с выручки + налог на прибыль, если он включён в профиль. Для ОСНО это сумма обязательств, а не сумма вычетов из товарного P&L."],
     );
   } else {
     secondaryMetrics.push([
@@ -8235,7 +8909,7 @@ function ozonMartMetricItems(mart = {}, reconciliation = {}) {
 }
 
 function setKpiHeading(
-  { eyebrow = "Основной расчёт", title = "Юнит-экономика WB" } = {},
+  { eyebrow = "Юнит-экономика WB", title = "Ключевые показатели" } = {},
 ) {
   if (els.kpiTitle) {
     els.kpiTitle.textContent = title;
@@ -8546,7 +9220,7 @@ function setAnalyticsTitles(mode, mart = {}) {
   }
   els.moneyTrendTitle.textContent = "Динамика продаж";
   els.moneyTrendCopy.textContent =
-    "Выручка, маржинальный доход, маржа и количество продаж по месяцам.";
+    "По месяцам текущего загруженного отчёта; 12 месяцев показываются как год.";
   els.unitPlTitle.textContent = ozonMode
     ? includesAdditionalOnecDocuments
       ? "P&L Ozon (включая выкупы)"
@@ -9858,7 +10532,10 @@ function renderMoneyTrendChart(target, monthly) {
   });
   chart.append(svg, tooltip);
   viewport.append(chart);
-  target.replaceChildren(legend, viewport);
+  const period = document.createElement("p");
+  period.className = "sales-trend-period";
+  period.textContent = salesTrendPeriodLabel(normalizedRows);
+  target.replaceChildren(period, legend, viewport);
   if (normalizedRows.length === 1) {
     const centerSingleMonth = () => {
       viewport.scrollLeft = Math.max(0, chart.scrollWidth / 2 - viewport.clientWidth / 2);
@@ -9875,6 +10552,18 @@ function renderMoneyTrendChart(target, monthly) {
       resizeObserver.observe(viewport);
     }
   }
+}
+
+function salesTrendPeriodLabel(rows) {
+  const safeRows = asArray(rows);
+  if (!safeRows.length) {
+    return "Загруженный период не определён";
+  }
+  const firstMonth = safeRows[0].month || "первый месяц";
+  const lastMonth = safeRows[safeRows.length - 1].month || "последний месяц";
+  const range = firstMonth === lastMonth ? firstMonth : `${firstMonth} — ${lastMonth}`;
+  const scope = safeRows.length === 12 ? "Год" : "Загруженный период";
+  return `${scope}: ${range} · ${number(safeRows.length)} мес.`;
 }
 
 function compactMonthLabel(value) {
@@ -9898,13 +10587,6 @@ function renderUnitProfitAndLossTable(target, kpis, expenses) {
   const expenseTotal = expenseRows.reduce((total, row) => total + row.amount, 0);
   const explicitProfit = managementProfitFromKpis(kpis, null);
   const profit = explicitProfit === null ? revenue - expenseTotal : explicitProfit;
-  if (financialCheckFailed((state.summary || {}).readiness || {})) {
-    renderAnalyticsEmpty(
-      target,
-      "Прибыли и убытки не рассчитаны: финансовая проверка источников и методики не пройдена.",
-    );
-    return;
-  }
   if (!revenue && !profit && !expenseRows.length) {
     renderAnalyticsEmpty(target, "Нет данных для расчёта прибылей и убытков.");
     return;
@@ -9947,7 +10629,18 @@ function renderUnitProfitAndLossTable(target, kpis, expenses) {
       action: profit < 0 ? { name: "rowsPreset", preset: "losses" } : null,
     },
   ];
-  target.replaceChildren(profitAndLossTable(rows, revenue));
+  const content = [];
+  if (financialCheckFailed((state.summary || {}).readiness || {})) {
+    const notice = document.createElement("p");
+    notice.className = "analytics-calculation-note";
+    notice.setAttribute("role", "note");
+    notice.textContent =
+      "Предварительный расчёт: есть замечания к качеству данных. " +
+      "Показатели рассчитаны по доступным данным и требуют проверки.";
+    content.push(notice);
+  }
+  content.push(profitAndLossTable(rows, revenue));
+  target.replaceChildren(...content);
 }
 
 function managementProfitFromKpis(kpis = {}, fallback = 0) {
@@ -10866,6 +11559,7 @@ function renderMetrics(target, items) {
         item.setAttribute("aria-label", `${label}. Формула: ${formula}`);
       }
       const labelNode = document.createElement("span");
+      labelNode.className = "metric-label";
       labelNode.textContent = label;
       const valueNode = document.createElement("strong");
       valueNode.textContent = String(value);
@@ -12736,6 +13430,14 @@ function resetClientScopedState(options = {}) {
   }
   state.reports = [];
   state.reportId = null;
+  state.reportKinds = [];
+  state.scenario = null;
+  state.generationIdempotencyKey = "";
+  if (!options.keepClient) {
+    state.reportKind = "marketplace_unit_economics";
+    state.organizationId = "";
+    state.periodMonth = "";
+  }
   state.rowsRequestKey = "";
   state.drilldownRequestKey = "";
   state.drilldownPreset = "review";
@@ -12780,6 +13482,7 @@ function resetClientScopedState(options = {}) {
   renderLostSales([]);
   renderLiquidity([]);
   renderOzonPreview(null, null);
+  renderReportContextControls();
 }
 
 function syncIntegrationsEntryPoint() {

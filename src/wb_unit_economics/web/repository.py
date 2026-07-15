@@ -69,12 +69,14 @@ from wb_unit_economics.web.models import (
     MarketplaceFinanceDailyFact,
     MarketplaceMappingItem,
     MarketplaceOperationFact,
+    MonthCloseControlReport,
     OnecMappingItem,
     OrganizationInputVatPolicy,
     OrganizationTaxProfile,
     OrganizationTaxProfileOverride,
     ReportArtifact,
     ReportDocumentReconciliationRow,
+    ReportGenerationRequest,
     ReportLostSalesRow,
     ReportMarketplaceExpenseRow,
     ReportReconciliationMonthly,
@@ -85,11 +87,24 @@ from wb_unit_economics.web.models import (
     SourceRefreshCollection,
     SourceRefreshRun,
     SourceSnapshotRow,
+    TaxLoadReport,
     Tenant,
     TenantIntegration,
     User,
     UserTenantAccess,
     WbCabinet,
+)
+from wb_unit_economics.web.report_kinds import (
+    ACCOUNTING_REPORT_KINDS,
+    MARKETPLACE_UNIT_ECONOMICS,
+    MONTH_CLOSE_CONTROL,
+    TAX_LOAD,
+    require_report_kind,
+)
+from wb_unit_economics.web.reports import (
+    build_month_close_control_payload,
+    build_tax_load_payload,
+    canonical_payload_sha256,
 )
 
 VALID_ROLES = {"client", "consultant", "admin"}
@@ -97,8 +112,13 @@ DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
 STAFF_ROLES = {"consultant", "admin"}
 RATE_ANCHOR_REASON_PREFIX = "[rate_anchor_only]"
-ACTIVE_REFRESH_STATUSES = {"queued", "running", "source_loaded", "rebuilding"}
-ACTIVE_SOURCE_REFRESH_STATUSES = {"queued", "running", "source_loaded", "rebuilding"}
+ACTIVE_REFRESH_STATUSES = {
+    "queued",
+    "running",
+    "source_loaded",
+    "rebuilding",
+}
+ACTIVE_SOURCE_REFRESH_STATUSES = set(ACTIVE_REFRESH_STATUSES)
 SOURCE_REFRESH_HEARTBEAT_STALE_AFTER = timedelta(minutes=5)
 MARKETPLACE_STAGING_DELETE_BATCH_SIZE = 5_000
 CALCULABLE_OZON_REFRESH_STATUSES = {
@@ -2936,58 +2956,107 @@ def reset_managed_user_password(
 
 
 def list_reports_for_user(
-    db: Session, user: User, *, client_id: str | None = None
+    db: Session,
+    user: User,
+    *,
+    client_id: str | None = None,
+    report_kind: str | None = MARKETPLACE_UNIT_ECONOMICS,
+    organization_id: str | None = None,
 ) -> list[ReportRun]:
     if client_id:
-        return list_reports_for_client(db, user, client_id)
+        return list_reports_for_client(
+            db,
+            user,
+            client_id,
+            report_kind=report_kind,
+            organization_id=organization_id,
+        )
     tenant_ids = allowed_tenant_ids(user)
     if not tenant_ids:
         return []
+    statement = select(ReportRun).where(ReportRun.tenant_id.in_(tenant_ids))
+    if report_kind:
+        statement = statement.where(ReportRun.report_kind == report_kind)
+    if organization_id:
+        statement = statement.where(ReportRun.organization_id == organization_id)
     reports = list(
         db.scalars(
-            select(ReportRun)
-            .where(ReportRun.tenant_id.in_(tenant_ids))
-            .order_by(ReportRun.is_current.desc(), ReportRun.generated_at.desc())
+            statement.order_by(
+                ReportRun.is_current.desc(), ReportRun.generated_at.desc()
+            )
         )
     )
     return [report for report in reports if _report_visible_to_user(user, report)]
 
 
-def list_reports_for_client(db: Session, user: User, client_id: str) -> list[ReportRun]:
+def list_reports_for_client(
+    db: Session,
+    user: User,
+    client_id: str,
+    *,
+    report_kind: str | None = MARKETPLACE_UNIT_ECONOMICS,
+    organization_id: str | None = None,
+) -> list[ReportRun]:
     client = require_client_access(db, user, client_id)
+    statement = select(ReportRun).where(
+        ReportRun.tenant_id == client.tenant_id,
+        ReportRun.client_id == client.id,
+    )
+    if report_kind:
+        statement = statement.where(ReportRun.report_kind == report_kind)
+    if organization_id:
+        statement = statement.where(ReportRun.organization_id == organization_id)
     reports = list(
         db.scalars(
-            select(ReportRun)
-            .where(
-                ReportRun.tenant_id == client.tenant_id,
-                ReportRun.client_id == client.id,
+            statement.order_by(
+                ReportRun.is_current.desc(), ReportRun.generated_at.desc()
             )
-            .order_by(ReportRun.is_current.desc(), ReportRun.generated_at.desc())
         )
     )
     return [report for report in reports if _report_visible_to_user(user, report)]
 
 
 def latest_report_for_user(
-    db: Session, user: User, *, client_id: str | None = None
+    db: Session,
+    user: User,
+    *,
+    client_id: str | None = None,
+    report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+    organization_id: str | None = None,
 ) -> ReportRun | None:
     if client_id:
-        return latest_report_for_client(db, user, client_id)
+        return latest_report_for_client(
+            db,
+            user,
+            client_id,
+            report_kind=report_kind,
+            organization_id=organization_id,
+        )
     tenant_ids = allowed_tenant_ids(user)
     if not tenant_ids:
         return None
+    current_filters = [
+        ReportRun.tenant_id.in_(tenant_ids),
+        ReportRun.report_kind == report_kind,
+        ReportRun.is_current.is_(True),
+    ]
+    if report_kind not in ACCOUNTING_REPORT_KINDS:
+        current_filters.append(ReportRun.publication_status == "published")
+    if organization_id:
+        current_filters.append(ReportRun.organization_id == organization_id)
     current = db.scalar(
         select(ReportRun)
-        .where(
-            ReportRun.tenant_id.in_(tenant_ids),
-            ReportRun.publication_status == "published",
-            ReportRun.is_current.is_(True),
-        )
+        .where(*current_filters)
         .order_by(ReportRun.generated_at.desc())
     )
-    if current is not None:
+    if current is not None and _report_visible_to_user(user, current):
         return current
-    reports = list_reports_for_user(db, user)
+    reports = list_reports_for_user(
+        db,
+        user,
+        report_kind=report_kind,
+        organization_id=organization_id,
+    )
     return reports[0] if reports else None
 
 
@@ -2995,22 +3064,600 @@ def latest_report_for_client(
     db: Session,
     user: User,
     client_id: str,
+    *,
+    report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+    organization_id: str | None = None,
 ) -> ReportRun | None:
     client = require_client_access(db, user, client_id)
+    current_filters = [
+        ReportRun.tenant_id == client.tenant_id,
+        ReportRun.client_id == client.id,
+        ReportRun.report_kind == report_kind,
+        ReportRun.is_current.is_(True),
+    ]
+    if report_kind not in ACCOUNTING_REPORT_KINDS:
+        current_filters.append(ReportRun.publication_status == "published")
+    if organization_id:
+        current_filters.append(ReportRun.organization_id == organization_id)
     current = db.scalar(
         select(ReportRun)
-        .where(
-            ReportRun.tenant_id == client.tenant_id,
-            ReportRun.client_id == client.id,
-            ReportRun.publication_status == "published",
-            ReportRun.is_current.is_(True),
-        )
+        .where(*current_filters)
         .order_by(ReportRun.generated_at.desc())
     )
-    if current is not None:
+    if current is not None and _report_visible_to_user(user, current):
         return current
-    reports = list_reports_for_client(db, user, client_id)
+    reports = list_reports_for_client(
+        db,
+        user,
+        client_id,
+        report_kind=report_kind,
+        organization_id=organization_id,
+    )
     return reports[0] if reports else None
+
+
+def report_kinds_for_user(
+    user: User,
+    *,
+    tenant_id: str,
+    enabled_kinds: set[str],
+) -> list[dict[str, object]]:
+    roles = roles_for_tenant(user, tenant_id)
+    result: list[dict[str, object]] = []
+    for kind in enabled_kinds:
+        definition = require_report_kind(kind)
+        if roles.intersection(definition.roles):
+            result.append(definition.payload())
+    return sorted(result, key=lambda item: str(item["kind"]))
+
+
+def _normalized_scenario_evidence(
+    db: Session,
+    *,
+    client_id: str,
+    report_kind: str,
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+    refresh_run_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    source_type = f"{report_kind}_evidence"
+    statement = (
+        select(SourceRefreshCollection)
+        .join(
+            SourceRefreshRun,
+            SourceRefreshRun.id == SourceRefreshCollection.refresh_run_id,
+        )
+        .where(
+            SourceRefreshCollection.client_id == client_id,
+            SourceRefreshCollection.source_type == source_type,
+            SourceRefreshCollection.organization_id == organization_id,
+        )
+        .order_by(SourceRefreshRun.finished_at.desc())
+    )
+    if refresh_run_id:
+        statement = statement.where(
+            SourceRefreshCollection.refresh_run_id == refresh_run_id
+        )
+    else:
+        statement = statement.where(
+            SourceRefreshRun.period_start <= period_start,
+            SourceRefreshRun.period_end >= period_end,
+            SourceRefreshRun.finished_at.is_not(None),
+        )
+    collection = db.scalar(statement)
+    if collection is None or not isinstance(collection.payload, dict):
+        return {}, ""
+    normalized = collection.payload.get("normalizedEvidence")
+    if not isinstance(normalized, dict):
+        return {}, ""
+    evidence_organization = str(normalized.get("organizationId") or "")
+    if evidence_organization and evidence_organization != organization_id:
+        return {}, ""
+    refresh = db.get(SourceRefreshRun, collection.refresh_run_id)
+    return dict(normalized), refresh.snapshot_set_id if refresh else ""
+
+
+def _tax_profile_payload_for_generation(
+    db: Session,
+    *,
+    company: ClientCompany,
+    calculation_date: date,
+    refresh_run_id: str,
+) -> dict[str, Any]:
+    override = db.scalar(
+        select(OrganizationTaxProfileOverride)
+        .where(
+            OrganizationTaxProfileOverride.client_company_id == company.id,
+            OrganizationTaxProfileOverride.organization_id
+            == company.onec_organization_id,
+            OrganizationTaxProfileOverride.status == "active",
+            OrganizationTaxProfileOverride.valid_from <= calculation_date,
+            or_(
+                OrganizationTaxProfileOverride.valid_to.is_(None),
+                OrganizationTaxProfileOverride.valid_to >= calculation_date,
+            ),
+        )
+        .order_by(OrganizationTaxProfileOverride.valid_from.desc())
+    )
+    if override is not None:
+        return {
+            "taxSystem": override.tax_system,
+            "profileStatus": "ready",
+            "vatRate": override.vat_rate,
+            "vatMode": override.vat_mode,
+            "vatDeductionMode": override.vat_deduction_mode,
+            "revenueTaxRate": override.revenue_tax_rate,
+            "validFrom": override.valid_from.isoformat(),
+            "validTo": override.valid_to.isoformat() if override.valid_to else None,
+            "sourceKind": "manual_override",
+            "sourceRefreshRunId": None,
+            "sourceSnapshotHash": hashlib.sha256(
+                repr(
+                    (override.id, override.updated_at.isoformat(), override.reason)
+                ).encode("utf-8")
+            ).hexdigest(),
+            "profileId": override.id,
+        }
+    profile = db.scalar(
+        select(OrganizationTaxProfile)
+        .where(
+            OrganizationTaxProfile.source_refresh_run_id == refresh_run_id,
+            OrganizationTaxProfile.client_company_id == company.id,
+            OrganizationTaxProfile.organization_id == company.onec_organization_id,
+            OrganizationTaxProfile.status == "active",
+            or_(
+                OrganizationTaxProfile.valid_from.is_(None),
+                OrganizationTaxProfile.valid_from <= calculation_date,
+            ),
+            or_(
+                OrganizationTaxProfile.valid_to.is_(None),
+                OrganizationTaxProfile.valid_to >= calculation_date,
+            ),
+        )
+        .order_by(OrganizationTaxProfile.valid_from.desc())
+    )
+    if profile is None:
+        return {
+            "profileStatus": "missing",
+            "sourceKind": "missing",
+            "sourceRefreshRunId": refresh_run_id,
+            "sourceSnapshotHash": "",
+            "profileId": None,
+        }
+    return {
+        "taxSystem": profile.tax_system,
+        "profileStatus": "ready",
+        "vatRate": profile.vat_rate,
+        "vatMode": profile.vat_mode,
+        "vatDeductionMode": profile.vat_deduction_mode,
+        "revenueTaxRate": profile.revenue_tax_rate,
+        "validFrom": profile.valid_from.isoformat() if profile.valid_from else None,
+        "validTo": profile.valid_to.isoformat() if profile.valid_to else None,
+        "sourceKind": profile.source,
+        "sourceRefreshRunId": profile.source_refresh_run_id,
+        "sourceSnapshotHash": profile.source_snapshot_hash,
+        "profileId": profile.id,
+    }
+
+
+def scenario_payload_for_report(db: Session, report: ReportRun) -> dict[str, Any]:
+    if report.report_kind == MONTH_CLOSE_CONTROL:
+        stored = db.get(MonthCloseControlReport, report.id)
+    elif report.report_kind == TAX_LOAD:
+        stored = db.get(TaxLoadReport, report.id)
+    else:
+        raise ValueError("scenario payload is unavailable for report kind")
+    if stored is None:
+        raise LookupError("scenario payload not found")
+    return {
+        **dict(stored.payload),
+        "payloadSha256": stored.payload_sha256,
+    }
+
+
+def generation_run_payload(run: SourceRefreshRun) -> dict[str, Any]:
+    stage = run.generation_stage or (
+        "completed"
+        if run.status == "completed"
+        else "failed"
+        if run.status == "failed"
+        else run.status
+    )
+    messages = {
+        "queued": "Формирование отчета поставлено в очередь.",
+        "refreshing_sources": "Выполняется read-only загрузка данных 1С.",
+        "materializing_evidence": "Подготавливается проверяемый evidence-контракт.",
+        "building_report": "Формируются Web и Excel из единого payload.",
+        "completed": "Отчет сформирован.",
+        "failed": "Отчет не сформирован; исходные данные не изменялись.",
+    }
+    return {
+        "generationRunId": run.id,
+        "status": run.status,
+        "stage": stage,
+        "reportKind": run.target_report_kind,
+        "organizationId": run.organization_id,
+        "periodMonth": run.period_start.strftime("%Y-%m"),
+        "reportId": run.new_report_run_id,
+        "deduplicated": False,
+        "createdAt": run.created_at.isoformat(),
+        "finishedAt": run.finished_at.isoformat() if run.finished_at else None,
+        "safeMessage": messages.get(stage, "Формирование отчета выполняется."),
+    }
+
+
+def _generation_request_fingerprint(
+    *,
+    report_kind: str,
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "reportKind": report_kind,
+                "organizationId": organization_id,
+                "periodStart": period_start.isoformat(),
+                "periodEnd": period_end.isoformat(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _add_generation_request_key(
+    db: Session,
+    *,
+    client: Client,
+    idempotency_key: str,
+    request_fingerprint: str,
+    generation_run_id: str,
+) -> ReportGenerationRequest:
+    item = ReportGenerationRequest(
+        id=_stable_entity_id(
+            "report_generation_request",
+            client.tenant_id,
+            client.id,
+            idempotency_key,
+        ),
+        tenant_id=client.tenant_id,
+        client_id=client.id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        generation_run_id=generation_run_id,
+        created_at=security.utcnow(),
+    )
+    db.add(item)
+    db.flush()
+    return item
+
+
+def generate_accounting_report(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+    report_kind: str,
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+    idempotency_key: str,
+) -> tuple[SourceRefreshRun, bool]:
+    definition = require_report_kind(report_kind)
+    if report_kind not in ACCOUNTING_REPORT_KINDS:
+        raise ValueError("report generation is supported only for accounting kinds")
+    if not definition.requires_organization or not organization_id:
+        raise ValueError("organization is required")
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    company = db.scalar(
+        select(ClientCompany).where(
+            ClientCompany.client_id == client.id,
+            ClientCompany.onec_organization_id == organization_id,
+            ClientCompany.status == "active",
+        )
+    )
+    if company is None:
+        raise LookupError("organization not found")
+    idempotency_key = idempotency_key.strip()
+    if not idempotency_key:
+        raise ValueError("idempotency key is required")
+    request_fingerprint = _generation_request_fingerprint(
+        report_kind=report_kind,
+        organization_id=organization_id,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {
+                "lock_key": (
+                    "report-generation-key:"
+                    f"{client.tenant_id}:{client.id}:{idempotency_key}"
+                )
+            },
+        )
+    request_key = db.scalar(
+        select(ReportGenerationRequest).where(
+            ReportGenerationRequest.tenant_id == client.tenant_id,
+            ReportGenerationRequest.client_id == client.id,
+            ReportGenerationRequest.idempotency_key == idempotency_key,
+        )
+    )
+    if request_key is not None:
+        if request_key.request_fingerprint != request_fingerprint:
+            raise ValueError("idempotency key was used for a different request")
+        existing = db.get(SourceRefreshRun, request_key.generation_run_id)
+        if existing is None:
+            raise RuntimeError("idempotency mapping references a missing run")
+        audit(
+            db,
+            action="report_generation_deduplicated",
+            user=user,
+            tenant_id=client.tenant_id,
+            entity_type="source_refresh_run",
+            entity_id=existing.id,
+            payload={"reportKind": report_kind, "reason": "idempotency_key"},
+        )
+        return existing, True
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {
+                "lock_key": (
+                    f"report-generation-scope:{client.tenant_id}:{client.id}:"
+                    f"{report_kind}:{organization_id}:{period_start:%Y-%m}"
+                )
+            },
+        )
+    active = db.scalar(
+        select(SourceRefreshRun)
+        .where(
+            SourceRefreshRun.tenant_id == client.tenant_id,
+            SourceRefreshRun.client_id == client.id,
+            SourceRefreshRun.target_report_kind == report_kind,
+            SourceRefreshRun.organization_id == organization_id,
+            SourceRefreshRun.period_start == period_start,
+            SourceRefreshRun.period_end == period_end,
+            SourceRefreshRun.status.in_(ACTIVE_SOURCE_REFRESH_STATUSES),
+            SourceRefreshRun.finished_at.is_(None),
+        )
+        .order_by(SourceRefreshRun.created_at.desc())
+    )
+    if active is not None:
+        _add_generation_request_key(
+            db,
+            client=client,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            generation_run_id=active.id,
+        )
+        audit(
+            db,
+            action="report_generation_deduplicated",
+            user=user,
+            tenant_id=client.tenant_id,
+            entity_type="source_refresh_run",
+            entity_id=active.id,
+            payload={"reportKind": report_kind, "reason": "active_scope"},
+        )
+        return active, True
+
+    now = security.utcnow()
+    generation = SourceRefreshRun(
+        id=new_id("report_generation"),
+        tenant_id=client.tenant_id,
+        client_id=client.id,
+        target_report_kind=report_kind,
+        organization_id=organization_id,
+        idempotency_key=idempotency_key,
+        generation_stage="queued",
+        requested_by_user_id=user.id,
+        source_report_run_id=None,
+        new_report_run_id=None,
+        resumed_from_run_id=None,
+        base_source_refresh_run_id=None,
+        blocked_by_run_id=None,
+        worker_id="",
+        failure_code="",
+        heartbeat_at=None,
+        mode="report-generation",
+        credential_source="tenant",
+        dry_run=False,
+        status="queued",
+        reason="Staff-only advisory report generation",
+        snapshot_set_id=new_id("snapshot_set"),
+        period_start=period_start,
+        period_end=period_end,
+        source_window_start=(
+            period_start.replace(month=1, day=1)
+            if report_kind == TAX_LOAD
+            else period_start
+        ),
+        source_window_end=period_end,
+        root_dir="",
+        workbook_path="",
+        error_message="",
+        created_at=now,
+        started_at=None,
+        finished_at=None,
+        updated_at=now,
+    )
+    db.add(generation)
+    db.flush()
+    _add_generation_request_key(
+        db,
+        client=client,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        generation_run_id=generation.id,
+    )
+    audit(
+        db,
+        action="report_generation_requested",
+        user=user,
+        tenant_id=client.tenant_id,
+        entity_type="source_refresh_run",
+        entity_id=generation.id,
+        payload={
+            "reportKind": report_kind,
+            "organizationId": organization_id,
+            "periodMonth": period_start.strftime("%Y-%m"),
+        },
+    )
+    return generation, False
+
+
+def complete_accounting_report_generation(
+    db: Session,
+    *,
+    generation: SourceRefreshRun,
+    user: User | None,
+) -> ReportRun:
+    if generation.mode != "report-generation":
+        raise ValueError("generation run has an unsupported mode")
+    report_kind = generation.target_report_kind
+    organization_id = str(generation.organization_id or "")
+    definition = require_report_kind(report_kind)
+    client = db.get(Client, generation.client_id)
+    if client is None:
+        raise LookupError("generation client not found")
+    company = db.scalar(
+        select(ClientCompany).where(
+            ClientCompany.client_id == client.id,
+            ClientCompany.onec_organization_id == organization_id,
+            ClientCompany.status == "active",
+        )
+    )
+    if company is None:
+        raise LookupError("generation organization not found")
+    evidence_period_start = (
+        generation.period_start.replace(month=1, day=1)
+        if report_kind == TAX_LOAD
+        else generation.period_start
+    )
+    evidence, snapshot_set_id = _normalized_scenario_evidence(
+        db,
+        client_id=client.id,
+        report_kind=report_kind,
+        organization_id=organization_id,
+        period_start=evidence_period_start,
+        period_end=generation.period_end,
+        refresh_run_id=generation.id,
+    )
+    if not evidence:
+        raise LookupError("accounting evidence contract was not materialized")
+    now = security.utcnow()
+    report = ReportRun(
+        id=new_id("report"),
+        tenant_id=client.tenant_id,
+        client_id=client.id,
+        client_name=client.name,
+        report_kind=report_kind,
+        organization_id=organization_id,
+        title=f"{definition.title} — {generation.period_start:%m.%Y}",
+        period_start=generation.period_start,
+        period_end=generation.period_end,
+        source_coverage_start=evidence_period_start,
+        source_coverage_end=generation.period_end,
+        period_text=(
+            f"{generation.period_start:%d.%m.%Y} - {generation.period_end:%d.%m.%Y}"
+        ),
+        period_status="calendar_month",
+        generated_at=now,
+        status="preliminary",
+        publication_status="draft",
+        is_current=False,
+        lineage_type="multi_report_advisory_v1",
+        source_snapshot_set_id=snapshot_set_id or generation.snapshot_set_id,
+        methodology_version=(
+            "month-close-control-report-v2"
+            if report_kind == MONTH_CLOSE_CONTROL
+            else "tax-load-report-v2"
+        ),
+        marketplace_expense_context_version="",
+        source_workbook="",
+        source_workbook_path="",
+        return_reason_limitation="",
+        created_at=now,
+    )
+    db.add(report)
+    db.flush()
+    if report_kind == MONTH_CLOSE_CONTROL:
+        payload = build_month_close_control_payload(report, evidence)
+        stored: MonthCloseControlReport | TaxLoadReport = MonthCloseControlReport(
+            report_run_id=report.id,
+            contract_version=str(payload["contractVersion"]),
+            payload_sha256=canonical_payload_sha256(payload),
+            payload=payload,
+            created_at=now,
+        )
+        report.status = str(payload["businessRecommendation"])
+    else:
+        profile = _tax_profile_payload_for_generation(
+            db,
+            company=company,
+            calculation_date=generation.period_end,
+            refresh_run_id=generation.id,
+        )
+        payload = build_tax_load_payload(report, tax_profile=profile, evidence=evidence)
+        stored = TaxLoadReport(
+            report_run_id=report.id,
+            contract_version=str(payload["contractVersion"]),
+            payload_sha256=canonical_payload_sha256(payload),
+            payload=payload,
+            created_at=now,
+        )
+        report.status = str(payload["businessStatus"])
+    db.add(stored)
+    _set_accounting_draft_current(db, report)
+    generation.new_report_run_id = report.id
+    generation.status = "completed"
+    generation.generation_stage = "completed"
+    generation.finished_at = security.utcnow()
+    generation.updated_at = generation.finished_at
+    audit(
+        db,
+        action="report_generation_completed",
+        user=user,
+        tenant_id=client.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "generationRunId": generation.id,
+            "reportKind": report_kind,
+            "payloadSha256": stored.payload_sha256,
+        },
+    )
+    db.flush()
+    return report
+
+
+def _set_accounting_draft_current(db: Session, report: ReportRun) -> None:
+    if report.report_kind not in ACCOUNTING_REPORT_KINDS or not report.organization_id:
+        raise ValueError("staff advisory current requires an accounting organization")
+    previous_reports = list(
+        db.scalars(
+            select(ReportRun).where(
+                ReportRun.tenant_id == report.tenant_id,
+                ReportRun.client_id == report.client_id,
+                ReportRun.report_kind == report.report_kind,
+                ReportRun.organization_id == report.organization_id,
+                ReportRun.id != report.id,
+                ReportRun.is_current.is_(True),
+            )
+        )
+    )
+    for previous in previous_reports:
+        previous.is_current = False
+    db.flush()
+    report.publication_status = "draft"
+    report.is_current = True
 
 
 def require_report(db: Session, user: User, report_id: str) -> ReportRun:
@@ -3193,6 +3840,8 @@ def active_source_refresh_run(
         statement = statement.where(SourceRefreshRun.client_id == client_id)
     if mode:
         statement = statement.where(SourceRefreshRun.mode == mode)
+    else:
+        statement = statement.where(SourceRefreshRun.mode != "report-generation")
     return db.scalar(statement.order_by(SourceRefreshRun.created_at.desc()))
 
 
@@ -3234,6 +3883,8 @@ def latest_source_refresh_run(
         statement = statement.where(SourceRefreshRun.client_id == client_id)
     if mode:
         statement = statement.where(SourceRefreshRun.mode == mode)
+    else:
+        statement = statement.where(SourceRefreshRun.mode != "report-generation")
     if not include_dry_run:
         statement = statement.where(SourceRefreshRun.dry_run.is_(False))
     excluded = tuple(exclude_statuses)
@@ -3612,6 +4263,7 @@ def add_source_refresh_collection(
     payload: dict[str, Any] | None = None,
     client_id: str | None = None,
     wb_cabinet_id: str = "",
+    organization_id: str | None = None,
     loaded_at: datetime | None = None,
 ) -> SourceRefreshCollection:
     item = SourceRefreshCollection(
@@ -3623,6 +4275,7 @@ def add_source_refresh_collection(
             or client_id_for_tenant(refresh_run.tenant_id)
         ),
         wb_cabinet_id=wb_cabinet_id,
+        organization_id=organization_id,
         source_type=source_type[:120],
         source_label=source_label[:300],
         required=required,
@@ -4985,6 +5638,8 @@ def source_refresh_status_payload(
             completed_conditions.append(SourceRefreshRun.client_id == client_id)
         if mode:
             completed_conditions.append(SourceRefreshRun.mode == mode)
+        else:
+            completed_conditions.append(SourceRefreshRun.mode != "report-generation")
         latest_completed = db.scalar(
             select(SourceRefreshRun)
             .where(*completed_conditions)
@@ -11575,8 +12230,9 @@ def client_draft_contains_forbidden_text(content: str) -> bool:
 
 def client_draft_evidence_payload(summary: dict[str, Any]) -> dict[str, Any]:
     rows = summary["unitRows"]
-    revenue = sum(float(row.get("revenue") or 0) for row in rows)
-    profit = sum(float(row.get("profit") or 0) for row in rows)
+    kpis = summary.get("kpis") or {}
+    revenue = kpis.get("revenue")
+    profit = kpis.get("profit")
     losses = sorted(
         [row for row in rows if float(row.get("profit") or 0) < 0],
         key=lambda row: float(row.get("profit") or 0),
@@ -11592,9 +12248,10 @@ def client_draft_evidence_payload(summary: dict[str, Any]) -> dict[str, Any]:
             "methodologyVersion": summary["meta"].get("methodologyVersion", ""),
             "revenue": revenue,
             "profit": profit,
-            "margin": profit / revenue if revenue else None,
-            "rows": len(rows),
-            "lossRows": len(losses),
+            "profitBeforeTax": kpis.get("profitBeforeTax"),
+            "margin": kpis.get("margin"),
+            "rows": int(kpis.get("rowCount") or len(rows)),
+            "lossRows": int(kpis.get("lossRows") or 0),
         },
         "topLosses": [
             {
@@ -11619,13 +12276,24 @@ def client_draft_evidence_payload(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def client_draft_limitations(summary: dict[str, Any]) -> list[str]:
-    return [
-        "Июнь неполный, поэтому динамику июня нельзя читать как полный месяц.",
-        summary["meta"].get("returnReasonLimitation")
-        or "Причины возвратов не передаются текущими источниками.",
-        "Упущенные продажи являются управленческой оценкой, не финальным прогнозом.",
-        "AI не меняет данные WB/1C и не выполняет отправку клиенту.",
-    ]
+    limitations = []
+    period_status = str(summary.get("meta", {}).get("periodStatus") or "")
+    if "неполн" in period_status.casefold() or "предвар" in period_status.casefold():
+        limitations.append(
+            f"Период имеет статус «{period_status}» и не должен читаться как полный."
+        )
+    limitations.extend(
+        [
+            summary["meta"].get("returnReasonLimitation")
+            or "Причины возвратов не передаются текущими источниками.",
+            (
+                "Упущенные продажи являются управленческой оценкой, "
+                "не финальным прогнозом."
+            ),
+            "AI не меняет данные WB/1C и не выполняет отправку клиенту.",
+        ]
+    )
+    return limitations
 
 
 def import_dashboard_payload(
@@ -12130,20 +12798,28 @@ def publish_report_with_tasks(
 
 
 def _set_report_current(db: Session, report: ReportRun) -> None:
-    previous_reports = list(
-        db.scalars(
-            select(ReportRun).where(
-                ReportRun.tenant_id == report.tenant_id,
-                ReportRun.client_id == report.client_id,
-                ReportRun.id != report.id,
-                ReportRun.is_current.is_(True),
-            )
-        )
-    )
+    scope_filters = [
+        ReportRun.tenant_id == report.tenant_id,
+        ReportRun.client_id == report.client_id,
+        ReportRun.report_kind == report.report_kind,
+        ReportRun.id != report.id,
+        ReportRun.is_current.is_(True),
+    ]
+    if report.report_kind in ACCOUNTING_REPORT_KINDS:
+        if not report.organization_id:
+            raise ValueError("organization is required for accounting report")
+        scope_filters.append(ReportRun.organization_id == report.organization_id)
+    else:
+        scope_filters.append(ReportRun.organization_id.is_(None))
+    previous_reports = list(db.scalars(select(ReportRun).where(*scope_filters)))
     for previous in previous_reports:
         previous.is_current = False
         if previous.publication_status == "published":
             previous.publication_status = "superseded"
+    # The partial unique indexes enforce one current report per scope. Flush the
+    # demotion before promoting the new revision so SQLite/PostgreSQL never see
+    # two current rows within the same statement batch.
+    db.flush()
     report.publication_status = "published"
     report.is_current = True
 
@@ -12818,6 +13494,7 @@ def report_full_payload(
                 lost_sales_coverage=lost_sales_coverage,
                 onec_calendar_revenue=onec_calendar_revenue,
             ),
+            **_wb_payout_kpis(document_reconciliation),
             **marketplace_expense["kpis"],
         },
         "quality": _summary_quality_payload(
@@ -12919,6 +13596,8 @@ def report_summary_payload(
     *,
     include_staff_readiness: bool = False,
 ) -> dict[str, Any]:
+    if report.report_kind in ACCOUNTING_REPORT_KINDS:
+        return scenario_payload_for_report(db, report)
     if report.lineage_type == OZON_DRAFT_LINEAGE_TYPE:
         return ozon_draft_report_summary_payload(db, report)
     loads = _source_loads_for_report(db, report)
@@ -12991,6 +13670,7 @@ def report_summary_payload(
                 lost_sales_coverage=lost_sales_coverage,
                 onec_calendar_revenue=onec_calendar_revenue,
             ),
+            **_wb_payout_kpis(document_reconciliation_source_rows),
             **marketplace_expense["kpis"],
         },
         "quality": _summary_quality_payload(
@@ -13808,6 +14488,19 @@ def _worse_tax_input_status(statuses: set[str]) -> str:
     return max(statuses, key=lambda status: priority.get(status, 0))
 
 
+def _row_filter_period_date(
+    *,
+    week: date | None,
+    accounting_period_date: date | None,
+    wb_report_date: Any = None,
+) -> date | None:
+    if week is not None:
+        return week + timedelta(days=6)
+    if accounting_period_date is not None:
+        return accounting_period_date
+    return date_or_none(wb_report_date)
+
+
 def options_payload(
     rows: list[dict[str, Any]],
     *,
@@ -13837,11 +14530,22 @@ def options_payload(
     liquidity_rows = liquidity_rows or []
     month_values = {as_text(row.get("month")) for row in rows if row.get("month")}
     months = _ordered_values(list(month_values))
-    weeks = sorted(as_text(row.get("week")) for row in rows if row.get("week"))
+    period_dates = sorted(
+        period_date
+        for row in rows
+        if (
+            period_date := _row_filter_period_date(
+                week=date_or_none(row.get("week")),
+                accounting_period_date=date_or_none(row.get("accountingPeriodDate")),
+                wb_report_date=row.get("wbReportDate"),
+            )
+        )
+        is not None
+    )
     return {
         "months": months,
-        "periodStart": weeks[0] if weeks else "",
-        "periodEnd": weeks[-1] if weeks else "",
+        "periodStart": period_dates[0].isoformat() if period_dates else "",
+        "periodEnd": period_dates[-1].isoformat() if period_dates else "",
         "cabinets": unique_entities("wbCabinetId", "cabinet"),
         "organizations": unique_entities("clientCompanyId", "organization"),
         "schemes": unique("scheme"),
@@ -14206,6 +14910,9 @@ def _row_stats_for_conditions(
             func.coalesce(func.sum(ReportUnitRow.profit_before_tax), 0).label(
                 "profit_before_tax"
             ),
+            func.coalesce(func.sum(_pnl_tax_deduction_expression()), 0).label(
+                "pnl_tax_deduction"
+            ),
             func.coalesce(func.sum(ReportUnitRow.vat_output), 0).label("vat_output"),
             func.coalesce(func.sum(ReportUnitRow.vat_input), 0).label("vat_input"),
             func.coalesce(
@@ -14332,6 +15039,7 @@ def _row_stats_for_conditions(
         "pnl_without_vat_rows": int(stats["pnl_without_vat_rows"] or 0),
         "profit": float(stats["profit"] or 0),
         "profit_before_tax": float(stats["profit_before_tax"] or 0),
+        "pnl_tax_deduction": float(stats["pnl_tax_deduction"] or 0),
         "vat_output": float(stats["vat_output"] or 0),
         "vat_input": float(stats["vat_input"] or 0),
         "vat_input_from_import_scenario": float(
@@ -14415,6 +15123,19 @@ def _pnl_profit_expression() -> Any:
             ReportUnitRow.profit_before_tax,
         ),
         else_=ReportUnitRow.profit,
+    )
+
+
+def _pnl_tax_deduction_expression() -> Any:
+    """Return taxes that reduce the product P&L, not all tax obligations."""
+
+    included_income_tax = case(
+        (ReportUnitRow.income_tax_included.is_(True), ReportUnitRow.income_tax),
+        else_=0,
+    )
+    return case(
+        (_pnl_without_vat_condition(), 0),
+        else_=(ReportUnitRow.vat_payable + ReportUnitRow.usn + included_income_tax),
     )
 
 
@@ -15246,9 +15967,17 @@ def _summary_kpis_payload(
     income_tax = float(stats.get("income_tax") or 0)
     income_tax_included = int(stats.get("income_tax_included_rows") or 0) > 0
     total_tax = vat_payable + revenue_tax + (income_tax if income_tax_included else 0)
+    if "pnl_tax_deduction" in stats:
+        pnl_tax_deduction = float(stats.get("pnl_tax_deduction") or 0)
+    elif int(stats.get("pnl_without_vat_rows") or 0) > 0 and int(
+        stats.get("pnl_without_vat_rows") or 0
+    ) == int(stats.get("row_count") or 0):
+        pnl_tax_deduction = 0.0
+    else:
+        pnl_tax_deduction = total_tax
     tax_calculated = bool((tax_context or {}).get("calculated"))
     tax_bridge_calculated = bool(
-        tax_calculated and abs(profit_management - total_tax - profit) <= 1.0
+        tax_calculated and abs(profit_management - pnl_tax_deduction - profit) <= 1.0
     )
     lost_sales_calculated = bool((lost_sales_coverage or {}).get("calculated"))
     onec_revenue = dict(onec_calendar_revenue or {})
@@ -15314,6 +16043,9 @@ def _summary_kpis_payload(
         "profitManagement": profit_management,
         "profitAfterTax": profit if tax_calculated else None,
         "profitAfterIncomeTax": profit if tax_calculated else None,
+        "marginAfterTax": (
+            profit / revenue if tax_bridge_calculated and revenue else None
+        ),
         "incomeTaxIncluded": (
             int(stats.get("income_tax_included_rows") or 0) > 0
             if tax_calculated
@@ -15429,7 +16161,7 @@ def _summary_options_payload(
         ).where(ReportUnitRow.report_run_id == report.id)
     )
     months: set[str] = set()
-    weeks: set[date] = set()
+    period_dates: set[date] = set()
     cabinets: dict[str, str] = {}
     organizations: dict[str, str] = {}
     schemes: set[str] = set()
@@ -15457,8 +16189,12 @@ def _summary_options_payload(
         )
         if month:
             months.add(month)
-        if week:
-            weeks.add(week)
+        period_date = _row_filter_period_date(
+            week=week,
+            accounting_period_date=accounting_period_date,
+        )
+        if period_date is not None:
+            period_dates.add(period_date)
         cabinet_key = as_text(cabinet_id) or as_text(cabinet)
         if cabinet_key:
             cabinets.setdefault(cabinet_key, as_text(cabinet) or cabinet_key)
@@ -15502,8 +16238,8 @@ def _summary_options_payload(
     }
     return {
         "months": _ordered_values(list(months)),
-        "periodStart": min(weeks).isoformat() if weeks else "",
-        "periodEnd": max(weeks).isoformat() if weeks else "",
+        "periodStart": min(period_dates).isoformat() if period_dates else "",
+        "periodEnd": max(period_dates).isoformat() if period_dates else "",
         "cabinets": [
             {"id": item_id, "label": label}
             for item_id, label in sorted(
@@ -16413,6 +17149,20 @@ def _document_reconciliation_kpis(
     }
 
 
+def _wb_payout_kpis(
+    rows: Iterable[ReportDocumentReconciliationRow],
+) -> dict[str, Any]:
+    """Aggregate WB ``forPaySum`` without presenting it as a bank payment."""
+
+    values = [
+        Decimal(row.wb_for_pay_sum) for row in rows if row.wb_for_pay_sum is not None
+    ]
+    return {
+        "wbForPaySum": as_float(sum(values, Decimal("0"))) if values else None,
+        "wbForPayRowCount": len(values),
+    }
+
+
 def _document_reconciliation_conditions_for_report(
     report: ReportRun,
     *,
@@ -17039,12 +17789,15 @@ def _filtered_report_analytics_payload(
     filtered_rows = list(db.scalars(select(ReportUnitRow).where(*unit_conditions)))
     tax_context = _tax_context_payload(db, report, filtered_rows)
     return {
-        "kpis": _summary_kpis_payload(
-            stats,
-            tax_context=tax_context,
-            lost_sales_coverage=lost_sales_coverage,
-            onec_calendar_revenue=onec_calendar_revenue,
-        ),
+        "kpis": {
+            **_summary_kpis_payload(
+                stats,
+                tax_context=tax_context,
+                lost_sales_coverage=lost_sales_coverage,
+                onec_calendar_revenue=onec_calendar_revenue,
+            ),
+            **_wb_payout_kpis(document_reconciliation_rows),
+        },
         "quality": _summary_quality_payload(
             stats,
             _source_loads_for_report(db, report),
@@ -17274,12 +18027,7 @@ def query_report_rows(
     payload = {
         "items": [_row_payload(row) for row in rows],
         "total": total,
-        "kpis": _summary_kpis_payload(
-            stats,
-            tax_context=analytics.get("taxContext") or {},
-            lost_sales_coverage=lost_sales_coverage,
-            onec_calendar_revenue=onec_calendar_revenue,
-        ),
+        "kpis": dict(analytics["kpis"]),
         "analytics": analytics,
     }
     if preset == "missingCost":
@@ -19725,15 +20473,29 @@ def create_ai_thread(
     *,
     user: User,
     tenant_id: str,
-    report_id: str | None,
+    client_id: str,
+    report_id: str,
     title: str,
+    scope: dict[str, Any] | None = None,
+    thread_id: str | None = None,
 ) -> AiThread:
+    normalized_scope = scope or {}
     thread = AiThread(
-        id=new_id("thread"),
+        id=thread_id or new_id("thread"),
         tenant_id=tenant_id,
+        client_id=client_id,
         user_id=user.id,
         report_run_id=report_id,
         title=title[:200],
+        scope=normalized_scope,
+        scope_hash=hashlib.sha256(
+            json.dumps(
+                normalized_scope,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         created_at=security.utcnow(),
     )
     db.add(thread)
@@ -19750,19 +20512,29 @@ def create_ai_thread(
 
 def require_thread(db: Session, user: User, thread_id: str) -> AiThread:
     thread = db.get(AiThread, thread_id)
-    if thread is None or thread.tenant_id not in allowed_tenant_ids(user):
+    if (
+        thread is None
+        or thread.tenant_id not in allowed_tenant_ids(user)
+        or thread.user_id != user.id
+        or thread.archived_at is not None
+    ):
         raise PermissionError("thread access denied")
     return thread
 
 
-def thread_messages(db: Session, thread: AiThread) -> list[AiMessage]:
-    return list(
-        db.scalars(
-            select(AiMessage)
-            .where(AiMessage.thread_id == thread.id)
-            .order_by(AiMessage.created_at, AiMessage.id)
-        )
+def thread_messages(
+    db: Session, thread: AiThread, *, limit: int | None = None
+) -> list[AiMessage]:
+    statement = (
+        select(AiMessage)
+        .where(AiMessage.thread_id == thread.id)
+        .order_by(AiMessage.created_at.desc(), AiMessage.id.desc())
     )
+    if limit is not None:
+        statement = statement.limit(max(1, min(limit, 100)))
+    messages = list(db.scalars(statement))
+    messages.reverse()
+    return messages
 
 
 def add_ai_message(
@@ -19771,6 +20543,7 @@ def add_ai_message(
     thread: AiThread,
     role: str,
     content: str,
+    chatkit_item_id: str = "",
     tool_name: str = "",
     citations: list[Any] | None = None,
 ) -> AiMessage:
@@ -19778,6 +20551,7 @@ def add_ai_message(
         thread_id=thread.id,
         role=role,
         content=content,
+        chatkit_item_id=chatkit_item_id,
         tool_name=tool_name,
         citations=citations or [],
         created_at=security.utcnow(),
@@ -20230,23 +21004,29 @@ def _latest_live_check_cache(
 
 
 def management_report_text(summary: dict[str, Any]) -> str:
-    rows = summary["unitRows"]
-    totals = defaultdict(float)
-    for row in rows:
-        totals["revenue"] += float(row.get("revenue") or 0)
-        totals["profit"] += float(row.get("profit") or 0)
-        totals["losses"] += 1 if float(row.get("profit") or 0) < 0 else 0
-        totals["review"] += 1 if row.get("status") != "ОК" else 0
-    margin = totals["profit"] / totals["revenue"] if totals["revenue"] else 0
+    return management_report_summary_text(summary)
+
+
+def management_report_summary_text(summary: dict[str, Any]) -> str:
+    kpis = summary.get("kpis") or {}
+    quality = summary.get("quality") or {}
+
+    def money(value: Any) -> str:
+        return "не рассчитано" if value is None else f"{float(value):,.0f} ₽"
+
+    margin = kpis.get("margin")
+    margin_text = "не рассчитано" if margin is None else f"{float(margin):.1%}"
+    limitations = client_draft_limitations(summary)
     return (
         f"Период: {summary['meta']['period']}\n"
-        f"Выручка после СПП: {totals['revenue']:,.0f} ₽\n"
-        f"Управленческая прибыль WB: {totals['profit']:,.0f} ₽\n"
-        f"Маржа: {margin:.1%}\n"
-        f"Убыточных строк: {int(totals['losses'])}\n"
-        f"Строк требуют проверки данных: {int(totals['review'])}\n"
-        "Ограничения: июнь неполный; причины возвратов не передаются текущими "
-        "источниками; упущенные продажи являются управленческой оценкой."
+        f"Выручка после СПП: {money(kpis.get('revenue'))}\n"
+        f"Прибыль после налогов: {money(kpis.get('profit'))}\n"
+        f"Прибыль до налогов: {money(kpis.get('profitBeforeTax'))}\n"
+        f"Маржа после налогов: {margin_text}\n"
+        f"Убыточных строк: {int(kpis.get('lossRows') or 0)}\n"
+        f"Строк в расчете: {int(kpis.get('rowCount') or 0)}\n"
+        f"Качество данных: {json.dumps(quality, ensure_ascii=False)}\n"
+        f"Ограничения: {'; '.join(limitations)}"
     )
 
 

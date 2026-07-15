@@ -5,7 +5,7 @@
 
 # local data and generated reports
 data/
-reports/
+/reports/
 *.xlsx
 *.xls
 *.csv

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -16,7 +17,6 @@ from wb_unit_economics.web.refresh import (
 from wb_unit_economics.web.settings import WebSettings
 
 LIMITATIONS = [
-    "Июнь неполный, поэтому динамику июня нельзя читать как полный месяц.",
     "Причины возврата не передаются текущими источниками.",
     "Упущенные продажи являются управленческой оценкой, не финальным прогнозом.",
     "AI не меняет себестоимость, маппинг и данные WB/1C.",
@@ -30,6 +30,7 @@ class AiAnswer:
     model: str
     fallback_reason: str = ""
     tool_names: tuple[str, ...] = ()
+    citations: tuple[dict[str, Any], ...] = ()
 
 
 class AiAnalyst:
@@ -46,15 +47,23 @@ class AiAnalyst:
         self, db: Session, *, user: User, thread: AiThread, question: str
     ) -> AiAnswer:
         report = self._thread_report(db, user, thread)
-        fallback_outputs = self._fallback_tool_outputs(
-            db, user, thread, report, question
-        )
-        tool_names = tuple(fallback_outputs.keys())
+        fallback_outputs: dict[str, Any] = {}
+        tool_names: tuple[str, ...] = ()
         if self.settings.resolved_openai_api_key:
-            response, fallback_reason = self._openai_answer(
+            result = self._openai_answer(
                 db, user, thread, report, question
             )
+            response, fallback_reason = result[:2]
+            if len(result) >= 3:
+                tool_names = tuple(result[2])
+            if len(result) >= 4:
+                fallback_outputs = dict(result[3])
             if response:
+                citations = self._citations(
+                    report=report,
+                    thread=thread,
+                    tool_outputs=fallback_outputs,
+                )
                 self._add_answer_source_event(
                     db,
                     user=user,
@@ -67,9 +76,19 @@ class AiAnalyst:
                     answer_source="openai",
                     model=self.settings.openai_model,
                     tool_names=tool_names,
+                    citations=citations,
                 )
         else:
             fallback_reason = "no_openai_key"
+        fallback_outputs = self._fallback_tool_outputs(
+            db,
+            user,
+            thread,
+            report,
+            question,
+            existing=fallback_outputs,
+        )
+        tool_names = tuple(fallback_outputs.keys())
         self._add_answer_source_event(
             db,
             user=user,
@@ -84,7 +103,45 @@ class AiAnalyst:
             model=self.settings.openai_model,
             fallback_reason=fallback_reason,
             tool_names=tool_names,
+            citations=self._citations(
+                report=report,
+                thread=thread,
+                tool_outputs=fallback_outputs,
+            ),
         )
+
+    def _citations(
+        self,
+        *,
+        report: ReportRun,
+        thread: AiThread,
+        tool_outputs: dict[str, Any],
+    ) -> tuple[dict[str, Any], ...]:
+        citations: list[dict[str, Any]] = [
+            {
+                "type": "report",
+                "reportId": report.id,
+                "clientId": report.client_id,
+                "scopeHash": thread.scope_hash,
+                "tool": "get_report_summary",
+            }
+        ]
+        for tool_name in ("search_sku", "get_loss_drivers"):
+            output = tool_outputs.get(tool_name) or {}
+            items = output.get("items") or output.get("top_losses") or []
+            for item in items[:5]:
+                citations.append(
+                    {
+                        "type": "report_row",
+                        "reportId": report.id,
+                        "tool": tool_name,
+                        "product": item.get("product"),
+                        "article1c": item.get("article_1c"),
+                        "barcode": item.get("barcode"),
+                        "nmId": item.get("nm_id"),
+                    }
+                )
+        return tuple(citations)
 
     def _add_answer_source_event(
         self,
@@ -117,7 +174,11 @@ class AiAnalyst:
                 "model": self.settings.openai_model,
                 "fallbackReason": fallback_reason,
                 "toolNames": list(tool_names),
-                "limitations": LIMITATIONS,
+                "limitations": self._limitations(
+                    repository.report_summary_payload(
+                        db, self._thread_report(db, user, thread)
+                    )
+                ),
             },
         )
 
@@ -187,11 +248,11 @@ class AiAnalyst:
         }
 
     def _thread_report(self, db: Session, user: User, thread: AiThread) -> ReportRun:
-        if thread.report_run_id:
-            return repository.require_report(db, user, thread.report_run_id)
-        report = repository.latest_report_for_user(db, user)
-        if report is None:
-            raise ValueError("Нет доступных расчетов для AI-аналитика")
+        if not thread.report_run_id:
+            raise ValueError("Диалог AI не привязан к расчету отчета")
+        report = repository.require_report(db, user, thread.report_run_id)
+        if thread.client_id and thread.client_id != report.client_id:
+            raise PermissionError("thread/report scope mismatch")
         return report
 
     def _fallback_tool_outputs(
@@ -201,12 +262,14 @@ class AiAnalyst:
         thread: AiThread,
         report: ReportRun,
         question: str,
+        *,
+        existing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        outputs = {
-            "get_report_summary": self._run_tool(
+        outputs = dict(existing or {})
+        if "get_report_summary" not in outputs:
+            outputs["get_report_summary"] = self._run_tool(
                 db, user, thread, report, "get_report_summary", {}, question
             )
-        }
         for tool_name in self._planned_tool_names(question):
             if tool_name in outputs:
                 continue
@@ -228,13 +291,27 @@ class AiAnalyst:
         thread: AiThread,
         report: ReportRun,
         question: str,
-    ) -> tuple[str | None, str]:
+    ) -> tuple[str | None, str, tuple[str, ...], dict[str, Any]]:
         try:
             from openai import OpenAI
         except ImportError:
-            return None, "openai_sdk_missing"
+            return None, "openai_sdk_missing", (), {}
         try:
-            client = OpenAI(api_key=self.settings.resolved_openai_api_key)
+            client = OpenAI(
+                api_key=self.settings.resolved_openai_api_key,
+                timeout=self.settings.openai_timeout_seconds,
+            )
+            history = repository.thread_messages(db, thread, limit=20)
+            history_items = [
+                {"role": item.role, "content": item.content}
+                for item in history
+                if item.role in {"user", "assistant"}
+            ]
+            while sum(len(str(item["content"])) for item in history_items) > 32000:
+                history_items.pop(0)
+            limitations = self._limitations(
+                repository.report_summary_payload(db, report)
+            )
             input_items: list[Any] = [
                 {
                     "role": "developer",
@@ -243,24 +320,36 @@ class AiAnalyst:
                         "без права изменять данные. "
                         "Отвечай по-русски. Используй только whitelisted function "
                         "tools, не придумывай себестоимость, маппинг, остатки или "
-                        "причины возвратов. В каждом ответе явно покажи ограничения: "
-                        "июнь неполный, причины возврата недоступны, "
-                        "AI не меняет данные."
+                        "причины возвратов. Отделяй рассчитанный факт от вывода. "
+                        "Не подменяй null нулём. Явно перечисляй только ограничения "
+                        f"текущего отчёта: {'; '.join(limitations)}"
                     ),
                 },
-                {"role": "user", "content": question},
+                *history_items,
             ]
+            current_item = {"role": "user", "content": question}
+            if not history_items or history_items[-1] != current_item:
+                input_items.append({"role": "user", "content": question})
+            executed: dict[str, Any] = {}
             response = client.responses.create(
                 model=self.settings.openai_model,
                 input=input_items,
                 tools=self._tool_specs(),
                 tool_choice="required",
                 parallel_tool_calls=False,
+                store=False,
+                include=["reasoning.encrypted_content"],
+                safety_identifier=self._safety_identifier(user),
             )
             for _ in range(3):
                 calls = self._function_calls(response)
                 if not calls:
-                    return getattr(response, "output_text", None), ""
+                    return (
+                        getattr(response, "output_text", None),
+                        "",
+                        tuple(executed),
+                        executed,
+                    )
                 input_items.extend(self._response_output_items(response))
                 for call in calls:
                     tool_output = self._run_tool(
@@ -272,6 +361,7 @@ class AiAnalyst:
                         call["arguments"],
                         question,
                     )
+                    executed[call["name"]] = tool_output
                     input_items.append(
                         {
                             "type": "function_call_output",
@@ -284,10 +374,23 @@ class AiAnalyst:
                     input=input_items,
                     tools=self._tool_specs(),
                     parallel_tool_calls=False,
+                    store=False,
+                    include=["reasoning.encrypted_content"],
+                    safety_identifier=self._safety_identifier(user),
                 )
-            return getattr(response, "output_text", None), ""
+            return (
+                getattr(response, "output_text", None),
+                "tool_loop_limit",
+                tuple(executed),
+                executed,
+            )
         except Exception as exc:
-            return None, exc.__class__.__name__
+            completed = locals().get("executed", {})
+            return None, exc.__class__.__name__, tuple(completed), completed
+
+    def _safety_identifier(self, user: User) -> str:
+        digest = hashlib.sha256(user.id.encode("utf-8")).hexdigest()[:32]
+        return f"cabinet-user-{digest}"
 
     def _run_tool(
         self,
@@ -310,19 +413,25 @@ class AiAnalyst:
             tool_name=tool_name,
             payload=self._tool_input_payload(tool_name, arguments, question),
         )
-        summary = repository.report_full_payload(db, report)
+        summary = repository.report_summary_payload(
+            db,
+            report,
+            include_staff_readiness=repository.has_role(
+                user, repository.STAFF_ROLES, report.tenant_id
+            ),
+        )
         if tool_name == "get_report_summary":
             output = self._summary_digest(summary, question)
         elif tool_name == "search_sku":
             output = self._search_sku(db, report, arguments.get("query") or question)
         elif tool_name == "get_loss_drivers":
-            output = self._loss_drivers(summary)
+            output = self._loss_drivers(db, report, summary)
         elif tool_name == "get_data_quality_issues":
-            output = self._data_quality(summary)
+            output = self._data_quality(db, report, summary)
         elif tool_name == "compare_periods":
             output = self._period_comparison(summary)
         elif tool_name == "draft_management_report":
-            output = {"markdown": repository.management_report_text(summary)}
+            output = {"markdown": repository.management_report_summary_text(summary)}
         elif tool_name == "verify_onec_cost":
             output = repository.live_check_payload(
                 db,
@@ -331,7 +440,10 @@ class AiAnalyst:
                 source_type="1c",
                 check_type="onec_cost",
                 lookup_key=arguments.get("lookup") or question,
-                enabled=self.settings.live_checks_enabled,
+                enabled=(
+                    self.settings.external_integrations_enabled
+                    and self.settings.live_checks_enabled
+                ),
                 cache_ttl_minutes=self.settings.live_check_cache_ttl_minutes,
             )
         elif tool_name == "verify_wb_card":
@@ -342,7 +454,10 @@ class AiAnalyst:
                 source_type="wb",
                 check_type="wb_card",
                 lookup_key=arguments.get("lookup") or question,
-                enabled=self.settings.live_checks_enabled,
+                enabled=(
+                    self.settings.external_integrations_enabled
+                    and self.settings.live_checks_enabled
+                ),
                 cache_ttl_minutes=self.settings.live_check_cache_ttl_minutes,
             )
         elif tool_name == "verify_wb_stock":
@@ -353,7 +468,10 @@ class AiAnalyst:
                 source_type="wb",
                 check_type="wb_stock",
                 lookup_key=arguments.get("lookup") or question,
-                enabled=self.settings.live_checks_enabled,
+                enabled=(
+                    self.settings.external_integrations_enabled
+                    and self.settings.live_checks_enabled
+                ),
                 cache_ttl_minutes=self.settings.live_check_cache_ttl_minutes,
             )
         elif tool_name == "refresh_onec_and_rebuild_report":
@@ -392,26 +510,21 @@ class AiAnalyst:
         return output
 
     def _summary_digest(self, summary: dict[str, Any], question: str) -> dict[str, Any]:
-        rows = summary["unitRows"]
-        revenue = sum(float(row.get("revenue") or 0) for row in rows)
-        profit = sum(float(row.get("profit") or 0) for row in rows)
-        losses = [row for row in rows if float(row.get("profit") or 0) < 0]
-        quality = {}
-        for row in rows:
-            quality[row.get("status") or "Не указан"] = (
-                quality.get(row.get("status") or "Не указан", 0) + 1
-            )
+        kpis = summary.get("kpis") or {}
         return {
             "question": question,
             "period": summary["meta"]["period"],
             "period_status": summary["meta"]["periodStatus"],
             "methodology_version": summary["meta"]["methodologyVersion"],
-            "revenue": revenue,
-            "profit": profit,
-            "margin": profit / revenue if revenue else None,
-            "rows": len(rows),
-            "loss_rows": len(losses),
-            "quality": quality,
+            "revenue": kpis.get("revenue"),
+            "profit": kpis.get("profit"),
+            "profit_before_tax": kpis.get("profitBeforeTax"),
+            "margin": kpis.get("margin"),
+            "margin_management": kpis.get("marginManagement"),
+            "rows": int(kpis.get("rowCount") or 0),
+            "loss_rows": int(kpis.get("lossRows") or 0),
+            "quality": summary.get("quality") or {},
+            "readiness": summary.get("readiness") or {},
             "limitations": self._limitations(summary),
         }
 
@@ -438,15 +551,16 @@ class AiAnalyst:
                 }
                 for row in result["items"]
             ],
-            "limitations": LIMITATIONS,
+            "limitations": self._limitations(
+                repository.report_summary_payload(db, report)
+            ),
         }
 
-    def _loss_drivers(self, summary: dict[str, Any]) -> dict[str, Any]:
-        rows = summary["unitRows"]
-        losses = sorted(
-            [row for row in rows if float(row.get("profit") or 0) < 0],
-            key=lambda row: float(row.get("profit") or 0),
-        )
+    def _loss_drivers(
+        self, db: Session, report: ReportRun, summary: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = repository.query_report_rows(db, report, preset="losses", limit=25)
+        losses = result["items"]
         driver_totals: dict[str, dict[str, Any]] = {}
         for row in losses:
             driver = row.get("lossDriver") or "Нужно уточнить"
@@ -457,7 +571,7 @@ class AiAnalyst:
             bucket["rows"] += 1
             bucket["profit"] += float(row.get("profit") or 0)
         return {
-            "loss_rows": len(losses),
+            "loss_rows": int(result["total"]),
             "drivers": sorted(
                 driver_totals.values(), key=lambda item: float(item["profit"])
             )[:10],
@@ -475,8 +589,11 @@ class AiAnalyst:
             "limitations": self._limitations(summary),
         }
 
-    def _data_quality(self, summary: dict[str, Any]) -> dict[str, Any]:
-        rows = summary["unitRows"]
+    def _data_quality(
+        self, db: Session, report: ReportRun, summary: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = repository.query_report_rows(db, report, preset="review", limit=25)
+        rows = result["items"]
         buckets: dict[str, dict[str, Any]] = {}
         for row in rows:
             status = row.get("status") or "Не указан"
@@ -499,7 +616,9 @@ class AiAnalyst:
                     }
                 )
         return {
-            "total_rows": len(rows),
+            "total_rows": int((summary.get("kpis") or {}).get("rowCount") or 0),
+            "review_rows": int(result["total"]),
+            "quality": summary.get("quality") or {},
             "statuses": sorted(
                 buckets.values(), key=lambda item: int(item["rows"]), reverse=True
             ),
@@ -521,6 +640,8 @@ class AiAnalyst:
         summary = tool_outputs["get_report_summary"]
         margin = summary["margin"]
         margin_text = "н/д" if margin is None else f"{margin:.1%}"
+        revenue_text = self._money_or_na(summary.get("revenue"))
+        profit_text = self._money_or_na(summary.get("profit"))
         loss_output = tool_outputs.get("get_loss_drivers") or {}
         top_losses = loss_output.get("top_losses", [])
         loss_lines = "\n".join(
@@ -557,14 +678,17 @@ class AiAnalyst:
                 )
         return (
             f"По расчету за {summary['period']} выручка после СПП составляет "
-            f"{summary['revenue']:,.0f} ₽, маржинальный доход WB после налогов "
-            f"{summary['profit']:,.0f} ₽, маржа {margin_text}.\n\n"
+            f"{revenue_text}, прибыль после налогов "
+            f"{profit_text}, маржа {margin_text}.\n\n"
             f"Убыточных строк: {summary['loss_rows']} из {summary['rows']}.\n"
             f"{loss_lines}{quality_line}{refresh_line}\n\n"
-            "Ограничения: июнь неполный, причины возврата текущими источниками не "
-            "передаются, упущенные продажи являются управленческой оценкой. "
+            "Ограничения: "
+            f"{'; '.join(summary.get('limitations') or LIMITATIONS)}. "
             "Я не меняю данные WB/1C и не записываю ничего во внешние системы."
         )
+
+    def _money_or_na(self, value: Any) -> str:
+        return "не рассчитано" if value is None else f"{float(value):,.0f} ₽"
 
     def _base_client_draft(self, summary: dict[str, Any]) -> str:
         evidence = repository.client_draft_evidence_payload(summary)
@@ -594,8 +718,9 @@ class AiAnalyst:
         return (
             "Ключевой вывод\n"
             f"За период {kpi['period']} расчет показывает выручку после СПП "
-            f"{kpi['revenue']:,.0f} ₽ и маржинальный доход WB после налогов "
-            f"{kpi['profit']:,.0f} ₽. Маржа по расчетной витрине: {margin_text}.\n\n"
+            f"{self._money_or_na(kpi.get('revenue'))} и прибыль после налогов "
+            f"{self._money_or_na(kpi.get('profit'))}. Маржа по расчетной витрине: "
+            f"{margin_text}.\n\n"
             "Факты\n"
             f"- В расчете {int(kpi['rows'])} строк товаров/SKU.\n"
             f"- Убыточных строк: {int(kpi['lossRows'])}.\n"
@@ -624,7 +749,10 @@ class AiAnalyst:
         except ImportError:
             return None
         try:
-            client = OpenAI(api_key=self.settings.resolved_openai_api_key)
+            client = OpenAI(
+                api_key=self.settings.resolved_openai_api_key,
+                timeout=self.settings.openai_timeout_seconds,
+            )
             response = client.responses.create(
                 model=self.settings.openai_model,
                 input=[
@@ -658,6 +786,8 @@ class AiAnalyst:
                         ),
                     },
                 ],
+                store=False,
+                include=["reasoning.encrypted_content"],
             )
             return getattr(response, "output_text", None)
         except Exception:
@@ -901,12 +1031,25 @@ class AiAnalyst:
         }
 
     def _limitations(self, summary: dict[str, Any]) -> list[str]:
-        return [
-            LIMITATIONS[0],
-            summary["meta"].get("returnReasonLimitation") or LIMITATIONS[1],
-            LIMITATIONS[2],
-            LIMITATIONS[3],
-        ]
+        limitations: list[str] = []
+        period_status = str(summary.get("meta", {}).get("periodStatus") or "")
+        if (
+            "неполн" in period_status.casefold()
+            or "предвар" in period_status.casefold()
+        ):
+            limitations.append(
+                f"Период отчета имеет статус «{period_status}» "
+                "и не должен читаться как полный."
+            )
+        limitations.extend(
+            [
+                summary.get("meta", {}).get("returnReasonLimitation")
+                or LIMITATIONS[0],
+                LIMITATIONS[1],
+                LIMITATIONS[2],
+            ]
+        )
+        return limitations
 
     def _tool_title(self, tool_name: str) -> str:
         return {
@@ -1071,13 +1214,10 @@ class AiAnalyst:
         return calls
 
     def _response_output_items(self, response: Any) -> list[Any]:
-        items = []
-        for item in getattr(response, "output", []) or []:
-            if hasattr(item, "model_dump"):
-                items.append(item.model_dump())
-            else:
-                items.append(item)
-        return items
+        # The Responses SDK output objects are valid follow-up input items as-is.
+        # Serializing them with model_dump() leaks response-only fields such as
+        # `status` and causes the API to reject the next tool-loop request.
+        return list(getattr(response, "output", []) or [])
 
     def _item_value(self, item: Any, key: str) -> Any:
         if isinstance(item, dict):

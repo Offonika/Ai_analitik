@@ -5,8 +5,8 @@ Requires=postgresql@16-main.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
-EnvironmentFile=/etc/shumeiko-web.env
-ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/check_source_refresh_worker.py --apply
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/check_source_refresh_worker.py --apply
 NoNewPrivileges=true
 PrivateTmp=true

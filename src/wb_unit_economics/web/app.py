@@ -4,15 +4,20 @@ import json
 import logging
 import re
 import time
+from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
+from chatkit.server import NonStreamingResult, StreamingResult
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
+    Header,
     HTTPException,
     Request,
     Response,
@@ -38,6 +43,11 @@ from wb_unit_economics.web import (
     security,
 )
 from wb_unit_economics.web.ai import AiAnalyst
+from wb_unit_economics.web.chatkit_server import (
+    CabinetChatKitContext,
+    CabinetChatKitServer,
+    CabinetChatKitStore,
+)
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
 from wb_unit_economics.web.database import (
     init_db,
@@ -52,6 +62,12 @@ from wb_unit_economics.web.refresh import (
     AutoRefreshUnavailableError,
     OnecAutoRefreshService,
 )
+from wb_unit_economics.web.report_kinds import (
+    ACCOUNTING_REPORT_KINDS,
+    MARKETPLACE_UNIT_ECONOMICS,
+    require_report_kind,
+)
+from wb_unit_economics.web.reports.excel import write_scenario_excel
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
     SourceRefreshBusyError,
@@ -63,15 +79,30 @@ from wb_unit_economics.web.source_refresh import (
 from wb_unit_economics.web.source_refresh_worker import (
     SourceRefreshWorkerLaunchError,
     enqueue_source_refresh_worker,
+    launch_source_refresh_worker,
     production_source_refresh_worker_launcher,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260713-cogs-review-v1"
+WEB_BUILD_ID = "20260715-runtime-contours-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
 logger = logging.getLogger(__name__)
+
+
+def _run_report_generation_background(
+    session_factory: sessionmaker[Session],
+    source_refresh_service: SourceRefreshService,
+    generation_run_id: str,
+) -> None:
+    with session_factory() as db:
+        source_refresh_service.run_existing(
+            db,
+            generation_run_id,
+            worker_id=f"background:{generation_run_id}",
+        )
+        db.commit()
 
 
 def _log_report_endpoint_timing(
@@ -96,6 +127,23 @@ def _log_report_endpoint_timing(
     )
 
 
+def _require_enabled_report_kind_or_404(
+    user: User,
+    *,
+    tenant_id: str,
+    report_kind: str,
+    settings: WebSettings,
+) -> None:
+    try:
+        definition = require_report_kind(report_kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="report kind not found") from exc
+    if report_kind not in settings.enabled_report_kind_set:
+        raise HTTPException(status_code=404, detail="report kind not found")
+    if not repository.roles_for_tenant(user, tenant_id).intersection(definition.roles):
+        raise HTTPException(status_code=404, detail="report kind not found")
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1)
@@ -106,6 +154,7 @@ class ThreadCreateRequest(BaseModel):
     report_id: str | None = None
     client_id: str | None = None
     title: str = "AI-аналитик"
+    scope: dict[str, Any] = Field(default_factory=dict)
 
 
 class MessageRequest(BaseModel):
@@ -215,6 +264,12 @@ class ReportImportRequest(BaseModel):
     tenant_name: str | None = None
 
 
+class ReportGenerateRequest(BaseModel):
+    reportKind: str = Field(pattern="^(month_close_control|tax_load)$")
+    organizationId: str = Field(min_length=1, max_length=240)
+    periodMonth: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
 class LiveCheckRequest(BaseModel):
     lookup: str = Field(min_length=1, max_length=240)
 
@@ -310,6 +365,7 @@ def create_app(
     app.state.settings = runtime_settings
     app.state.session_factory = session_factory
     app.state.analyst = analyst
+    app.state.chatkit_server = CabinetChatKitServer(CabinetChatKitStore())
     app.state.auto_refresh_service = refresh_service
     app.state.source_refresh_service = source_refresh_service
     app.state.source_refresh_worker_launcher = worker_launcher
@@ -336,6 +392,7 @@ def create_app(
         bind = db.get_bind()
         health_tenant_id = runtime_settings.source_refresh_tenant.strip()
         report_conditions = [
+            ReportRun.report_kind == MARKETPLACE_UNIT_ECONOMICS,
             ReportRun.publication_status == "published",
             ReportRun.is_current.is_(True),
         ]
@@ -348,7 +405,7 @@ def create_app(
         )
         if not health_tenant_id and latest_report is not None:
             health_tenant_id = latest_report.tenant_id
-        refresh_conditions = []
+        refresh_conditions = [SourceRefreshRun.mode != "report-generation"]
         if health_tenant_id:
             refresh_conditions.append(SourceRefreshRun.tenant_id == health_tenant_id)
         latest_refresh = db.scalar(
@@ -400,8 +457,14 @@ def create_app(
             "status": health_status,
             "backendBuildId": WEB_BUILD_ID,
             "staticBuildId": WEB_BUILD_ID,
+            "runtimeEnvironment": runtime_settings.runtime_environment,
+            "maintenanceMessage": runtime_settings.maintenance_message.strip()[:500],
             "databaseType": bind.dialect.name,
             "schemaVersion": schema_version(bind),
+            "aiConfigured": bool(runtime_settings.resolved_openai_api_key),
+            "aiModel": runtime_settings.openai_model,
+            "chatkitEnabled": runtime_settings.chatkit_enabled,
+            "chatkitDomainKey": runtime_settings.chatkit_domain_key,
             "sourceRefreshTenantId": health_tenant_id,
             "latestPublishedReportId": latest_report.id if latest_report else "",
             "latestSourceRefreshStatus": displayed_refresh.status
@@ -430,6 +493,85 @@ def create_app(
             ),
         }
 
+    @app.get("/api/ai/config")
+    def ai_config(current: CurrentUser) -> dict[str, Any]:
+        return {
+            "transport": "chatkit" if runtime_settings.chatkit_enabled else "sse",
+            "chatkitEnabled": runtime_settings.chatkit_enabled,
+            "attachmentsEnabled": False,
+            "externalActionsEnabled": False,
+            "historyLimit": 20,
+        }
+
+    @app.post("/api/chatkit")
+    async def chatkit_protocol(
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> Response:
+        if not runtime_settings.chatkit_enabled:
+            raise HTTPException(status_code=404, detail="ChatKit is disabled")
+        origin = request.headers.get("origin", "")
+        host = request.headers.get("host", "")
+        if origin and urlparse(origin).netloc != host:
+            raise HTTPException(status_code=403, detail="cross-origin request denied")
+        raw_request = await request.body()
+        try:
+            protocol_request = json.loads(raw_request)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="invalid ChatKit request"
+            ) from exc
+        metadata = protocol_request.get("metadata") or {}
+        report_id = str(metadata.get("reportId") or "")
+        client_id = str(metadata.get("clientId") or "")
+        scope = metadata.get("scope") or {}
+        if not isinstance(scope, dict):
+            raise HTTPException(status_code=400, detail="invalid ChatKit scope")
+        if protocol_request.get("type") == "threads.create":
+            if not report_id:
+                raise HTTPException(status_code=409, detail="reportId is required")
+            report = _require_report_or_404(db, current, report_id)
+            if client_id and client_id != report.client_id:
+                raise HTTPException(
+                    status_code=409, detail="report/client scope mismatch"
+                )
+            client_id = report.client_id
+        context = CabinetChatKitContext(
+            db=db,
+            user=current,
+            analyst=app.state.analyst,
+            report_id=report_id,
+            client_id=client_id,
+            scope=scope,
+        )
+        try:
+            result = await app.state.chatkit_server.process(raw_request, context)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="thread not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if isinstance(result, NonStreamingResult):
+            db.commit()
+            return Response(content=result.json, media_type="application/json")
+
+        assert isinstance(result, StreamingResult)
+
+        async def stream_chatkit():
+            try:
+                async for chunk in result:
+                    yield chunk
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+        return StreamingResponse(
+            stream_chatkit(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.post("/api/auth/login")
     def login(
         payload: LoginRequest,
@@ -442,6 +584,11 @@ def create_app(
         if user is None or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         if not security.verify_password(payload.password, user.password_hash):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        if (
+            not runtime_settings.client_login_enabled
+            and not repository.has_role(user, repository.STAFF_ROLES)
+        ):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         ttl_hours = (
             runtime_settings.remember_me_session_ttl_hours
@@ -1599,6 +1746,11 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
     ) -> dict[str, Any]:
+        if not runtime_settings.external_integrations_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="Внешние проверки отключены для этого контура.",
+            )
         resolved_tenant_id, _client_id = _resolve_client_tenant_or_400(
             db,
             current,
@@ -1720,20 +1872,94 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
         client_id: str | None = None,
+        report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
-        reports = repository.list_reports_for_user(db, current, client_id=client_id)
+        try:
+            require_report_kind(report_kind)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=404, detail="report kind not found"
+            ) from exc
+        if report_kind not in runtime_settings.enabled_report_kind_set:
+            raise HTTPException(status_code=404, detail="report kind not found")
+        if client_id:
+            client = repository.require_client_access(db, current, client_id)
+            _require_enabled_report_kind_or_404(
+                current,
+                tenant_id=client.tenant_id,
+                report_kind=report_kind,
+                settings=runtime_settings,
+            )
+        reports = repository.list_reports_for_user(
+            db,
+            current,
+            client_id=client_id,
+            report_kind=report_kind,
+            organization_id=organization_id,
+        )
         return {"items": [_report_list_item(report) for report in reports]}
+
+    @app.get("/api/clients/{client_id}/report-kinds")
+    def list_client_report_kinds(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            client = repository.require_client_access(db, current, client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
+        return {
+            "reportKinds": repository.report_kinds_for_user(
+                current,
+                tenant_id=client.tenant_id,
+                enabled_kinds=runtime_settings.enabled_report_kind_set,
+            )
+        }
 
     @app.get("/api/clients/{client_id}/reports")
     def list_client_reports(
         client_id: str,
         current: CurrentUser,
         db: DbSession,
+        report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         try:
-            reports = repository.list_reports_for_client(db, current, client_id)
+            client = repository.require_client_access(db, current, client_id)
+            _require_enabled_report_kind_or_404(
+                current,
+                tenant_id=client.tenant_id,
+                report_kind=report_kind,
+                settings=runtime_settings,
+            )
+            if report_kind in ACCOUNTING_REPORT_KINDS and not organization_id:
+                raise HTTPException(
+                    status_code=400, detail="organization_id is required"
+                )
+            reports = repository.list_reports_for_client(
+                db,
+                current,
+                client_id,
+                report_kind=report_kind,
+                organization_id=organization_id,
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail="client not found") from exc
+        repository.audit(
+            db,
+            action="report_kind_viewed",
+            user=current,
+            tenant_id=client.tenant_id,
+            entity_type="client",
+            entity_id=client.id,
+            payload={
+                "reportKind": report_kind,
+                "organizationId": organization_id,
+            },
+        )
+        db.commit()
         return {"items": [_report_list_item(report) for report in reports]}
 
     @app.get("/api/reports/latest/summary")
@@ -1741,9 +1967,29 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
         client_id: str | None = None,
+        report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         resolved_client_id = _resolve_latest_client_id_or_400(db, current, client_id)
-        report = repository.latest_report_for_client(db, current, resolved_client_id)
+        try:
+            client = repository.require_client_access(db, current, resolved_client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
+        _require_enabled_report_kind_or_404(
+            current,
+            tenant_id=client.tenant_id,
+            report_kind=report_kind,
+            settings=runtime_settings,
+        )
+        if report_kind in ACCOUNTING_REPORT_KINDS and not organization_id:
+            raise HTTPException(status_code=400, detail="organization_id is required")
+        report = repository.latest_report_for_client(
+            db,
+            current,
+            resolved_client_id,
+            report_kind=report_kind,
+            organization_id=organization_id,
+        )
         if report is None:
             raise HTTPException(status_code=404, detail="report not found")
         repository.audit(
@@ -1760,6 +2006,119 @@ def create_app(
             report,
             include_staff_readiness=_include_staff_readiness(current, report.tenant_id),
         )
+
+    @app.post("/api/clients/{client_id}/reports/generate", status_code=202)
+    def generate_client_report(
+        client_id: str,
+        payload: ReportGenerateRequest,
+        background_tasks: BackgroundTasks,
+        current: CurrentUser,
+        db: DbSession,
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=160)
+        ],
+    ) -> dict[str, Any]:
+        try:
+            client = repository.require_client_access(db, current, client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
+        _require_enabled_report_kind_or_404(
+            current,
+            tenant_id=client.tenant_id,
+            report_kind=payload.reportKind,
+            settings=runtime_settings,
+        )
+        try:
+            year, month = (int(value) for value in payload.periodMonth.split("-"))
+            period_start = date(year, month, 1)
+            period_end = date(year, month, monthrange(year, month)[1])
+            run, deduplicated = repository.generate_accounting_report(
+                db,
+                user=current,
+                client_id=client_id,
+                report_kind=payload.reportKind,
+                organization_id=payload.organizationId,
+                period_start=period_start,
+                period_end=period_end,
+                idempotency_key=idempotency_key,
+            )
+        except LookupError as exc:
+            raise HTTPException(
+                status_code=404, detail="organization not found"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            db.rollback()
+            repository.audit(
+                db,
+                action="report_generation_failed",
+                user=current,
+                tenant_id=client.tenant_id,
+                entity_type="client",
+                entity_id=client.id,
+                payload={
+                    "reportKind": payload.reportKind,
+                    "organizationId": payload.organizationId,
+                    "periodMonth": payload.periodMonth,
+                },
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail="Не удалось сформировать отчет; исходные данные не изменялись.",
+            ) from exc
+        db.commit()
+        if not deduplicated and run.status == "queued":
+            if app.state.source_refresh_worker_launcher is None:
+                background_tasks.add_task(
+                    _run_report_generation_background,
+                    app.state.session_factory,
+                    app.state.source_refresh_service,
+                    run.id,
+                )
+            else:
+                try:
+                    launch_source_refresh_worker(
+                        db,
+                        refresh_run_id=run.id,
+                        worker_launcher=app.state.source_refresh_worker_launcher,
+                        user=current,
+                        fallback_payload=repository.generation_run_payload(run),
+                    )
+                except SourceRefreshWorkerLaunchError as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Не удалось запустить отдельный процесс формирования; "
+                            "исходные данные не изменялись."
+                        ),
+                    ) from exc
+        result = repository.generation_run_payload(run)
+        result["deduplicated"] = deduplicated
+        return result
+
+    @app.get("/api/report-generations/{generation_run_id}")
+    def report_generation_status(
+        generation_run_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        run = db.get(SourceRefreshRun, generation_run_id)
+        if run is None or run.mode != "report-generation":
+            raise HTTPException(status_code=404, detail="generation not found")
+        try:
+            client = repository.require_client_access(db, current, run.client_id)
+            repository.require_staff(current, client.tenant_id)
+        except (LookupError, PermissionError) as exc:
+            raise HTTPException(status_code=404, detail="generation not found") from exc
+        _require_enabled_report_kind_or_404(
+            current,
+            tenant_id=client.tenant_id,
+            report_kind=run.target_report_kind,
+            settings=runtime_settings,
+        )
+        return repository.generation_run_payload(run)
 
     @app.get("/api/reports/{report_id}/summary")
     def report_summary(
@@ -1798,6 +2157,32 @@ def create_app(
             started_at=started_at,
             outcome="ok",
         )
+        return payload
+
+    @app.get("/api/reports/{report_id}/scenario")
+    def report_scenario(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        if report.report_kind not in ACCOUNTING_REPORT_KINDS:
+            raise HTTPException(status_code=404, detail="scenario not found")
+        _require_staff_or_403(current, report.tenant_id)
+        try:
+            payload = repository.scenario_payload_for_report(db, report)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="scenario not found") from exc
+        repository.audit(
+            db,
+            action="report_viewed",
+            user=current,
+            tenant_id=report.tenant_id,
+            entity_type="report_run",
+            entity_id=report.id,
+            payload={"reportKind": report.report_kind, "surface": "scenario"},
+        )
+        db.commit()
         return payload
 
     @app.get("/api/reports/{report_id}/freshness")
@@ -1942,7 +2327,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_staff_or_403(current, report.tenant_id)
-        thread_id = _checked_optional_thread_id(db, current, payload.thread_id)
+        thread_id = _checked_optional_thread_id(
+            db, current, payload.thread_id, report_id=report.id
+        )
         summary = repository.report_full_payload(db, report)
         try:
             draft = repository.create_client_draft_revision(
@@ -1974,7 +2361,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_staff_or_403(current, report.tenant_id)
-        thread_id = _checked_optional_thread_id(db, current, payload.thread_id)
+        thread_id = _checked_optional_thread_id(
+            db, current, payload.thread_id, report_id=report.id
+        )
         latest = repository.latest_client_draft(db, report)
         instruction = _client_draft_instruction(payload)
         result = app.state.analyst.refine_client_draft(
@@ -2308,6 +2697,42 @@ def create_app(
         wb_cabinet_id: str = "",
     ) -> FileResponse:
         report = _require_report_or_404(db, current, report_id)
+        if report.report_kind in ACCOUNTING_REPORT_KINDS:
+            _require_staff_or_403(current, report.tenant_id)
+            payload = repository.scenario_payload_for_report(db, report)
+            payload_sha256 = str(payload.pop("payloadSha256"))
+            output_dir = (
+                runtime_settings.export_root_path
+                / "accounting_reports"
+                / _safe_path_segment(report.client_id)
+            ).resolve()
+            allowed = runtime_settings.export_root_path.resolve()
+            if output_dir != allowed and allowed not in output_dir.parents:
+                raise HTTPException(
+                    status_code=400, detail="export path is outside reports"
+                )
+            path = output_dir / f"{_safe_path_segment(report.id)}.xlsx"
+            write_scenario_excel(payload, payload_sha256, path)
+            repository.audit(
+                db,
+                action="report_exported",
+                user=current,
+                tenant_id=report.tenant_id,
+                entity_type="report_run",
+                entity_id=report.id,
+                payload={
+                    "reportKind": report.report_kind,
+                    "payloadSha256": payload_sha256,
+                },
+            )
+            db.commit()
+            return FileResponse(
+                path,
+                media_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                filename=f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx",
+            )
         if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
             _require_staff_or_403(current, report.tenant_id)
             diagnostics = repository.ozon_draft_diagnostics_payload(
@@ -2466,7 +2891,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_staff_or_403(current, report.tenant_id)
-        thread_id = _checked_optional_thread_id(db, current, payload.thread_id)
+        thread_id = _checked_optional_thread_id(
+            db, current, payload.thread_id, report_id=report.id
+        )
         try:
             result = app.state.auto_refresh_service.run(
                 db,
@@ -2557,25 +2984,22 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
     ) -> dict[str, Any]:
-        report_id = payload.report_id
-        report = None
-        if report_id:
-            report = _require_report_or_404(db, current, report_id)
-        elif payload.client_id:
-            client_id = _resolve_latest_client_id_or_400(db, current, payload.client_id)
-            report = repository.latest_report_for_client(db, current, client_id)
-        else:
-            client_id = _resolve_latest_client_id_or_400(db, current, None)
-            report = repository.latest_report_for_client(db, current, client_id)
-        access = repository.primary_access(
-            current, report.tenant_id if report else None
-        )
+        if not payload.report_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Для AI-аналитика нужно выбрать конкретный расчет отчета.",
+            )
+        report = _require_report_or_404(db, current, payload.report_id)
+        if payload.client_id and payload.client_id != report.client_id:
+            raise HTTPException(status_code=409, detail="report/client scope mismatch")
         thread = repository.create_ai_thread(
             db,
             user=current,
-            tenant_id=access.tenant_id,
-            report_id=report.id if report else None,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            report_id=report.id,
             title=payload.title,
+            scope=payload.scope,
         )
         db.commit()
         return thread_payload(thread, [], [])
@@ -2629,7 +3053,11 @@ def create_app(
             question=payload.content,
         )
         repository.add_ai_message(
-            db, thread=thread, role="assistant", content=answer.content
+            db,
+            thread=thread,
+            role="assistant",
+            content=answer.content,
+            citations=list(answer.citations),
         )
         repository.add_ai_event(
             db,
@@ -2701,7 +3129,11 @@ def create_app(
                     question=payload.content,
                 )
                 repository.add_ai_message(
-                    db, thread=thread, role="assistant", content=answer.content
+                    db,
+                    thread=thread,
+                    role="assistant",
+                    content=answer.content,
+                    citations=list(answer.citations),
                 )
                 done = repository.add_ai_event(
                     db,
@@ -2779,6 +3211,7 @@ def get_current_user(request: Request, db: DbSession) -> User:
     user = repository.get_user_by_session(db, token)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    user._enabled_report_kind_set = settings.enabled_report_kind_set
     return user
 
 
@@ -2832,14 +3265,18 @@ def thread_payload(
     return {
         "id": thread.id,
         "tenantId": thread.tenant_id,
+        "clientId": thread.client_id,
         "reportId": thread.report_run_id,
         "title": thread.title,
+        "scope": thread.scope or {},
+        "scopeHash": thread.scope_hash,
         "messages": [
             {
                 "id": message.id,
                 "role": message.role,
                 "content": message.content,
                 "toolName": message.tool_name,
+                "citations": message.citations or [],
                 "createdAt": message.created_at.isoformat(),
             }
             for message in messages
@@ -2970,9 +3407,13 @@ def _report_list_item(report: ReportRun) -> dict[str, Any]:
         "id": report.id,
         "tenantId": report.tenant_id,
         "clientId": report.client_id,
+        "reportKind": report.report_kind,
+        "organizationId": report.organization_id,
         "title": report.title,
         "client": report.client_name,
         "period": f"{report.period_start:%d.%m.%Y} - {report.period_end:%d.%m.%Y}",
+        "periodStart": report.period_start.isoformat(),
+        "periodEnd": report.period_end.isoformat(),
         "periodStatus": report.period_status,
         "generatedAt": report.generated_at.isoformat(),
         "methodologyVersion": report.methodology_version,
@@ -2998,9 +3439,13 @@ def _report_excel_export_path(
 
 def _require_report_or_404(db: Session, user: User, report_id: str):
     try:
-        return repository.require_report(db, user, report_id)
+        report = repository.require_report(db, user, report_id)
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail="report not found") from exc
+    enabled = getattr(user, "_enabled_report_kind_set", {MARKETPLACE_UNIT_ECONOMICS})
+    if report.report_kind not in enabled:
+        raise HTTPException(status_code=404, detail="report not found")
+    return report
 
 
 def _require_thread_or_404(db: Session, user: User, thread_id: str):
@@ -3091,11 +3536,17 @@ def _include_staff_readiness(user: User, tenant_id: str) -> bool:
 
 
 def _checked_optional_thread_id(
-    db: Session, user: User, thread_id: str | None
+    db: Session,
+    user: User,
+    thread_id: str | None,
+    *,
+    report_id: str,
 ) -> str | None:
     if not thread_id:
         return None
     thread = _require_thread_or_404(db, user, thread_id)
+    if thread.report_run_id != report_id:
+        raise HTTPException(status_code=409, detail="thread/report scope mismatch")
     return thread.id
 
 
@@ -3264,7 +3715,10 @@ def _live_check(
             source_type=source_type,
             check_type=check_type,
             lookup_key=lookup,
-            enabled=settings.live_checks_enabled,
+            enabled=(
+                settings.external_integrations_enabled
+                and settings.live_checks_enabled
+            ),
             cache_ttl_minutes=settings.live_check_cache_ttl_minutes,
         )
     except ValueError as exc:

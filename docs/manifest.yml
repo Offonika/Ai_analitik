@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -113,6 +113,15 @@ documents:
     truth_scope: "web-cabinet"
     truth_priority: 100
     summary: "Accepted implementation spec для пилотного FastAPI/PostgreSQL-кабинета, multi-client структуры, авторизации, AI tools и закрытого экспорта."
+  - path: "docs/specs/web-cabinet-runtime-contours.md"
+    title: "Web-кабинет: production и test контуры"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    truth_scope: "runtime-contours"
+    truth_priority: 100
+    summary: "Accepted разделение analitika production и shumeiko staff-only test: независимые БД, процессы, файлы, immutable releases и rollback."
   - path: "docs/specs/wb-unit-economics-db-first-report-marts.md"
     title: "Шумейко WB/1C: DB-first report marts"
     doc_type: "spec"
@@ -152,10 +161,37 @@ documents:
   - path: "docs/specs/month-close-control-pilot.md"
     title: "Пилот контроля закрытия месяца по 1С"
     doc_type: "spec"
-    status: "draft"
+    status: "superseded"
     audience: ["engineering", "consultant", "operations"]
     source_of_truth: false
-    summary: "Draft-контур пилота закрытия месяца: онлайн-ОСВ через OData, регистры налогов/ЕНС/НДС и процессные подтверждения до CRM."
+    summary: "Superseded discovery-контур пилота закрытия месяца, сохраненный как история проверки источников и ограничений."
+  - path: "docs/specs/multi-report-cabinet-implementation.md"
+    title: "AI-аналитик отчетов: многотипный кабинет"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "consultant", "operations"]
+    source_of_truth: true
+    truth_scope: "multi-report-cabinet"
+    truth_priority: 100
+    summary: "Accepted архитектура report_kind, асинхронной генерации, независимого current и staff-only advisory rollout; production evidence проходит повторную реализацию."
+  - path: "docs/specs/month-close-control-report-implementation.md"
+    title: "Контроль закрытия месяца: web-сценарий и Excel"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "consultant", "operations", "accountant"]
+    source_of_truth: true
+    truth_scope: "month-close-control"
+    truth_priority: 100
+    summary: "Accepted staff-only advisory-сценарий календарного закрытия месяца: read-only 1С, evidence, web и Excel."
+  - path: "docs/specs/tax-load-report-implementation.md"
+    title: "Налоговая нагрузка: web-сценарий и Excel"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "consultant", "operations", "accountant"]
+    source_of_truth: true
+    truth_scope: "tax-load-report"
+    truth_priority: 100
+    summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v2, профиль 1С, web и Excel."
   - path: "docs/specs/wb-unit-economics-ai-git-workflow.md"
     title: "AI development Git workflow"
     doc_type: "spec"
@@ -283,7 +319,7 @@ documents:
     status: "draft"
     audience: ["engineering", "operations"]
     source_of_truth: false
-    summary: "Доступы, импорт report runs, AI, live checks, backup, monitor и deployment smoke для web-кабинета."
+    summary: "Production/test контуры, доступы, импорт report runs, AI, backup, monitor, promotion и deployment smoke."
   - path: "docs/runbooks/source-refresh-schedule.md"
     title: "Расписание source refresh WB/1C"
     doc_type: "runbook"
@@ -314,6 +350,13 @@ documents:
     truth_scope: "tax-methodology"
     truth_priority: 100
     summary: "Accepted ADR по налоговым профилям, ОСНО, НДС к уплате, Управленческой прибыли WB и прибыли до НДФЛ."
+  - path: "docs/decisions/2026-07-14-accounting-reports-accountant-questions.md"
+    title: "Вопросы бухгалтеру по закрытию месяца и налоговой нагрузке"
+    doc_type: "decision"
+    status: "active"
+    audience: ["engineering", "consultant", "operations", "accountant"]
+    source_of_truth: false
+    summary: "Активный реестр: закрытая формула ФНС и вопросы, блокирующие подтверждения, enforced-режим и клиентскую публикацию после advisory v1."
   - path: "docs/decisions/2026-06-23-db-first-publication-baseline.md"
     title: "DB-first publication baseline"
     doc_type: "decision"

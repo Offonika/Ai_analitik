@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import event, select, text
 
-from wb_unit_economics.web import integrations, repository
+from wb_unit_economics.web import dashboard_payload, integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.app import create_app
 from wb_unit_economics.web.dashboard_payload import (
@@ -197,6 +197,72 @@ def test_health_ignores_later_refresh_from_another_tenant(tmp_path: Path) -> Non
     assert payload["sourceRefreshTenantId"] == "shumeyko"
     assert payload["latestSourceRefreshRunId"] == shumeyko_run.id
     assert payload["latestCompletedSourceRefreshStatus"] == "needs_review"
+
+
+def test_health_exposes_safe_runtime_contour_and_maintenance_message(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "runtime_environment": "test",
+            "maintenance_message": "Проверяем новую версию до 18:00.",
+        },
+    )
+
+    payload = client.get("/api/health").json()
+
+    assert payload["runtimeEnvironment"] == "test"
+    assert payload["maintenanceMessage"] == "Проверяем новую версию до 18:00."
+
+
+def test_test_contour_blocks_client_login_but_keeps_staff_access(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "runtime_environment": "test",
+            "client_login_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="client-only@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+
+    rejected = client.post(
+        "/api/auth/login",
+        json={"email": "client-only@example.com", "password": "secret"},
+    )
+    staff = client.post(
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "secret"},
+    )
+
+    assert rejected.status_code == 401
+    assert staff.status_code == 200
+
+
+def test_external_integration_master_switch_blocks_live_check(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"external_integrations_enabled": False},
+    )
+    login(client)
+
+    response = client.post(
+        "/api/integrations/wb_api/check",
+        json={"tenant_id": "shumeyko"},
+    )
+
+    assert response.status_code == 409
+    assert "Внешние проверки отключены" in response.json()["detail"]
 
 
 def test_ozon_mapping_candidate_uses_later_precise_match_after_ambiguous() -> None:
@@ -1482,6 +1548,8 @@ def test_report_summary_includes_document_reconciliation(tmp_path: Path) -> None
     assert summary["documentReconciliation"][0]["onecReturnQuantity"] == 2
     assert summary["documentReconciliation"][0]["netQuantityDelta"] == 0
     assert summary["documentReconciliation"][0]["wbForPaySum"] == 85000
+    assert summary["kpis"]["wbForPaySum"] == 85000
+    assert summary["kpis"]["wbForPayRowCount"] == 1
     assert summary["documentReconciliation"][0]["weeklySalesReportId"] == "SUMMARY-1"
     assert summary["documentReconciliation"][0]["weeklyBuyoutReportId"] == "BUYOUT-1"
     assert summary["documentReconciliation"][0]["onecSettlementTotal"] == 85000
@@ -2088,6 +2156,72 @@ def test_marketplace_expense_reconciliation_is_filterable_and_matches_groups(
     assert all(item["status"] == "matched" for item in result["groups"])
     summary = client.get("/api/reports/report-1/summary").json()
     assert summary["kpis"]["onecMarketplaceExpensesWithVat"] == 45200
+    filtered = client.get("/api/reports/report-1/rows").json()
+    assert filtered["kpis"]["wbMarketplacePnlExpenses"] is not None
+    assert (
+        filtered["kpis"]["wbMarketplacePnlExpenses"]
+        == filtered["analytics"]["kpis"]["wbMarketplacePnlExpenses"]
+    )
+
+
+def test_rows_filters_recalculate_after_tax_profit_and_margin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = ready_payload()
+    for row in payload["unitRows"]:
+        row["vatPayable"] = row["vat"]
+        row["profitBeforeTax"] = round(
+            row["profit"] + row["vatPayable"] + row["usn"],
+            2,
+        )
+        row["pnlVatMode"] = "legacy"
+        row["taxProfileSource"] = "test-profile"
+
+    client = make_client(tmp_path, payload=payload)
+    login_as(client, "admin@example.com", "secret")
+    monkeypatch.setattr(
+        repository,
+        "_tax_context_payload",
+        lambda *_args, **_kwargs: {
+            "calculated": True,
+            "taxSystem": "УСН",
+            "revenueTaxRate": 0.01,
+        },
+    )
+
+    full = client.get("/api/reports/report-1/rows").json()
+    assert full["kpis"]["taxBridgeCalculated"] is True
+    assert full["kpis"]["marginAfterTax"] == pytest.approx(
+        full["kpis"]["profitAfterTax"] / full["kpis"]["revenue"]
+    )
+    assert full["kpis"]["marginAfterTax"] == full["analytics"]["kpis"][
+        "marginAfterTax"
+    ]
+
+    slices = [
+        {"cabinet": "Кабинет A"},
+        {"organization": "Организация A"},
+        {"period_start": "2026-04-01", "period_end": "2026-04-30"},
+    ]
+    for params in slices:
+        filtered = client.get(
+            "/api/reports/report-1/rows",
+            params=params,
+        ).json()
+        kpis = filtered["kpis"]
+        assert filtered["total"] == 1
+        assert kpis["taxBridgeCalculated"] is True
+        assert kpis["profitAfterTax"] != full["kpis"]["profitAfterTax"]
+        assert kpis["marginAfterTax"] == pytest.approx(
+            kpis["profitAfterTax"] / kpis["revenue"]
+        )
+        assert kpis["profitAfterTax"] == filtered["analytics"]["kpis"][
+            "profitAfterTax"
+        ]
+        assert kpis["marginAfterTax"] == filtered["analytics"]["kpis"][
+            "marginAfterTax"
+        ]
 
 
 def test_marketplace_expense_reconciliation_requires_rebuild_for_legacy_report(
@@ -2158,6 +2292,25 @@ def test_dashboard_payload_period_helpers_separate_report_period_and_coverage() 
         )
         == "март, апрель, май, июнь; июнь неполный"
     )
+
+
+def test_report_option_bounds_use_week_closing_dates() -> None:
+    rows = [
+        {
+            "week": "2026-06-29",
+            "month": "Июль 2026",
+        },
+        {
+            "week": "2026-07-06",
+            "accountingPeriodDate": "2026-07-07",
+            "month": "Июль 2026",
+        },
+    ]
+
+    assert repository.options_payload(rows)["periodStart"] == "2026-07-05"
+    assert repository.options_payload(rows)["periodEnd"] == "2026-07-12"
+    assert dashboard_payload.options(rows)["periodStart"] == "2026-07-05"
+    assert dashboard_payload.options(rows)["periodEnd"] == "2026-07-12"
 
 
 def test_document_reconciliation_parser_reads_excel_control_columns() -> None:
@@ -2346,15 +2499,27 @@ def test_login_remember_me_extends_session_cookie(tmp_path: Path) -> None:
     assert "Max-Age=172800" in response.headers["set-cookie"]
 
 
-def test_preflight_panel_appears_before_analytics(tmp_path: Path) -> None:
+def test_overview_orders_kpis_analytics_and_readiness(tmp_path: Path) -> None:
     cabinet = make_client(tmp_path).get("/cabinet")
 
     assert cabinet.status_code == 200
+    assert cabinet.text.index('id="kpi-grid"') < cabinet.text.index(
+        'id="analytics-panel"'
+    )
     assert cabinet.text.index('id="ozon-diagnostics-panel"') < cabinet.text.index(
         'id="analytics-panel"'
     )
     assert cabinet.text.index('id="analytics-panel"') < cabinet.text.index(
         'id="readiness-card"'
+    )
+    assert cabinet.text.index('id="preflight-title"') < cabinet.text.index(
+        'id="data-trust-strip"'
+    )
+    assert cabinet.text.index('id="data-trust-strip"') < cabinet.text.index(
+        'id="secondary-kpi-section"'
+    )
+    assert cabinet.text.index('id="secondary-kpi-section"') < cabinet.text.index(
+        'id="onec-kpi-section"'
     )
 
 
@@ -2363,12 +2528,13 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260713-cogs-review-v1"
-    assert health.json()["staticBuildId"] == "20260713-cogs-review-v1"
+    assert health.json()["backendBuildId"] == "20260715-runtime-contours-v1"
+    assert health.json()["staticBuildId"] == "20260715-runtime-contours-v1"
 
     page = client.get("/")
     assert page.status_code == 200
     assert "Кабинет отчета" in page.text
+    assert 'id="runtime-banner"' in page.text
     assert "Убыточный товар" not in page.text
     assert "Нет себестоимости 1С" not in page.text
 
@@ -2457,8 +2623,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     )
     assert 'data-detail-tab="liquidity"' in cabinet.text
     assert 'data-detail-tab="lostSales"' in cabinet.text
-    assert 'aria-controls="reconciliation-hub-overlay"' in cabinet.text
-    assert 'id="reconciliation-hub-overlay"' in cabinet.text
+    assert 'id="reconciliation-hub-panel"' in cabinet.text
+    assert 'id="reconciliation-hub-overlay"' not in cabinet.text
     assert 'data-reconciliation-tab="documents"' in cabinet.text
     assert 'data-reconciliation-tab="cogs"' in cabinet.text
     assert 'data-reconciliation-tab="expenses"' in cabinet.text
@@ -2483,10 +2649,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert (
-        "styles.css?v=20260713-cogs-review-v1" in cabinet.text
-    )
-    assert "app.js?v=20260713-cogs-review-v1" in cabinet.text
+    assert "styles.css?v=20260715-runtime-contours-v1" in cabinet.text
+    assert "app.js?v=20260715-runtime-contours-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -2569,6 +2733,14 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="secondary-kpi-section"' in cabinet.text
     assert 'id="secondary-kpi-grid"' in cabinet.text
     assert "Дополнительные показатели" in cabinet.text
+    assert "Ключевые показатели" in cabinet.text
+    assert "12 месяцев показываются как год" in cabinet.text
+    assert cabinet.text.index('id="preflight-title"') < cabinet.text.index(
+        'id="secondary-kpi-section"'
+    )
+    assert cabinet.text.index('id="secondary-kpi-section"') < cabinet.text.index(
+        'id="onec-kpi-section"'
+    )
     assert "analytics-chart-wide sales-trend-card" in cabinet.text
     assert "sales-trend-chart" in cabinet.text
     assert 'class="decision-support-grid report-page-section"' in cabinet.text
@@ -2576,7 +2748,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Готовность, деньги и следующий шаг по клиенту" not in cabinet.text
     assert "Финансовая картина" not in cabinet.text
     assert "Что важно по деньгам" not in cabinet.text
-    assert "Перед отправкой" not in cabinet.text
+    assert '<h2 id="preflight-title">Перед отправкой' not in cabinet.text
     assert "Смарт-процесс подготовки" not in cabinet.text
     assert cabinet.text.index('id="kpi-title"') < cabinet.text.index(
         'id="readiness-card"'
@@ -2603,6 +2775,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'data-workspace-nav="overview"' in cabinet.text
     assert 'data-workspace-nav="checks"' in cabinet.text
     assert 'data-workspace-nav="tables"' in cabinet.text
+    assert 'data-workspace-nav="guide"' in cabinet.text
+    assert 'id="user-guide-page"' in cabinet.text
+    assert 'data-workspace-panel="guide"' in cabinet.text
+    assert "Как пользоваться сервисом" in cabinet.text
     assert 'id="workspace-actions-menu"' in cabinet.text
     assert 'class="secondary-button session-button"' in cabinet.text
     assert "Отчёт для клиента" in cabinet.text
@@ -2622,9 +2798,48 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "mapping и обязательных" not in cabinet.text
     assert "Read-only помощник" not in cabinet.text
     assert "P&amp;L юнит-экономики" not in cabinet.text
-    assert 'class="report-only-control"' in cabinet.text
+    assert "report-only-control" in cabinet.text
     assert 'id="report-load-retry-button"' in cabinet.text
     assert client.get("/api/reports").status_code == 401
+
+
+def test_user_guide_is_generated_from_current_interface_metadata(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert 'id="guide-start-list"' in cabinet.text
+    assert 'id="guide-sections-list"' in cabinet.text
+    assert 'id="guide-actions-list"' in cabinet.text
+    assert 'id="guide-checks-list"' in cabinet.text
+    assert 'data-guide-entry="start"' in cabinet.text
+    assert 'data-guide-entry="sections"' in cabinet.text
+    assert 'data-guide-entry="actions"' in cabinet.text
+    assert 'data-guide-entry="checks"' in cabinet.text
+    assert 'data-guide-roles="consultant,admin"' in cabinet.text
+    assert "Как работать с вкладкой «Проверки»" in cabinet.text
+    assert "Прочитайте сводку запуска" in cabinet.text
+    assert "Обычный рабочий сценарий" in cabinet.text
+    assert "Используйте только для первой загрузки" in cabinet.text
+    assert 'id="preflight-panel"' in cabinet.text
+
+    assert app_js.status_code == 200
+    assert 'if (value === "guide")' in app_js.text
+    assert '["overview", "checks", "tables", "guide"]' in app_js.text
+    assert "function renderUserGuide()" in app_js.text
+    assert "document.querySelectorAll(`[data-guide-entry=" in app_js.text
+    assert "guideEntryVisibleForRole" in app_js.text
+    assert "document.createElement(\"li\")" in app_js.text
+    assert "list.replaceChildren(...cards)" in app_js.text
+    assert 'renderGuideGroup("checks", els.guideChecksList, role)' in app_js.text
+
+    assert styles.status_code == 200
+    assert 'data-active-workspace="guide"' in styles.text
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in styles.text
 
 
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
@@ -2725,7 +2940,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Комиссионер, выкупы и расходы по статьям." not in app_js.text
     assert 'els.moneyTrendTitle.textContent = "Динамика продаж";' in app_js.text
     assert (
-        '"Выручка, маржинальный доход, маржа и количество продаж по месяцам."'
+        '"По месяцам текущего загруженного отчёта; 12 месяцев показываются как год."'
         in app_js.text
     )
     assert "renderOzonMartKpis" not in app_js.text
@@ -2886,7 +3101,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
         in app_js.text
     )
     assert '"Выручка WB с НДС"' in app_js.text
-    assert '"Выручка 1С с НДС"' in app_js.text
+    assert "onecRevenueSupportingCaption" in app_js.text
+    assert "с НДС · календарный учёт" in app_js.text
+    assert '"Выручка 1С с НДС"' not in app_js.text
     assert "onecRevenueWithVat" in app_js.text
     assert "wbDocumentRevenueWithVat" in app_js.text
     assert "accountingReconciliationDelta" in app_js.text
@@ -2896,6 +3113,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert '"Себестоимость продаж 1С"' in app_js.text
     assert '"Себестоимость 1С"' in app_js.text
     assert '"Расходы WB"' in app_js.text
+    assert '"Итого к перечислению"' in app_js.text
+    assert "wbForPaySum" in app_js.text
+    assert "kpis: analytics.kpis || payload.kpis || {}" in app_js.text
     assert '"Услуги WB по документам 1С"' in app_js.text
     assert '"Сверка расходов WB ↔ 1С"' in app_js.text
     assert "openMarketplaceExpenseReconciliationWidget" in app_js.text
@@ -2906,6 +3126,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "profitUsesRevenueWithoutVat" in app_js.text
     assert "Сумма выкупа" in app_js.text
     assert "item.dataset.tooltip = String(formula)" in app_js.text
+    assert "salesTrendPeriodLabel" in app_js.text
     assert "Выручка 1C Ozon · факт" in app_js.text
     assert "Источник: 1C OData · регистр продаж · включая выкупы" in app_js.text
     assert "Ozon API · ожидается в 1C" in app_js.text
@@ -2932,7 +3153,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Штрафы без продаж" in app_js.text
     assert "Финансовая проверка не пройдена" in app_js.text
     assert 'profitDisplay: profit === null ? "не рассчитано" : ""' in app_js.text
-    assert "Прибыли и убытки не рассчитаны: финансовая проверка" in app_js.text
+    assert "Прибыли и убытки не рассчитаны: финансовая проверка" not in app_js.text
+    assert "Предварительный расчёт: есть замечания к качеству данных" in app_js.text
+    assert "content.push(profitAndLossTable(rows, revenue))" in app_js.text
     assert "nonOkSourceCount" in app_js.text
     assert "refreshHasCollectionStatus" in app_js.text
     assert "applyTopbarFilter" in app_js.text
@@ -3093,6 +3316,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
 
     css = client.get("/static/styles.css")
     assert css.status_code == 200
+    assert ".analytics-calculation-note" in css.text
     assert "@media (max-width: 560px)" in css.text
     assert ".filters-bar" in css.text
     assert ".control-room" in css.text
@@ -3238,6 +3462,89 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "reason-columns" not in css.text
     assert ".file-picker" in css.text
     assert "overflow-wrap: anywhere" in css.text
+
+
+def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    app_js = client.get("/static/app.js")
+    css = client.get("/static/styles.css")
+
+    assert app_js.status_code == 200
+    render_kpis = app_js.text.split("function renderKpis", 1)[1].split(
+        "function lostSalesCoveragePeriodText",
+        1,
+    )[0]
+    ordered_labels = [
+        "Выручка WB без НДС",
+        "Себестоимость 1С",
+        "Расходы WB",
+        "Маржинальный доход",
+        "Маржа",
+        "Прибыль после налогов",
+        "Рентабельность после налогов",
+        "Итого к перечислению",
+        "Продажи WB",
+        "Возвратность",
+    ]
+    positions = [render_kpis.index(f'"{label}"') for label in ordered_labels]
+
+    assert positions == sorted(positions)
+    assert render_kpis.count('"Прибыль после налогов"') == 1
+    assert render_kpis.count('"Рентабельность после налогов"') == 1
+    assert '"Прибыль посл. налогов"' not in render_kpis
+    assert '"Рентаб. после налогов"' not in render_kpis
+    assert "marginAfterTax" in render_kpis
+    assert "Налоговый профиль не применён" in render_kpis
+    assert "Налоговый мост требует сверки" in render_kpis
+    assert "По юнит-экономике · НДФЛ ИП не включён" in render_kpis
+    assert '"Нулевая выручка"' in render_kpis
+
+    assert css.status_code == 200
+    assert (
+        ".money-strip .primary-kpi-grid {\n"
+        "  grid-template-columns: repeat(5, minmax(0, 1fr));"
+    ) in css.text
+    primary_card_rule = css.text.split(
+        ".money-strip .primary-kpi-grid .metric {",
+        1,
+    )[1].split("}", 1)[0]
+    primary_label_rule = css.text.split(
+        ".money-strip .primary-kpi-grid .metric > span {",
+        1,
+    )[1].split("}", 1)[0]
+    primary_value_rule = css.text.split(
+        ".money-strip .primary-kpi-grid .metric > strong {",
+        1,
+    )[1].split("}", 1)[0]
+    tablet_rules = css.text.split(
+        "@media (max-width: 1179px) and (min-width: 761px)",
+        1,
+    )[1].split("@media (max-width: 920px)", 1)[0]
+    mobile_rules = css.text.rsplit("@media (max-width: 760px)", 1)[1]
+
+    assert "min-height: 142px" in primary_card_rule
+    assert "min-height: 36px" in primary_label_rule
+    assert "font-size: 14px" in primary_label_rule
+    assert "-webkit-line-clamp: 2" in primary_label_rule
+    assert "font-size: clamp(22px, 1.55vw, 26px)" in primary_value_rule
+    assert "min-width: 0" in primary_value_rule
+    assert "max-width: 100%" in primary_value_rule
+    assert "white-space: nowrap" in primary_value_rule
+    assert "overflow-wrap: normal" in primary_value_rule
+    assert "word-break: keep-all" in primary_value_rule
+    assert "font-variant-numeric: tabular-nums" in primary_value_rule
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in tablet_rules
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in mobile_rules
+    assert "gap: 8px" in mobile_rules
+    assert ".money-strip {\n    padding-inline: 8px" in mobile_rules
+    assert "font-size: 19px" in mobile_rules
+    assert 'font-family: "Arial Narrow", Arial, sans-serif' in mobile_rules
+    assert "max-width: min(320px, calc(100vw - 24px))" in css.text
+    assert ".metric:nth-child(5n + 1)::after" in css.text
+    assert ".metric:nth-child(3n + 1)::after" in tablet_rules
+    assert ".metric:nth-child(odd)::after" in mobile_rules
 
 
 def test_frontend_guards_stale_filter_requests(tmp_path: Path) -> None:
@@ -5789,8 +6096,8 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert summary["readiness"]["status"] == "partial_period"
     assert summary["readiness"]["label"] == "Неполный период"
     assert summary["readiness"]["score"] == 70
-    assert summary["options"]["periodStart"] == "2026-04-06"
-    assert summary["options"]["periodEnd"] == "2026-06-02"
+    assert summary["options"]["periodStart"] == "2026-04-12"
+    assert summary["options"]["periodEnd"] == "2026-06-08"
     assert len(summary["liquidityRows"]) == 2
     assert {row["liquidityStatus"] for row in summary["liquidityRows"]} == {
         "Убыточный: логистика и приемка WB",
@@ -5964,6 +6271,7 @@ def test_summary_kpis_exposes_signed_tax_bridge() -> None:
             "revenue_without_vat": Decimal("59716744.72"),
             "profit": Decimal("12615188.45"),
             "profit_before_tax": Decimal("16228051.66"),
+            "pnl_tax_deduction": Decimal("3612863.21"),
             "vat_output": Decimal("2985837.21"),
             "vat_input": Decimal("0"),
             "vat_payable": Decimal("2985837.21"),
@@ -5988,6 +6296,111 @@ def test_summary_kpis_exposes_signed_tax_bridge() -> None:
     assert payload["profitBeforeTax"] == 16228051.66
     assert payload["profitAfterTax"] == 12615188.45
     assert payload["taxBridgeCalculated"] is True
+    assert payload["marginAfterTax"] == pytest.approx(
+        12615188.45 / 62702581.93
+    )
+
+
+def test_summary_kpis_osno_keeps_vat_outside_product_pnl() -> None:
+    payload = repository._summary_kpis_payload(
+        {
+            "revenue": Decimal("900"),
+            "revenue_with_vat": Decimal("1100"),
+            "revenue_without_vat": Decimal("900"),
+            "profit": Decimal("300"),
+            "profit_before_tax": Decimal("300"),
+            "pnl_tax_deduction": Decimal("0"),
+            "vat_output": Decimal("150"),
+            "vat_input": Decimal("50"),
+            "vat_payable": Decimal("100"),
+            "revenue_tax": Decimal("0"),
+            "income_tax": Decimal("0"),
+            "income_tax_included_rows": 0,
+            "pnl_without_vat_rows": 1,
+            "sales": 1,
+            "returns": 0,
+            "loss_rows": 0,
+            "penalty_only_rows": 0,
+            "row_count": 1,
+        },
+        tax_context={"calculated": True, "taxSystem": "ОСНО"},
+    )
+
+    assert payload["totalTax"] == 100
+    assert payload["profitBeforeTax"] == 300
+    assert payload["profitAfterTax"] == 300
+    assert payload["incomeTaxIncluded"] is False
+    assert payload["taxBridgeCalculated"] is True
+    assert payload["marginAfterTax"] == pytest.approx(1 / 3)
+
+
+@pytest.mark.parametrize(
+    ("tax_context", "profit_before_tax", "profit", "pnl_tax_deduction"),
+    [
+        ({"calculated": False}, Decimal("500"), Decimal("400"), Decimal("100")),
+        ({"calculated": True}, Decimal("500"), Decimal("450"), Decimal("100")),
+    ],
+)
+def test_summary_kpis_does_not_expose_after_tax_margin_without_valid_bridge(
+    tax_context: dict[str, object],
+    profit_before_tax: Decimal,
+    profit: Decimal,
+    pnl_tax_deduction: Decimal,
+) -> None:
+    payload = repository._summary_kpis_payload(
+        {
+            "revenue": Decimal("1000"),
+            "revenue_with_vat": Decimal("1000"),
+            "revenue_without_vat": Decimal("1000"),
+            "profit": profit,
+            "profit_before_tax": profit_before_tax,
+            "pnl_tax_deduction": pnl_tax_deduction,
+            "vat_payable": Decimal("100"),
+            "revenue_tax": Decimal("0"),
+            "income_tax": Decimal("0"),
+            "income_tax_included_rows": 0,
+            "pnl_without_vat_rows": 0,
+            "sales": 1,
+            "returns": 0,
+            "loss_rows": 0,
+            "penalty_only_rows": 0,
+            "row_count": 1,
+        },
+        tax_context=tax_context,
+    )
+
+    assert payload["taxBridgeCalculated"] is False
+    assert payload["marginAfterTax"] is None
+    if tax_context["calculated"] is False:
+        assert payload["profitAfterTax"] is None
+
+
+def test_summary_kpis_zero_revenue_keeps_profit_but_not_margin() -> None:
+    payload = repository._summary_kpis_payload(
+        {
+            "revenue": Decimal("0"),
+            "revenue_with_vat": Decimal("0"),
+            "revenue_without_vat": Decimal("0"),
+            "profit": Decimal("100"),
+            "profit_before_tax": Decimal("100"),
+            "pnl_tax_deduction": Decimal("0"),
+            "vat_payable": Decimal("0"),
+            "revenue_tax": Decimal("0"),
+            "income_tax": Decimal("0"),
+            "income_tax_included_rows": 0,
+            "pnl_without_vat_rows": 1,
+            "sales": 0,
+            "returns": 0,
+            "loss_rows": 0,
+            "penalty_only_rows": 0,
+            "row_count": 1,
+        },
+        tax_context={"calculated": True, "taxSystem": "ОСНО"},
+    )
+
+    assert payload["taxBridgeCalculated"] is True
+    assert payload["profitAfterTax"] == 100
+    assert payload["marginAfterTax"] is None
 
 
 def test_osno_legacy_draft_pnl_fallback_uses_tax_method_without_vat(
@@ -9156,6 +9569,11 @@ def test_ai_fallback_uses_report_facts(tmp_path: Path) -> None:
     assert assistant_messages
     assert "Убыточных строк" in assistant_messages[-1]
     assert "не меняю данные" in assistant_messages[-1]
+    assistant_payloads = [
+        item for item in answer["messages"] if item["role"] == "assistant"
+    ]
+    assert assistant_payloads[-1]["citations"][0]["reportId"] == "report-1"
+    assert assistant_payloads[-1]["citations"][0]["scopeHash"]
     assert any(item["type"] == "tool_completed" for item in answer["events"])
     done_events = [
         item for item in answer["events"] if item["type"] == "assistant_done"
@@ -9191,6 +9609,180 @@ def test_ai_openai_source_is_visible_when_model_answers(
     assert done_events[-1]["payload"]["answerSource"] == "openai"
     assert done_events[-1]["payload"]["model"]
     assert any(item["type"] == "answer_source" for item in answer["events"])
+
+
+def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import openai
+
+    class FakeCall:
+        type = "function_call"
+        name = "get_report_summary"
+        call_id = "call-summary"
+        arguments = "{}"
+        status = "completed"
+
+    class FakeResponse:
+        def __init__(self, output, output_text=""):
+            self.output = output
+            self.output_text = output_text
+
+    requests = []
+    responses = iter(
+        [
+            FakeResponse([FakeCall()]),
+            FakeResponse([], "Главный вывод собран по расчетной витрине."),
+            FakeResponse([FakeCall()]),
+            FakeResponse([], "Продолжение учитывает историю диалога."),
+        ]
+    )
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            return next(responses)
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    client = make_client(tmp_path, settings_overrides={"openai_api_key": "test-key"})
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+
+    answer = client.post(
+        f"/api/ai/threads/{thread['id']}/messages",
+        json={"content": "Что главное?"},
+    ).json()
+
+    assert len(requests) == 2
+    assert all(request["store"] is False for request in requests)
+    assert all(
+        request["include"] == ["reasoning.encrypted_content"]
+        for request in requests
+    )
+    assert isinstance(requests[1]["input"][2], FakeCall)
+    completed = [
+        item
+        for item in answer["events"]
+        if item["type"] == "tool_completed"
+        and item["toolName"] == "get_report_summary"
+    ]
+    assert len(completed) == 1
+
+    client.post(
+        f"/api/ai/threads/{thread['id']}/messages",
+        json={"content": "А что было в прошлом ответе?"},
+    )
+    second_input = requests[2]["input"]
+    assert any(
+        item.get("role") == "assistant"
+        and item.get("content") == "Главный вывод собран по расчетной витрине."
+        for item in second_input
+        if isinstance(item, dict)
+    )
+    assert sum(
+        1
+        for item in second_input
+        if isinstance(item, dict)
+        and item.get("role") == "user"
+        and item.get("content") == "А что было в прошлом ответе?"
+    ) == 1
+
+
+def test_ai_thread_requires_report_and_is_private_to_owner(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    assert client.post("/api/ai/threads", json={}).status_code == 409
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+    created = client.post(
+        "/api/admin/users",
+        json={"email": "other-analyst@example.com", "role": "consultant"},
+    ).json()
+    client.post("/api/auth/logout")
+    login_as(client, "other-analyst@example.com", created["temporaryPassword"])
+
+    assert client.get(f"/api/ai/threads/{thread['id']}").status_code == 404
+
+
+def test_ai_thread_rejects_report_client_scope_mismatch(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+
+    response = client.post(
+        "/api/ai/threads",
+        json={"report_id": "report-1", "client_id": "another-client"},
+    )
+
+    assert response.status_code == 409
+
+
+def test_chatkit_custom_server_uses_existing_private_ai_store(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"chatkit_enabled": True},
+    )
+    login(client)
+    response = client.post(
+        "/api/chatkit",
+        json={
+            "type": "threads.create",
+            "metadata": {
+                "reportId": "report-1",
+                "scope": {"preset": "losses"},
+            },
+            "params": {
+                "input": {
+                    "content": [
+                        {"type": "input_text", "text": "Что главное по отчету?"}
+                    ],
+                    "attachments": [],
+                    "inference_options": {},
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "thread.created" in response.text
+    assert "assistant_message" in response.text
+    assert "Убыточных строк" in response.text
+
+    listed = client.post(
+        "/api/chatkit",
+        json={
+            "type": "threads.list",
+            "metadata": {},
+            "params": {"limit": 10, "order": "desc"},
+        },
+    )
+    assert listed.status_code == 200
+    threads = listed.json()["data"]
+    assert len(threads) == 1
+    stored = client.get(f"/api/ai/threads/{threads[0]['id']}").json()
+    assert stored["reportId"] == "report-1"
+    assert stored["scope"] == {"preset": "losses"}
+    assert stored["scopeHash"]
+    assistant_messages = [
+        item for item in stored["messages"] if item["role"] == "assistant"
+    ]
+    assert assistant_messages[-1]["citations"][0]["reportId"] == "report-1"
+
+
+def test_chatkit_protocol_is_disabled_by_default(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+
+    response = client.post(
+        "/api/chatkit",
+        json={"type": "threads.list", "metadata": {}, "params": {}},
+    )
+
+    assert response.status_code == 404
 
 
 def test_ai_fallback_reason_is_hidden_from_client_role(
@@ -9252,6 +9844,65 @@ def test_ai_explicit_onec_refresh_creates_new_report(tmp_path: Path) -> None:
 
     audit = client.get("/api/admin/audit").json()["items"]
     assert any(item["action"] == "ai_onec_auto_refresh_completed" for item in audit)
+
+
+def test_ai_openai_failure_does_not_repeat_completed_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import openai
+
+    class CountingRefresh(FakeAutoRefreshService):
+        calls = 0
+
+        def run(self, *args, **kwargs):
+            self.calls += 1
+            return super().run(*args, **kwargs)
+
+    class RefreshCall:
+        type = "function_call"
+        name = "refresh_onec_and_rebuild_report"
+        call_id = "call-refresh"
+        arguments = '{"reason":"Дозагрузить себестоимость"}'
+
+    class FirstResponse:
+        output = [RefreshCall()]
+        output_text = ""
+
+    class FakeResponses:
+        calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return FirstResponse()
+            raise RuntimeError("model unavailable after tool")
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    refresh = CountingRefresh(tmp_path / "reports" / "once.xlsx")
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "openai_api_key": "test-key",
+            "source_refresh_enabled": True,
+        },
+        auto_refresh_service=refresh,
+    )
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+
+    answer = client.post(
+        f"/api/ai/threads/{thread['id']}/messages",
+        json={"content": "Дозагрузи 1С себестоимость и пересобери отчет"},
+    )
+
+    assert answer.status_code == 200
+    assert refresh.calls == 1
+    assert client.get("/api/reports/report-1-refresh/summary").status_code == 200
 
 
 def test_ai_reports_worker_launch_failure_without_changing_report(

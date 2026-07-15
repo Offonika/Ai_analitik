@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Индекс документации проекта
@@ -72,6 +72,7 @@ implementation spec, затем общий MVP spec, затем клиентск
 | `mapping` | `docs/specs/marketplace-1c-mapping-service.md` | 100 |
 | `report-publication` | `docs/specs/wb-unit-economics-db-first-report-marts.md` | 100 |
 | `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 |
+| `runtime-contours` | `docs/specs/web-cabinet-runtime-contours.md` | 100 |
 | `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 |
 | `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 |
 | `ozon` | `docs/specs/marketplace-unit-economics-ozon-integration.md` | 100 |
@@ -94,10 +95,14 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | 1C marketplace mapping fallback | `docs/specs/onec-marketplace-mapping-client-extension.md` | superseded | Нужно понять старый путь импорта кандидатов из расширения `ИС_Маркетплейс`; не использовать как основной источник правды. |
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
+| Runtime contours | `docs/specs/web-cabinet-runtime-contours.md` | accepted | Меняются production/test домены, БД, systemd/nginx, release promotion, test sanitization или rollback. |
+| Multi-report cabinet | `docs/specs/multi-report-cabinet-implementation.md` | accepted | Реализуется каталог `report_kind`, асинхронная генерация из read-only evidence, независимый current и staff-only rollout. |
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
 | Source refresh DB retention | `docs/specs/source-refresh-database-retention.md` | accepted | Меняются правила хранения raw snapshot rows PostgreSQL или процедура освобождения диска. |
 | Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
 | Month close pilot | `docs/specs/month-close-control-pilot.md` | draft | Нужно понять пилотный read-only контур закрытия месяца: онлайн-ОСВ, налоги, ЕНС, НДС, скрины и процессные подтверждения до CRM. |
+| Month close report | `docs/specs/month-close-control-report-implementation.md` | accepted | Реализуется staff-only web + Excel сценарий календарного закрытия месяца с evidence v2 и advisory-проверками. |
+| Tax load report | `docs/specs/tax-load-report-implementation.md` | accepted | Реализуется staff-only отчет налоговой нагрузки за месяц и YTD, web + Excel, без неподтвержденных значений. |
 | AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
 
@@ -134,7 +139,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/runbooks/power-bi-power-query.md` — путь от регулярного Excel/CSV к
   Power Query и Power BI поверх расчетных витрин.
 - `docs/runbooks/web-cabinet-operations.md` — эксплуатация web-кабинета:
-  пользователи, импорт report runs, AI, live checks, backup и monitor.
+  production/test, пользователи, импорт report runs, AI, backup и monitor.
 - `docs/runbooks/source-refresh-schedule.md` — active runbook для systemd
   timers, отдельного worker и staff incremental source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
@@ -144,6 +149,9 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 
 - `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — действующее решение
   по налоговым профилям и клиентской семантике прибыли.
+- `docs/decisions/2026-07-14-accounting-reports-accountant-questions.md` —
+  draft-решение: налоговый профиль и формула ФНС уже зафиксированы, оставшиеся
+  вопросы бухгалтеру блокируют перевод бухгалтерских spec в accepted.
 - `docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md` — superseded
   решение с legacy-формулой `НДС 5/105 + УСН 1%`.
 - `docs/decisions/2026-06-23-db-first-publication-baseline.md` — исторический

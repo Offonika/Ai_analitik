@@ -9,6 +9,7 @@ import pytest
 
 from scripts.export_onec_odata_samples import _select_collections
 from wb_unit_economics.onec_odata import (
+    ACCOUNTING_REPORT_SAMPLE_COLLECTIONS,
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
     INPUT_VAT_SAMPLE_COLLECTIONS,
@@ -18,6 +19,7 @@ from wb_unit_economics.onec_odata import (
     OnecSampleCollection,
     check_onec_odata_metadata,
     export_collection_sample,
+    export_onec_accounting_recordtype_balances,
     extract_odata_rows,
     raw_payload_hash,
 )
@@ -716,3 +718,205 @@ def test_input_vat_collections_are_read_only_and_selectable() -> None:
     assert "Разделы" in by_id["import_expenses"].select_fields
     assert by_id["vat_presented"].period_field == ""
     assert _select_collections(["import_expenses"])[0] == by_id["import_expenses"]
+
+
+def test_accounting_recordtype_fallback_aggregates_by_organization(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    pages = {
+        0: [
+            {
+                "Period": "2026-04-30T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-1",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "100",
+            },
+            {
+                "Period": "2026-05-10T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-1",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "50",
+            },
+            {
+                "Period": "2026-05-20T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-1",
+                "AccountCr_Key": "ACC-51",
+                "Сумма": "20",
+            },
+        ],
+        3: [
+            {
+                "Period": "2026-05-21T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-2",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "10",
+            },
+            {
+                "Period": "2026-05-22T12:00:00",
+                "Active": False,
+                "Организация_Key": "ORG-2",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "777",
+            },
+            {
+                "Period": "2026-05-31T12:00:00",
+                "Active": True,
+                "Организация_Key": "",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "1",
+            },
+        ],
+        6: [
+            {
+                "Period": "2026-06-02T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-1",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "999",
+            },
+            {
+                "Period": "2026-06-03T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-2",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "888",
+            },
+            {
+                "Period": "2026-06-04T12:00:00",
+                "Active": True,
+                "Организация_Key": "ORG-2",
+                "AccountDr_Key": "ACC-51",
+                "Сумма": "7777",
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        skip = int(request.url.params.get("$skip", "0"))
+        return httpx.Response(200, json={"value": pages.get(skip, [])})
+
+    result = export_onec_accounting_recordtype_balances(
+        OnecODataSettings(
+            base_url="https://onec.example/odata/standard.odata",
+            username="readonly",
+            password="test-only",
+        ),
+        tmp_path,
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        page_size=3,
+        max_pages=10,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.ok is True
+    assert result.status == "loaded"
+    assert result.page_count == 3
+    assert result.checkpoint_path is not None
+    assert result.checkpoint_path.is_file()
+    assert all("$filter" not in request.url.params for request in requests)
+    assert all(
+        request.url.params["$orderby"]
+        == "Period asc,Recorder asc,LineNumber asc"
+        for request in requests
+    )
+    assert all(
+        request.url.params["$select"]
+        == (
+            "Period,Recorder,LineNumber,Active,Организация_Key,"
+            "AccountDr_Key,AccountCr_Key,Сумма"
+        )
+        for request in requests
+    )
+    payload = json.loads(result.output_path.read_text(encoding="utf-8"))
+    by_org = {row["Organization_Key"]: row for row in payload["value"]}
+    assert by_org["ORG-1"] == {
+        "Organization_Key": "ORG-1",
+        "Account_Key": "ACC-51",
+        "OpeningDebit": "100",
+        "OpeningCredit": "0",
+        "DebitTurnover": "50",
+        "CreditTurnover": "20",
+        "ClosingDebit": "130",
+        "ClosingCredit": "0",
+    }
+    assert by_org["ORG-2"]["ClosingDebit"] == "10"
+
+
+def test_accounting_report_collections_do_not_require_server_period_filters() -> None:
+    accounting = {
+        item.sample_id: item for item in ACCOUNTING_REPORT_SAMPLE_COLLECTIONS
+    }
+
+    assert accounting["accounting_register_records"].period_field == ""
+    assert accounting["accounting_taxes"].period_field == ""
+    assert accounting["accounting_taxes"].page_size == 5000
+    assert accounting["accounting_bank_out"].period_field == ""
+
+
+def test_local_accounting_period_stops_after_selected_window(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+    pages = {
+        0: {
+            "value": [
+                {"Period": "2026-04-30T12:00:00"},
+                {"Period": "2026-05-31T12:00:00"},
+            ]
+        },
+        2: {
+            "value": [
+                {"Period": "2026-06-01T12:00:00"},
+                {"Period": "2026-06-02T12:00:00"},
+            ]
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        skip = int(request.url.params.get("$skip", "0"))
+        return httpx.Response(200, json=pages.get(skip, {"value": []}))
+
+    settings = OnecODataSettings(
+        base_url="https://onec.example/odata/standard.odata",
+        username="readonly",
+        password="test-only",
+    )
+    collection = OnecSampleCollection(
+        sample_id="accounting_taxes",
+        collection_name="AccumulationRegister_РасчетыПоНалогам_RecordType",
+        purpose="test",
+        period_filter_mode="local_accounting_period",
+        page_size=2,
+    )
+    client = OnecODataClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        result = export_collection_sample(
+            client,
+            collection,
+            tmp_path,
+            top=2,
+            max_pages=10,
+            period_start=date(2026, 5, 1),
+            period_end=date(2026, 5, 31),
+        )
+    finally:
+        client.close()
+
+    assert result.ok is True
+    assert result.page_count == 2
+    assert result.row_count == 1
+    assert len(requests) == 2
+    assert all("$filter" not in request.url.params for request in requests)
+    assert all(
+        request.url.params["$orderby"]
+        == "Period asc,Recorder asc,LineNumber asc"
+        for request in requests
+    )
+    output = json.loads(result.output_path.read_text(encoding="utf-8"))
+    assert output["value"] == [{"Period": "2026-05-31T12:00:00"}]

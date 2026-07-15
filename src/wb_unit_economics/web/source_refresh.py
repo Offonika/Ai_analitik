@@ -9,7 +9,7 @@ import re
 import shutil
 import zipfile
 from calendar import monthrange
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -33,6 +33,7 @@ from wb_unit_economics.contracts import (
     WbSalesReportSummaryRow,
 )
 from wb_unit_economics.onec_odata import (
+    ACCOUNTING_REPORT_SAMPLE_COLLECTIONS,
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
     INPUT_VAT_SAMPLE_COLLECTIONS,
@@ -43,6 +44,8 @@ from wb_unit_economics.onec_odata import (
     OnecODataSettings,
     OnecSampleExportResult,
     check_onec_odata_metadata,
+    export_onec_accounting_balance_and_turnovers,
+    export_onec_accounting_recordtype_balances,
     export_onec_samples,
 )
 from wb_unit_economics.ozon import (
@@ -112,6 +115,14 @@ from wb_unit_economics.web.models import (
     TenantIntegration,
     User,
     WbCabinet,
+)
+from wb_unit_economics.web.report_kinds import (
+    ACCOUNTING_REPORT_KINDS,
+    MONTH_CLOSE_CONTROL,
+)
+from wb_unit_economics.web.reports.evidence import (
+    AccountingEvidenceSource,
+    materialize_accounting_evidence,
 )
 from wb_unit_economics.web.settings import WebSettings
 
@@ -292,6 +303,12 @@ class SourceRefreshService:
         onec_exporter: Callable[..., list[OnecSampleExportResult]] = (
             export_onec_samples
         ),
+        onec_accounting_balance_exporter: Callable[
+            ..., OnecSampleExportResult
+        ] = export_onec_accounting_balance_and_turnovers,
+        onec_accounting_recordtype_exporter: Callable[
+            ..., OnecSampleExportResult
+        ] = export_onec_accounting_recordtype_balances,
         onec_metadata_checker: Callable[
             [OnecODataSettings], OnecODataMetadataCheckResult
         ]
@@ -319,6 +336,10 @@ class SourceRefreshService:
         self._ozon_stocks_exporter = ozon_stocks_exporter
         self._ozon_returns_exporter = ozon_returns_exporter
         self._onec_exporter = onec_exporter
+        self._onec_accounting_balance_exporter = onec_accounting_balance_exporter
+        self._onec_accounting_recordtype_exporter = (
+            onec_accounting_recordtype_exporter
+        )
         self._onec_metadata_checker = onec_metadata_checker or check_onec_odata_metadata
         self._workbook_builder = workbook_builder
         self._dashboard_payload_builder = dashboard_payload_builder
@@ -433,7 +454,277 @@ class SourceRefreshService:
             if refresh_run.requested_by_user_id
             else None
         )
+        if refresh_run.mode == "report-generation":
+            return self._execute_accounting_report_generation(
+                db,
+                refresh_run,
+                user=user,
+            )
         return self._execute_run(db, refresh_run, user=user)
+
+    def _execute_accounting_report_generation(
+        self,
+        db: Session,
+        generation: SourceRefreshRun,
+        *,
+        user: User | None,
+    ) -> dict[str, Any]:
+        if generation.target_report_kind not in ACCOUNTING_REPORT_KINDS:
+            raise SourceRefreshConfigError("unsupported report generation kind")
+        root_dir = (
+            self.settings.source_refresh_root_path / generation.snapshot_set_id
+        ).resolve()
+        try:
+            repository.update_source_refresh_run(
+                db,
+                generation,
+                status="running",
+                started_at=generation.started_at or security.utcnow(),
+                heartbeat_at=security.utcnow(),
+                root_dir=str(root_dir),
+            )
+            generation.generation_stage = "refreshing_sources"
+            generation.failure_code = ""
+            _commit_source_refresh_progress(db)
+            disk_issue = self._low_disk_issue()
+            if disk_issue is not None:
+                raise SourceRefreshConfigError(disk_issue["error_message"])
+            credentials = self._credentials(
+                db,
+                tenant_id=generation.tenant_id,
+                credential_source=generation.credential_source,
+                mode=generation.mode,
+            )
+            for issue in (*credentials.issues, *credentials.optional_issues):
+                repository.add_source_refresh_collection(
+                    db,
+                    generation,
+                    source_type=issue["source_type"],
+                    source_label=issue["source_label"],
+                    required=issue["required"],
+                    status=issue["status"],
+                    error_message=issue.get("error_message", ""),
+                    payload=issue.get("payload", {}),
+                    organization_id=generation.organization_id,
+                )
+            if credentials.issues or credentials.onec_settings is None:
+                raise SourceRefreshConfigError("onec_readonly_not_ready")
+            metadata_result = self._record_onec_metadata_check(
+                db,
+                generation,
+                credentials.onec_settings,
+            )
+            _commit_source_refresh_progress(db)
+            if not metadata_result.ok:
+                raise SourceRefreshConfigError("onec_odata_metadata_unavailable")
+
+            output_dir = root_dir / "onec_accounting"
+            evidence_start = generation.source_window_start or generation.period_start
+            accounting_collections = tuple(
+                collection
+                for collection in ACCOUNTING_REPORT_SAMPLE_COLLECTIONS
+                if collection.sample_id != "accounting_register_records"
+            )
+            results = self._onec_exporter(
+                credentials.onec_settings,
+                accounting_collections,
+                output_dir,
+                top=max(self._onec_page_size(), 5000),
+                # Period-local accounting collections can start well after the
+                # generic refresh cap. They retain every fetched GET page as
+                # raw evidence but materialize only the requested period.
+                max_pages=max(self._onec_max_pages(), 1000),
+                period_start=evidence_start,
+                period_end=generation.period_end,
+                source_identity=hashlib.sha256(
+                    credentials.onec_settings.base_url.encode("utf-8")
+                ).hexdigest(),
+            )
+            if generation.target_report_kind == MONTH_CLOSE_CONTROL:
+                balance_result = self._onec_accounting_balance_exporter(
+                    credentials.onec_settings,
+                    output_dir,
+                    period_start=generation.period_start,
+                    period_end=generation.period_end,
+                )
+                results = [
+                    *results,
+                    balance_result,
+                ]
+                if not balance_result.ok or balance_result.row_count == 0:
+                    results = [
+                        *results,
+                        self._onec_accounting_recordtype_exporter(
+                            credentials.onec_settings,
+                            output_dir,
+                            period_start=generation.period_start,
+                            period_end=generation.period_end,
+                            page_size=max(
+                                self._onec_page_size(),
+                                self.settings.accounting_recordtype_page_size,
+                            ),
+                            max_pages=max(self._onec_max_pages(), 1000),
+                        ),
+                    ]
+            self._record_onec(db, generation, output_dir, results)
+            repository.sync_organization_tax_profiles(db, generation, user=user)
+            repository.validate_source_snapshot_duplicates(db, generation)
+            generation.generation_stage = "materializing_evidence"
+            generation.heartbeat_at = security.utcnow()
+            _commit_source_refresh_progress(db)
+
+            sources = self._accounting_evidence_sources(db, generation, root_dir)
+            if not any(
+                source.status in {"loaded", "ready", "complete", "partial_source"}
+                for source in sources.values()
+            ):
+                raise LookupError("accounting evidence sources are unavailable")
+            evidence = materialize_accounting_evidence(
+                report_kind=generation.target_report_kind,
+                organization_id=str(generation.organization_id or ""),
+                period_start=generation.period_start,
+                period_end=generation.period_end,
+                refresh_run_id=generation.id,
+                sources=sources,
+            )
+            if generation.target_report_kind == MONTH_CLOSE_CONTROL and not (
+                evidence.get("osvBalanceAndTurnovers", {}).get("rows")
+                or evidence.get("osvRecordTypeFallback", {}).get("rows")
+            ):
+                raise LookupError("accounting osv evidence is unavailable")
+            evidence_source_type = f"{generation.target_report_kind}_evidence"
+            repository.add_source_refresh_collection(
+                db,
+                generation,
+                source_type=evidence_source_type,
+                source_label="Normalized accounting evidence v2",
+                required=True,
+                status="loaded",
+                snapshot_hash=str(evidence["evidenceSha256"]),
+                row_count=1,
+                payload={
+                    "contractVersion": evidence["contractVersion"],
+                    "organizationId": generation.organization_id,
+                    "payloadSha256": evidence["evidenceSha256"],
+                    "sourceSnapshotIds": sorted(
+                        {
+                            source.snapshot_id
+                            for source in sources.values()
+                            if source.snapshot_id
+                        }
+                    ),
+                    "normalizedEvidence": evidence,
+                },
+                organization_id=generation.organization_id,
+            )
+            generation.generation_stage = "building_report"
+            generation.heartbeat_at = security.utcnow()
+            _commit_source_refresh_progress(db)
+            repository.complete_accounting_report_generation(
+                db,
+                generation=generation,
+                user=user,
+            )
+            _commit_source_refresh_progress(db)
+            return repository.generation_run_payload(generation)
+        except Exception as exc:
+            safe_error = _safe_error(exc)
+            with suppress(Exception):
+                db.rollback()
+            generation = db.get(SourceRefreshRun, generation.id) or generation
+            repository.update_source_refresh_run(
+                db,
+                generation,
+                status="failed",
+                failure_code=(
+                    "accounting_evidence_missing"
+                    if isinstance(exc, LookupError)
+                    else "report_generation_failed"
+                ),
+                error_message=safe_error,
+                finished_at=security.utcnow(),
+            )
+            generation.generation_stage = "failed"
+            repository.audit(
+                db,
+                action="report_generation_failed",
+                user=user,
+                tenant_id=generation.tenant_id,
+                entity_type="source_refresh_run",
+                entity_id=generation.id,
+                payload={
+                    "reportKind": generation.target_report_kind,
+                    "organizationId": generation.organization_id,
+                    "errorType": exc.__class__.__name__,
+                },
+            )
+            _commit_source_refresh_progress(db)
+            return repository.generation_run_payload(generation)
+
+    def _accounting_evidence_sources(
+        self,
+        db: Session,
+        generation: SourceRefreshRun,
+        root_dir: Path,
+    ) -> dict[str, AccountingEvidenceSource]:
+        result: dict[str, AccountingEvidenceSource] = {}
+        collections = list(
+            db.scalars(
+                select(SourceRefreshCollection).where(
+                    SourceRefreshCollection.refresh_run_id == generation.id,
+                    SourceRefreshCollection.source_type.like("onec_%"),
+                    SourceRefreshCollection.source_type.notin_(
+                        {"onec_odata_metadata", "onec_tax_profiles"}
+                    ),
+                )
+            )
+        )
+        for collection in collections:
+            rows = [
+                row.row_payload or {}
+                for row in db.scalars(
+                    select(SourceSnapshotRow)
+                    .where(SourceSnapshotRow.collection_id == collection.id)
+                    .order_by(SourceSnapshotRow.row_number)
+                )
+            ]
+            if not rows:
+                rows = self._read_onec_collection_rows(
+                    collection.raw_path,
+                    allowed_root=root_dir,
+                )
+            result[collection.source_type] = AccountingEvidenceSource(
+                source_type=collection.source_type,
+                status=collection.status,
+                snapshot_id=collection.snapshot_hash or str(collection.id),
+                rows=tuple(row for row in rows if isinstance(row, Mapping)),
+            )
+        return result
+
+
+    @staticmethod
+    def _read_onec_collection_rows(
+        raw_path: str,
+        *,
+        allowed_root: Path,
+    ) -> list[dict[str, Any]]:
+        if not raw_path:
+            return []
+        path = Path(raw_path).resolve()
+        root = allowed_root.resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return []
+        try:
+            if path.stat().st_size > 100 * 1024 * 1024:
+                return []
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(payload, dict):
+            return []
+        return [
+            row for row in _extract_onec_rows(payload) if isinstance(row, dict)
+        ]
 
     def _create_refresh_run(
         self,
@@ -468,6 +759,10 @@ class SourceRefreshService:
         if resume_mode == "never" and resume_from_run_id:
             raise SourceRefreshConfigError(
                 "resume_from_run_id cannot be used with resume_mode=never"
+            )
+        if not self.settings.external_integrations_enabled and not dry_run:
+            raise SourceRefreshDisabledError(
+                "Внешние интеграции отключены для этого контура."
             )
         if not self.settings.source_refresh_enabled and not dry_run:
             raise SourceRefreshDisabledError(
