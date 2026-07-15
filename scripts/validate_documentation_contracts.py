@@ -37,6 +37,23 @@ EXCEL_SPEC = ROOT / "docs" / "specs" / (
 )
 WEB_INDEX = ROOT / "src" / "wb_unit_economics" / "web" / "static" / "index.html"
 WEB_APP_JS = ROOT / "src" / "wb_unit_economics" / "web" / "static" / "app.js"
+CURRENT_CLIENT_SEMANTICS_DOCS = (
+    ROOT / "docs" / "specs" / "wb-unit-economics-excel-mvp-implementation.md",
+    ROOT / "docs" / "specs" / "wb-unit-economics-ai-web-cabinet-implementation.md",
+    ROOT / "docs" / "specs" / "marketplace-unit-economics-ozon-integration.md",
+    ROOT / "docs" / "runbooks" / "report-generation.md",
+    ROOT / "docs" / "runbooks" / "power-bi-power-query.md",
+    ROOT / "docs" / "client-scope.md",
+    ROOT / "docs" / "client-methodology.md",
+    ROOT / "docs" / "client-tz.md",
+    ROOT / "docs" / "calculation-formulas.md",
+)
+FORBIDDEN_CLIENT_PROFIT_TERMS = (
+    "маржинальный доход wb после налогов",
+    "прибыль по юнит-экономике wb после налогов",
+    "прибыль после налогов",
+    "рентабельность после налогов",
+)
 
 
 class UserGuideContractParser(HTMLParser):
@@ -227,6 +244,25 @@ def validate_openapi_inventory() -> list[str]:
     return []
 
 
+def validate_client_profit_terminology(
+    paths: tuple[Path, ...] = CURRENT_CLIENT_SEMANTICS_DOCS,
+) -> list[str]:
+    """Reject superseded client-facing profit labels in current documentation."""
+    failures: list[str] = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8").casefold()
+        try:
+            label = str(path.relative_to(ROOT))
+        except ValueError:
+            label = path.name
+        for term in FORBIDDEN_CLIENT_PROFIT_TERMS:
+            if term in text:
+                failures.append(
+                    f"{label}: deprecated client profit term remains: {term!r}"
+                )
+    return failures
+
+
 def validate_user_guide_contract() -> list[str]:
     parser = UserGuideContractParser()
     parser.feed(WEB_INDEX.read_text(encoding="utf-8"))
@@ -255,6 +291,7 @@ def validate_user_guide_contract() -> list[str]:
 def main() -> int:
     failures = validate_excel_sheet_contract()
     failures.extend(validate_user_guide_contract())
+    failures.extend(validate_client_profit_terminology())
     markdown = CLIENT_TZ_MARKDOWN.read_text(encoding="utf-8")
     if check_docx(
         markdown,

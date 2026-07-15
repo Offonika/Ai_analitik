@@ -8644,7 +8644,7 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       openMarketplaceExpenseReconciliationWidget,
     ],
     [
-      "Маржинальный доход",
+      "Управленческая прибыль WB",
       profitBeforeTax === null ? "Не рассчитано" : money(profitBeforeTax),
       "До налогов",
       profitBeforeTax === null
@@ -8655,7 +8655,7 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       profitFormula,
     ],
     [
-      "Маржа",
+      "Маржинальность WB",
       margin,
       "До налогов",
       managementMargin === null || managementMargin === undefined
@@ -8666,24 +8666,24 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       marginFormula,
     ],
     [
-      "Прибыль после налогов",
+      "Прибыль до НДФЛ",
       profitAfterTaxReady ? money(profitAfterTax) : "Не рассчитано",
       afterTaxStatus,
       afterTaxTone(profitAfterTax, profitAfterTaxReady),
       osnoWithoutAllocatedNdfl
-        ? "Прибыль товарного P&L после включённых в него налогов. НДС к уплате учитывается отдельно, НДФЛ ИП не распределён по товарам."
-        : "Маржинальный доход до налогов − налоги, включённые в товарный P&L.",
+        ? "Прибыль товарного P&L после применимых профильных налогов, но до НДФЛ предпринимателя. НДС к уплате учитывается отдельно, НДФЛ ИП не распределён по товарам."
+        : "Управленческая прибыль WB − применимые профильные налоги на доход, кроме НДФЛ предпринимателя.",
     ],
     [
-      "Рентабельность после налогов",
+      "Маржинальность до НДФЛ",
       marginAfterTaxReady ? percent(marginAfterTax) : "Не рассчитано",
       profitAfterTaxReady && marginAfterTax === null
         ? "Нулевая выручка"
         : afterTaxStatus,
       afterTaxTone(marginAfterTax, marginAfterTaxReady),
       profitUsesRevenueWithoutVat
-        ? "Прибыль после налогов ÷ выручка WB без НДС."
-        : "Прибыль после налогов ÷ база выручки применённого налогового профиля.",
+        ? "Прибыль до НДФЛ ÷ выручка WB без НДС."
+        : "Прибыль до НДФЛ ÷ база выручки применённого налогового профиля.",
     ],
     [
       "Итого к перечислению",
@@ -8831,9 +8831,9 @@ function ozonMartMetricItems(mart = {}, reconciliation = {}) {
     afterTax ?? totals.profitBeforeIncomeTax ?? profitBeforeTax;
   const canonicalProfitLabel =
     afterTax != null
-      ? "Прибыль после налогов"
+      ? "Прибыль до НДФЛ"
       : osno
-        ? "Управленческая прибыль до НДФЛ"
+        ? "Управленческая прибыль WB"
         : "Прибыль до налогов";
   const includesAdditionalOnecDocuments =
     mart.pnlScope === "onec_sales_register_including_additional_documents";

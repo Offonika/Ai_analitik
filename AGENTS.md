@@ -20,21 +20,35 @@ Work in this repository must preserve three invariants:
 
 ## Current Source Of Truth
 
-- Current accepted implementation target:
-  `docs/specs/wb-unit-economics-excel-mvp-implementation.md`.
-- Product and technical scope: `docs/specs/wb-unit-economics-mvp.md`.
-- Project overview and secret handling: `README.md`.
-- Non-secret configuration notes: `config/README.md`.
-- Documentation navigation and registry: `docs/index.md`, `docs/manifest.yml`.
-- Client-facing scope and access instructions: `docs/client-scope.md`,
-  `docs/client-tz.md`, `docs/onec-access-instruction.md`.
+`docs/manifest.yml` is the machine-readable registry of documentation scopes.
+For each `truth_scope`, the document with the highest `truth_priority` is the
+canonical source for that scope. `docs/index.md` is the human-readable map and
+must stay synchronized with the manifest.
 
-If these documents conflict, follow this order:
+Core scopes include:
 
-1. accepted implementation spec, when one exists;
-2. `docs/specs/wb-unit-economics-mvp.md`;
-3. client-facing documents in `docs/`;
-4. `README.md` and local notes.
+- project governance: `AGENTS.md`;
+- product scope: `docs/specs/wb-unit-economics-mvp.md`;
+- Excel methodology:
+  `docs/specs/wb-unit-economics-excel-mvp-implementation.md`;
+- web cabinet:
+  `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`;
+- report publication:
+  `docs/specs/wb-unit-economics-db-first-report-marts.md`;
+- multi-report, month-close, tax-load, mapping, source-refresh, retention,
+  runtime and development workflow: the corresponding canonical documents in
+  `docs/manifest.yml`.
+
+Resolve conflicts as follows:
+
+1. identify the behavior's `truth_scope` in `docs/manifest.yml`;
+2. within that scope, follow the document with the highest `truth_priority`;
+3. an accepted implementation spec overrides the general product brief,
+   client-facing documents and README only for behavior inside its own scope;
+4. ADRs and supporting documents cannot override a higher-priority canonical
+   document unless the manifest explicitly gives them precedence;
+5. if two scopes genuinely conflict, do not choose silently: update the
+   affected specs or record an explicit cross-scope decision first.
 
 Do not treat chat messages, generated reports, or ad hoc spreadsheets as the
 source of truth unless the user explicitly asks to update the spec from them.

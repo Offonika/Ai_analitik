@@ -873,7 +873,8 @@ def _build_markdown(data: dict[str, Any]) -> str:
                     _money(_num(row.get("Расходы WB"))),
                     _money(
                         _num(
-                            row.get("Управленческая прибыль WB")
+                            row.get("Прибыль до НДФЛ")
+                            or row.get("Управленческая прибыль WB")
                             or row.get("Маржинальный доход WB после налогов")
                             or row.get("Управленческая прибыль")
                             or row.get("Прибыль после налогов")
@@ -881,7 +882,8 @@ def _build_markdown(data: dict[str, Any]) -> str:
                     ),
                     _percent(
                         _num_or_none(
-                            row.get("Маржа WB без НДС")
+                            row.get("Маржинальность до НДФЛ")
+                            or row.get("Маржа WB без НДС")
                             or row.get("Маржа WB после налогов")
                             or row.get("Маржа без НДС")
                             or row.get("Маржа после налогов")
@@ -1188,7 +1190,8 @@ def _row_revenue(row: dict[str, Any]) -> Decimal:
 
 def _row_profit(row: dict[str, Any]) -> Decimal:
     return _num(
-        row.get("Управленческая прибыль WB")
+        row.get("Прибыль до НДФЛ")
+        or row.get("Управленческая прибыль WB")
         or row.get("Маржинальный доход WB после налогов")
         or row.get("Управленческая прибыль")
         or row.get("Прибыль после налогов")

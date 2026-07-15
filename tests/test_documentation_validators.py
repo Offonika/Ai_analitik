@@ -8,7 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import validate_docs_manifest  # noqa: E402
-from validate_docs_manifest import validate_truth_precedence  # noqa: E402
+from validate_docs_manifest import (  # noqa: E402
+    validate_index_consistency,
+    validate_truth_precedence,
+)
 from validate_specs import validate_dependency_graph  # noqa: E402
 
 from scripts.build_client_tz_docx import check_docx, render_client_tz  # noqa: E402
@@ -19,6 +22,7 @@ from scripts.docs_metadata import (  # noqa: E402
 )
 from scripts.validate_documentation_contracts import (  # noqa: E402
     UserGuideContractParser,
+    validate_client_profit_terminology,
     validate_excel_sheet_contract,
     validate_user_guide_contract,
 )
@@ -114,6 +118,44 @@ def test_truth_precedence_rejects_equal_leaders() -> None:
     assert validate_truth_precedence(records) == [
         "truth_scope 'source-refresh' must have one highest-priority document; "
         "found a.md, b.md"
+    ]
+
+
+def test_index_consistency_rejects_missing_scope_and_stale_status() -> None:
+    records = [
+        {
+            "path": "docs/specs/current.md",
+            "status": "accepted",
+            "source_of_truth": True,
+            "truth_scope": "source-refresh",
+            "truth_priority": 100,
+        },
+        {
+            "path": "docs/specs/old.md",
+            "status": "superseded",
+            "source_of_truth": False,
+        },
+    ]
+    index_text = (
+        "| Scope | Canonical | Priority |\n"
+        "| --- | --- | ---: |\n"
+        "| Contour | `docs/specs/old.md` | draft | Description |\n"
+    )
+
+    failures = validate_index_consistency(records, index_text)
+
+    assert "docs/index.md: missing truth_scope row 'source-refresh'" in failures
+    assert any("docs/specs/old.md" in failure for failure in failures)
+
+
+def test_client_profit_terminology_rejects_deprecated_label(tmp_path: Path) -> None:
+    document = tmp_path / "current.md"
+    document.write_text("Прибыль после налогов", encoding="utf-8")
+
+    failures = validate_client_profit_terminology((document,))
+
+    assert failures == [
+        "current.md: deprecated client profit term remains: 'прибыль после налогов'"
     ]
 
 

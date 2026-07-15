@@ -3510,10 +3510,10 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
         "Выручка WB без НДС",
         "Себестоимость 1С",
         "Расходы WB",
-        "Маржинальный доход",
-        "Маржа",
-        "Прибыль после налогов",
-        "Рентабельность после налогов",
+        "Управленческая прибыль WB",
+        "Маржинальность WB",
+        "Прибыль до НДФЛ",
+        "Маржинальность до НДФЛ",
         "Итого к перечислению",
         "Продажи WB",
         "Возвратность",
@@ -3521,10 +3521,10 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
     positions = [render_kpis.index(f'"{label}"') for label in ordered_labels]
 
     assert positions == sorted(positions)
-    assert render_kpis.count('"Прибыль после налогов"') == 1
-    assert render_kpis.count('"Рентабельность после налогов"') == 1
-    assert '"Прибыль посл. налогов"' not in render_kpis
-    assert '"Рентаб. после налогов"' not in render_kpis
+    assert render_kpis.count('"Прибыль до НДФЛ"') == 1
+    assert render_kpis.count('"Маржинальность до НДФЛ"') == 1
+    assert '"Прибыль после налогов"' not in render_kpis
+    assert '"Рентабельность после налогов"' not in render_kpis
     assert "marginAfterTax" in render_kpis
     assert "Налоговый профиль не применён" in render_kpis
     assert "Налоговый мост требует сверки" in render_kpis

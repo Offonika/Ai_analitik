@@ -497,9 +497,9 @@ COLUMN_LABELS = {
     "incomeTaxIncluded": "НДФЛ включен",
     "profitBeforeTax": "Управленческая прибыль до НДФЛ",
     "marginBeforeTax": "Маржа до налогов",
-    "profitBeforeIncomeTax": "Управленческая прибыль до НДФЛ",
-    "profitAfterTax": "Прибыль после налогов",
-    "marginAfterTax": "Маржа после налогов",
+    "profitBeforeIncomeTax": "Управленческая прибыль WB",
+    "profitAfterTax": "Прибыль до НДФЛ",
+    "marginAfterTax": "Маржинальность до НДФЛ",
     "revenueTax": "Налог с выручки",
     "taxSystem": "Налоговый режим",
     "profit": "Управленческая прибыль WB",
@@ -838,7 +838,7 @@ def _aggregate_unit_rows(
             ("revenue", "Выручка с НДС"),
             ("revenueWithoutVat", "Выручка без НДС"),
             ("profitBeforeTax", "Прибыль до налогов"),
-            ("profit", "Прибыль после налогов"),
+            ("profit", "Прибыль до НДФЛ"),
         ):
             target[label] = float(target.get(label) or 0) + float(row.get(source) or 0)
     return list(totals.values())
@@ -855,7 +855,7 @@ def _dashboard_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         ("Налог УСН", "revenueTax"),
         ("Всего налогов", "totalTax"),
         ("Прибыль до налогов", "profitBeforeTax"),
-        ("Прибыль после налогов", "profitAfterTax"),
+        ("Прибыль до НДФЛ", "profitAfterTax"),
     )
     rows = [
         {"Показатель": label, "Значение": kpis.get(key)} for label, key in labels
@@ -1153,7 +1153,7 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
         ("income_tax", "НДФЛ / налог на доход", "incomeTax", "tax", "expense"),
         (
             "profit_after_tax",
-            "Прибыль после налогов",
+            "Прибыль до НДФЛ",
             "profitAfterTax",
             "result",
             "result",

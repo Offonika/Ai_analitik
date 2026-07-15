@@ -21043,9 +21043,9 @@ def management_report_summary_text(summary: dict[str, Any]) -> str:
     return (
         f"Период: {summary['meta']['period']}\n"
         f"Выручка после СПП: {money(kpis.get('revenue'))}\n"
-        f"Прибыль после налогов: {money(kpis.get('profit'))}\n"
+        f"Прибыль до НДФЛ: {money(kpis.get('profit'))}\n"
         f"Прибыль до налогов: {money(kpis.get('profitBeforeTax'))}\n"
-        f"Маржа после налогов: {margin_text}\n"
+        f"Маржинальность до НДФЛ: {margin_text}\n"
         f"Убыточных строк: {int(kpis.get('lossRows') or 0)}\n"
         f"Строк в расчете: {int(kpis.get('rowCount') or 0)}\n"
         f"Качество данных: {json.dumps(quality, ensure_ascii=False)}\n"

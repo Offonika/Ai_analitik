@@ -76,6 +76,9 @@ implementation spec, затем общий MVP spec, затем клиентск
 | `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 |
 | `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 |
 | `ozon` | `docs/specs/marketplace-unit-economics-ozon-integration.md` | 100 |
+| `multi-report-cabinet` | `docs/specs/multi-report-cabinet-implementation.md` | 100 |
+| `month-close-control` | `docs/specs/month-close-control-report-implementation.md` | 100 |
+| `tax-load-report` | `docs/specs/tax-load-report-implementation.md` | 100 |
 | `development-workflow` | `docs/specs/wb-unit-economics-ai-git-workflow.md` | 100 |
 
 ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
@@ -100,7 +103,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
 | Source refresh DB retention | `docs/specs/source-refresh-database-retention.md` | accepted | Меняются правила хранения raw snapshot rows PostgreSQL или процедура освобождения диска. |
 | Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
-| Month close pilot | `docs/specs/month-close-control-pilot.md` | draft | Нужно понять пилотный read-only контур закрытия месяца: онлайн-ОСВ, налоги, ЕНС, НДС, скрины и процессные подтверждения до CRM. |
+| Month close pilot | `docs/specs/month-close-control-pilot.md` | superseded | Исторический discovery-контур закрытия месяца; действующая реализация описана в accepted report spec. |
 | Month close report | `docs/specs/month-close-control-report-implementation.md` | accepted | Реализуется staff-only web + Excel сценарий календарного закрытия месяца с evidence v2 и advisory-проверками. |
 | Tax load report | `docs/specs/tax-load-report-implementation.md` | accepted | Реализуется staff-only отчет налоговой нагрузки за месяц и YTD, web + Excel, без неподтвержденных значений. |
 | AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
@@ -150,8 +153,9 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — действующее решение
   по налоговым профилям и клиентской семантике прибыли.
 - `docs/decisions/2026-07-14-accounting-reports-accountant-questions.md` —
-  draft-решение: налоговый профиль и формула ФНС уже зафиксированы, оставшиеся
-  вопросы бухгалтеру блокируют перевод бухгалтерских spec в accepted.
+  active-реестр: налоговый профиль и формула ФНС уже зафиксированы, а оставшиеся
+  вопросы ограничивают подтвержденные статусы, enforced-проверки и клиентскую
+  публикацию, но не accepted staff-only advisory v1.
 - `docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md` — superseded
   решение с legacy-формулой `НДС 5/105 + УСН 1%`.
 - `docs/decisions/2026-06-23-db-first-publication-baseline.md` — исторический

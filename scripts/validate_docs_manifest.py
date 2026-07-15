@@ -16,6 +16,7 @@ from docs_metadata import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs" / "manifest.yml"
+DOCS_INDEX = ROOT / "docs" / "index.md"
 REQUIRED_KEYS = {
     "path",
     "title",
@@ -34,6 +35,15 @@ FRONTMATTER_PARITY_KEYS = {
 }
 VALID_STATUSES = {"active", "draft", "accepted", "implemented", "superseded"}
 RECONCILED_RE = re.compile(r"^(?P<path>.+?)\s+@\s+(?P<date>\d{4}-\d{2}-\d{2})$")
+TRUTH_TABLE_ROW_RE = re.compile(
+    r"^\| `(?P<scope>[^`]+)` \| `(?P<path>[^`]+)` \| "
+    r"(?P<priority>\d+) \|$",
+    re.MULTILINE,
+)
+CONTOUR_STATUS_ROW_RE = re.compile(
+    r"^\| [^|]+ \| `(?P<path>[^`]+)` \| (?P<status>[a-z-]+) \|",
+    re.MULTILINE,
+)
 CLIENT_TZ_DATE_RE = re.compile(
     r"^Дата актуализации: (?P<day>\d{1,2}) (?P<month>[а-яё]+) (?P<year>\d{4})\.$",
     re.MULTILINE,
@@ -212,6 +222,73 @@ def validate_truth_precedence(records: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def validate_index_consistency(
+    records: list[dict[str, Any]], index_text: str
+) -> list[str]:
+    """Keep human-readable truth and status tables aligned with the manifest."""
+    failures: list[str] = []
+    truth_by_scope: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        scope = record.get("truth_scope")
+        priority = record.get("truth_priority")
+        if (
+            record.get("source_of_truth") is True
+            and isinstance(scope, str)
+            and isinstance(priority, int)
+            and not isinstance(priority, bool)
+        ):
+            truth_by_scope.setdefault(scope, []).append(record)
+
+    expected_truth: dict[str, tuple[str, int]] = {}
+    for scope, scoped_records in truth_by_scope.items():
+        highest = max(int(record["truth_priority"]) for record in scoped_records)
+        leaders = [
+            record for record in scoped_records if record["truth_priority"] == highest
+        ]
+        if len(leaders) == 1:
+            expected_truth[scope] = (str(leaders[0]["path"]), highest)
+
+    indexed_truth: dict[str, tuple[str, int]] = {}
+    for match in TRUTH_TABLE_ROW_RE.finditer(index_text):
+        scope = match.group("scope")
+        if scope in indexed_truth:
+            failures.append(f"docs/index.md: duplicate truth_scope row {scope!r}")
+            continue
+        indexed_truth[scope] = (
+            match.group("path"),
+            int(match.group("priority")),
+        )
+
+    for scope, expected in sorted(expected_truth.items()):
+        actual = indexed_truth.get(scope)
+        if actual is None:
+            failures.append(f"docs/index.md: missing truth_scope row {scope!r}")
+        elif actual != expected:
+            failures.append(
+                f"docs/index.md: truth_scope {scope!r} differs from manifest; "
+                f"index={actual!r}, manifest={expected!r}"
+            )
+    for scope in sorted(indexed_truth.keys() - expected_truth.keys()):
+        failures.append(f"docs/index.md: unknown truth_scope row {scope!r}")
+
+    records_by_path = {str(record.get("path")): record for record in records}
+    for match in CONTOUR_STATUS_ROW_RE.finditer(index_text):
+        path = match.group("path")
+        record = records_by_path.get(path)
+        if record is None:
+            failures.append(
+                f"docs/index.md: contour path is absent from manifest: {path}"
+            )
+            continue
+        status = match.group("status")
+        if status != record.get("status"):
+            failures.append(
+                f"docs/index.md: status for {path} is {status!r}, "
+                f"manifest has {record.get('status')!r}"
+            )
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     if not MANIFEST.exists():
@@ -256,6 +333,15 @@ def main() -> int:
             validate_markdown_metadata(rel_path, record, failures)
 
     failures.extend(validate_truth_precedence(records))
+    if DOCS_INDEX.exists():
+        failures.extend(
+            validate_index_consistency(
+                records,
+                DOCS_INDEX.read_text(encoding="utf-8"),
+            )
+        )
+    else:
+        failures.append("docs/index.md: file is missing")
 
     registered_dates: list[str] = []
     for record in records:

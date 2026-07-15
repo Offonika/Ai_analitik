@@ -15,7 +15,7 @@ contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_
 depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Implementation Status
@@ -739,12 +739,14 @@ Web/Excel должен показывать разрез `Маркетплейс
    transaction with unknown outcome inside the same run.
    `ozon-only` preflight requires Ozon + 1C and does not block on an unrelated
    WB integration status.
-5. Reload Sabura in `ozon-only`, validate April, then inspect May and the open
-   June. Sabura keeps `taxProfile.status = missing` when 1C has no explicit
-   regime; do not add an override without accountant confirmation.
-6. Reload Galustov and validate one closed month against 1C. Then reload the
-   Mukhamedov client and enable the same contract only after the pilot checks
-   pass. Publish a mixed report only after consultant acceptance.
+5. Reload the first pilot client in `ozon-only`, validate one closed month, then
+   inspect an incomplete and an open month. Keep `taxProfile.status = missing`
+   when 1C has no explicit regime; do not add an override without accountant
+   confirmation.
+6. Validate a second pilot client for one closed month against 1C, then repeat
+   the same contract for the next client only after the pilot checks pass.
+   Publish a mixed report only after consultant acceptance. Exact client ids and
+   periods belong to local acceptance evidence outside Git.
 
 Rollback: keep the new additive tables/column, disable the new mart/UI path and
 restore the previous application version. Do not delete snapshots, profiles or
@@ -779,21 +781,19 @@ Integration:
   commissioner revenue, 1C COGS and SKU-level Ozon expenses;
 - monthly mart uses period cost by organization and item; a later open month
   cannot change the result of earlier closed months;
-- Sabura April control: 1C revenue `26 149 512.63`, Ozon expenses
-  `5 433 950.60`, signed monthly COGS `12 487 433.55`, pre-tax profit
-  `8 228 128.48`, mart average unit cost about `895.41`, direct 1C register
-  average about `896.65`, deviation about `0.14%`;
-- former controls `11 700 778.70` for April and `38 734 121.76` for March-May
-  are superseded because they used the erroneous whole-snapshot average; a new
-  March-May control is accepted only after May is complete;
+- an anonymized closed-period fixture reconciles 1C revenue, Ozon expenses,
+  signed monthly COGS and pre-tax profit; mart average unit cost must stay within
+  the accepted tolerance of the direct 1C register average;
+- controls derived from a whole-snapshot average are superseded; a multi-month
+  control is accepted only when every included month is complete;
 - non-material cost anomaly returns `warning`; material anomaly, missing or
   nonpositive cost returns `blocked` and null profit. A closed incomplete May
   is listed in `excludedIncompletePeriods`; open June is listed only in
   `excludedOpenPeriods`;
-- on immutable snapshot `source_refresh_c349dd3c521a4e668346cc2114f066aa`,
-  May has seven missing-cost rows, zero ambiguous mappings and zero incomplete
-  expense rows; the earlier `5/2/2` composition belongs to another snapshot.
-  The durable acceptance invariant is null May profit plus explicit blockers;
+- an anonymized incomplete-period fixture keeps profit `null` and exposes
+  missing-cost, ambiguous-mapping and incomplete-expense blockers separately;
+  exact production report ids, snapshot ids and business totals stay in local
+  acceptance evidence outside Git;
 - tax profile tests cover explicit 1C USN, OSNO with confirmed input VAT,
   missing profile, missing annual NDFL base, overlapping profiles and multiple
   organizations of one client;
@@ -855,6 +855,11 @@ Acceptance:
 
 # Changelog
 
+- 2026-07-15: replaced production client names, report totals and snapshot ids
+  with anonymized acceptance invariants; exact live evidence remains outside
+  Git, while exported client labels use the accepted profit-before-NDFL
+  semantics.
+
 - 2026-07-12: Добавлен полный typed shadow для Ozon: cash-flow service lines,
   realization/posting, mutual settlement, buyout, B2B и product catalog
   материализуются из verified immutable files. Legacy DB rows и typed путь
@@ -894,10 +899,10 @@ Acceptance:
 - 2026-07-11: Removed single-company/single-organization guessing, made
   documentless direct COGS control conservative, added unknown-revenue row
   counters and preserved the actually applied monthly materiality thresholds.
-- 2026-07-10: Replaced the superseded Sabura April whole-snapshot control with
-  signed monthly COGS `12 487 433.55` and pre-tax profit `8 228 128.48`; added
-  `costQuality`, materiality rules, `excludedIncompletePeriods` and the
-  1,000-row resumable snapshot-persistence requirement.
+- 2026-07-10: Replaced the superseded whole-snapshot control with an anonymized
+  closed-period control; added `costQuality`, materiality rules,
+  `excludedIncompletePeriods` and the 1,000-row resumable snapshot-persistence
+  requirement.
 - 2026-07-10: Accepted canonical monthly Ozon P&L v2, organization-bound
   immutable tax profiles, audited overrides, open-period profit blocking,
   duplicate snapshot controls and deprecated legacy `pnl` isolation.

@@ -29,6 +29,7 @@ updated_at: "2026-07-15"
 | `PATCH` | `/api/admin/users/{user_id}` | `admin_update_user_api_admin_users__user_id__patch` | Admin Update User |
 | `POST` | `/api/admin/users/{user_id}/reset-password` | `admin_reset_password_api_admin_users__user_id__reset_password_post` | Admin Reset Password |
 | `GET` | `/api/ai/config` | `ai_config_api_ai_config_get` | Ai Config |
+| `GET` | `/api/ai/threads` | `list_threads_api_ai_threads_get` | List Threads |
 | `POST` | `/api/ai/threads` | `create_thread_api_ai_threads_post` | Create Thread |
 | `GET` | `/api/ai/threads/{thread_id}` | `get_thread_api_ai_threads__thread_id__get` | Get Thread |
 | `GET` | `/api/ai/threads/{thread_id}/events` | `get_thread_events_api_ai_threads__thread_id__events_get` | Get Thread Events |
@@ -107,4 +108,4 @@ updated_at: "2026-07-15"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **86**.
+Всего маршрутов: **87**.
