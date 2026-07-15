@@ -2845,6 +2845,28 @@ def test_user_guide_is_generated_from_current_interface_metadata(
     assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in styles.text
 
 
+def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
+
+    assert app_js.status_code == 200
+    assert styles.status_code == 200
+    assert (
+        "/api/ai/threads?report_id=${encodeURIComponent(reportId)}&limit=1"
+        in app_js.text
+    )
+    assert "function renderAiThread(thread)" in app_js.text
+    assert 'els.aiSourceStatus.textContent = "Анализирую…"' in app_js.text
+    assert 'throw new Error("AI stream ended without a final answer")' in app_js.text
+    assert "grid-template-rows: auto auto auto minmax(0, 1fr);" in styles.text
+    assert ".ai-widget {\n    display: block;\n    overflow-y: auto;" in styles.text
+    assert "word-break: break-word;" in styles.text
+
+
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     tmp_path: Path,
 ) -> None:
@@ -9713,6 +9735,48 @@ def test_ai_thread_requires_report_and_is_private_to_owner(tmp_path: Path) -> No
     assert client.get(f"/api/ai/threads/{thread['id']}").status_code == 404
 
 
+def test_ai_thread_history_lists_latest_owner_thread_for_report(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    first = client.post(
+        "/api/ai/threads", json={"report_id": "report-1"}
+    ).json()
+    client.post(
+        f"/api/ai/threads/{first['id']}/messages",
+        json={"content": "Что главное?"},
+    )
+    latest = client.post(
+        "/api/ai/threads", json={"report_id": "report-1"}
+    ).json()
+    client.post(
+        f"/api/ai/threads/{latest['id']}/messages",
+        json={"content": "Где нет себестоимости?"},
+    )
+
+    response = client.get("/api/ai/threads?report_id=report-1&limit=1")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [latest["id"]]
+    assert [message["role"] for message in items[0]["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    assert items[0]["events"]
+
+    created = client.post(
+        "/api/admin/users",
+        json={"email": "history-other@example.com", "role": "consultant"},
+    ).json()
+    client.post("/api/auth/logout")
+    login_as(client, "history-other@example.com", created["temporaryPassword"])
+    assert client.get("/api/ai/threads?report_id=report-1&limit=1").json() == {
+        "items": []
+    }
+
+
 def test_ai_thread_rejects_report_client_scope_mismatch(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     login(client)
@@ -10007,6 +10071,15 @@ def test_ai_stream_returns_safe_events_and_final_answer(tmp_path: Path) -> None:
     events = client.get(f"/api/ai/threads/{thread['id']}/events").json()["items"]
     assert any(item["title"] == "Разбираю убыточность" for item in events)
     assert not any("input_payload" in item.get("payload", {}) for item in events)
+
+    with client.stream(
+        "POST",
+        f"/api/ai/threads/{thread['id']}/messages/stream",
+        json={"content": "Повтори главный вывод"},
+    ) as response:
+        second_body = "".join(response.iter_text())
+
+    assert second_body.count('"title": "Ответ готов"') == 1
 
 
 def test_client_company_alias_merge_repairs_report_scope_and_is_idempotent(

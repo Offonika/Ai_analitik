@@ -2977,6 +2977,31 @@ def create_app(
             settings=runtime_settings,
         )
 
+    @app.get("/api/ai/threads")
+    def list_threads(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        limit: int = 1,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        threads = repository.list_ai_threads(
+            db,
+            user=current,
+            report_id=report.id,
+            limit=limit,
+        )
+        return {
+            "items": [
+                thread_payload(
+                    thread,
+                    repository.thread_messages(db, thread, limit=100),
+                    repository.thread_events(db, current, thread),
+                )
+                for thread in threads
+            ]
+        }
+
     @app.post("/api/ai/threads")
     def create_thread(
         payload: ThreadCreateRequest,
@@ -3096,6 +3121,10 @@ def create_app(
         def generate():
             sent_ids: set[int] = set()
             try:
+                sent_ids.update(
+                    item["id"]
+                    for item in repository.thread_events(db, current, thread)
+                )
                 repository.add_ai_message(
                     db, thread=thread, role="user", content=payload.content
                 )

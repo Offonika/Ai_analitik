@@ -947,6 +947,18 @@ AI-аналитик в кабинете показывает не raw reasoning 
 - `final`: финальный текст ответа;
 - `error`: безопасная ошибка без SQL, traceback или секретов.
 
+Штатный SSE UI восстанавливает последний активный thread текущего пользователя
+для выбранного отчёта через `GET /api/ai/threads?report_id=<id>&limit=1`.
+После перезагрузки страницы сохранённые сообщения, safe events и источник
+последнего ответа снова видимы; UI не очищает серверную историю. Во время
+запроса поле и кнопка блокируются, статус явно показывает `Анализирую…`, а
+обрыв stream без `final` отображается как безопасная ошибка.
+
+Модальный AI widget имеет отдельные grid-строки для header, report context,
+quick questions и прокручиваемой chat workspace. Длинный текст переносится
+внутри message/timeline, форма не выходит за viewport. На узком экране сам
+widget получает вертикальную прокрутку вместо обрезки через `overflow:hidden`.
+
 Клиентская роль видит только safe trace. `consultant` и `admin` могут видеть
 дополнительные служебные labels tool names/status, но не raw prompts, SQL,
 секреты, payload внешних API или скрытые рассуждения модели.
@@ -1300,6 +1312,9 @@ Large-report loading:
 
 # Changelog
 
+- 2026-07-15: v2.43 закрепил восстановление последнего SSE thread после
+  перезагрузки, явные loading/error состояния, отсутствие повторной отправки
+  исторических SSE events и viewport-safe прокрутку AI widget.
 - 2026-07-15: v2.42 синхронизировал self-hosted ChatKit с актуальным OpenAI
   custom-server contract (`apiURL` и same-origin custom `fetch`), исключил
   устаревший domain key из runtime/API и добавил test-only systemd feature-flag

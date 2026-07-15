@@ -2873,8 +2873,9 @@ button.action-insight-card {
 
 .ai-widget {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 0;
+  min-height: 0;
 }
 
 .client-output-widget {
@@ -3853,6 +3854,7 @@ body.widget-open {
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
   gap: 16px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .chatkit-shell {
@@ -3872,14 +3874,21 @@ body.widget-open {
 .ai-chat,
 .ai-timeline {
   min-width: 0;
+  min-height: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
 }
 
+.ai-chat {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  overflow: hidden;
+}
+
 .ai-messages {
-  min-height: 320px;
-  max-height: min(480px, calc(100vh - 280px));
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   display: grid;
   align-content: start;
@@ -3888,12 +3897,14 @@ body.widget-open {
 }
 
 .ai-message {
+  min-width: 0;
   max-width: 82%;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .ai-message.user {
@@ -3917,14 +3928,28 @@ body.widget-open {
 
 .ai-form input {
   width: 100%;
+  min-width: 0;
   min-height: 40px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0 10px;
+  text-overflow: ellipsis;
 }
 
 .ai-timeline {
   padding: 14px;
+  overflow: auto;
+}
+
+.ai-widget-actions,
+.ai-widget-actions .status-pill {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ai-widget-actions .status-pill {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .ai-timeline h3 {
@@ -5303,6 +5328,20 @@ td {
     max-height: calc(100vh - 20px);
   }
 
+  .ai-widget {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .ai-workspace {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .ai-chat {
+    min-height: 420px;
+  }
+
   .widget-header,
   .widget-actions {
     align-items: stretch;
@@ -5310,8 +5349,8 @@ td {
   }
 
   .ai-messages {
-    min-height: 220px;
-    max-height: 42vh;
+    min-height: 240px;
+    max-height: 50vh;
   }
 
   .integration-actions {

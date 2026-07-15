@@ -20510,6 +20510,29 @@ def create_ai_thread(
     return thread
 
 
+def list_ai_threads(
+    db: Session,
+    *,
+    user: User,
+    report_id: str,
+    limit: int = 20,
+) -> list[AiThread]:
+    """Return the current user's active threads for one accessible report."""
+
+    statement = (
+        select(AiThread)
+        .where(
+            AiThread.user_id == user.id,
+            AiThread.report_run_id == report_id,
+            AiThread.tenant_id.in_(allowed_tenant_ids(user)),
+            AiThread.archived_at.is_(None),
+        )
+        .order_by(AiThread.created_at.desc(), AiThread.id.desc())
+        .limit(max(1, min(limit, 20)))
+    )
+    return list(db.scalars(statement))
+
+
 def require_thread(db: Session, user: User, thread_id: str) -> AiThread:
     thread = db.get(AiThread, thread_id)
     if (

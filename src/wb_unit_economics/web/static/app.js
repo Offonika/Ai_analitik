@@ -44,6 +44,7 @@ const state = {
   sourceRefreshPollTimer: 0,
   sourceRefreshAutoOpenRunId: "",
   aiThreadId: null,
+  aiHistoryRequestKey: "",
   aiBusy: false,
   chatkitEnabled: false,
   onecReconciliationLoaded: false,
@@ -3035,6 +3036,7 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   }
   state.reportId = reportId;
   state.aiThreadId = null;
+  state.aiHistoryRequestKey = "";
   if (state.chatkitEnabled) {
     els.chatkitElement.setThreadId(null).catch(() => {});
   }
@@ -3051,6 +3053,7 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
       state.scenario = scenario;
       state.freshness = null;
       renderAccountingScenario(scenario);
+      await restoreAiThread(reportId, context);
       configurePageMode();
     } catch (error) {
       if (!isCurrentClientLoad(context) || state.reportId !== reportId) return;
@@ -3082,6 +3085,7 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
     await Promise.allSettled([
       loadIntegrations(context),
       loadSourceRefreshStatus(context),
+      restoreAiThread(reportId, context),
     ]);
     configurePageMode();
     return;
@@ -3095,6 +3099,7 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
     loadClientDraft({ ...context, reportId }),
     loadIntegrations(context),
     loadSourceRefreshStatus(context),
+    restoreAiThread(reportId, context),
   ]);
   configurePageMode();
 }
@@ -3368,9 +3373,70 @@ async function ensureAiThread() {
   return state.aiThreadId;
 }
 
+async function restoreAiThread(
+  reportId = state.reportId,
+  context = currentClientLoadContext(),
+) {
+  if (state.chatkitEnabled || !reportId) {
+    return;
+  }
+  const requestKey = `${context.clientLoadToken ?? state.clientLoadToken}:${reportId}`;
+  state.aiHistoryRequestKey = requestKey;
+  els.aiInput.disabled = true;
+  els.aiSendButton.disabled = true;
+  els.aiSourceStatus.textContent = "Загружаем историю…";
+  els.aiSourceStatus.classList.remove("ok", "fallback", "bad");
+  try {
+    const payload = await api(
+      `/api/ai/threads?report_id=${encodeURIComponent(reportId)}&limit=1`,
+    );
+    if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
+      return;
+    }
+    const thread = (payload.items || [])[0];
+    if (!thread) {
+      els.aiSourceStatus.textContent = "Не запускался";
+      return;
+    }
+    state.aiThreadId = thread.id;
+    renderAiThread(thread);
+  } catch (error) {
+    if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
+      return;
+    }
+    els.aiSourceStatus.textContent = "История недоступна";
+    els.aiSourceStatus.classList.add("bad");
+  } finally {
+    if (state.aiHistoryRequestKey === requestKey) {
+      state.aiHistoryRequestKey = "";
+      els.aiInput.disabled = state.aiBusy;
+      els.aiSendButton.disabled = state.aiBusy;
+    }
+  }
+}
+
+function renderAiThread(thread) {
+  els.aiMessages.replaceChildren();
+  els.aiEvents.replaceChildren();
+  (thread.messages || []).forEach((message) =>
+    appendAiMessage(message.role, message.content),
+  );
+  (thread.events || []).forEach(appendAiEvent);
+  const sourceEvent = [...(thread.events || [])]
+    .reverse()
+    .find((event) => event.payload?.answerSource);
+  if (sourceEvent) {
+    renderAiSource(sourceEvent.payload);
+  } else if ((thread.messages || []).some((message) => message.role === "assistant")) {
+    els.aiSourceStatus.textContent = "История восстановлена";
+  } else {
+    els.aiSourceStatus.textContent = "Не запускался";
+  }
+}
+
 async function sendAiQuestion(rawQuestion) {
   const question = String(rawQuestion || "").trim();
-  if (!question || state.aiBusy || !state.reportId) {
+  if (!question || state.aiBusy || state.aiHistoryRequestKey || !state.reportId) {
     return;
   }
   if (state.chatkitEnabled) {
@@ -3385,7 +3451,10 @@ async function sendAiQuestion(rawQuestion) {
   state.aiBusy = true;
   els.aiError.textContent = "";
   els.aiInput.value = "";
+  els.aiInput.disabled = true;
   els.aiSendButton.disabled = true;
+  els.aiSourceStatus.textContent = "Анализирую…";
+  els.aiSourceStatus.classList.remove("ok", "fallback", "bad");
   appendAiMessage("user", question);
   try {
     const threadId = await ensureAiThread();
@@ -3401,11 +3470,17 @@ async function sendAiQuestion(rawQuestion) {
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
     }
-    await readAiStream(response);
+    const terminalEvent = await readAiStream(response);
+    if (terminalEvent !== "final") {
+      throw new Error("AI stream ended without a final answer");
+    }
   } catch (error) {
     els.aiError.textContent = "Не удалось получить ответ AI. Данные WB/1С не менялись.";
+    els.aiSourceStatus.textContent = "Ошибка ответа";
+    els.aiSourceStatus.classList.add("bad");
   } finally {
     state.aiBusy = false;
+    els.aiInput.disabled = false;
     els.aiSendButton.disabled = false;
   }
 }
@@ -3414,6 +3489,7 @@ async function readAiStream(response) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let terminalEvent = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) {
@@ -3422,11 +3498,14 @@ async function readAiStream(response) {
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split("\n\n");
     buffer = chunks.pop() || "";
-    chunks.forEach(handleSseChunk);
+    chunks.forEach((chunk) => {
+      terminalEvent = handleSseChunk(chunk) || terminalEvent;
+    });
   }
   if (buffer.trim()) {
-    handleSseChunk(buffer);
+    terminalEvent = handleSseChunk(buffer) || terminalEvent;
   }
+  return terminalEvent;
 }
 
 function handleSseChunk(chunk) {
@@ -3434,28 +3513,29 @@ function handleSseChunk(chunk) {
   const eventLine = lines.find((line) => line.startsWith("event:"));
   const dataLine = lines.find((line) => line.startsWith("data:"));
   if (!dataLine) {
-    return;
+    return "";
   }
   const eventName = eventLine ? eventLine.replace("event:", "").trim() : "message";
   let payload = {};
   try {
     payload = JSON.parse(dataLine.replace("data:", "").trim());
   } catch (error) {
-    return;
+    return "";
   }
   if (eventName === "final") {
     appendAiMessage("assistant", payload.content || "");
     renderAiSource(payload);
-    return;
+    return "final";
   }
   if (eventName === "error") {
     els.aiError.textContent = payload.message || "AI временно недоступен.";
-    return;
+    return "error";
   }
   appendAiEvent(payload);
   if (payload.payload) {
     renderAiSource(payload.payload);
   }
+  return "";
 }
 
 function appendAiMessage(role, content) {
@@ -13446,6 +13526,7 @@ function resetClientScopedState(options = {}) {
   updateReportBuildButton(null);
   updateReportDownloadControl();
   state.aiThreadId = null;
+  state.aiHistoryRequestKey = "";
   state.onecReconciliationLoaded = false;
   state.rowPreset = "";
   els.topbarCabinetSelect.replaceChildren();
@@ -13457,6 +13538,8 @@ function resetClientScopedState(options = {}) {
   els.onecReconciliationFilterForm.reset();
   syncRowsPresetButtons();
   resetAiPanel();
+  els.aiInput.disabled = false;
+  els.aiSendButton.disabled = false;
   resetSourceRefreshPanel({ hide: true });
   resetMappingServicePanel({ hide: true });
   els.integrationsPanel.hidden = true;
