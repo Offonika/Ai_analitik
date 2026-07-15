@@ -55,6 +55,7 @@ depends_on:
   - workspace-shumeyko-partners-wb-unit-economics-mvp
 related_specs:
   - docs/specs/marketplace-1c-mapping-service.md
+changelog_path: docs/changelogs/excel-mvp.md
 supersedes: []
 rollout_required: false
 updated_at: "2026-07-15"

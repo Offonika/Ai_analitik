@@ -97,6 +97,20 @@ documents:
     audience: ["engineering", "consultant"]
     source_of_truth: false
     summary: "Полная история изменений accepted Excel MVP, вынесенная из длинного implementation spec."
+  - path: "docs/changelogs/web-cabinet.md"
+    title: "AI web cabinet changelog"
+    doc_type: "changelog"
+    status: "active"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Полная история изменений accepted web-cabinet implementation spec."
+  - path: "docs/changelogs/ozon-integration.md"
+    title: "Ozon integration changelog"
+    doc_type: "changelog"
+    status: "active"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Полная история изменений accepted Ozon integration spec."
   - path: "docs/specs/wb-unit-economics-client-web-cabinet.md"
     title: "Клиентский web-кабинет WB/1C юнит-экономики"
     doc_type: "spec"

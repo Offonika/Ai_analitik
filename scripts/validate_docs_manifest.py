@@ -34,6 +34,11 @@ FRONTMATTER_PARITY_KEYS = {
     "source_of_truth",
 }
 VALID_STATUSES = {"active", "draft", "accepted", "implemented", "superseded"}
+CHANGELOG_REQUIRED_SPECS = {
+    "docs/specs/marketplace-unit-economics-ozon-integration.md",
+    "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md",
+    "docs/specs/wb-unit-economics-excel-mvp-implementation.md",
+}
 RECONCILED_RE = re.compile(r"^(?P<path>.+?)\s+@\s+(?P<date>\d{4}-\d{2}-\d{2})$")
 TRUTH_TABLE_ROW_RE = re.compile(
     r"^\| `(?P<scope>[^`]+)` \| `(?P<path>[^`]+)` \| "
@@ -222,6 +227,55 @@ def validate_truth_precedence(records: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def validate_changelog_registration(
+    records: list[dict[str, Any]],
+    required_specs: set[str] | None = None,
+) -> list[str]:
+    """Keep long source specs linked to registered, back-referenced changelogs."""
+    failures: list[str] = []
+    required = CHANGELOG_REQUIRED_SPECS if required_specs is None else required_specs
+    records_by_path = {str(record.get("path")): record for record in records}
+
+    for rel_path in sorted(records_by_path):
+        path = ROOT / rel_path
+        if path.suffix != ".md" or not path.exists():
+            continue
+        metadata, _ = load_frontmatter(path)
+        changelog_path = metadata.get("changelog_path")
+        if rel_path in required and changelog_path is None:
+            failures.append(f"{rel_path}: required changelog_path is missing")
+            continue
+        if changelog_path is None:
+            continue
+        if not isinstance(changelog_path, str):
+            failures.append(f"{rel_path}: changelog_path must be a path string")
+            continue
+
+        changelog_record = records_by_path.get(changelog_path)
+        if changelog_record is None:
+            failures.append(
+                f"{rel_path}: changelog_path is not registered: {changelog_path}"
+            )
+            continue
+        if changelog_record.get("doc_type") != "changelog":
+            failures.append(
+                f"{rel_path}: changelog_path must reference doc_type changelog: "
+                f"{changelog_path}"
+            )
+        changelog_file = ROOT / changelog_path
+        if not changelog_file.exists():
+            failures.append(
+                f"{rel_path}: changelog_path does not exist: {changelog_path}"
+            )
+            continue
+        changelog_metadata, _ = load_frontmatter(changelog_file)
+        if changelog_metadata.get("source_spec") != rel_path:
+            failures.append(
+                f"{changelog_path}: source_spec must point back to {rel_path}"
+            )
+    return failures
+
+
 def validate_index_consistency(
     records: list[dict[str, Any]], index_text: str
 ) -> list[str]:
@@ -326,13 +380,11 @@ def main() -> int:
         if not isinstance(record["source_of_truth"], bool):
             failures.append(f"{rel_path}: source_of_truth must be boolean")
         failures.extend(validate_truth_metadata(record, rel_path))
-        if (
-            path.suffix == ".md"
-            and rel_path.startswith(("docs/", "config/"))
-        ):
+        if path.suffix == ".md" and rel_path.startswith(("docs/", "config/")):
             validate_markdown_metadata(rel_path, record, failures)
 
     failures.extend(validate_truth_precedence(records))
+    failures.extend(validate_changelog_registration(records))
     if DOCS_INDEX.exists():
         failures.extend(
             validate_index_consistency(

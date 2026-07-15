@@ -164,6 +164,10 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
   решение по provider registry, blocked statuses и dry-run-first retention.
 - `docs/changelogs/excel-mvp.md` — полная история изменений accepted Excel MVP,
   вынесенная из длинного implementation spec.
+- `docs/changelogs/web-cabinet.md` — полная история изменений accepted
+  web-cabinet implementation spec.
+- `docs/changelogs/ozon-integration.md` — полная история изменений accepted
+  Ozon integration spec.
 
 # Проверки документации
 

@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import validate_docs_manifest  # noqa: E402
 from validate_docs_manifest import (  # noqa: E402
+    validate_changelog_registration,
     validate_index_consistency,
     validate_truth_precedence,
 )
@@ -73,9 +74,7 @@ def test_user_guide_contract_rejects_undocumented_source_refresh_action() -> Non
         "</div>"
     )
 
-    assert (
-        "new-refresh-action: expected data-guide-entry='checks'" in parser.failures
-    )
+    assert "new-refresh-action: expected data-guide-entry='checks'" in parser.failures
     assert "new-refresh-action: guide description is missing" in parser.failures
 
 
@@ -118,6 +117,33 @@ def test_truth_precedence_rejects_equal_leaders() -> None:
     assert validate_truth_precedence(records) == [
         "truth_scope 'source-refresh' must have one highest-priority document; "
         "found a.md, b.md"
+    ]
+
+
+def test_changelog_registration_requires_registered_back_reference(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "current.md"
+    spec.write_text(
+        "---\nchangelog_path: history.md\n---\nCurrent requirements\n",
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.md"
+    history.write_text(
+        "---\nsource_spec: wrong.md\n---\nHistory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    records = [
+        {"path": "current.md", "doc_type": "spec"},
+        {"path": "history.md", "doc_type": "reference"},
+    ]
+
+    failures = validate_changelog_registration(records, {"current.md"})
+
+    assert failures == [
+        "current.md: changelog_path must reference doc_type changelog: history.md",
+        "history.md: source_spec must point back to current.md",
     ]
 
 
