@@ -43,6 +43,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "wb_unit_economics.web" = ["static/*"]
+"wb_unit_economics.web.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

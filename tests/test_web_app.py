@@ -33,6 +33,7 @@ from wb_unit_economics.web.models import (
     TenantIntegration,
     WbCabinet,
 )
+from wb_unit_economics.web.prompt_loader import load_prompt, render_prompt
 from wb_unit_economics.web.refresh import (
     AutoRefreshBusyError,
     AutoRefreshUnavailableError,
@@ -9640,6 +9641,72 @@ def test_ai_openai_source_is_visible_when_model_answers(
     assert any(item["type"] == "answer_source" for item in answer["events"])
 
 
+def test_ai_prompts_are_versioned_package_resources() -> None:
+    analyst_prompt = load_prompt("ai_analyst")
+    client_draft_prompt = load_prompt("client_draft")
+
+    assert "{{LIMITATIONS}}" in analyst_prompt
+    assert "короткое приветствие" in analyst_prompt
+    assert "Обязательные разделы" in client_draft_prompt
+    rendered = render_prompt("ai_analyst", LIMITATIONS="- Только тест")
+    assert "{{LIMITATIONS}}" not in rendered
+    assert "- Только тест" in rendered
+    with pytest.raises(RuntimeError, match="Unresolved placeholders"):
+        render_prompt("ai_analyst")
+
+    analyst = AiAnalyst(WebSettings())
+    assert analyst._is_conversational_message("Привет!") is True
+    assert analyst._is_conversational_message("Привет! Что главное?") is False
+
+
+def test_ai_short_greeting_does_not_call_report_tools(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import openai
+
+    class FakeResponse:
+        output = []
+        output_text = "Здравствуйте! Могу помочь разобрать показатели отчёта."
+
+    requests = []
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            return FakeResponse()
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    client = make_client(tmp_path, settings_overrides={"openai_api_key": "test-key"})
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+
+    answer = client.post(
+        f"/api/ai/threads/{thread['id']}/messages",
+        json={"content": "Привет!"},
+    ).json()
+
+    assert requests[0]["tool_choice"] == "none"
+    assert not any(
+        item["type"] in {"tool_started", "tool_completed"}
+        for item in answer["events"]
+    )
+    assistant = [
+        item for item in answer["messages"] if item["role"] == "assistant"
+    ][-1]
+    assert assistant["content"].startswith("Здравствуйте!")
+    assert assistant["citations"] == []
+    source_event = [
+        item for item in answer["events"] if item["type"] == "answer_source"
+    ][-1]
+    assert source_event["payload"]["toolNames"] == []
+    assert "без обращения к данным отчёта" in source_event["message"]
+
+
 def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
     tmp_path: Path,
     monkeypatch,
@@ -9688,6 +9755,7 @@ def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
     ).json()
 
     assert len(requests) == 2
+    assert requests[0]["tool_choice"] == "required"
     assert all(request["store"] is False for request in requests)
     assert all(
         request["include"] == ["reasoning.encrypted_content"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.models import AiThread, ReportRun, User
+from wb_unit_economics.web.prompt_loader import load_prompt, render_prompt
 from wb_unit_economics.web.refresh import (
     AutoRefreshBusyError,
     AutoRefreshDisabledError,
@@ -21,6 +23,27 @@ LIMITATIONS = [
     "Упущенные продажи являются управленческой оценкой, не финальным прогнозом.",
     "AI не меняет себестоимость, маппинг и данные WB/1C.",
 ]
+
+CONVERSATIONAL_MESSAGES = frozenset(
+    {
+        "благодарю",
+        "доброе утро",
+        "добрый вечер",
+        "добрый день",
+        "до свидания",
+        "здравствуй",
+        "здравствуйте",
+        "как тобой пользоваться",
+        "пока",
+        "привет",
+        "приветствую",
+        "спасибо",
+        "что ты умеешь",
+        "чем можешь помочь",
+        "hello",
+        "hi",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -117,6 +140,8 @@ class AiAnalyst:
         thread: AiThread,
         tool_outputs: dict[str, Any],
     ) -> tuple[dict[str, Any], ...]:
+        if not tool_outputs:
+            return ()
         citations: list[dict[str, Any]] = [
             {
                 "type": "report",
@@ -155,7 +180,11 @@ class AiAnalyst:
     ) -> None:
         if answer_source == "openai":
             title = "OpenAI ответил"
-            message = "Ответ собран AI-аналитиком по расчетной витрине."
+            message = (
+                "Ответ собран AI-аналитиком по расчетной витрине."
+                if tool_names
+                else "Ответ подготовлен без обращения к данным отчёта."
+            )
             status = "ok"
         else:
             title = "Ответ собран локально"
@@ -315,14 +344,9 @@ class AiAnalyst:
             input_items: list[Any] = [
                 {
                     "role": "developer",
-                    "content": (
-                        "Ты AI-аналитик кабинета WB/1C юнит-экономики "
-                        "без права изменять данные. "
-                        "Отвечай по-русски. Используй только whitelisted function "
-                        "tools, не придумывай себестоимость, маппинг, остатки или "
-                        "причины возвратов. Отделяй рассчитанный факт от вывода. "
-                        "Не подменяй null нулём. Явно перечисляй только ограничения "
-                        f"текущего отчёта: {'; '.join(limitations)}"
+                    "content": render_prompt(
+                        "ai_analyst",
+                        LIMITATIONS="\n".join(f"- {item}" for item in limitations),
                     ),
                 },
                 *history_items,
@@ -335,7 +359,9 @@ class AiAnalyst:
                 model=self.settings.openai_model,
                 input=input_items,
                 tools=self._tool_specs(),
-                tool_choice="required",
+                tool_choice=(
+                    "none" if self._is_conversational_message(question) else "required"
+                ),
                 parallel_tool_calls=False,
                 store=False,
                 include=["reasoning.encrypted_content"],
@@ -758,17 +784,7 @@ class AiAnalyst:
                 input=[
                     {
                         "role": "developer",
-                        "content": (
-                            "Ты помогаешь консультанту подготовить чистый "
-                            "клиентский текст по уже рассчитанной WB/1C витрине. "
-                            "Отвечай только готовым Markdown без служебных "
-                            "комментариев. Обязательные разделы: Ключевой вывод, "
-                            "Факты, Что требует проверки, Ограничения, Следующий шаг. "
-                            "Не упоминай названия инструментов, отладочные метки, "
-                            "служебные статусы и исходные данные, "
-                            "скрытые рассуждения и неподтвержденные причины возвратов. "
-                            "Не обещай запись во внешние системы."
-                        ),
+                        "content": load_prompt("client_draft"),
                     },
                     {
                         "role": "user",
@@ -792,6 +808,11 @@ class AiAnalyst:
             return getattr(response, "output_text", None)
         except Exception:
             return None
+
+    def _is_conversational_message(self, question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        normalized = re.sub(r"^[\s!?.,:;…—-]+|[\s!?.,:;…—-]+$", "", normalized)
+        return normalized in CONVERSATIONAL_MESSAGES
 
     def _normalize_client_draft(self, content: str, summary: dict[str, Any]) -> str:
         lines = [

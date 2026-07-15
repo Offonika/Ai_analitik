@@ -966,6 +966,16 @@ quick questions и прокручиваемой chat workspace. Длинный �
 
 ### AI core v2.41
 
+- Runtime developer prompts хранятся отдельными Git-versioned Markdown-файлами
+  `src/wb_unit_economics/web/prompts/ai_analyst.md` и `client_draft.md`,
+  упаковываются вместе с Python package и не редактируются через кабинет.
+  Отсутствующий, пустой или содержащий незаполненный обязательный placeholder
+  prompt считается ошибкой реализации, а не поводом молча ослабить ограничения.
+- Для чистого короткого приветствия, благодарности, прощания или вопроса о
+  возможностях первый Responses request использует `tool_choice=none`: ответ не
+  содержит фактов отчёта и не создаёт tool events/citations. Любой смешанный или
+  фактический вопрос по отчёту сохраняет `tool_choice=required`, поэтому модель
+  не может ответить финансовыми показателями без server-side evidence.
 - OpenAI вызывается до deterministic fallback; fallback не запускает tools
   заранее и переиспользует уже полученный результат tool call после ошибки
   модели. Один function call, включая `refresh_onec_and_rebuild_report`, может
@@ -1313,6 +1323,9 @@ Large-report loading:
 
 # Changelog
 
+- 2026-07-15: v2.45 вынес developer prompts AI-аналитика и клиентского
+  черновика в упакованные Markdown-файлы и запретил запуск отчётных tools для
+  чистых приветствий, сохранив обязательный tool для фактических вопросов.
 - 2026-07-15: v2.44 распространил viewport-safe вертикальную прокрутку AI
   widget на низкие экраны, чтобы поле вопроса не обрезалось при ограниченной
   высоте окна.
