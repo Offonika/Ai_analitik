@@ -32,9 +32,7 @@ from scripts.generate_web_api_reference import (  # noqa: E402
 )
 from scripts.generate_web_api_reference import render_inventory  # noqa: E402
 
-EXCEL_SPEC = ROOT / "docs" / "specs" / (
-    "wb-unit-economics-excel-mvp-implementation.md"
-)
+EXCEL_SPEC = ROOT / "docs" / "specs" / ("wb-unit-economics-excel-mvp-implementation.md")
 WEB_INDEX = ROOT / "src" / "wb_unit_economics" / "web" / "static" / "index.html"
 WEB_APP_JS = ROOT / "src" / "wb_unit_economics" / "web" / "static" / "app.js"
 CURRENT_CLIENT_SEMANTICS_DOCS = (
@@ -47,6 +45,7 @@ CURRENT_CLIENT_SEMANTICS_DOCS = (
     ROOT / "docs" / "client-methodology.md",
     ROOT / "docs" / "client-tz.md",
     ROOT / "docs" / "calculation-formulas.md",
+    ROOT / "docs" / "power-bi-wb-model-reference.md",
 )
 FORBIDDEN_CLIENT_PROFIT_TERMS = (
     "маржинальный доход wb после налогов",
@@ -130,8 +129,7 @@ class UserGuideContractParser(HTMLParser):
         identifier = attributes.get("id", tag)
         guide_entry = attributes.get("data-guide-entry", "")
         has_description = bool(
-            attributes.get("data-guide-description")
-            or attributes.get("data-tooltip")
+            attributes.get("data-guide-description") or attributes.get("data-tooltip")
         )
         ignored = attributes.get("data-guide-ignore") == "true"
 
@@ -165,9 +163,8 @@ class UserGuideContractParser(HTMLParser):
                 has_description,
             )
 
-        is_primary_action = (
-            tag in {"button", "a"}
-            and (self._inside("topbar-actions") or self._inside("workspace-header"))
+        is_primary_action = tag in {"button", "a"} and (
+            self._inside("topbar-actions") or self._inside("workspace-header")
         )
         if is_primary_action and not ignored:
             self._require_guide_entry(

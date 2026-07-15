@@ -49,6 +49,7 @@ CONTOUR_STATUS_ROW_RE = re.compile(
     r"^\| [^|]+ \| `(?P<path>[^`]+)` \| (?P<status>[a-z-]+) \|",
     re.MULTILINE,
 )
+CHANGELOG_HEADING_RE = re.compile(r"^# Changelog\s*$", re.MULTILINE)
 CLIENT_TZ_DATE_RE = re.compile(
     r"^Дата актуализации: (?P<day>\d{1,2}) (?P<month>[а-яё]+) (?P<year>\d{4})\.$",
     re.MULTILINE,
@@ -240,7 +241,7 @@ def validate_changelog_registration(
         path = ROOT / rel_path
         if path.suffix != ".md" or not path.exists():
             continue
-        metadata, _ = load_frontmatter(path)
+        metadata, body = load_frontmatter(path)
         changelog_path = metadata.get("changelog_path")
         if rel_path in required and changelog_path is None:
             failures.append(f"{rel_path}: required changelog_path is missing")
@@ -272,6 +273,35 @@ def validate_changelog_registration(
         if changelog_metadata.get("source_spec") != rel_path:
             failures.append(
                 f"{changelog_path}: source_spec must point back to {rel_path}"
+            )
+        source_updated_at = date_text(metadata.get("updated_at"))
+        changelog_updated_at = date_text(changelog_metadata.get("updated_at"))
+        if (
+            source_updated_at is not None
+            and changelog_updated_at is not None
+            and changelog_updated_at < source_updated_at
+        ):
+            failures.append(
+                f"{changelog_path}: updated_at {changelog_updated_at} is older "
+                f"than source spec {source_updated_at}"
+            )
+
+        changelog_heading = CHANGELOG_HEADING_RE.search(body)
+        if changelog_heading is None:
+            failures.append(f"{rel_path}: externalized changelog heading is missing")
+            continue
+        inline_tail = body[changelog_heading.end() :].strip()
+        inline_lines = [line for line in inline_tail.splitlines() if line.strip()]
+        if f"`{changelog_path}`" not in inline_tail:
+            failures.append(
+                f"{rel_path}: inline changelog must point to {changelog_path}"
+            )
+        if len(inline_lines) > 3 or any(
+            line.lstrip().startswith(("- ", "* ", "#")) for line in inline_lines
+        ):
+            failures.append(
+                f"{rel_path}: inline changelog must contain only the external "
+                "history pointer"
             )
     return failures
 

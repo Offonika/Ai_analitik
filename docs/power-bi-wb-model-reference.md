@@ -5,7 +5,8 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant"]
 status: "draft"
 source_of_truth: false
-updated_at: "2026-06-22"
+last_reconciled_with: "docs/decisions/2026-07-10-tax-profiles-osno-profit.md @ 2026-07-13"
+updated_at: "2026-07-15"
 source_artifact: "reports/power_bi_export_input/modelWB.pbip"
 ---
 
@@ -272,8 +273,10 @@ unit_profit_before_tax =
   - cogs_from_1c
 ```
 
-Текущий клиентский показатель называется `Маржинальный доход WB после налогов`,
-а не полная `Чистая прибыль`.
+В текущем отчете этот операционный слой называется `Управленческая прибыль WB`.
+После применения подтвержденного профильного налога клиент видит отдельный KPI
+`Прибыль до НДФЛ`. Ни один из этих показателей не является полной `Чистой
+прибылью` бизнеса.
 
 ## Налоги
 
@@ -284,15 +287,21 @@ unit_profit_before_tax =
 НалогУСНЗак = [Заказано руб] * 0.02
 ```
 
-Это нельзя переносить в текущий MVP. В Shumeyko принята текущая рамка:
+Это нельзя переносить в текущий MVP. Действующая рамка определяется налоговым
+профилем организации 1С:
 
 ```text
-vat_5_105 = revenue_after_spp * 5 / 105
-usn_1 = revenue_after_spp * 0.01
-profit_after_tax = unit_profit_before_tax - vat_5_105 - usn_1
+revenue_without_vat = revenue_with_vat - vat_output
+vat_payable = vat_output - confirmed_vat_input
+management_profit_wb =
+  revenue_without_vat - cogs_without_vat - wb_expenses_without_vat
+profit_before_ndfl = management_profit_wb - confirmed_non_ndfl_income_tax
 ```
 
-Если налоговые правила изменятся, нужна отдельная правка accepted spec.
+`НДС к уплате` остается отдельной сверкой и не вычитается из P&L повторно.
+Без подтвержденного профиля налоговые KPI остаются неопределенными, а формула
+`НДС 5/105 + УСН 1%` допустима только для legacy-отчетов с явно закрепленной
+старой версией методики.
 
 ## СПП и цена после СПП
 

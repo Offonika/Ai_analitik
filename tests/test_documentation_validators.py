@@ -125,7 +125,8 @@ def test_changelog_registration_requires_registered_back_reference(
 ) -> None:
     spec = tmp_path / "current.md"
     spec.write_text(
-        "---\nchangelog_path: history.md\n---\nCurrent requirements\n",
+        "---\nchangelog_path: history.md\n---\nCurrent requirements\n\n"
+        "# Changelog\n\nFull history: `history.md`.\n",
         encoding="utf-8",
     )
     history = tmp_path / "history.md"
@@ -144,6 +145,61 @@ def test_changelog_registration_requires_registered_back_reference(
     assert failures == [
         "current.md: changelog_path must reference doc_type changelog: history.md",
         "history.md: source_spec must point back to current.md",
+    ]
+
+
+def test_changelog_registration_rejects_inline_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "current.md"
+    spec.write_text(
+        "---\nchangelog_path: history.md\n---\nCurrent requirements\n\n"
+        "# Changelog\n\nFull history: `history.md`.\n"
+        "- 2026-07-15: duplicated inline change.\n",
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.md"
+    history.write_text(
+        "---\nsource_spec: current.md\n---\nHistory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    records = [
+        {"path": "current.md", "doc_type": "spec"},
+        {"path": "history.md", "doc_type": "changelog"},
+    ]
+
+    failures = validate_changelog_registration(records, {"current.md"})
+
+    assert failures == [
+        "current.md: inline changelog must contain only the external history pointer"
+    ]
+
+
+def test_changelog_registration_rejects_stale_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "current.md"
+    spec.write_text(
+        "---\nchangelog_path: history.md\nupdated_at: '2026-07-15'\n---\n"
+        "Current requirements\n\n# Changelog\n\nFull history: `history.md`.\n",
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.md"
+    history.write_text(
+        "---\nsource_spec: current.md\nupdated_at: '2026-07-14'\n---\nHistory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    records = [
+        {"path": "current.md", "doc_type": "spec"},
+        {"path": "history.md", "doc_type": "changelog"},
+    ]
+
+    failures = validate_changelog_registration(records, {"current.md"})
+
+    assert failures == [
+        "history.md: updated_at 2026-07-14 is older than source spec 2026-07-15"
     ]
 
 

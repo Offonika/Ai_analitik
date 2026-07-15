@@ -124,8 +124,8 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
   статусов.
 - `docs/power-bi-wb-model-reference.md` — безопасная выжимка из ранней Power
   BI-модели WB: структура, страницы, идеи формул и ограничения переноса.
-- `docs/wb-financial-report-power-bi-measures-review.md` — сверка текущего
-  расчета финансового отчета WB с ранними Power BI-мерами и список улучшений.
+- `docs/wb-financial-report-power-bi-measures-review.md` — superseded-анализ
+  ранней Power BI-модели; сохранен только как история.
 - `docs/client-analytical-report-draft.md` — шаблон AI-черновика аналитической
   записки к Excel-отчету для проверки консультантом.
 

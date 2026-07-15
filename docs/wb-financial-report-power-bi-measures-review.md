@@ -3,11 +3,18 @@ title: "Сверка финансового отчета WB с ранними Po
 doc_type: "analysis"
 domain: "marketplace-analytics"
 audience: ["engineering", "consultant"]
-status: "draft"
+status: "superseded"
 source_of_truth: false
-updated_at: "2026-06-22"
+superseded_by:
+  - "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
+  - "docs/decisions/2026-07-10-tax-profiles-osno-profit.md"
+updated_at: "2026-07-15"
 source_artifact: "reports/power_bi_export_input/modelWB.pbip"
 ---
+
+> **Устаревший анализ.** Сравнение сохранено как история ранней Power BI-модели.
+> Текущие формулы определяет accepted Excel spec, а налоговую семантику — ADR
+> `docs/decisions/2026-07-10-tax-profiles-osno-profit.md`.
 
 # Сверка финансового отчета WB с ранними Power BI-мерами
 
