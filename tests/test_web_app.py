@@ -207,6 +207,7 @@ def test_health_exposes_safe_runtime_contour_and_maintenance_message(
         settings_overrides={
             "runtime_environment": "test",
             "maintenance_message": "Проверяем новую версию до 18:00.",
+            "chatkit_enabled": True,
         },
     )
 
@@ -214,6 +215,8 @@ def test_health_exposes_safe_runtime_contour_and_maintenance_message(
 
     assert payload["runtimeEnvironment"] == "test"
     assert payload["maintenanceMessage"] == "Проверяем новую версию до 18:00."
+    assert payload["chatkitEnabled"] is True
+    assert "chatkitDomainKey" not in payload
 
 
 def test_test_contour_blocks_client_login_but_keeps_staff_access(
@@ -2859,6 +2862,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "текст для клиента" not in app_js.text.lower()
     assert "клиентский вывод" not in app_js.text.lower()
     assert "/messages/stream" in app_js.text
+    assert 'apiURL: "/api/chatkit"' in app_js.text
+    assert "domainKey" not in app_js.text
     assert "answerSource" in app_js.text
     assert "latestSourceRefresh" in app_js.text
     assert "integrationEffectiveStatus" in app_js.text
@@ -9726,6 +9731,10 @@ def test_chatkit_custom_server_uses_existing_private_ai_store(tmp_path: Path) ->
         settings_overrides={"chatkit_enabled": True},
     )
     login(client)
+    config = client.get("/api/ai/config").json()
+    assert config["transport"] == "chatkit"
+    assert config["chatkitEnabled"] is True
+    assert "chatkitDomainKey" not in config
     response = client.post(
         "/api/chatkit",
         json={

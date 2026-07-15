@@ -982,10 +982,13 @@ ChatKit является опциональной заменой только UI
 `SHUMEYKO_CHATKIT_ENABLED=false`, штатный SSE остается активным. При включении
 разрешена только custom self-hosted server integration с существующей
 same-origin session, CSRF/tenant/report/owner проверками и теми же серверными
-tools. Agent Builder workflow и Agents SDK не являются источником финансовой
-логики. Attachments и внешние actions отключены. До отдельного acceptance теста
-feature flag не включается в production; `/api/ai/config` сообщает UI выбранный
-transport и ограничения, не раскрывая конфигурацию OpenAI.
+tools. Web component использует актуальный custom-server contract:
+`apiURL=/api/chatkit` и same-origin custom `fetch`; domain key не требуется и
+не публикуется через health/config. Agent Builder workflow и Agents SDK не
+являются источником финансовой логики. Attachments и внешние actions отключены.
+До отдельного acceptance теста feature flag не включается в production;
+`/api/ai/config` сообщает UI выбранный transport и ограничения, не раскрывая
+конфигурацию OpenAI.
 
 ## Tenant Integrations
 
@@ -1297,6 +1300,10 @@ Large-report loading:
 
 # Changelog
 
+- 2026-07-15: v2.42 синхронизировал self-hosted ChatKit с актуальным OpenAI
+  custom-server contract (`apiURL` и same-origin custom `fetch`), исключил
+  устаревший domain key из runtime/API и добавил test-only systemd feature-flag
+  drop-in для staff acceptance.
 - 2026-07-14: v2.40 сделал десять основных KPI компактными и устойчивыми к
   разрыву чисел, закрепил адаптивную сетку 5/3/2 и ограниченные viewport
   подсказки при наведении и клавиатурном фокусе без изменения API и формул.

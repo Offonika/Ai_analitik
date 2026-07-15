@@ -96,9 +96,11 @@ AI runtime настраивается только через runtime env:
 
 - `SHUMEYKO_OPENAI_MODEL` — модель Responses API;
 - `SHUMEYKO_OPENAI_TIMEOUT_SECONDS=60` — общий timeout одного запроса;
-- `SHUMEYKO_CHATKIT_ENABLED=false` — опциональный custom-server UI transport;
-- `SHUMEYKO_CHATKIT_DOMAIN_KEY` — публичный domain key ChatKit web component.
+- `SHUMEYKO_CHATKIT_ENABLED=false` — опциональный self-hosted custom-server UI
+  transport.
 
-OpenAI API key остается секретом и в этот каталог не попадает. ChatKit включают
-только вместе с domain key после staff acceptance; без feature flag штатным
-transport остается `/messages/stream`. Attachments и внешние actions отключены.
+OpenAI API key остается секретом и в этот каталог не попадает. Self-hosted
+ChatKit подключается к same-origin `/api/chatkit` через `apiURL` и custom
+`fetch`; отдельный domain key этому режиму не нужен. До staff acceptance
+feature flag остается выключенным, а штатным transport — `/messages/stream`.
+Attachments и внешние actions отключены.

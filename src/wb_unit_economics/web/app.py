@@ -464,7 +464,6 @@ def create_app(
             "aiConfigured": bool(runtime_settings.resolved_openai_api_key),
             "aiModel": runtime_settings.openai_model,
             "chatkitEnabled": runtime_settings.chatkit_enabled,
-            "chatkitDomainKey": runtime_settings.chatkit_domain_key,
             "sourceRefreshTenantId": health_tenant_id,
             "latestPublishedReportId": latest_report.id if latest_report else "",
             "latestSourceRefreshStatus": displayed_refresh.status

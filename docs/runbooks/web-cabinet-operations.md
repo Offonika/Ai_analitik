@@ -435,13 +435,18 @@ AI-инструменты работают только поверх расче�
 Если ключ пустой или OpenAI недоступен, кабинет отвечает deterministic fallback
 по тем же серверным tool outputs.
 
-Для ChatKit custom-server режима нужны одновременно
-`SHUMEYKO_CHATKIT_ENABLED=true` и публичный
-`SHUMEYKO_CHATKIT_DOMAIN_KEY`. До staff acceptance оба production-контура
-оставляют feature flag выключенным. `/api/ai/config` показывает выбранный
-transport, а `/api/chatkit` при выключенном флаге возвращает `404`. Откат —
-вернуть `SHUMEYKO_CHATKIT_ENABLED=false`; существующие private AI threads и
-сообщения остаются доступны штатному SSE UI.
+Для self-hosted ChatKit custom-server режима нужен
+`SHUMEYKO_CHATKIT_ENABLED=true`. Web component подключается к same-origin
+`/api/chatkit` через `apiURL` и custom `fetch`; domain key не используется.
+До staff acceptance production оставляет feature flag выключенным.
+`/api/ai/config` показывает выбранный transport, а `/api/chatkit` при
+выключенном флаге возвращает `404`. Откат — вернуть
+`SHUMEYKO_CHATKIT_ENABLED=false`; существующие private AI threads и сообщения
+остаются доступны штатному SSE UI.
+
+Для test acceptance установить versioned drop-in
+`deploy/systemd/shumeiko-web-test.service.d/chatkit.conf`, выполнить
+`systemctl daemon-reload` и перезапустить только `shumeiko-web-test.service`.
 
 В UI панель `AI-аналитик` должна явно показывать источник ответа:
 

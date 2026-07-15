@@ -46,7 +46,6 @@ const state = {
   aiThreadId: null,
   aiBusy: false,
   chatkitEnabled: false,
-  chatkitDomainKey: "",
   onecReconciliationLoaded: false,
   rowPreset: "",
   taxInputPage: 0,
@@ -863,26 +862,15 @@ async function loadRuntimeStatus() {
 async function configureAiTransport() {
   try {
     const config = await api("/api/ai/config");
-    state.chatkitEnabled = Boolean(
-      config.chatkitEnabled && config.chatkitDomainKey,
-    );
-    state.chatkitDomainKey = String(config.chatkitDomainKey || "");
+    state.chatkitEnabled = Boolean(config.chatkitEnabled);
     if (!state.chatkitEnabled) {
       return;
     }
     await loadChatKitScript();
     els.chatkitElement.setOptions({
-      api: {
-        url: "/api/chatkit",
-        domainKey: state.chatkitDomainKey,
-        fetch: chatkitFetch,
-      },
-      locale: "ru",
+      apiURL: "/api/chatkit",
+      fetch: chatkitFetch,
       initialThread: null,
-      frameTitle: "AI-аналитик отчета",
-      disclaimer: {
-        text: "AI использует только расчетную витрину и не изменяет данные WB/1С.",
-      },
     });
     els.chatkitShell.hidden = false;
     els.aiWorkspace.hidden = true;

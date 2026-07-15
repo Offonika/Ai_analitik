@@ -30,7 +30,6 @@ class WebSettings(BaseSettings):
     openai_api_key: str = ""
     openai_timeout_seconds: float = 60.0
     chatkit_enabled: bool = False
-    chatkit_domain_key: str = ""
     integration_secret_key: str = ""
     client_login_enabled: bool = True
     external_integrations_enabled: bool = True
