@@ -92,6 +92,8 @@ find /data/shumeyko/test -type f -exec chmod 0640 {} +
 которой не заканчивается на `_test`. Боевые integration secrets после clone
 не сохраняются. Отдельные read-only test-ключи вводятся staff вручную и только
 после этого master-switch внешних интеграций может быть включен.
+Повторный `--apply` допустим: файлы current reports, уже находящиеся внутри
+test report root, должны быть отмечены как `reused`, а не `unavailable`.
 
 ## Maintenance communication
 

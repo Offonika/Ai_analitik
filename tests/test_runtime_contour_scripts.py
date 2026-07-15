@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.prepare_test_database import _safe_current_source
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -117,3 +119,24 @@ def test_runtime_env_generator_accepts_separate_test_database_role(
     assert test_values["SHUMEYKO_DATABASE_URL"].endswith(
         "/shumeyko_web_cabinet_test"
     )
+
+
+def test_test_database_sanitizer_reuses_safe_test_artifact(
+    tmp_path: Path,
+) -> None:
+    production_root = tmp_path / "production"
+    test_root = tmp_path / "test"
+    production_root.mkdir()
+    test_root.mkdir()
+    test_artifact = test_root / "report" / "workbook-report.xlsx"
+    test_artifact.parent.mkdir()
+    test_artifact.write_bytes(b"safe-test-artifact")
+
+    source, already_in_test = _safe_current_source(
+        str(test_artifact),
+        production_root,
+        test_root,
+    )
+
+    assert source == test_artifact.resolve()
+    assert already_in_test is True

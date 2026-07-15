@@ -66,6 +66,10 @@ test обязательно:
 - удалить ссылки на production raw paths;
 - скопировать только файлы current published reports в test report root.
 
+Sanitization должна быть идемпотентной: повторный запуск сохраняет current
+report/workbook artifacts, уже находящиеся внутри разрешенного test report
+root, и не переводит их в `unavailable`.
+
 40 GiB production source snapshots не копируются. Для ручной end-to-end
 проверки test использует только отдельно сохраненные read-only интеграции,
 собственный snapshot root и retention `daily=1`, `full=1`, `failed=1`.
@@ -103,3 +107,5 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
   immutable promotion и zero-downtime cutover.
 - 2026-07-15: зафиксирована безопасная передача URL отдельной PostgreSQL-роли
   test-контура без вывода секрета.
+- 2026-07-15: повторная sanitization сохраняет уже безопасно скопированные
+  current report artifacts внутри test root.

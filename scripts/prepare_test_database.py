@@ -73,6 +73,20 @@ def _safe_source(path_value: str, allowed_root: Path) -> Path | None:
     return path
 
 
+def _safe_current_source(
+    path_value: str,
+    production_root: Path,
+    test_root: Path,
+) -> tuple[Path | None, bool]:
+    production_source = _safe_source(path_value, production_root)
+    if production_source is not None:
+        return production_source, False
+    test_source = _safe_source(path_value, test_root)
+    if test_source is not None:
+        return test_source, True
+    return None, False
+
+
 def _artifact_destination(
     test_root: Path,
     *,
@@ -142,16 +156,25 @@ def main() -> int:
 
         copied_workbooks = 0
         copied_artifacts = 0
+        reused_workbooks = 0
+        reused_artifacts = 0
         current_ids = {report.id for report in current_reports}
         for report in db.scalars(select(ReportRun)):
-            source = (
-                _safe_source(report.source_workbook_path, production_root)
+            source, already_in_test = (
+                _safe_current_source(
+                    report.source_workbook_path,
+                    production_root,
+                    test_root,
+                )
                 if report.id in current_ids
-                else None
+                else (None, False)
             )
             if source is None:
                 report.source_workbook_path = ""
                 report.source_workbook = ""
+                continue
+            if already_in_test:
+                reused_workbooks += 1
                 continue
             destination = _artifact_destination(
                 test_root,
@@ -165,14 +188,21 @@ def main() -> int:
             copied_workbooks += 1
 
         for artifact in db.scalars(select(ReportArtifact)):
-            source = (
-                _safe_source(artifact.path, production_root)
+            source, already_in_test = (
+                _safe_current_source(
+                    artifact.path,
+                    production_root,
+                    test_root,
+                )
                 if artifact.report_run_id in current_ids
-                else None
+                else (None, False)
             )
             if source is None:
                 artifact.path = f"unavailable/{artifact.id}"
                 artifact.status = "unavailable"
+                continue
+            if already_in_test:
+                reused_artifacts += 1
                 continue
             destination = _artifact_destination(
                 test_root,
@@ -218,7 +248,9 @@ def main() -> int:
         db.commit()
         print(
             f"copiedWorkbooks={copied_workbooks} "
-            f"copiedArtifacts={copied_artifacts} status=prepared"
+            f"copiedArtifacts={copied_artifacts} "
+            f"reusedWorkbooks={reused_workbooks} "
+            f"reusedArtifacts={reused_artifacts} status=prepared"
         )
     return 0
 
