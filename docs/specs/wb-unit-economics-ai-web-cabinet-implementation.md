@@ -956,8 +956,9 @@ AI-аналитик в кабинете показывает не raw reasoning 
 
 Модальный AI widget имеет отдельные grid-строки для header, report context,
 quick questions и прокручиваемой chat workspace. Длинный текст переносится
-внутри message/timeline, форма не выходит за viewport. На узком экране сам
-widget получает вертикальную прокрутку вместо обрезки через `overflow:hidden`.
+внутри message/timeline, форма не выходит за viewport. На узком или низком
+экране сам widget получает вертикальную прокрутку вместо обрезки через
+`overflow:hidden`; поле вопроса и кнопка остаются доступны после прокрутки.
 
 Клиентская роль видит только safe trace. `consultant` и `admin` могут видеть
 дополнительные служебные labels tool names/status, но не raw prompts, SQL,
@@ -1312,6 +1313,9 @@ Large-report loading:
 
 # Changelog
 
+- 2026-07-15: v2.44 распространил viewport-safe вертикальную прокрутку AI
+  widget на низкие экраны, чтобы поле вопроса не обрезалось при ограниченной
+  высоте окна.
 - 2026-07-15: v2.43 закрепил восстановление последнего SSE thread после
   перезагрузки, явные loading/error состояния, отсутствие повторной отправки
   исторических SSE events и viewport-safe прокрутку AI widget.

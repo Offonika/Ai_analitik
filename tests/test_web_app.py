@@ -2864,6 +2864,8 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
     assert 'throw new Error("AI stream ended without a final answer")' in app_js.text
     assert "grid-template-rows: auto auto auto minmax(0, 1fr);" in styles.text
     assert ".ai-widget {\n    display: block;\n    overflow-y: auto;" in styles.text
+    assert "@media (max-height: 700px)" in styles.text
+    assert "overscroll-behavior: contain;" in styles.text
     assert "word-break: break-word;" in styles.text
 
 

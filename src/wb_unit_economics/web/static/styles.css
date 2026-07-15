@@ -6086,6 +6086,19 @@ td {
   background: #bd7800;
 }
 
+@media (max-height: 700px) {
+  .ai-widget {
+    display: block;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .ai-workspace {
+    min-height: 420px;
+    overflow: visible;
+  }
+}
+
 @media (max-width: 1179px) and (min-width: 761px) {
   .money-strip .primary-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
