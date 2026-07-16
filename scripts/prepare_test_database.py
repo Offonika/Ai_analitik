@@ -9,7 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
@@ -110,7 +110,12 @@ def _delete_raw_snapshot_rows(db: Session) -> int:
     count = int(
         db.scalar(select(func.count()).select_from(SourceSnapshotRow)) or 0
     )
-    db.execute(delete(SourceSnapshotRow))
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("TRUNCATE TABLE wb_unit_economics.source_snapshot_rows")
+        )
+    else:
+        db.execute(delete(SourceSnapshotRow))
     return count
 
 
