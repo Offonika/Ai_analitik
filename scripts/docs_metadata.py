@@ -8,6 +8,7 @@ import yaml
 
 TRUTH_SCOPES = {
     "configuration",
+    "client-analytical-report",
     "development-workflow",
     "excel-methodology",
     "mapping",

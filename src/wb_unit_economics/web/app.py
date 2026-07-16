@@ -30,11 +30,15 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from scripts.build_client_analytical_report import (
+from wb_unit_economics.client_report import (
+    CLIENT_REPORT_CONTRACT_VERSION,
     ClientAnalyticalReportArtifacts,
     build_client_analytical_report,
 )
-from wb_unit_economics.report_exports import write_ozon_diagnostics_excel
+from wb_unit_economics.report_exports import (
+    artifact_record,
+    write_ozon_diagnostics_excel,
+)
 from wb_unit_economics.web import (
     integrations,
     mapping_service,
@@ -84,7 +88,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260715-runtime-contours-v1"
+WEB_BUILD_ID = "20260716-tax-input-checks-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -2448,18 +2452,31 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _reject_client_report_recommendations(db, current, report)
-        workbook_path = repository.report_file_path(
-            report, runtime_settings.export_root_path
-        )
-        if workbook_path is None or not workbook_path.exists():
-            raise HTTPException(status_code=404, detail="workbook not found")
+        summary = repository.report_full_payload(db, report)
         output_dir = _analytical_report_dir(runtime_settings, report.id)
         artifacts = build_client_analytical_report(
-            workbook_path=workbook_path,
+            summary=summary,
             output_dir=output_dir,
             basename=_analytical_report_basename(report, branded=payload.branded),
             branded=payload.branded,
         )
+        artifact_paths = {
+            "analytical_markdown": artifacts.markdown_path,
+            "analytical_docx": artifacts.docx_path,
+        }
+        if artifacts.pdf_path is not None:
+            artifact_paths["analytical_pdf"] = artifacts.pdf_path
+        for artifact_type, path in artifact_paths.items():
+            record = artifact_record(path)
+            repository.record_report_artifact(
+                db,
+                report,
+                artifact_type=artifact_type,
+                path=path,
+                sha256=record["hash"],
+                byte_size=record["byte_size"],
+                status=record["status"],
+            )
         repository.audit(
             db,
             action="analytical_report_generated",
@@ -3662,6 +3679,8 @@ def _analytical_report_payload(
     return {
         "reportId": report_id,
         "status": "ready",
+        "contractVersion": CLIENT_REPORT_CONTRACT_VERSION,
+        "sourceSha256": getattr(artifacts, "source_sha256", ""),
         "files": {
             "markdown": {
                 "status": "ok",
@@ -3685,9 +3704,8 @@ def _analytical_report_payload(
             },
         },
         "limitations": [
-            "Июнь неполный.",
-            "Причина возврата не передается текущими источниками.",
-            "AI и генератор отчета не меняют данные WB, 1С или CRM.",
+            "Ограничения конкретного периода и источников включены в документ.",
+            "Генератор отчёта не меняет данные WB, 1С или CRM.",
         ],
     }
 

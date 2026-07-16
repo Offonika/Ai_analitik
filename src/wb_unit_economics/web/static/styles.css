@@ -855,7 +855,8 @@ select:focus-visible {
   padding: 10px 12px;
 }
 
-.tax-input-chart-card {
+.tax-input-chart-card,
+.ozon-article-economics-card {
   grid-column: 1 / -1;
 }
 
@@ -865,7 +866,7 @@ select:focus-visible {
 
 .ozon-analytics-mode .analytics-chart[aria-labelledby="loss-drivers-title"],
 .ozon-analytics-mode .analytics-chart[aria-labelledby="returns-chart-title"],
-.ozon-analytics-mode .analytics-chart[aria-labelledby="tax-input-title"] {
+.ozon-analytics-mode .analytics-chart[aria-labelledby="ozon-article-economics-title"] {
   grid-column: 1 / -1;
 }
 
@@ -876,7 +877,7 @@ select:focus-visible {
 
 .ozon-analytics-mode .analytics-chart[aria-labelledby="loss-drivers-title"] .analytics-chart-body,
 .ozon-analytics-mode .analytics-chart[aria-labelledby="returns-chart-title"] .analytics-chart-body,
-.ozon-analytics-mode .analytics-chart[aria-labelledby="tax-input-title"] .analytics-chart-body {
+.ozon-analytics-mode .analytics-chart[aria-labelledby="ozon-article-economics-title"] .analytics-chart-body {
   min-height: 0;
 }
 
@@ -1401,19 +1402,6 @@ button.action-insight-card {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-}
-
-.tax-input-toolbar label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.tax-input-toolbar select {
-  min-width: 180px;
 }
 
 .tax-input-table-wrap {

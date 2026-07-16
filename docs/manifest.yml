@@ -145,6 +145,15 @@ documents:
     truth_scope: "report-publication"
     truth_priority: 100
     summary: "Accepted spec DB-first публикации: расчетные витрины БД как источник правды, Excel/web/DOCX/PDF/HTML/CSV как экспорты."
+  - path: "docs/specs/client-analytical-report-implementation.md"
+    title: "Клиентский аналитический отчёт WB/1С"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "consultant", "client"]
+    source_of_truth: true
+    truth_scope: "client-analytical-report"
+    truth_priority: 100
+    summary: "Accepted DB-first spec клиентского Markdown/DOCX/PDF/HTML по одному report_id с executive summary, evidence и налоговыми настройками из 1С."
   - path: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
     title: "Shumeyko source refresh hardening and provider registry"
     doc_type: "spec"
@@ -281,10 +290,10 @@ documents:
   - path: "docs/client-analytical-report-draft.md"
     title: "AI-черновик аналитического отчета к Excel юнит-экономике WB"
     doc_type: "client_report_draft"
-    status: "draft"
+    status: "superseded"
     audience: ["client", "consultant"]
     source_of_truth: false
-    summary: "Шаблон AI-черновика аналитической записки к Excel-отчету для проверки консультантом."
+    summary: "Superseded Excel-first шаблон; действующий клиентский документ определяет accepted DB-first implementation spec."
   - path: "docs/onec-access-instruction.md"
     title: "Короткая инструкция: доступ к данным 1С только на чтение"
     doc_type: "access_instruction"

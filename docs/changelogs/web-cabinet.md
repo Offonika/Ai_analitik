@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-15"
+updated_at: "2026-07-16"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,10 @@ updated_at: "2026-07-15"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-07-16: v2.47 перенёс полную сверку входящего НДС из `Обзора` в
+  `Проверки`, подчинил её общему срезу кабинет/период/организация, удалил
+  отдельный фильтр кабинета и скрыл блок для профилей без права на вычет,
+  сохранив отдельный обзорный блок статей экономики Ozon.
 - 2026-07-15: v2.46 закрепил клиентские KPI `Прибыль до НДФЛ` и
   `Маржинальность до НДФЛ`; технические поля `profitAfterTax` и
   `marginAfterTax` сохранены для обратной совместимости.

@@ -42,6 +42,8 @@ implementation spec, затем общий MVP spec, затем клиентск
 - `docs/specs/wb-unit-economics-db-first-report-marts.md` — accepted spec
   DB-first публикации: БД как источник готового отчета, Excel/web/DOCX/PDF/CSV
   как экспорты.
+- `docs/specs/client-analytical-report-implementation.md` — accepted spec
+  клиентского аналитического Markdown/DOCX/PDF/HTML по одному `report_id`.
 - `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` —
   accepted spec hardening `source_refresh`, provider registry и retention CLI.
 - `docs/specs/source-refresh-database-retention.md` — accepted spec пакетной
@@ -71,6 +73,7 @@ implementation spec, затем общий MVP spec, затем клиентск
 | `tax-methodology` | `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` | 100 |
 | `mapping` | `docs/specs/marketplace-1c-mapping-service.md` | 100 |
 | `report-publication` | `docs/specs/wb-unit-economics-db-first-report-marts.md` | 100 |
+| `client-analytical-report` | `docs/specs/client-analytical-report-implementation.md` | 100 |
 | `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 |
 | `runtime-contours` | `docs/specs/web-cabinet-runtime-contours.md` | 100 |
 | `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 |
@@ -97,6 +100,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | Marketplace/1C mapping | `docs/specs/marketplace-1c-mapping-service.md` | implemented | Меняется сервис сопоставления WB/Ozon и 1С, статусы, решения оператора, candidate import или экспорт `sku_mapping`. |
 | 1C marketplace mapping fallback | `docs/specs/onec-marketplace-mapping-client-extension.md` | superseded | Нужно понять старый путь импорта кандидатов из расширения `ИС_Маркетплейс`; не использовать как основной источник правды. |
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
+| Client analytical report | `docs/specs/client-analytical-report-implementation.md` | accepted | Меняется состав, DB-first источник, DOCX/PDF/HTML-рендеринг, рекомендации или налоговое пояснение клиентского отчёта. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
 | Runtime contours | `docs/specs/web-cabinet-runtime-contours.md` | accepted | Меняются production/test домены, БД, systemd/nginx, release promotion, test sanitization или rollback. |
 | Multi-report cabinet | `docs/specs/multi-report-cabinet-implementation.md` | accepted | Реализуется каталог `report_kind`, асинхронная генерация из read-only evidence, независимый current и staff-only rollout. |
@@ -122,8 +126,8 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/client-methodology.md` — методика расчета простым языком.
 - `docs/calculation-formulas.md` — формулы расчета показателей, сверок и
   статусов.
-- `docs/client-analytical-report-draft.md` — шаблон AI-черновика аналитической
-  записки к Excel-отчету для проверки консультантом.
+- `docs/client-analytical-report-draft.md` — superseded Excel-first шаблон;
+  сохранён как исторический ориентир.
 
 # Исторические материалы
 

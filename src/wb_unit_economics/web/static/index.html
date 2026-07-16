@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260715-runtime-contours-v1"
+      content="20260716-tax-input-checks-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260715-runtime-contours-v1"
+      href="/static/styles.css?v=20260716-tax-input-checks-v1"
     />
   </head>
   <body>
@@ -693,6 +693,17 @@
             </summary>
             <div id="secondary-kpi-grid" class="metric-grid secondary-kpi-grid"></div>
           </details>
+          <article
+            id="tax-input-check-card"
+            class="analytics-chart tax-input-chart-card"
+            aria-labelledby="tax-input-title"
+          >
+            <div class="analytics-chart-header">
+              <h3 id="tax-input-title">Сверка входящего НДС</h3>
+              <p>Начисления, сторно, нетто и подтверждение 1С в общем срезе отчёта.</p>
+            </div>
+            <div id="tax-input-chart" class="analytics-chart-body"></div>
+          </article>
           <details id="onec-kpi-section" class="secondary-kpi-section kpi-control-section diagnostic-details">
             <summary>
               <span id="onec-kpi-title">Контроль 1С</span>
@@ -1193,12 +1204,17 @@
               </div>
               <div id="returns-chart" class="analytics-chart-body"></div>
             </article>
-            <article class="analytics-chart tax-input-chart-card" aria-labelledby="tax-input-title">
+            <article
+              id="ozon-article-economics-card"
+              class="analytics-chart ozon-article-economics-card"
+              aria-labelledby="ozon-article-economics-title"
+              hidden
+            >
               <div class="analytics-chart-header">
-                <h3 id="tax-input-title">Сверка входящего НДС</h3>
-                <p>Начисления, сторно, нетто, подтверждение 1С и право на вычет.</p>
+                <h3 id="ozon-article-economics-title">Статьи экономики Ozon</h3>
+                <p>Расходы, распределение и контрольные строки отдельным широким блоком.</p>
               </div>
-              <div id="tax-input-chart" class="analytics-chart-body"></div>
+              <div id="ozon-article-economics-chart" class="analytics-chart-body"></div>
             </article>
           </div>
         </section>
@@ -2182,9 +2198,9 @@
         </section>
       </div>
     </main>
-    <script src="/static/report-scenarios.js?v=20260715-runtime-contours-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260715-runtime-contours-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260715-runtime-contours-v1" defer></script>
-    <script src="/static/app.js?v=20260715-runtime-contours-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260716-tax-input-checks-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260716-tax-input-checks-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260716-tax-input-checks-v1" defer></script>
+    <script src="/static/app.js?v=20260716-tax-input-checks-v1" defer></script>
   </body>
 </html>

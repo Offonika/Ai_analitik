@@ -13723,6 +13723,7 @@ def _report_meta_payload(
             "неполный"
         )
     return {
+        "reportId": report.id,
         "clientId": report.client_id,
         "tenantId": report.tenant_id,
         "title": report.title,
@@ -14345,6 +14346,9 @@ def _tax_input_reconciliation_payload_from_unit_rows(
             bucket["statuses"].add(row.vat_input_completeness)
     result = []
     deduction_status = str((tax_context or {}).get("vatDeductionMode") or "unknown")
+    deduction_status_by_organization = (
+        _tax_input_deduction_status_by_organization(tax_context)
+    )
     for bucket in buckets.values():
         vat_from_wb = bucket["vatInputFromWb"]
         vat_from_1c = bucket["vatInputFrom1c"]
@@ -14362,7 +14366,9 @@ def _tax_input_reconciliation_payload_from_unit_rows(
         )
         bucket["wbEvidenceStatus"] = "confirmed" if vat_from_wb else "missing"
         bucket["onecEvidenceStatus"] = "confirmed" if onec_has_documents else "missing"
-        bucket["vatDeductionMode"] = deduction_status
+        bucket["vatDeductionMode"] = deduction_status_by_organization.get(
+            str(bucket["organization"]), deduction_status
+        )
         bucket["wbSource"] = "WB weekly realization report"
         bucket["onecSource"] = (
             "1C confirming documents" if onec_has_documents else "missing"
@@ -14377,6 +14383,31 @@ def _tax_input_reconciliation_payload_from_unit_rows(
     )
     for index, bucket in enumerate(result, start=1):
         bucket["id"] = f"tax-input-reconciliation-{index}"
+    return result
+
+
+def _tax_input_deduction_status_by_organization(
+    tax_context: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for profile in (tax_context or {}).get("profiles") or []:
+        if not isinstance(profile, Mapping):
+            continue
+        organization = str(profile.get("organization") or "").strip()
+        if not organization:
+            continue
+        modes = {
+            str(check.get("vatDeductionMode") or "unknown")
+            for check in profile.get("checks") or []
+            if isinstance(check, Mapping)
+        }
+        modes.discard("")
+        if not modes:
+            result[organization] = "unknown"
+        elif len(modes) == 1:
+            result[organization] = next(iter(modes))
+        else:
+            result[organization] = "mixed"
     return result
 
 
@@ -14441,6 +14472,9 @@ def _summary_tax_input_reconciliation_payload(
 
     result = []
     deduction_status = str((tax_context or {}).get("vatDeductionMode") or "unknown")
+    deduction_status_by_organization = (
+        _tax_input_deduction_status_by_organization(tax_context)
+    )
     for bucket in buckets.values():
         vat_from_wb = bucket["vatInputFromWb"]
         vat_from_1c = bucket["vatInputFrom1c"]
@@ -14458,7 +14492,9 @@ def _summary_tax_input_reconciliation_payload(
         )
         bucket["wbEvidenceStatus"] = "confirmed" if vat_from_wb else "missing"
         bucket["onecEvidenceStatus"] = "confirmed" if onec_has_documents else "missing"
-        bucket["vatDeductionMode"] = deduction_status
+        bucket["vatDeductionMode"] = deduction_status_by_organization.get(
+            str(bucket["organization"]), deduction_status
+        )
         bucket["wbSource"] = "WB weekly realization report"
         bucket["onecSource"] = (
             "1C confirming documents" if onec_has_documents else "missing"
@@ -15535,7 +15571,10 @@ def _tax_context_payload_from_row_markers(
             "basisDocument": None,
             "confirmedBy": None,
             "sourceObjectIds": [],
-            "message": "Налоговый профиль не подтверждён.",
+            "message": (
+                "Настройки налогообложения организации из 1С не загружены "
+                "или не применены к этому отчёту."
+            ),
             "profiles": profile_statuses,
         }
     tax_systems = {profile.tax_system for profile in profiles}
@@ -15594,7 +15633,7 @@ def _tax_context_payload_from_row_markers(
             if rate_basis_kinds == {"regional_preference"} and all(basis_documents)
             else ("Налоговый профиль и сохраненная в настройках ставка применены.")
             if any(profile.revenue_tax_rate > 0 for profile in profiles)
-            else "Налоговый профиль подтверждён."
+            else "Налоговые настройки организации из 1С применены."
         ),
         "profiles": profile_statuses,
     }
@@ -15721,7 +15760,10 @@ def tax_profile_sync_payload(
         message = "Профиль 1С связан с другой карточкой организации отчёта."
     else:
         report_status = "missing"
-        message = str(tax_context.get("message") or "Налоговый профиль не подтверждён.")
+        message = str(
+            tax_context.get("message")
+            or "Настройки налогообложения из 1С не применены к отчёту."
+        )
 
     needs_rebuild = live_ready and report_status != "applied"
     if not include_staff_details:
@@ -17455,7 +17497,8 @@ def _readiness_next_action(
             "Исправить качество данных перед отправкой клиенту."
         ),
         "tax_profile_unconfirmed": (
-            "Подтвердить налоговый профиль каждой организации на весь период."
+            "Обновить настройки налогообложения организаций из 1С и "
+            "пересобрать отчёт."
         ),
         "company_cabinet_mismatch": (
             "Исправить каноническую привязку организации и пересобрать отчёт."
@@ -17553,7 +17596,10 @@ def _financial_integrity_blockers(
         blockers.append(
             _readiness_reason(
                 "tax_profile_unconfirmed",
-                ("Налоговый профиль не подтвержден для всех организаций и дат отчета."),
+                (
+                    "Настройки налогообложения из 1С не загружены или не "
+                    "применены для всех организаций и дат отчёта."
+                ),
                 tax_profile_issue_count,
             )
         )
@@ -17810,6 +17856,10 @@ def _filtered_report_analytics_payload(
         "lostSales": lost_sales_payload,
         "lostSalesCoverage": dict(lost_sales_coverage),
         "taxContext": tax_context,
+        "taxInputReconciliation": _tax_input_reconciliation_payload_from_unit_rows(
+            filtered_rows,
+            tax_context=tax_context,
+        ),
     }
 
 

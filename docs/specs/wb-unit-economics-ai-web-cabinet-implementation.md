@@ -17,7 +17,7 @@ related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cab
 changelog_path: docs/changelogs/web-cabinet.md
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-15"
+updated_at: "2026-07-16"
 ---
 
 # Implementation Status
@@ -83,8 +83,9 @@ PostgreSQL, управляемый Excel export и AI-аналитик отче�
   отдельной вручную синхронизируемой копии навигации; contract test требует
   guide metadata для каждого верхнеуровневого раздела и действия кабинета, а
   также для статуса, этапов и всех основных действий `Данные и расчёт`;
-- формирование фирменного клиентского аналитического отчета из Excel MVP в
-  Markdown, DOCX и PDF, если на сервере доступен PDF-конвертер;
+- формирование фирменного клиентского аналитического отчета из сохранённого
+  DB-first `report_id` в Markdown, DOCX и PDF, если на сервере доступен
+  PDF-конвертер; Excel не является входом этого документа;
 - AI-аналитик отчетов через OpenAI Responses API и серверные read-only tools;
 - read-only live checks для 1С/WB как отдельные инструменты с аудитом и
   выключателем;
@@ -542,9 +543,10 @@ UI readiness behavior:
   reason. A complete provider window shorter than the report period is rendered
   as `Рассчитано за доступный период`; it is never extrapolated or rendered as
   a confirmed zero and the analytics block is not removed;
-- `taxContext.calculated` remains `false` when any report organization has no
-  profile for part of the report period, when `vatDeductionMode=unknown`, or
-  when the confirmed tax object is not supported by the current methodology;
+- `taxContext.calculated` remains `false` when settings of any report
+  organization were not loaded from 1C or were not applied for part of the
+  report period, when `vatDeductionMode=unknown`, or when the loaded tax object
+  is not supported by the current methodology;
   `readiness.blockingReasons[]` exposes `tax_profile_unconfirmed` in these
   cases;
 - если живой профиль готов, но hash `onec_tax_profiles` не совпадает с
@@ -580,8 +582,9 @@ UI readiness behavior:
 - начиная с v2.35 первый экран `Обзора` использует фиксированную иерархию:
   один блок основных KPI, затем `Аналитика` с динамикой продаж первым графиком,
   затем readiness command board. `Дополнительные показатели`, `Статус исходных
-  данных` и подробный `Контроль 1С` находятся во вкладке `Проверки`; два набора
-  карточек раскрываются по запросу и по умолчанию не увеличивают высоту экрана;
+  данных`, подробный `Контроль 1С` и полная сверка входящего НДС находятся во
+  вкладке `Проверки`; два набора карточек раскрываются по запросу и по умолчанию
+  не увеличивают высоту экрана;
 - `Контроль перед отправкой` находится во вкладке `Проверки` рядом с контролем
   источников и расширенными показателями, так что line-quality blockers и
   problem-row action не конкурируют с финансовой интерпретацией на `Обзоре`.
@@ -658,16 +661,25 @@ UI readiness behavior:
 - the unit-economics tab exposes quick row presets `Все`, `Убыточные`,
   `Без себестоимости`, `Mapping`, `Возвраты` and `К проверке`; `preset=returns`
   filters rows with returns or positive return rate;
-- analytics charts are read-only and show the current report run as a whole;
-  dashboard-wide filterable analytics can be added later through a dedicated
-  read-only analytics endpoint or filtered rows aggregation;
+- analytics charts are read-only. Initial summary shows the current report run
+  as a whole, while the compact global cabinet and period controls refresh the
+  filtered analytics payload; table-local search, status and business presets
+  do not silently redefine report-wide financial totals;
 - return months are ordered by machine-readable `monthStart`; an incomplete
   month stays last, shows `daysElapsed/daysInMonth`, and is not presented as a
   like-for-like comparison with complete months;
-- VAT reconciliation preserves signed amounts and shows charges, reversals and
-  net separately. It includes cabinet/organization and source evidence status,
-  uses a full-width semantic table, and never labels VAT as deductible while
-  `taxContext.vatDeductionMode` is `unknown`;
+- VAT reconciliation is a full-width control in `Проверки`, not a chart on
+  `Обзоре`. It preserves signed amounts and shows charges, reversals and net
+  separately, includes cabinet/organization and source evidence status, and
+  follows the global cabinet, period and organization slice through
+  `analytics.taxInputReconciliation`; it has no independent cabinet filter;
+- VAT reconciliation is shown only where input VAT may be deducted. For
+  `vatDeductionMode = allowed` it shows the semantic table; for `mixed` it
+  excludes organization rows whose resolved mode is `not_allowed` or
+  `not_applicable`; for `unknown` it shows only a warning that the tax profile
+  must be confirmed; for `not_allowed` and `not_applicable`, including USN with
+  special VAT rates, the block is hidden. Ozon article economics remains a
+  separate overview block and does not reuse the WB VAT reconciliation node;
 - period filters use row `week` when available and fall back to the row month or
   ISO WB report date for imported rows without a week date; for rows with a
   week the month/date filter uses the closing Sunday (`week + 6 days`) so a
@@ -1208,9 +1220,10 @@ Large-report loading:
 - Client role cannot read or infer staff client drafts through UI or API.
 - Summary/freshness include `readiness`; consultant/admin sees client-draft
   readiness checks, client role does not infer staff draft state.
-- KPI block uses tax-context-aware wording. With an unconfirmed profile it
-  labels the canonical result `Маржинальный доход до налогов`, reports that the
-  profile is missing and returns nullable tax KPIs instead of zeroes.
+- KPI block uses tax-context-aware wording. When tax settings from 1C were not
+  loaded or applied, it labels the canonical result `Маржинальный доход до
+  налогов`, reports the missing settings and returns nullable tax KPIs instead
+  of zeroes; it does not request separate manual confirmation.
 - Loss navigation separates product-margin losses, returns, penalty incidents
   without sales and rows with unconfirmed COGS.
 - A report with a financial blocker shows `Финансовая проверка не пройдена`,

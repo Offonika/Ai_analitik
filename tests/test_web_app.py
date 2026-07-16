@@ -892,6 +892,89 @@ def test_tax_input_reconciliation_keeps_signed_charges_reversals_and_net() -> No
     assert all(item["vatDeductionMode"] == "unknown" for item in result)
 
 
+def test_tax_input_reconciliation_uses_organization_deduction_modes() -> None:
+    rows = [
+        SimpleNamespace(
+            week=date(2026, 3, 9),
+            cabinet="Кабинет A",
+            organization="Организация ОСНО",
+            vat_input_from_wb=Decimal("22"),
+            vat_input_from_1c=Decimal("22"),
+            vat_input_completeness="confirmed",
+        ),
+        SimpleNamespace(
+            week=date(2026, 3, 9),
+            cabinet="Кабинет B",
+            organization="Организация УСН",
+            vat_input_from_wb=Decimal("5"),
+            vat_input_from_1c=Decimal("0"),
+            vat_input_completeness="partial",
+        ),
+    ]
+    tax_context = {
+        "vatDeductionMode": "mixed",
+        "profiles": [
+            {
+                "organization": "Организация ОСНО",
+                "checks": [{"vatDeductionMode": "allowed"}],
+            },
+            {
+                "organization": "Организация УСН",
+                "checks": [{"vatDeductionMode": "not_allowed"}],
+            },
+        ],
+    }
+
+    result = repository._tax_input_reconciliation_payload_from_unit_rows(
+        rows,
+        tax_context=tax_context,
+    )
+
+    assert {
+        item["organization"]: item["vatDeductionMode"] for item in result
+    } == {
+        "Организация ОСНО": "allowed",
+        "Организация УСН": "not_allowed",
+    }
+
+
+def test_filtered_analytics_scopes_tax_input_reconciliation(tmp_path: Path) -> None:
+    payload = deepcopy(sample_payload())
+    payload["unitRows"][0].update(
+        {
+            "vatInputFromWb": 22,
+            "vatInputFrom1c": 20,
+            "vatInputCompleteness": "mismatch",
+        }
+    )
+    payload["unitRows"][1].update(
+        {
+            "vatInputFromWb": 11,
+            "vatInputFrom1c": 11,
+            "vatInputCompleteness": "confirmed",
+        }
+    )
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+
+    april = client.get(
+        "/api/reports/report-1/rows",
+        params={"period_start": "2026-04-01", "period_end": "2026-04-30"},
+    ).json()
+    cabinet_b = client.get(
+        "/api/reports/report-1/rows",
+        params={"wb_cabinet_id": "Кабинет B"},
+    ).json()
+
+    assert [
+        item["cabinet"] for item in april["analytics"]["taxInputReconciliation"]
+    ] == ["Кабинет A"]
+    assert [
+        item["cabinet"]
+        for item in cabinet_b["analytics"]["taxInputReconciliation"]
+    ] == ["Кабинет B"]
+
+
 def ready_payload() -> dict:
     payload = deepcopy(sample_payload())
     payload["meta"] = {
@@ -2523,7 +2606,13 @@ def test_overview_orders_kpis_analytics_and_readiness(tmp_path: Path) -> None:
         'id="secondary-kpi-section"'
     )
     assert cabinet.text.index('id="secondary-kpi-section"') < cabinet.text.index(
+        'id="tax-input-check-card"'
+    )
+    assert cabinet.text.index('id="tax-input-check-card"') < cabinet.text.index(
         'id="onec-kpi-section"'
+    )
+    assert cabinet.text.index('id="tax-input-check-card"') < cabinet.text.index(
+        'id="analytics-panel"'
     )
 
 
@@ -2532,8 +2621,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260715-runtime-contours-v1"
-    assert health.json()["staticBuildId"] == "20260715-runtime-contours-v1"
+    assert health.json()["backendBuildId"] == "20260716-tax-input-checks-v1"
+    assert health.json()["staticBuildId"] == "20260716-tax-input-checks-v1"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2621,7 +2710,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="returns-chart"' in cabinet.text
     assert 'id="data-trust-strip"' in cabinet.text
     assert 'id="lost-margin-chart"' in cabinet.text
+    assert 'id="tax-input-check-card"' in cabinet.text
     assert 'class="analytics-chart tax-input-chart-card"' in cabinet.text
+    assert 'id="ozon-article-economics-card"' in cabinet.text
+    assert 'id="ozon-article-economics-chart"' in cabinet.text
     assert (
         'class="panel full-width detail-workspace report-page-section"' in cabinet.text
     )
@@ -2653,8 +2745,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260715-runtime-contours-v1" in cabinet.text
-    assert "app.js?v=20260715-runtime-contours-v1" in cabinet.text
+    assert "styles.css?v=20260716-tax-input-checks-v1" in cabinet.text
+    assert "app.js?v=20260716-tax-input-checks-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -3170,6 +3262,11 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "lostContributionMargin" in app_js.text
     assert "Нет подтверждающих документов" in app_js.text
     assert "tax-input-semantic-table" in app_js.text
+    assert "taxInputCabinet" not in app_js.text
+    assert "Фильтр сверки НДС по кабинету" not in app_js.text
+    assert 'includes(deductionMode)' in app_js.text
+    assert 'els.taxInputCard.hidden = true' in app_js.text
+    assert "Право на вычет входящего НДС не подтверждено" in app_js.text
     assert "sourceRows.slice(0, 8)" not in app_js.text
     assert "taxInputPage" in app_js.text
     assert "monthStart" in app_js.text
@@ -3467,12 +3564,13 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
         ".analytics-chart-body" in css.text
     )
     assert (
-        '.ozon-analytics-mode .analytics-chart[aria-labelledby="tax-input-title"]'
+        ".ozon-analytics-mode "
+        '.analytics-chart[aria-labelledby="ozon-article-economics-title"]'
         in css.text
     )
     assert (
         ".ozon-analytics-mode "
-        '.analytics-chart[aria-labelledby="tax-input-title"] '
+        '.analytics-chart[aria-labelledby="ozon-article-economics-title"] '
         ".analytics-chart-body" in css.text
     )
     assert ".ozon-economics-grid" in css.text
@@ -8834,11 +8932,13 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
     monkeypatch,
 ) -> None:
     client = make_client(tmp_path)
+    received: dict[str, object] = {}
 
     assert client.post("/api/reports/report-1/analytical-report").status_code == 401
     login(client)
 
     def fake_build_client_analytical_report(**kwargs):
+        received.update(kwargs)
         output_dir = kwargs["output_dir"]
         output_dir.mkdir(parents=True, exist_ok=True)
         markdown_path = output_dir / "report.md"
@@ -8864,7 +8964,10 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
     )
     assert generated.status_code == 200
     payload = generated.json()
+    assert "workbook_path" not in received
+    assert received["summary"]["meta"]["reportId"] == "report-1"
     assert payload["files"]["docx"]["url"].endswith("/analytical-report.docx")
+    assert payload["contractVersion"] == "client-analytical-report.v1"
     assert payload["files"]["pdf"]["status"] == "unavailable"
 
     docx = client.get("/api/reports/report-1/analytical-report.docx")

@@ -50,7 +50,6 @@ const state = {
   onecReconciliationLoaded: false,
   rowPreset: "",
   taxInputPage: 0,
-  taxInputCabinet: "",
   workspace: "overview",
   checkView: "summary",
 };
@@ -271,9 +270,10 @@ const els = {
   returnsChartTitle: document.querySelector("#returns-chart-title"),
   returnsChartCopy: document.querySelector("#returns-chart-title")?.nextElementSibling,
   returnsChart: document.querySelector("#returns-chart"),
-  taxInputTitle: document.querySelector("#tax-input-title"),
-  taxInputCopy: document.querySelector("#tax-input-title")?.nextElementSibling,
+  taxInputCard: document.querySelector("#tax-input-check-card"),
   taxInputChart: document.querySelector("#tax-input-chart"),
+  ozonArticleEconomicsCard: document.querySelector("#ozon-article-economics-card"),
+  ozonArticleEconomicsChart: document.querySelector("#ozon-article-economics-chart"),
   draftPanel: document.querySelector("#draft-panel"),
   draftStatus: document.querySelector("#draft-status"),
   draftRefreshButton: document.querySelector("#draft-refresh-button"),
@@ -9269,7 +9269,7 @@ function renderOzonAnalytics(diagnostics = state.latestOzonDiagnostics) {
   renderOzonProfitAndLoss(els.unitPlTable, totals, mart);
   renderOzonProblems(els.lossDriversChart, summary);
   renderOzonReconciliationAnalytics(els.returnsChart, payload);
-  renderOzonArticleEconomics(els.taxInputChart, mart);
+  renderOzonArticleEconomics(els.ozonArticleEconomicsChart, mart);
   if (!rows.length && normalize(payload.status) === "error") {
     renderAnalyticsEmpty(
       els.moneyTrendChart,
@@ -9283,6 +9283,10 @@ function setAnalyticsTitles(mode, mart = {}) {
   const includesAdditionalOnecDocuments =
     mart.pnlScope === "onec_sales_register_including_additional_documents";
   document.body.classList.toggle("ozon-analytics-mode", ozonMode);
+  els.ozonArticleEconomicsCard.hidden = !ozonMode;
+  if (ozonMode) {
+    els.taxInputCard.hidden = true;
+  }
   if (!ozonMode) {
     resetOzonAnalyticsCardGrids();
   }
@@ -9311,12 +9315,6 @@ function setAnalyticsTitles(mode, mart = {}) {
   els.returnsChartCopy.textContent = ozonMode
     ? "Комиссионер, выкупы и расходы: что сходится и что проверить."
     : "Возвратность и объем возвратов по месяцам.";
-  els.taxInputTitle.textContent = ozonMode
-    ? "Статьи экономики Ozon"
-    : "Сверка входящего НДС";
-  els.taxInputCopy.textContent = ozonMode
-    ? "Расходы, распределение и контрольные строки отдельным широким блоком."
-    : "Начисления, сторно, нетто, подтверждение 1С и право на вычет.";
 }
 
 function renderOzonActionInsights(target, diagnostics = {}, mart = {}) {
@@ -10076,7 +10074,7 @@ function resetOzonAnalyticsCardGrids() {
   [
     els.lossDriversChart,
     els.returnsChart,
-    els.taxInputChart,
+    els.ozonArticleEconomicsChart,
   ].forEach(clearAnalyticsMetricsGrid);
 }
 
@@ -10843,7 +10841,32 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
   if (!target) {
     return;
   }
-  const allRows = asArray(rows).filter(
+  const deductionMode = normalize(taxContext.vatDeductionMode || "unknown");
+  if (["not_allowed", "not_applicable"].includes(deductionMode)) {
+    els.taxInputCard.hidden = true;
+    target.replaceChildren();
+    return;
+  }
+  els.taxInputCard.hidden = false;
+  if (deductionMode === "unknown") {
+    renderAnalyticsEmpty(
+      target,
+      "Право на вычет входящего НДС не подтверждено. Сначала проверьте налоговый профиль организации.",
+    );
+    return;
+  }
+  const applicableRows = asArray(rows).filter(
+    (row) =>
+      !["not_allowed", "not_applicable"].includes(
+        normalize(row.vatDeductionMode || deductionMode),
+      ),
+  );
+  if (deductionMode === "mixed" && !applicableRows.length) {
+    els.taxInputCard.hidden = true;
+    target.replaceChildren();
+    return;
+  }
+  const allRows = applicableRows.filter(
     (row) =>
       Number(row.vatInputFromWb || 0) ||
       Number(row.vatInputFromWbCharges || 0) ||
@@ -10860,14 +10883,7 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
     renderAnalyticsEmpty(target, "Нет выделенного входящего НДС для сверки.");
     return;
   }
-  const cabinets = [...new Set(allRows.map((row) => row.cabinet || "").filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right, "ru"));
-  if (state.taxInputCabinet && !cabinets.includes(state.taxInputCabinet)) {
-    state.taxInputCabinet = "";
-  }
-  const sourceRows = state.taxInputCabinet
-    ? allRows.filter((row) => row.cabinet === state.taxInputCabinet)
-    : allRows;
+  const sourceRows = allRows;
   const totalCharges = sourceRows.reduce(
     (total, row) => total + Number(row.vatInputFromWbCharges || 0),
     0,
@@ -10894,20 +10910,7 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
   toolbar.className = "tax-input-toolbar";
   const count = document.createElement("strong");
   count.textContent = `${number(sourceRows.length)} строк`;
-  const filterLabel = document.createElement("label");
-  filterLabel.textContent = "Кабинет ";
-  const filter = document.createElement("select");
-  filter.setAttribute("aria-label", "Фильтр сверки НДС по кабинету");
-  filter.append(new Option("Все кабинеты", ""));
-  cabinets.forEach((cabinet) => filter.append(new Option(cabinet, cabinet)));
-  filter.value = state.taxInputCabinet;
-  filter.addEventListener("change", () => {
-    state.taxInputCabinet = filter.value;
-    state.taxInputPage = 0;
-    renderTaxInputReconciliation(target, allRows, taxContext);
-  });
-  filterLabel.append(filter);
-  toolbar.append(count, filterLabel);
+  toolbar.append(count);
 
   const summary = document.createElement("p");
   summary.className = "analytics-summary-line";

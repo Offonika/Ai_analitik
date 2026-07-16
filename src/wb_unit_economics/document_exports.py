@@ -175,7 +175,9 @@ def _body_lines(markdown: str) -> list[str]:
 
 
 def _normalize_token(value: str) -> str:
-    return " ".join(str(value).replace("\xa0", " ").split())
+    return " ".join(
+        str(value).replace("\xa0", " ").replace("**", "").split()
+    )
 
 
 def _iter_document_blocks(document: DocumentObject) -> Iterator[Paragraph | Table]:
@@ -292,9 +294,19 @@ def _add_paragraph(
     paragraph = document.add_paragraph(style=style)
     if align is not None:
         paragraph.alignment = align
-    run = paragraph.add_run(str(value))
-    _set_run_font(run)
+    _add_inline_markdown_runs(paragraph, str(value))
     return paragraph
+
+
+def _add_inline_markdown_runs(paragraph: Paragraph, value: str) -> None:
+    parts = re.split(r"(\*\*.+?\*\*)", value)
+    for part in parts:
+        if not part:
+            continue
+        bold = part.startswith("**") and part.endswith("**")
+        text = part[2:-2] if bold else part
+        run = paragraph.add_run(text)
+        _set_run_font(run, bold=True if bold else None)
 
 
 def _parse_markdown_table(lines: list[str], start: int) -> tuple[list[list[str]], int]:
