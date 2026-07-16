@@ -127,7 +127,10 @@ def main() -> int:
     if not _is_test_database(settings.database_url):
         raise SystemExit("Refusing: target database name must end with _test")
 
-    engine = make_engine(settings.database_url)
+    engine = make_engine(
+        settings.database_url,
+        statement_timeout_ms=settings.postgres_statement_timeout_ms,
+    )
     factory = make_session_factory(engine)
     production_root = args.production_report_root.resolve()
     test_root = args.test_report_root.resolve()
