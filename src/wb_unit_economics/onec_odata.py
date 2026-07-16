@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -563,6 +564,441 @@ SERVICE_SAMPLE_COLLECTIONS = (
     ),
 )
 
+ACCOUNTING_REPORT_SAMPLE_COLLECTIONS = (
+    DEFAULT_SAMPLE_COLLECTIONS[1],  # organizations
+    DEFAULT_SAMPLE_COLLECTIONS[2],  # special-tax notifications
+    *TAX_PROFILE_SAMPLE_COLLECTIONS,
+    OnecSampleCollection(
+        sample_id="accounting_chart",
+        collection_name="ChartOfAccounts_Управленческий",
+        purpose="План счетов управленческого учета для нормализации ОСВ.",
+        page_size=1000,
+        select_fields=("Ref_Key", "Code", "Description", "DeletionMark"),
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_register_records",
+        collection_name="AccountingRegister_Управленческий_RecordType",
+        purpose="Проводки управленческого регистра как fallback ОСВ.",
+        period_filter_mode="local_accounting_period",
+        page_size=1000,
+        min_page_size=100,
+        request_timeout_seconds=120,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_month_close_docs",
+        collection_name="Document_ЗакрытиеМесяца",
+        purpose="Проведенные документы закрытия месяца.",
+        period_filter_mode="local_document_date",
+        page_size=500,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_taxes",
+        collection_name="AccumulationRegister_РасчетыПоНалогам_RecordType",
+        purpose="Движения расчетов по налогам.",
+        period_filter_mode="local_accounting_period",
+        page_size=5000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_ens",
+        collection_name="AccumulationRegister_РасчетыПоЕдиномуНалоговомуСчету_RecordType",
+        purpose="Движения по единому налоговому счету.",
+        period_filter_mode="local_accounting_period",
+        page_size=5000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_taxes_on_ens",
+        collection_name="AccumulationRegister_РасчетыПоНалогамНаЕдиномНалоговомСчете_RecordType",
+        purpose="Детализация налогов на ЕНС.",
+        period_filter_mode="local_accounting_period",
+        page_size=5000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_ens_sanctions",
+        collection_name="AccumulationRegister_РасчетыПоСанкциямНаЕдиномНалоговомСчете_RecordType",
+        purpose="Санкции на едином налоговом счете.",
+        period_filter_mode="local_accounting_period",
+        page_size=5000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_bank_in",
+        collection_name="Document_ПоступлениеНаСчет",
+        purpose="Поступления на расчетный счет.",
+        period_filter_mode="local_document_date",
+        page_size=1000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_bank_out",
+        collection_name="Document_РасходСоСчета",
+        purpose="Расходы с расчетного счета.",
+        period_filter_mode="local_document_date",
+        page_size=1000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_manual_operations",
+        collection_name="Document_Операция",
+        purpose="Ручные операции за период.",
+        period_filter_mode="local_document_date",
+        page_size=1000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_register_corrections",
+        collection_name="Document_КорректировкаРегистров",
+        purpose="Корректировки регистров за период.",
+        period_filter_mode="local_document_date",
+        page_size=1000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_purchase_corrections",
+        collection_name="Document_КорректировкаПоступления",
+        purpose="Корректировки поступлений за период.",
+        period_filter_mode="local_document_date",
+        page_size=1000,
+    ),
+    OnecSampleCollection(
+        sample_id="accounting_sales_corrections",
+        collection_name="Document_КорректировкаРеализации",
+        purpose="Корректировки реализаций за период.",
+        period_filter_mode="local_document_date",
+        page_size=1000,
+    ),
+)
+
+
+def export_onec_accounting_balance_and_turnovers(
+    settings: OnecODataSettings,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+    page_size: int = 1000,
+    max_pages: int = 50,
+) -> OnecSampleExportResult:
+    """Read the accounting virtual table using GET requests only."""
+
+    sample_id = "accounting_balance_and_turnovers"
+    collection_name = "AccountingRegister_Управленческий/BalanceAndTurnovers"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    last_status: int | None = None
+    end_exclusive = period_end + timedelta(days=1)
+    register = quote("AccountingRegister_Управленческий", safe="")
+    function_call = (
+        "BalanceAndTurnovers("
+        f"StartPeriod=datetime'{period_start:%Y-%m-%dT00:00:00}',"
+        f"EndPeriod=datetime'{end_exclusive:%Y-%m-%dT00:00:00}',"
+        "AccountCondition='',Condition='',Dimensions='Организация')"
+    )
+    try:
+        with httpx.Client(
+            auth=(settings.username, settings.password),
+            headers={"Accept": "application/json"},
+            timeout=settings.timeout_seconds,
+            verify=settings.verify_ssl,
+            follow_redirects=True,
+        ) as client:
+            for page_index in range(max(1, max_pages)):
+                response = client.get(
+                    f"{settings.base_url.rstrip('/')}/{register}/{function_call}",
+                    params={
+                        "$format": "json",
+                        "$top": str(max(1, page_size)),
+                        "$skip": str(page_index * max(1, page_size)),
+                    },
+                )
+                last_status = response.status_code
+                response.raise_for_status()
+                page_rows = [
+                    row
+                    for row in extract_odata_rows(response.json())
+                    if isinstance(row, dict)
+                ]
+                rows.extend(page_rows)
+                if len(page_rows) < max(1, page_size):
+                    break
+            else:
+                return OnecSampleExportResult(
+                    sample_id=sample_id,
+                    collection_name=collection_name,
+                    ok=False,
+                    row_count=len(rows),
+                    page_count=max_pages,
+                    status_code=last_status,
+                    error="max_pages_reached",
+                    status="partial_source",
+                    retryable=True,
+                )
+    except httpx.HTTPStatusError as exc:
+        return OnecSampleExportResult(
+            sample_id=sample_id,
+            collection_name=collection_name,
+            ok=False,
+            row_count=len(rows),
+            status_code=exc.response.status_code,
+            error=f"HTTP {exc.response.status_code}",
+            status="failed",
+            retryable=exc.response.status_code in RETRYABLE_STATUS_CODES,
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        return OnecSampleExportResult(
+            sample_id=sample_id,
+            collection_name=collection_name,
+            ok=False,
+            row_count=len(rows),
+            status_code=last_status,
+            error=exc.__class__.__name__,
+            status="failed",
+            retryable=isinstance(exc, httpx.HTTPError),
+        )
+
+    payload = {
+        "value": rows,
+        "_source": {
+            "collectionName": collection_name,
+            "periodStart": period_start.isoformat(),
+            "periodEndExclusive": end_exclusive.isoformat(),
+            "readBoundary": "GET only",
+        },
+    }
+    output_path = output_dir / f"{sample_id}.raw.json"
+    _write_json(output_path, payload)
+    return OnecSampleExportResult(
+        sample_id=sample_id,
+        collection_name=collection_name,
+        ok=True,
+        row_count=len(rows),
+        page_count=max(1, (len(rows) + max(1, page_size) - 1) // max(1, page_size)),
+        raw_payload_hash=raw_payload_hash(payload),
+        output_path=output_path,
+        status_code=last_status,
+        status="loaded",
+        retryable=False,
+    )
+
+
+def export_onec_accounting_recordtype_balances(
+    settings: OnecODataSettings,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+    page_size: int = 1000,
+    max_pages: int = 1000,
+    transport: httpx.BaseTransport | None = None,
+) -> OnecSampleExportResult:
+    """Build an organization-aware OSV fallback from RecordType GET pages.
+
+    Some 1C publications return HTTP 500 for ``$filter`` on accounting
+    registers. This collector intentionally paginates the unfiltered read-only
+    endpoint, retains every raw page locally, and persists only deterministic
+    account aggregates for report materialization.
+    """
+
+    sample_id = "accounting_register_balances"
+    collection_name = "AccountingRegister_Управленческий_RecordType"
+    collection_dir = output_dir / sample_id
+    collection_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = collection_dir / "manifest.json"
+    normalized_path = output_dir / f"{sample_id}.raw.json"
+    effective_page_size = max(1, page_size)
+    page_limit = max(1, max_pages)
+    end_exclusive = period_end + timedelta(days=1)
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    page_meta: list[dict[str, Any]] = []
+    scanned_rows = 0
+    last_status: int | None = None
+    complete = False
+    error = ""
+    request_params = {
+        "$select": ",".join(
+            (
+                "Period",
+                "Recorder",
+                "LineNumber",
+                "Active",
+                "Организация_Key",
+                "AccountDr_Key",
+                "AccountCr_Key",
+                "Сумма",
+            )
+        ),
+        "$orderby": "Period asc,Recorder asc,LineNumber asc",
+    }
+
+    def bucket(organization_id: str, account_key: str) -> dict[str, Any]:
+        key = (organization_id, account_key)
+        if key not in buckets:
+            buckets[key] = {
+                "Organization_Key": organization_id,
+                "Account_Key": account_key,
+                "openingNet": Decimal("0"),
+                "debitTurnover": Decimal("0"),
+                "creditTurnover": Decimal("0"),
+                "closingNet": Decimal("0"),
+            }
+        return buckets[key]
+
+    try:
+        with OnecODataClient(settings, transport=transport) as client:
+            for page_index in range(page_limit):
+                payload, status_code = _fetch_collection_with_retries(
+                    client,
+                    collection_name,
+                    top=effective_page_size,
+                    skip=page_index * effective_page_size,
+                    params=request_params,
+                    next_link="",
+                    timeout_seconds=120.0,
+                    retry_attempts=2,
+                    retry_delay_seconds=2.0,
+                    retry_read_timeouts=True,
+                )
+                last_status = status_code
+                rows = [
+                    row
+                    for row in extract_odata_rows(payload)
+                    if isinstance(row, dict)
+                ]
+                page_path = collection_dir / f"page_{page_index + 1:06d}.raw.json"
+                _write_json(page_path, payload)
+                page_meta.append(
+                    {
+                        "pageIndex": page_index + 1,
+                        "skip": page_index * effective_page_size,
+                        "rowCount": len(rows),
+                        "statusCode": status_code,
+                        "file": page_path.name,
+                        "fileSha256": _file_sha256(page_path),
+                    }
+                )
+                scanned_rows += len(rows)
+                ordered_period_complete = False
+                for row in rows:
+                    row_date = _accounting_row_date(row.get("Period"))
+                    if row_date is not None and row_date >= end_exclusive:
+                        ordered_period_complete = True
+                    if (
+                        row_date is None
+                        or row_date >= end_exclusive
+                        or not _accounting_row_is_active(row.get("Active"))
+                    ):
+                        continue
+                    organization_id = str(
+                        row.get("Организация_Key")
+                        or row.get("Organization_Key")
+                        or ""
+                    ).strip()
+                    amount = _accounting_decimal(row.get("Сумма") or row.get("Amount"))
+                    if not organization_id or amount is None:
+                        continue
+                    in_period = period_start <= row_date < end_exclusive
+                    for side, account_field in (
+                        ("debit", "AccountDr_Key"),
+                        ("credit", "AccountCr_Key"),
+                    ):
+                        account_key = str(row.get(account_field) or "").strip()
+                        if not account_key:
+                            continue
+                        item = bucket(organization_id, account_key)
+                        signed = amount if side == "debit" else -amount
+                        item["closingNet"] += signed
+                        if row_date < period_start:
+                            item["openingNet"] += signed
+                        elif in_period:
+                            turnover_field = (
+                                "debitTurnover"
+                                if side == "debit"
+                                else "creditTurnover"
+                            )
+                            item[turnover_field] += amount
+                if ordered_period_complete:
+                    # The server accepted an explicit Period ordering. Once
+                    # the ordered stream enters the next period, every row
+                    # needed for opening balances and current-month turnover
+                    # has been retained in the raw lineage.
+                    complete = True
+                    break
+                if len(rows) < effective_page_size:
+                    complete = True
+                    break
+            if not complete:
+                error = "max_pages_reached"
+    except httpx.HTTPStatusError as exc:
+        last_status = exc.response.status_code
+        error = f"HTTP {exc.response.status_code}"
+    except (httpx.HTTPError, ValueError) as exc:
+        error = exc.__class__.__name__
+
+    normalized_rows: list[dict[str, Any]] = []
+    for item in buckets.values():
+        opening = item.pop("openingNet")
+        closing = item.pop("closingNet")
+        normalized_rows.append(
+            {
+                **item,
+                "OpeningDebit": _accounting_decimal_text(max(opening, Decimal("0"))),
+                "OpeningCredit": _accounting_decimal_text(max(-opening, Decimal("0"))),
+                "DebitTurnover": _accounting_decimal_text(item["debitTurnover"]),
+                "CreditTurnover": _accounting_decimal_text(item["creditTurnover"]),
+                "ClosingDebit": _accounting_decimal_text(max(closing, Decimal("0"))),
+                "ClosingCredit": _accounting_decimal_text(max(-closing, Decimal("0"))),
+            }
+        )
+    for row in normalized_rows:
+        row.pop("debitTurnover", None)
+        row.pop("creditTurnover", None)
+    normalized_rows.sort(
+        key=lambda row: (str(row["Organization_Key"]), str(row["Account_Key"]))
+    )
+    status = (
+        "loaded" if complete else ("partial_source" if normalized_rows else "failed")
+    )
+    manifest = {
+        "contractVersion": "onec-accounting-recordtype-balances-v3",
+        "collectionName": collection_name,
+        "readBoundary": "GET only",
+        "periodStart": period_start.isoformat(),
+        "periodEndExclusive": end_exclusive.isoformat(),
+        "status": status,
+        "error": error,
+        "scannedRows": scanned_rows,
+        "normalizedRows": len(normalized_rows),
+        "pageSize": effective_page_size,
+        "orderBy": request_params["$orderby"],
+        "pages": page_meta,
+    }
+    _write_json(checkpoint_path, manifest)
+    output_payload = {
+        "value": normalized_rows,
+        "_source": {
+            "contractVersion": manifest["contractVersion"],
+            "periodStart": period_start.isoformat(),
+            "periodEndExclusive": end_exclusive.isoformat(),
+            "rawManifestSha256": _file_sha256(checkpoint_path),
+            "scannedRows": scanned_rows,
+            "readBoundary": "GET only",
+        },
+    }
+    _write_json(normalized_path, output_payload)
+    return OnecSampleExportResult(
+        sample_id=sample_id,
+        collection_name=collection_name,
+        ok=complete,
+        row_count=len(normalized_rows),
+        page_count=len(page_meta),
+        raw_payload_hash=_file_sha256(checkpoint_path),
+        output_path=normalized_path,
+        status_code=last_status,
+        error=error,
+        status=status,
+        checkpoint_path=checkpoint_path,
+        retryable=not complete,
+        next_cursor=(
+            f"skip:{len(page_meta) * effective_page_size}" if not complete else ""
+        ),
+        effective_page_size=effective_page_size,
+        detail_mode="normalized_account_balances",
+    )
+
 
 class OnecODataClient:
     """Small read-only client for the standard 1C OData interface."""
@@ -691,6 +1127,10 @@ def export_collection_sample(
     complete = checkpoint_complete
     error = ""
     retryable = False
+    local_period_field = {
+        "local_accounting_period": "Period",
+        "local_document_date": "Date",
+    }.get(collection.period_filter_mode)
 
     while not complete and len(page_meta) < page_limit:
         try:
@@ -726,6 +1166,14 @@ def export_collection_sample(
             break
 
         rows = extract_odata_rows(payload)
+        local_page_dates = [
+            parsed
+            for row in rows
+            if isinstance(row, Mapping)
+            and local_period_field is not None
+            and (parsed := _accounting_row_date(row.get(local_period_field)))
+            is not None
+        ]
         last_status_code = status_code
         page_index = len(page_meta) + 1
         page_path = collection_dir / f"page_{page_index:06d}.raw.json"
@@ -763,6 +1211,18 @@ def export_collection_sample(
         if not next_link and len(rows) < page_size:
             complete = True
             break
+        if (
+            local_period_field is not None
+            and period_end is not None
+            and local_page_dates
+            and min(local_page_dates) > period_end
+        ):
+            # Period-local accounting collections request an explicit server
+            # ordering below. Once an entire page is beyond the selected
+            # window, no matching row can appear later in the stream.
+            complete = True
+            next_link = ""
+            break
 
     if not complete and not error and len(page_meta) >= page_limit:
         error = "max_pages_reached"
@@ -773,10 +1233,13 @@ def export_collection_sample(
     payload_hash = ""
     if complete:
         output_path = output_dir / f"{collection.sample_id}.raw.json"
-        _write_combined_output(
+        row_count = _write_combined_output(
             output_path,
             collection_dir=collection_dir,
             pages=page_meta,
+            local_period_field=local_period_field,
+            period_start=period_start,
+            period_end=period_end,
         )
         payload_hash = _file_sha256(output_path)
         retryable = False
@@ -940,6 +1403,13 @@ def _collection_request_params(
         params["$filter"] = " and ".join(filters)
     if collection.order_by and "$orderby" not in params:
         params["$orderby"] = collection.order_by
+    if "$orderby" not in params:
+        local_order_field = {
+            "local_accounting_period": "Period asc,Recorder asc,LineNumber",
+            "local_document_date": "Date asc,Ref_Key",
+        }.get(collection.period_filter_mode)
+        if local_order_field:
+            params["$orderby"] = f"{local_order_field} asc"
     if collection.select_fields and "$select" not in params:
         params["$select"] = ",".join(collection.select_fields)
     return params
@@ -1092,7 +1562,10 @@ def _write_combined_output(
     *,
     collection_dir: Path,
     pages: list[dict[str, Any]],
-) -> None:
+    local_period_field: str | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> int:
     shape = "value"
     if pages:
         first_payload = json.loads(
@@ -1114,11 +1587,22 @@ def _write_combined_output(
         else:
             handle.write('{"value":[')
         first_row = True
+        output_row_count = 0
         for page in pages:
             payload = json.loads(
                 (collection_dir / str(page["file"])).read_text(encoding="utf-8")
             )
             for row in extract_odata_rows(payload):
+                if local_period_field is not None:
+                    if not isinstance(row, Mapping):
+                        continue
+                    row_date = _accounting_row_date(row.get(local_period_field))
+                    if row_date is None:
+                        continue
+                    if period_start is not None and row_date < period_start:
+                        continue
+                    if period_end is not None and row_date > period_end:
+                        continue
                 if not first_row:
                     handle.write(",")
                 handle.write(
@@ -1131,6 +1615,7 @@ def _write_combined_output(
                     )
                 )
                 first_row = False
+                output_row_count += 1
         if shape == "d_results":
             handle.write("]}")
         else:
@@ -1141,6 +1626,7 @@ def _write_combined_output(
         )
         handle.write("}")
     os.replace(temporary, output_path)
+    return output_row_count
 
 
 def _file_sha256(path: Path) -> str:
@@ -1175,6 +1661,39 @@ def raw_payload_hash(payload: Mapping[str, Any]) -> str:
         default=str,
     )
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _accounting_row_date(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if len(text) < 10:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _accounting_row_is_active(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() not in {"", "0", "false", "no"}
+
+
+def _accounting_decimal(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _accounting_decimal_text(value: Decimal) -> str:
+    return format(value, "f")
 
 
 def _combined_payload(

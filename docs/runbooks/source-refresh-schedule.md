@@ -3,7 +3,7 @@ title: "Расписание source refresh WB/1C"
 doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
-status: draft
+status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
 updated_at: "2026-07-13"
@@ -11,10 +11,12 @@ updated_at: "2026-07-13"
 
 # Назначение
 
-> **Статус draft.** Unit-файлы и команды проверяются локально, но полный цикл
-> установки timers и production refresh не запускается только ради проверки
-> документации. После отдельного операционного smoke runbook можно повысить до
-> `active`.
+> **Статус active.** Production timers, отдельный systemd worker, full/daily
+> refresh и ручной incremental smoke проверены 13.07.2026. Два последовательных
+> incremental run создали только staff-черновики, завершились за `9:18` и
+> `8:45`, дали одинаковые `19 230` расчетных строк и одинаковые KPI; текущий
+> опубликованный отчет не переключался. После включения drop-ins штатный
+> production worker повторил тот же результат за `8:36`.
 
 Этот runbook описывает безопасное расписание `source refresh` для web-кабинета
 Shumeyko. Расписание запускает только read-only CLI
@@ -56,26 +58,29 @@ deploy/systemd/shumeiko-source-refresh-daily.timer
 deploy/systemd/shumeiko-source-refresh-weekly.service
 deploy/systemd/shumeiko-source-refresh-weekly.timer
 deploy/systemd/shumeiko-source-refresh-worker@.service
+deploy/systemd/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf
+deploy/systemd/shumeiko-source-refresh-worker@.service.d/marketplace-facts.conf
 deploy/systemd/shumeiko-source-refresh-watchdog.service
 deploy/systemd/shumeiko-source-refresh-watchdog.timer
+deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf
 ```
 
 Оба service-файла используют:
 
-- `WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics`;
+- `WorkingDirectory=/opt/shumeyko-runtime/prod/current`;
 - проектный `.venv/bin/python`;
-- `EnvironmentFile=/etc/shumeiko-web.env`;
+- `EnvironmentFile=/etc/shumeiko-web-prod.env`;
 - `SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko` как безопасный tenant по умолчанию.
 
 Ручной запуск из web, совместимая кнопка 1С, AI-команда, пересборка после
 загрузки сопоставления и production daily/weekly выполняют отдельный шаблон
 `shumeiko-source-refresh-worker@<run_id>.service`. Web-процесс только создаёт
 `queued` run и запускает unit; чтение источников и сборка отчёта внутри
-`shumeiko-web.service` запрещены. Watchdog раз в минуту проверяет heartbeat.
+`shumeiko-web-prod.service` запрещены. Watchdog раз в минуту проверяет heartbeat.
 Локальный `cli:<pid>:<run_id>` fallback разрешён только для SQLite/dev; stale
 CLI run восстанавливается лишь после подтверждения отсутствия процесса.
 
-Фоновый worker ограничен `MemoryHigh=2G`, `MemoryMax=3G` и
+Фоновый worker ограничен `MemoryHigh=3G`, `MemoryMax=4G` и
 `MemorySwapMax=1G`. На production он включён в systemd-oomd как приоритетный
 кандидат на завершение при давлении памяти. Поэтому тяжёлый refresh может
 завершиться управляемой ошибкой и быть продолжен по checkpoint, но не должен
@@ -89,7 +94,14 @@ refresh доступы должны приходить из encrypted tenant int
 ```bash
 sudo cp deploy/systemd/shumeiko-source-refresh-*.service /etc/systemd/system/
 sudo cp deploy/systemd/shumeiko-source-refresh-*.timer /etc/systemd/system/
+sudo install -d /etc/systemd/system/shumeiko-source-refresh-worker@.service.d
+sudo install -d /etc/systemd/system/shumeiko-web-prod.service.d
+sudo cp deploy/systemd/shumeiko-source-refresh-worker@.service.d/*.conf \
+  /etc/systemd/system/shumeiko-source-refresh-worker@.service.d/
+sudo cp deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf \
+  /etc/systemd/system/shumeiko-web-prod.service.d/
 sudo systemctl daemon-reload
+sudo systemctl restart shumeiko-web-prod.service
 sudo systemctl enable --now shumeiko-source-refresh-watchdog.timer
 sudo systemctl enable --now shumeiko-source-refresh-daily.timer
 sudo systemctl enable --now shumeiko-source-refresh-weekly.timer
@@ -108,6 +120,20 @@ Drop-in:
 [Service]
 Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=<tenant_id>
 ```
+
+Версионированные drop-ins включают staff incremental только вместе с
+daily-facts и DB-first. Rollback не требует изменения файла с секретами:
+
+```bash
+sudo rm /etc/systemd/system/shumeiko-web-prod.service.d/incremental-refresh.conf
+sudo rm \
+  /etc/systemd/system/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf
+sudo systemctl daemon-reload
+sudo systemctl restart shumeiko-web-prod.service
+```
+
+Перед rollback убедиться, что incremental worker не активен. Уже созданные
+immutable draft/report snapshots не удалять этой командой.
 
 # Проверка
 

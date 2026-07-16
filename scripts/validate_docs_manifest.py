@@ -16,6 +16,7 @@ from docs_metadata import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs" / "manifest.yml"
+DOCS_INDEX = ROOT / "docs" / "index.md"
 REQUIRED_KEYS = {
     "path",
     "title",
@@ -33,7 +34,22 @@ FRONTMATTER_PARITY_KEYS = {
     "source_of_truth",
 }
 VALID_STATUSES = {"active", "draft", "accepted", "implemented", "superseded"}
+CHANGELOG_REQUIRED_SPECS = {
+    "docs/specs/marketplace-unit-economics-ozon-integration.md",
+    "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md",
+    "docs/specs/wb-unit-economics-excel-mvp-implementation.md",
+}
 RECONCILED_RE = re.compile(r"^(?P<path>.+?)\s+@\s+(?P<date>\d{4}-\d{2}-\d{2})$")
+TRUTH_TABLE_ROW_RE = re.compile(
+    r"^\| `(?P<scope>[^`]+)` \| `(?P<path>[^`]+)` \| "
+    r"(?P<priority>\d+) \|$",
+    re.MULTILINE,
+)
+CONTOUR_STATUS_ROW_RE = re.compile(
+    r"^\| [^|]+ \| `(?P<path>[^`]+)` \| (?P<status>[a-z-]+) \|",
+    re.MULTILINE,
+)
+CHANGELOG_HEADING_RE = re.compile(r"^# Changelog\s*$", re.MULTILINE)
 CLIENT_TZ_DATE_RE = re.compile(
     r"^Дата актуализации: (?P<day>\d{1,2}) (?P<month>[а-яё]+) (?P<year>\d{4})\.$",
     re.MULTILINE,
@@ -212,6 +228,151 @@ def validate_truth_precedence(records: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def validate_changelog_registration(
+    records: list[dict[str, Any]],
+    required_specs: set[str] | None = None,
+) -> list[str]:
+    """Keep long source specs linked to registered, back-referenced changelogs."""
+    failures: list[str] = []
+    required = CHANGELOG_REQUIRED_SPECS if required_specs is None else required_specs
+    records_by_path = {str(record.get("path")): record for record in records}
+
+    for rel_path in sorted(records_by_path):
+        path = ROOT / rel_path
+        if path.suffix != ".md" or not path.exists():
+            continue
+        metadata, body = load_frontmatter(path)
+        changelog_path = metadata.get("changelog_path")
+        if rel_path in required and changelog_path is None:
+            failures.append(f"{rel_path}: required changelog_path is missing")
+            continue
+        if changelog_path is None:
+            continue
+        if not isinstance(changelog_path, str):
+            failures.append(f"{rel_path}: changelog_path must be a path string")
+            continue
+
+        changelog_record = records_by_path.get(changelog_path)
+        if changelog_record is None:
+            failures.append(
+                f"{rel_path}: changelog_path is not registered: {changelog_path}"
+            )
+            continue
+        if changelog_record.get("doc_type") != "changelog":
+            failures.append(
+                f"{rel_path}: changelog_path must reference doc_type changelog: "
+                f"{changelog_path}"
+            )
+        changelog_file = ROOT / changelog_path
+        if not changelog_file.exists():
+            failures.append(
+                f"{rel_path}: changelog_path does not exist: {changelog_path}"
+            )
+            continue
+        changelog_metadata, _ = load_frontmatter(changelog_file)
+        if changelog_metadata.get("source_spec") != rel_path:
+            failures.append(
+                f"{changelog_path}: source_spec must point back to {rel_path}"
+            )
+        source_updated_at = date_text(metadata.get("updated_at"))
+        changelog_updated_at = date_text(changelog_metadata.get("updated_at"))
+        if (
+            source_updated_at is not None
+            and changelog_updated_at is not None
+            and changelog_updated_at < source_updated_at
+        ):
+            failures.append(
+                f"{changelog_path}: updated_at {changelog_updated_at} is older "
+                f"than source spec {source_updated_at}"
+            )
+
+        changelog_heading = CHANGELOG_HEADING_RE.search(body)
+        if changelog_heading is None:
+            failures.append(f"{rel_path}: externalized changelog heading is missing")
+            continue
+        inline_tail = body[changelog_heading.end() :].strip()
+        inline_lines = [line for line in inline_tail.splitlines() if line.strip()]
+        if f"`{changelog_path}`" not in inline_tail:
+            failures.append(
+                f"{rel_path}: inline changelog must point to {changelog_path}"
+            )
+        if len(inline_lines) > 3 or any(
+            line.lstrip().startswith(("- ", "* ", "#")) for line in inline_lines
+        ):
+            failures.append(
+                f"{rel_path}: inline changelog must contain only the external "
+                "history pointer"
+            )
+    return failures
+
+
+def validate_index_consistency(
+    records: list[dict[str, Any]], index_text: str
+) -> list[str]:
+    """Keep human-readable truth and status tables aligned with the manifest."""
+    failures: list[str] = []
+    truth_by_scope: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        scope = record.get("truth_scope")
+        priority = record.get("truth_priority")
+        if (
+            record.get("source_of_truth") is True
+            and isinstance(scope, str)
+            and isinstance(priority, int)
+            and not isinstance(priority, bool)
+        ):
+            truth_by_scope.setdefault(scope, []).append(record)
+
+    expected_truth: dict[str, tuple[str, int]] = {}
+    for scope, scoped_records in truth_by_scope.items():
+        highest = max(int(record["truth_priority"]) for record in scoped_records)
+        leaders = [
+            record for record in scoped_records if record["truth_priority"] == highest
+        ]
+        if len(leaders) == 1:
+            expected_truth[scope] = (str(leaders[0]["path"]), highest)
+
+    indexed_truth: dict[str, tuple[str, int]] = {}
+    for match in TRUTH_TABLE_ROW_RE.finditer(index_text):
+        scope = match.group("scope")
+        if scope in indexed_truth:
+            failures.append(f"docs/index.md: duplicate truth_scope row {scope!r}")
+            continue
+        indexed_truth[scope] = (
+            match.group("path"),
+            int(match.group("priority")),
+        )
+
+    for scope, expected in sorted(expected_truth.items()):
+        actual = indexed_truth.get(scope)
+        if actual is None:
+            failures.append(f"docs/index.md: missing truth_scope row {scope!r}")
+        elif actual != expected:
+            failures.append(
+                f"docs/index.md: truth_scope {scope!r} differs from manifest; "
+                f"index={actual!r}, manifest={expected!r}"
+            )
+    for scope in sorted(indexed_truth.keys() - expected_truth.keys()):
+        failures.append(f"docs/index.md: unknown truth_scope row {scope!r}")
+
+    records_by_path = {str(record.get("path")): record for record in records}
+    for match in CONTOUR_STATUS_ROW_RE.finditer(index_text):
+        path = match.group("path")
+        record = records_by_path.get(path)
+        if record is None:
+            failures.append(
+                f"docs/index.md: contour path is absent from manifest: {path}"
+            )
+            continue
+        status = match.group("status")
+        if status != record.get("status"):
+            failures.append(
+                f"docs/index.md: status for {path} is {status!r}, "
+                f"manifest has {record.get('status')!r}"
+            )
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     if not MANIFEST.exists():
@@ -249,13 +410,20 @@ def main() -> int:
         if not isinstance(record["source_of_truth"], bool):
             failures.append(f"{rel_path}: source_of_truth must be boolean")
         failures.extend(validate_truth_metadata(record, rel_path))
-        if (
-            path.suffix == ".md"
-            and rel_path.startswith(("docs/", "config/"))
-        ):
+        if path.suffix == ".md" and rel_path.startswith(("docs/", "config/")):
             validate_markdown_metadata(rel_path, record, failures)
 
     failures.extend(validate_truth_precedence(records))
+    failures.extend(validate_changelog_registration(records))
+    if DOCS_INDEX.exists():
+        failures.extend(
+            validate_index_consistency(
+                records,
+                DOCS_INDEX.read_text(encoding="utf-8"),
+            )
+        )
+    else:
+        failures.append("docs/index.md: file is missing")
 
     registered_dates: list[str] = []
     for record in records:

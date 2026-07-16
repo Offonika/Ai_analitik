@@ -6,8 +6,8 @@ audience: ["client", "consultant"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-13"
-updated_at: "2026-07-13"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-15"
+updated_at: "2026-07-15"
 ---
 
 # AI-аналитик отчетов: пилот Шумейко WB/1C
@@ -139,7 +139,7 @@ read-only данные, считает показатели, помогает к
 
 Далее применяется налоговый профиль организации. Для ОСНО отдельно показываются
 `НДС к уплате` и применимые налоги на доход, кроме НДФЛ предпринимателя, а итог
-называется `прибыль до НДФЛ`. В текущей методике ИП ОСНО ненДФЛ-налог равен
+называется `прибыль до налогов`. В текущей методике ИП ОСНО ненДФЛ-налог равен
 нулю, а НДФЛ по SKU не распределяется. Без
 подтвержденного профиля или обязательного налогового источника эти показатели
 остаются пустыми с объяснением. Формула `НДС 5/105 + УСН 1%` допустима только

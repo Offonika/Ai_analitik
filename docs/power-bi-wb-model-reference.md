@@ -3,11 +3,18 @@ title: "Power BI WB model reference"
 doc_type: "reference"
 domain: "marketplace-analytics"
 audience: ["engineering", "consultant"]
-status: "draft"
+status: "superseded"
 source_of_truth: false
-updated_at: "2026-06-22"
+superseded_by:
+  - "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
+  - "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
+updated_at: "2026-07-16"
 source_artifact: "reports/power_bi_export_input/modelWB.pbip"
 ---
+
+> **Устаревший reference.** Power BI был ранним источником идей, но не является
+> текущим продуктовым контуром. Расчёты определяет accepted Excel spec, а
+> пользовательский сервис — accepted web-cabinet spec.
 
 # Power BI WB model reference
 
@@ -272,8 +279,9 @@ unit_profit_before_tax =
   - cogs_from_1c
 ```
 
-Текущий клиентский показатель называется `Маржинальный доход WB после налогов`,
-а не полная `Чистая прибыль`.
+В раннем прототипе клиентский показатель назывался `Маржинальный доход WB после
+налогов`, а не полной `Чистой прибылью`. Это историческое название не определяет
+терминологию текущего сервиса.
 
 ## Налоги
 
@@ -284,7 +292,7 @@ unit_profit_before_tax =
 НалогУСНЗак = [Заказано руб] * 0.02
 ```
 
-Это нельзя переносить в текущий MVP. В Shumeyko принята текущая рамка:
+В раннем переносе модели использовалась legacy-рамка:
 
 ```text
 vat_5_105 = revenue_after_spp * 5 / 105
@@ -292,7 +300,8 @@ usn_1 = revenue_after_spp * 0.01
 profit_after_tax = unit_profit_before_tax - vat_5_105 - usn_1
 ```
 
-Если налоговые правила изменятся, нужна отдельная правка accepted spec.
+Эта формула сохранена только как история Power BI-прототипа. Для новых отчетов
+ее применять нельзя; действующие правила находятся в superseding Excel spec.
 
 ## СПП и цена после СПП
 

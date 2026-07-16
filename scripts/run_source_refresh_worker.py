@@ -120,6 +120,8 @@ def recover_stale_worker_runs(
             error_message="Source refresh worker heartbeat expired.",
             finished_at=security.utcnow(),
         )
+        if refresh_run.mode == "report-generation":
+            refresh_run.generation_stage = "failed"
         repository.audit(
             db,
             action="source_refresh_worker_stale",
@@ -153,6 +155,8 @@ def mark_run_failed(
             error_message=f"{error_type}: source refresh worker stopped.",
             finished_at=security.utcnow(),
         )
+        if refresh_run.mode == "report-generation":
+            refresh_run.generation_stage = "failed"
         repository.audit(
             db,
             action="source_refresh_worker_failed",

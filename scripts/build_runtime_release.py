@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Build an immutable runtime release from an exact Git commit."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--commit", required=True)
+    parser.add_argument("--release-id", default="")
+    parser.add_argument(
+        "--release-root",
+        type=Path,
+        default=Path("/opt/shumeyko-releases"),
+    )
+    parser.add_argument("--venv", type=Path, default=ROOT / ".venv")
+    return parser.parse_args()
+
+
+def _run(*command: str, cwd: Path = ROOT) -> str:
+    result = subprocess.run(
+        list(command),
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main() -> int:
+    args = parse_args()
+    commit = _run("git", "rev-parse", "--verify", f"{args.commit}^{{commit}}")
+    short_commit = commit[:12]
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    release_id = args.release_id or f"runtime-{short_commit}-{stamp}"
+    release_root = args.release_root.resolve()
+    release_dir = release_root / release_id
+    venv = args.venv.resolve()
+    if release_dir.exists():
+        raise SystemExit(f"Release already exists: {release_dir}")
+    if not (venv / "bin" / "python").is_file():
+        raise SystemExit(f"Python environment not found: {venv}")
+
+    release_root.mkdir(parents=True, exist_ok=True)
+    release_root.chmod(0o711)
+    with tempfile.TemporaryDirectory(prefix=f".{release_id}-", dir=release_root) as raw:
+        staging = Path(raw)
+        archive = staging / "source.tar"
+        _run(
+            "git",
+            "archive",
+            "--format=tar",
+            f"--output={archive}",
+            commit,
+        )
+        archive_sha256 = _sha256(archive)
+        app_dir = staging / "app"
+        app_dir.mkdir()
+        with tarfile.open(archive, "r") as bundle:
+            bundle.extractall(app_dir, filter="data")
+        (app_dir / "reports").symlink_to(
+            Path("/opt/shumeyko-partners-wb-unit-economics/reports"),
+            target_is_directory=True,
+        )
+        shutil.copytree(venv, app_dir / ".venv", symlinks=True)
+
+        freeze = _run(str(venv / "bin" / "python"), "-m", "pip", "freeze")
+        freeze_path = app_dir / "python-freeze.txt"
+        freeze_path.write_text(freeze + "\n", encoding="utf-8")
+        freeze_sha256 = _sha256(freeze_path)
+        content_sha256 = hashlib.sha256(
+            f"{archive_sha256}:{freeze_sha256}".encode()
+        ).hexdigest()
+        manifest = {
+            "releaseId": release_id,
+            "sourceCommit": commit,
+            "sourceDirty": False,
+            "createdAt": datetime.now(UTC).isoformat(),
+            "archiveSha256": archive_sha256,
+            "pythonFreezeSha256": freeze_sha256,
+            "contentSha256": content_sha256,
+        }
+        (app_dir / "release-manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        archive.unlink()
+        os.rename(app_dir, release_dir)
+
+    for path in release_dir.rglob("*"):
+        if path.is_symlink():
+            continue
+        with contextlib.suppress(OSError):
+            if path.is_dir() or path.stat().st_mode & 0o111:
+                path.chmod(0o555)
+            else:
+                path.chmod(0o444)
+    release_dir.chmod(0o555)
+    print(
+        f"release={release_dir} sourceCommit={commit} "
+        f"contentSha256={content_sha256} sourceDirty=false"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

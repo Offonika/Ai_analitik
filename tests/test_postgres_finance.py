@@ -50,6 +50,22 @@ def test_postgres_finance_records_keep_raw_payload_and_week(tmp_path: Path) -> N
                 "deduction": "4",
                 "acquiringFee": "11",
                 "deliveryMethod": "FBS",
+                "orderUid": "order-1",
+                "orderId": 2816993144,
+                "shkId": 1239159661,
+                "stickerId": "1964038895",
+                "trbxId": "WB-TRBX-1234567",
+                "officeName": "Коледино",
+                "ppvzOfficeName": "ПВЗ Москва",
+                "ppvzOfficeId": 105383,
+                "country": "Россия",
+                "giBoxTypeName": "Монопаллета",
+                "dlvPrc": 1.8,
+                "fixTariffDateFrom": "2026-04-01",
+                "fixTariffDateTo": "2026-04-30",
+                "deliveryAmount": 1,
+                "returnAmount": 0,
+                "rebillLogisticCost": "1.349",
                 "currency": "RUB",
                 "unexpectedColumn": "must stay in jsonb",
             }
@@ -84,6 +100,22 @@ def test_postgres_finance_records_keep_raw_payload_and_week(tmp_path: Path) -> N
     assert record["net_revenue"] == 1000
     assert record["deduction"] == 4
     assert record["penalties_and_holdbacks"] == -2
+    assert record["order_uid"] == "order-1"
+    assert record["order_id"] == "2816993144"
+    assert record["shk_id"] == "1239159661"
+    assert record["sticker_id"] == "1964038895"
+    assert record["trbx_id"] == "WB-TRBX-1234567"
+    assert record["office_name"] == "Коледино"
+    assert record["ppvz_office_name"] == "ПВЗ Москва"
+    assert record["ppvz_office_id"] == "105383"
+    assert record["country"] == "Россия"
+    assert record["gi_box_type_name"] == "Монопаллета"
+    assert record["dlv_prc"] == Decimal("1.8")
+    assert record["fix_tariff_date_from"] == date(2026, 4, 1)
+    assert record["fix_tariff_date_to"] == date(2026, 4, 30)
+    assert record["delivery_amount"] == Decimal("1")
+    assert record["return_amount"] == Decimal("0")
+    assert record["rebill_logistic_cost"] == Decimal("1.349")
     assert record["is_partial_source"] is True
     assert json.loads(record["row_payload"])["unexpectedColumn"] == "must stay in jsonb"
 

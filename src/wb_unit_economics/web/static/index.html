@@ -6,15 +6,22 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260713-reconciliation-incremental-v1"
+      content="20260716-report-download-flow-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260713-reconciliation-incremental-v1"
+      href="/static/styles.css?v=20260716-report-download-flow-v1"
     />
   </head>
   <body>
+    <div
+      id="runtime-banner"
+      class="runtime-banner"
+      role="status"
+      aria-live="polite"
+      hidden
+    ></div>
     <main class="app-shell">
       <section id="login-view" class="login-view" hidden>
         <div class="login-panel">
@@ -46,57 +53,137 @@
       </section>
 
       <section id="cabinet-view" class="cabinet-view" hidden>
-        <header class="topbar">
-          <div class="brand-lockup is-info" aria-live="polite" aria-atomic="true">
-            <p class="eyebrow">Шумейко · WB / Ozon / 1C</p>
-            <h1 id="report-title">Пульт подготовки отчета</h1>
-            <p id="report-subtitle" class="topbar-subtitle"></p>
+        <aside class="workspace-sidebar" aria-label="Навигация кабинета">
+          <div class="workspace-brand">
+            <span class="workspace-brand-mark" aria-hidden="true">
+              <img src="/static/icons/chart-bar.svg" alt="" />
+            </span>
+            <span class="workspace-brand-copy">AI-аналитик<br />отчётов</span>
+          </div>
+          <nav class="workspace-nav" aria-label="Разделы отчёта">
             <button
-              id="report-load-retry-button"
               type="button"
-              class="report-load-retry secondary-button"
+              data-workspace-nav="overview"
+              data-guide-entry="sections"
+              data-guide-order="10"
+              data-guide-description="Главные показатели, динамика продаж, аналитические подсказки и готовность текущего отчёта."
+              aria-current="page"
+            >
+              <img src="/static/icons/house.svg" alt="" aria-hidden="true" />
+              <span>Обзор</span>
+            </button>
+            <button
+              type="button"
+              data-workspace-nav="checks"
+              data-guide-entry="sections"
+              data-guide-order="20"
+              data-guide-description="Качество источников, сопоставление с 1С, проблемные строки и проверки перед отправкой клиенту."
+            >
+              <img src="/static/icons/shield-check.svg" alt="" aria-hidden="true" />
+              <span>Проверки</span>
+              <span id="checks-nav-count" class="workspace-nav-count" hidden></span>
+            </button>
+            <button
+              type="button"
+              data-workspace-nav="tables"
+              data-guide-entry="sections"
+              data-guide-order="30"
+              data-guide-description="Детальные строки юнит-экономики, ликвидность ассортимента и недополученный доход."
+            >
+              <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
+              <span>Таблицы</span>
+            </button>
+            <button
+              id="logistics-workspace-nav"
+              type="button"
+              data-workspace-nav="logistics"
+              data-guide-entry="sections"
+              data-guide-order="35"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Фактические затраты на прямую и обратную логистику, рейтинг товаров и безопасные рекомендации."
               hidden
             >
-              Повторить
+              <img src="/static/icons/chart-bar.svg" alt="" aria-hidden="true" />
+              <span>Логистика</span>
             </button>
-          </div>
+            <button type="button" data-workspace-nav="guide">
+              <img src="/static/icons/file-text.svg" alt="" aria-hidden="true" />
+              <span>Инструкция</span>
+            </button>
+            <button id="accounting-workflow-open" type="button" hidden>
+              <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
+              <span>Закрытие месяца</span>
+            </button>
+          </nav>
+        </aside>
+
+        <div class="workspace-main">
+        <header class="topbar">
           <div class="topbar-controls">
-            <label class="client-switcher">
+            <label
+              class="client-switcher"
+              data-guide-entry="start"
+              data-guide-order="10"
+              data-guide-description="Выберите клиентский контур. Все показатели, проверки и доступные отчёты переключатся вместе с ним."
+            >
               <span>Клиент</span>
               <select id="client-select" aria-label="Выбор клиента"></select>
             </label>
-            <label class="cabinet-switcher report-only-control">
+            <label class="report-kind-switcher">
+              <span>Вид отчёта</span>
+              <select id="report-kind-select" aria-label="Выбор вида отчёта"></select>
+            </label>
+            <label id="report-organization-switcher" class="report-organization-switcher" hidden>
+              <span>Организация 1С</span>
+              <select id="report-organization-select" aria-label="Выбор организации 1С"></select>
+            </label>
+            <label id="report-month-switcher" class="report-month-switcher" hidden>
+              <span>Месяц</span>
+              <input id="report-month" type="month" aria-label="Месяц отчёта" />
+            </label>
+            <label
+              class="cabinet-switcher report-only-control marketplace-report-control"
+              data-guide-entry="start"
+              data-guide-order="20"
+              data-guide-description="Оставьте все кабинеты для общей картины или выберите один кабинет WB/Ozon для отдельного среза."
+            >
               <span>Кабинет МП</span>
               <select
                 id="topbar-cabinet-select"
                 aria-label="Фильтр по кабинету маркетплейса"
               ></select>
             </label>
-            <label class="period-start-switcher report-only-control">
+            <label
+              class="period-start-switcher report-only-control marketplace-report-control"
+              data-guide-entry="start"
+              data-guide-order="30"
+              data-guide-description="Задайте начало периода. Фильтр применяется к показателям и детализациям текущего отчёта."
+            >
               <span>Дата начала</span>
               <input id="topbar-period-start" type="date" aria-label="Дата начала периода" />
             </label>
-            <label class="period-end-switcher report-only-control">
+            <label
+              class="period-end-switcher report-only-control marketplace-report-control"
+              data-guide-entry="start"
+              data-guide-order="40"
+              data-guide-description="Задайте конец периода и проверьте фактический диапазон данных в заголовке отчёта."
+            >
               <span>Дата конца</span>
               <input id="topbar-period-end" type="date" aria-label="Дата конца периода" />
             </label>
-            <div class="topbar-actions" aria-label="Действия кабинета">
-              <div class="topbar-action-group topbar-action-group-primary">
-                <button
-                  id="client-output-button"
-                  type="button"
-                  class="report-only-control"
-                  aria-haspopup="dialog"
-                  aria-controls="client-output-widget-overlay"
-                  data-tooltip="Открыть отчёт для клиента."
-                >
-                  Отчёт для клиента
-                </button>
+            <details id="workspace-actions-menu" class="workspace-actions-menu">
+              <summary aria-label="Дополнительные действия">
+                <img src="/static/icons/dots-three-vertical.svg" alt="" aria-hidden="true" />
+              </summary>
+              <div class="topbar-actions" aria-label="Действия кабинета">
                 <button
                   id="report-build-button"
                   type="button"
                   aria-haspopup="dialog"
                   aria-controls="report-wizard-overlay"
+                  data-guide-entry="actions"
+                  data-guide-order="10"
+                  data-guide-roles="consultant,admin"
                   data-tooltip="Открыть мастер формирования отчета."
                 >
                   Сформировать отчёт
@@ -106,54 +193,38 @@
                   class="button-link secondary-button report-only-control"
                   href="#"
                   hidden
+                  data-guide-entry="actions"
+                  data-guide-order="20"
+                  data-guide-description="Скачайте защищённый Excel текущего опубликованного отчёта."
                   data-tooltip="Скачать текущий опубликованный Excel-отчёт."
                 >
                   Скачать Excel
                 </a>
                 <button
-                  id="ai-open-button"
-                  type="button"
-                  class="secondary-button report-only-control ai-assistant-button"
-                  aria-haspopup="dialog"
-                  aria-controls="ai-widget-overlay"
-                  aria-label="Открыть AI-аналитика"
-                  data-tooltip="Открыть AI-аналитика поверх уже рассчитанных фактов."
-                >
-                  <svg
-                    class="ai-assistant-icon"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
-                    focusable="false"
-                  >
-                    <path d="M12 3v3" />
-                    <circle cx="12" cy="2.5" r="1" />
-                    <rect x="4.5" y="6" width="15" height="13" rx="4" />
-                    <path d="M8.5 11h.01M15.5 11h.01M9 15h6M4.5 11H3v4h1.5M19.5 11H21v4h-1.5" />
-                  </svg>
-                  <span>AI-аналитик</span>
-                </button>
-                <button
-                  id="reconciliation-open-button"
+                  id="client-output-button"
                   type="button"
                   class="secondary-button report-only-control"
                   aria-haspopup="dialog"
-                  aria-controls="reconciliation-hub-overlay"
-                  data-tooltip="Открыть сверку WB и 1С: документы, себестоимость, расходы маркетплейса и выкупы."
+                  aria-controls="client-output-widget-overlay"
+                  data-guide-entry="actions"
+                  data-guide-order="30"
+                  data-guide-description="Откройте отчёт клиенту, сформируйте файл и скачайте нужный формат."
                 >
-                  Сверка WB ↔ 1С
+                  Отчёт клиенту
                 </button>
-              </div>
-              <div class="topbar-action-group topbar-action-group-management">
                 <button
                   id="integrations-open-button"
                   type="button"
                   class="secondary-button"
                   aria-haspopup="dialog"
                   aria-controls="integrations-widget-overlay"
-                  data-tooltip="Открыть подключения WB, Ozon и 1C только для чтения."
+                  data-guide-entry="actions"
+                  data-guide-order="40"
+                  data-guide-roles="consultant,admin"
+                  data-guide-description="Проверьте read-only подключения WB, Ozon и 1С для выбранного клиента."
                   hidden
                 >
-                  Интеграции
+                  Настройки
                 </button>
                 <button
                   id="new-client-button"
@@ -161,28 +232,211 @@
                   class="secondary-button"
                   aria-haspopup="dialog"
                   aria-controls="new-client-widget-overlay"
+                  data-guide-entry="actions"
+                  data-guide-order="50"
+                  data-guide-roles="consultant,admin"
                   data-tooltip="Создать новый клиентский контур."
                   hidden
                 >
                   Добавить клиента
                 </button>
-              </div>
-              <div class="topbar-action-group topbar-action-group-session">
                 <button
                   id="logout-button"
                   type="button"
                   class="secondary-button session-button"
+                  data-guide-ignore="true"
                 >
                   Выход
                 </button>
               </div>
-            </div>
+            </details>
           </div>
         </header>
+
+        <section class="workspace-header">
+          <div class="brand-lockup is-info" aria-live="polite" aria-atomic="true">
+            <p class="eyebrow">Шумейко · WB / Ozon / 1C</p>
+            <h1 id="report-title">Пульт подготовки отчета</h1>
+            <p id="report-subtitle" class="topbar-subtitle"></p>
+            <button
+              id="report-load-retry-button"
+              type="button"
+              class="report-load-retry secondary-button"
+              data-guide-ignore="true"
+              hidden
+            >
+              Повторить
+            </button>
+          </div>
+          <button
+            id="ai-open-button"
+            type="button"
+            class="report-only-control ai-assistant-button"
+            aria-haspopup="dialog"
+            aria-controls="ai-widget-overlay"
+            aria-label="Открыть AI-аналитика"
+            data-guide-entry="actions"
+            data-guide-order="60"
+            data-guide-description="Задайте вопрос по уже рассчитанным данным. Помощник ничего не изменяет в источниках и отчёте."
+          >
+            <img class="ai-assistant-icon" src="/static/icons/robot.svg" alt="" aria-hidden="true" />
+            <span>AI-аналитик</span>
+          </button>
+        </section>
+
+        <section
+          id="accounting-scenario-overview"
+          class="panel full-width report-page-section accounting-scenario-panel"
+          data-workspace-panel="overview"
+          hidden
+        ></section>
+        <section
+          id="accounting-scenario-checks"
+          class="panel full-width report-page-section accounting-scenario-panel"
+          data-workspace-panel="checks"
+          hidden
+        ></section>
+        <section
+          id="accounting-scenario-tables"
+          class="panel full-width report-page-section accounting-scenario-panel"
+          data-workspace-panel="tables"
+          hidden
+        ></section>
+
+        <section
+          id="logistics-workspace"
+          class="logistics-workspace report-page-section"
+          data-workspace-panel="logistics"
+          aria-labelledby="logistics-workspace-title"
+        >
+          <div class="panel logistics-heading">
+            <div>
+              <p class="eyebrow">WB · фактическая витрина</p>
+              <h2 id="logistics-workspace-title">Анализ затрат на логистику</h2>
+              <p class="muted">
+                Сводка строится только после сверки снимка WB с действующим отчётом.
+                Причины возвратов здесь не угадываются.
+              </p>
+            </div>
+            <p id="logistics-data-status" class="logistics-data-status" role="status">
+              Данные ещё не загружены.
+            </p>
+          </div>
+
+          <form id="logistics-filter-form" class="panel logistics-filters">
+            <label>
+              Организация
+              <select id="logistics-organization-filter">
+                <option value="">Все организации</option>
+              </select>
+            </label>
+            <label>
+              Схема
+              <select id="logistics-scheme-filter">
+                <option value="">Все схемы</option>
+              </select>
+            </label>
+            <label>
+              Товар или артикул
+              <input
+                id="logistics-product-filter"
+                type="search"
+                placeholder="Название, nmId, SKU"
+                autocomplete="off"
+              />
+            </label>
+            <button type="submit" class="secondary-button">Показать</button>
+          </form>
+
+          <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
+
+          <div class="logistics-grid-two">
+            <section class="panel" aria-labelledby="logistics-components-title">
+              <p class="eyebrow">Состав затрат</p>
+              <h3 id="logistics-components-title">Прямая и обратная часть</h3>
+              <div id="logistics-components" class="logistics-components"></div>
+            </section>
+            <section class="panel" aria-labelledby="logistics-recommendations-title">
+              <p class="eyebrow">Что проверить в первую очередь</p>
+              <h3 id="logistics-recommendations-title">Рекомендации по фактам</h3>
+              <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="logistics-dynamics-title">
+            <p class="eyebrow">Динамика</p>
+            <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
+            <div id="logistics-dynamics" class="logistics-dynamics"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="logistics-products-title">
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Рейтинг товаров</p>
+                <h3 id="logistics-products-title">Что сильнее всего влияет на результат</h3>
+              </div>
+              <span id="logistics-products-count" class="muted"></span>
+            </div>
+            <div class="table-wrap">
+              <table class="logistics-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Товар</th>
+                    <th scope="col">Логистика</th>
+                    <th scope="col">Доля</th>
+                    <th scope="col">Заказы</th>
+                    <th scope="col">Возвраты</th>
+                    <th scope="col">Влияние на прибыль</th>
+                    <th scope="col">Качество</th>
+                    <th scope="col"><span class="visually-hidden">Действие</span></th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-products-rows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section
+            id="logistics-orders-section"
+            class="panel"
+            aria-labelledby="logistics-orders-title"
+            hidden
+          >
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Обезличенная детализация</p>
+                <h3 id="logistics-orders-title">Цепочки заказов</h3>
+                <p id="logistics-orders-subtitle" class="muted"></p>
+              </div>
+              <button id="logistics-orders-close" type="button" class="secondary-button">
+                Закрыть
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="logistics-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Цепочка</th>
+                    <th scope="col">Период операции</th>
+                    <th scope="col">Прямая</th>
+                    <th scope="col">Обратная</th>
+                    <th scope="col">Итого</th>
+                    <th scope="col">Продажи</th>
+                    <th scope="col">Возвраты</th>
+                    <th scope="col">Статус</th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-orders-rows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
 
         <section
           id="source-refresh-panel"
           class="panel full-width source-refresh-panel source-refresh-main"
+          data-workspace-panel="checks"
+          data-check-panel="summary"
           aria-labelledby="source-refresh-title"
           hidden
         >
@@ -195,7 +449,15 @@
                 нового отчёта.
               </p>
             </div>
-            <div id="source-refresh-status" class="source-refresh-status">
+            <div
+              id="source-refresh-status"
+              class="source-refresh-status"
+              data-guide-entry="checks"
+              data-guide-order="10"
+              data-guide-roles="consultant,admin"
+              data-guide-label="Прочитайте сводку запуска"
+              data-guide-description="Сверьте статус, период, режим, прогресс и состояние Excel. «Требует проверки» означает, что данные загружены, но замечания ещё нужно разобрать; это не равно ошибке подключения."
+            >
               Статус еще не загружен.
             </div>
           </div>
@@ -203,8 +465,21 @@
             id="source-refresh-steps"
             class="source-refresh-steps"
             aria-label="Шаги обновления данных и расчёта"
+            data-guide-entry="checks"
+            data-guide-order="20"
+            data-guide-roles="consultant,admin"
+            data-guide-label="Проверьте, на каком этапе остановился процесс"
+            data-guide-description="Лента «Сопоставление → Проверка → Обновление → Готово» показывает ход последнего запуска. Не запускайте второй процесс, пока текущий ещё выполняется."
           ></ol>
-          <form id="source-refresh-mapping-form" class="source-refresh-mapping-form">
+          <form
+            id="source-refresh-mapping-form"
+            class="source-refresh-mapping-form"
+            data-guide-entry="checks"
+            data-guide-order="50"
+            data-guide-roles="consultant,admin"
+            data-guide-label="При необходимости обновите сопоставление клиента"
+            data-guide-description="Загружайте TXT, TSV или CSV из 1С, когда есть товары без связи с номенклатурой. Файл обновляет сопоставление всего клиента и будет применяться в следующих отчётах."
+          >
             <label
               class="file-picker upload-file-button compact"
               data-tooltip="Обновляет сопоставление на весь контур клиента — будет использовано во всех последующих отчётах."
@@ -229,6 +504,10 @@
               id="source-refresh-dry-run"
               type="button"
               class="secondary-button"
+              data-guide-entry="checks"
+              data-guide-order="40"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Начинайте с этой кнопки: она проверяет настройки и возможность запуска без внешнего чтения WB/1С и без формирования нового отчёта."
               data-tooltip="Проверить настройки без внешнего чтения WB и 1C."
             >
               Проверить готовность
@@ -237,6 +516,10 @@
               id="source-refresh-incremental-run"
               type="button"
               hidden
+              data-guide-entry="checks"
+              data-guide-order="60"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Обычный рабочий сценарий: обновляет последние 28 дней WB и свежие данные 1С, затем собирает новый полный черновик отчёта."
               data-tooltip="Обновить последние 28 дней WB и свежую 1С, затем собрать полный черновик."
             >
               Обновить последние данные
@@ -245,6 +528,10 @@
               id="source-refresh-full-run"
               type="button"
               class="secondary-button"
+              data-guide-entry="checks"
+              data-guide-order="80"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Используйте только для первой загрузки, исправления исторических данных или восстановления. Операция заново скачивает историю и обычно занимает 30–40 минут."
               data-tooltip="Полностью скачать историю WB и 1C заново. Обычно занимает 30–40 минут."
             >
               Полная пересборка истории
@@ -253,6 +540,10 @@
               id="source-refresh-ozon-run"
               type="button"
               class="secondary-button"
+              data-guide-entry="checks"
+              data-guide-order="70"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Запускайте для служебной витрины Ozon + 1С. Кнопка не требует обязательного WB и не публикует клиентский отчёт."
               data-tooltip="Загрузить служебную витрину Ozon + 1C без обязательного WB. Отчет не публикуется."
             >
               Обновить Ozon + 1C
@@ -261,37 +552,40 @@
               id="source-refresh-reload"
               type="button"
               class="secondary-button"
+              data-guide-entry="checks"
+              data-guide-order="90"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Перечитывает состояние последнего запуска. Кнопка не запускает новую загрузку и не пересчитывает отчёт."
               data-tooltip="Обновить статус последней загрузки."
             >
               Обновить статус
             </button>
           </div>
-          <div id="source-refresh-collections" class="source-refresh-collections"></div>
+          <div
+            id="source-refresh-collections"
+            class="source-refresh-collections"
+            data-guide-entry="checks"
+            data-guide-order="30"
+            data-guide-roles="consultant,admin"
+            data-guide-label="Проверьте карточки источников"
+            data-guide-description="Карточки показывают, какие коллекции WB, Ozon и 1С загружены и сколько строк получено. «Загружен» подтверждает получение данных, но замечания и дополнительные строки всё равно нужно проверить."
+          ></div>
         </section>
 
-        <section class="panel money-strip report-page-section" aria-labelledby="kpi-title">
+        <section class="panel money-strip report-page-section" data-workspace-panel="overview" aria-labelledby="kpi-title">
           <div class="panel-header">
             <div>
-              <p id="kpi-eyebrow" class="eyebrow">Основной расчёт</p>
-              <h2 id="kpi-title">Юнит-экономика WB</h2>
+              <p id="kpi-eyebrow" class="eyebrow">Юнит-экономика WB</p>
+              <h2 id="kpi-title">Ключевые показатели</h2>
             </div>
           </div>
-          <div id="kpi-grid" class="metric-grid command-metrics"></div>
-          <section id="onec-kpi-section" class="kpi-control-section" aria-labelledby="onec-kpi-title">
-            <div class="panel-header kpi-control-header">
-              <div>
-                <p class="eyebrow">Проверка учёта</p>
-                <h3 id="onec-kpi-title">Контроль 1С</h3>
-                <p class="muted">Календарные итоги 1С не заменяют товарный P&amp;L WB.</p>
-              </div>
-            </div>
-            <div id="onec-kpi-grid" class="metric-grid command-metrics"></div>
-          </section>
+          <div id="kpi-grid" class="metric-grid command-metrics primary-kpi-grid"></div>
         </section>
 
         <section
           id="ozon-diagnostics-panel"
           class="panel full-width ozon-preview-panel"
+          data-workspace-panel="overview"
           aria-labelledby="ozon-preview-title"
           hidden
         >
@@ -451,11 +745,18 @@
 
         <section
           class="decision-support-grid report-page-section"
+          data-workspace-panel="checks"
+          data-check-panel="summary"
           aria-label="Подготовка и проверки"
         >
           <section
+            id="preflight-panel"
             class="panel preflight-panel report-page-section"
             aria-labelledby="preflight-title"
+            data-guide-entry="checks"
+            data-guide-order="100"
+            data-guide-label="Разберите замечания отчёта"
+            data-guide-description="После завершения обновления откройте проблемные строки и сверку WB ↔ 1С. Отправляйте результат клиенту только после разбора блокирующих замечаний и проверки периода."
           >
             <div class="preflight-header">
               <div>
@@ -465,7 +766,16 @@
                   Загружаем качество строк и список проверок.
                 </p>
               </div>
-              <button id="review-rows-button" type="button">Открыть проблемные строки</button>
+              <div class="preflight-actions">
+                <button id="review-rows-button" type="button">Открыть проблемные строки</button>
+                <button
+                  id="reconciliation-open-button"
+                  type="button"
+                  class="secondary-button report-only-control"
+                >
+                  Сверка WB ↔ 1С
+                </button>
+              </div>
             </div>
             <div class="quality-progress" aria-label="Доля строк OK">
               <span id="quality-progress-fill"></span>
@@ -512,31 +822,7 @@
               </div>
             </div>
           </section>
-        </section>
-
-        <section
-          id="analytics-panel"
-          class="panel full-width analytics-panel report-page-section"
-          aria-labelledby="analytics-title"
-        >
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow">По текущей витрине отчета</p>
-              <h2 id="analytics-title">Аналитика</h2>
-            </div>
-          </div>
-          <div
-            id="action-insights-panel"
-            class="action-insights-panel"
-            aria-labelledby="action-insights-title"
-          >
-            <div class="action-insights-heading">
-              <p class="eyebrow">Навигация проверки</p>
-              <h3 id="action-insights-title">Что разобрать первым</h3>
-            </div>
-            <div id="action-insights-list" class="action-insights-list"></div>
-          </div>
-          <div id="data-trust-strip" class="decision-strip data-trust-strip readiness-neutral">
+          <section id="data-trust-strip" class="decision-strip data-trust-strip readiness-neutral">
             <div class="data-trust-heading">
               <div>
                 <p class="eyebrow">Доверие к расчёту</p>
@@ -545,15 +831,497 @@
               <span id="data-trust-badge" class="decision-badge">Проверяем</span>
             </div>
             <div id="data-trust-grid" class="metric-grid data-trust-grid"></div>
+          </section>
+          <details id="secondary-kpi-section" class="secondary-kpi-section diagnostic-details">
+            <summary>
+              <span>Дополнительные показатели</span>
+              <small>Налоги, возвраты и контрольные метрики</small>
+            </summary>
+            <div id="secondary-kpi-grid" class="metric-grid secondary-kpi-grid"></div>
+          </details>
+          <article
+            id="tax-input-check-card"
+            class="analytics-chart tax-input-chart-card"
+            aria-labelledby="tax-input-title"
+          >
+            <div class="analytics-chart-header">
+              <h3 id="tax-input-title">Сверка входящего НДС</h3>
+              <p>Начисления, сторно, нетто и подтверждение 1С в общем срезе отчёта.</p>
+            </div>
+            <div id="tax-input-chart" class="analytics-chart-body"></div>
+          </article>
+          <details id="onec-kpi-section" class="secondary-kpi-section kpi-control-section diagnostic-details">
+            <summary>
+              <span id="onec-kpi-title">Контроль 1С</span>
+              <small>Подробная сверка WB ↔ 1С по документам и календарному учёту</small>
+            </summary>
+            <div class="kpi-control-copy">
+              Календарные итоги 1С не заменяют товарный P&amp;L WB.
+            </div>
+            <div id="onec-kpi-grid" class="metric-grid command-metrics"></div>
+          </details>
+        </section>
+
+        <section
+          id="cost-review-workflow"
+          class="panel full-width cost-review-workflow"
+          data-workspace-panel="checks"
+          data-check-panel="cost"
+          aria-labelledby="cost-review-title"
+        >
+          <div class="cost-review-heading">
+            <div>
+              <button id="cost-review-back" type="button" class="text-button">
+                Назад к обзору
+              </button>
+              <div class="cost-review-title-row">
+                <h2 id="cost-review-title">Проверка себестоимости 1С</h2>
+                <span id="cost-review-status" class="status-pill">Загрузка</span>
+              </div>
+              <p id="cost-review-summary" class="muted">
+                Загружаем строки, которые требуют подтверждения.
+              </p>
+            </div>
+            <div class="cost-review-actions">
+              <button id="cost-review-open-rows" type="button">
+                <img src="/static/icons/magnifying-glass.svg" alt="" aria-hidden="true" />
+                <span>Открыть строки</span>
+              </button>
+              <button id="cost-review-mark" type="button" class="secondary-button">
+                Отметить просмотренным
+              </button>
+            </div>
+          </div>
+          <ol class="cost-review-stepper" aria-label="Этапы проверки себестоимости">
+            <li id="cost-step-find">
+              <span class="cost-step-marker">1</span>
+              <span><strong>Найти строки</strong><small>Определить позиции без подтверждённой себестоимости</small></span>
+            </li>
+            <li id="cost-step-review">
+              <span class="cost-step-marker">2</span>
+              <span><strong>Проверить себестоимость</strong><small>Сопоставить строки с данными 1С</small></span>
+            </li>
+            <li id="cost-step-confirm">
+              <span class="cost-step-marker">3</span>
+              <span><strong>Подтвердить</strong><small>Зафиксировать локальную проверку аналитика</small></span>
+            </li>
+          </ol>
+          <div class="cost-review-grid">
+            <section class="cost-review-issues" aria-labelledby="cost-review-issues-title">
+              <h3 id="cost-review-issues-title">Что требует проверки</h3>
+              <ul id="cost-review-reasons" class="reason-list"></ul>
+            </section>
+            <aside class="cost-review-guide" aria-labelledby="cost-review-guide-title">
+              <h3 id="cost-review-guide-title">Как проверить</h3>
+              <ol>
+                <li><strong>Откройте строки.</strong><span>Перейдите к списку позиций без подтверждённой себестоимости.</span></li>
+                <li><strong>Сопоставьте с 1С.</strong><span>Проверьте номенклатуру, документ и период себестоимости.</span></li>
+                <li><strong>Пересоберите отчёт.</strong><span>Расчётный статус изменится только после исправления источника.</span></li>
+              </ol>
+            </aside>
+          </div>
+          <div id="cost-review-metrics" class="metric-grid cost-review-metrics"></div>
+          <p id="cost-review-note" class="cost-review-note" role="status"></p>
+        </section>
+
+        <section
+          id="reconciliation-hub-panel"
+          class="panel full-width reconciliation-hub-panel"
+          data-workspace-panel="checks"
+          data-check-panel="reconciliation"
+          aria-labelledby="reconciliation-hub-title"
+        >
+          <div class="panel-header widget-header">
+            <div>
+              <p class="eyebrow">Сверка источников</p>
+              <h2 id="reconciliation-hub-title">Сверка WB ↔ 1С</h2>
+            </div>
+            <div class="widget-actions">
+              <button
+                id="reconciliation-hub-back"
+                type="button"
+                class="text-button"
+              >
+                Назад к проверкам
+              </button>
+            </div>
+          </div>
+          <div class="detail-tabs reconciliation-hub-tabs" role="tablist" aria-label="Раздел сверки WB ↔ 1С">
+            <button
+              id="reconciliation-tab-documents"
+              type="button"
+              class="active"
+              data-reconciliation-tab="documents"
+              role="tab"
+              aria-selected="true"
+              aria-controls="detail-panel-onec-reconciliation"
+            >
+              Документы 1С
+            </button>
+            <button
+              id="reconciliation-tab-cogs"
+              type="button"
+              data-reconciliation-tab="cogs"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-cogs-reconciliation"
+            >
+              Себестоимость
+            </button>
+            <button
+              id="reconciliation-tab-expenses"
+              type="button"
+              data-reconciliation-tab="expenses"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-marketplace-expense-reconciliation"
+            >
+              Расходы маркетплейса
+            </button>
+            <button
+              id="reconciliation-tab-buyouts"
+              type="button"
+              data-reconciliation-tab="buyouts"
+              role="tab"
+              aria-selected="false"
+              aria-controls="detail-panel-buyout-reconciliation"
+            >
+              Выкупы
+            </button>
+          </div>
+          <section
+            id="detail-panel-onec-reconciliation"
+            class="detail-tab-panel active"
+            data-reconciliation-panel="documents"
+            role="tabpanel"
+            aria-labelledby="reconciliation-tab-documents"
+          >
+            <div class="detail-panel-header">
+              <div>
+                <p class="eyebrow">Сверка источников</p>
+                <h3 id="onec-reconciliation-title">Сверка документов</h3>
+                <p class="muted">
+                  Единый стандарт сверки использует календарь 1С: отчёты
+                  комиссионера сверяются с WB, а выкупы — по сумме накладной
+                  1С нетто. Розница WB остаётся отдельной операционной базой.
+                </p>
+              </div>
+              <span id="onec-reconciliation-count" class="muted"></span>
+            </div>
+            <h4>Выручка 1С за календарный период, WB-сверка и штрафы</h4>
+            <div id="financial-reconciliation-grid" class="metric-grid"></div>
+            <p id="financial-reconciliation-source" class="muted"></p>
+            <form id="onec-reconciliation-filter-form" class="filters-bar">
+              <label class="filter-search">
+                Поиск
+                <input
+                  id="onec-filter-query"
+                  name="query"
+                  type="search"
+                  placeholder="Документ, кабинет, организация"
+                  autocomplete="off"
+                />
+              </label>
+              <label>
+                Статус
+                <select id="onec-filter-status" name="status"></select>
+              </label>
+              <label>
+                Статья
+                <select id="onec-filter-control-type" name="control_type">
+                  <option value="">Все статьи</option>
+                  <option value="revenue_with_vat">Выручка с НДС</option>
+                  <option value="penalties">Штрафы</option>
+                </select>
+              </label>
+              <label>
+                Начало
+                <input id="onec-filter-period-start" name="period_start" type="date" />
+              </label>
+              <label>
+                Конец
+                <input id="onec-filter-period-end" name="period_end" type="date" />
+              </label>
+              <label>
+                Кабинет
+                <select id="onec-filter-cabinet" name="wb_cabinet_id"></select>
+              </label>
+              <label>
+                Организация
+                <select id="onec-filter-organization" name="client_company_id"></select>
+              </label>
+              <label>
+                Тип документа
+                <select id="onec-filter-document-type" name="document_type"></select>
+              </label>
+              <label class="filter-checkbox">
+                <input id="onec-filter-delta-only" name="delta_only" type="checkbox" />
+                Только расхождения
+              </label>
+              <div class="filter-actions">
+                <button
+                  id="onec-reset-filters-button"
+                  type="button"
+                  class="secondary-button"
+                >
+                  Сбросить
+                </button>
+              </div>
+            </form>
+            <div class="table-wrap">
+              <table class="products-table data-table financial-reconciliation-table">
+                <thead>
+                  <tr>
+                    <th>Статья</th>
+                    <th>Период WB</th>
+                    <th>Документ WB</th>
+                    <th>Документ 1С</th>
+                    <th>WB сумма</th>
+                    <th>1С сумма</th>
+                    <th>Дельта 1С − WB, где сравнимо</th>
+                    <th data-tooltip="Сходится — суммы WB и 1С совпадают. Справочно — сравнение здесь не применяется. Остальное — расхождение или не найден документ, нужна проверка.">Статус</th>
+                    <th>Что проверить</th>
+                  </tr>
+                </thead>
+                <tbody id="financial-reconciliation-rows"></tbody>
+              </table>
+            </div>
+            <div class="detail-panel-header">
+              <div>
+                <h4>Техническая сверка документов WB ↔ 1С</h4>
+                <p class="muted">
+                  Количество, выплаты и полнота загрузки документов.
+                </p>
+              </div>
+              <span id="onec-reconciliation-technical-count" class="muted"></span>
+            </div>
+            <div id="onec-reconciliation-grid" class="metric-grid"></div>
+            <div class="table-wrap">
+              <table class="products-table data-table onec-reconciliation-table">
+                <thead>
+                  <tr>
+                    <th>Период продаж</th>
+                    <th>Кабинет WB</th>
+                    <th>Организация 1С</th>
+                    <th>Тип документа</th>
+                    <th>Ожидаемая дата</th>
+                    <th>Документы 1С</th>
+                    <th>WB количество</th>
+                    <th>1С количество</th>
+                    <th>Дельта количества</th>
+                    <th>WB сумма</th>
+                    <th>1С сумма</th>
+                    <th>Дельта суммы, где сравнимо</th>
+                    <th data-tooltip="Показывает, найден ли документ 1С и сходится ли количество с WB.">Статус</th>
+                    <th data-tooltip="Зелёный — выплата сошлась. Жёлтый/красный — нужна проверка или есть расхождение.">Статус выплаты</th>
+                    <th>Комментарий</th>
+                  </tr>
+                </thead>
+                <tbody id="onec-reconciliation-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section
+            id="detail-panel-cogs-reconciliation"
+            class="detail-tab-panel"
+            data-reconciliation-panel="cogs"
+            role="tabpanel"
+            aria-labelledby="reconciliation-tab-cogs"
+            hidden
+          >
+            <div class="detail-panel-header">
+              <div>
+                <p class="eyebrow">Себестоимость и период</p>
+                <h3 id="cogs-reconciliation-title">Почему себестоимость WB и 1С отличается</h3>
+                <p class="muted">
+                  P&amp;L относится к месяцу окончания недели WB. Контроль 1С — к
+                  календарной дате проведения документа. Здесь разница разложена
+                  на воспроизводимые части.
+                </p>
+              </div>
+              <span id="cogs-reconciliation-count" class="muted"></span>
+            </div>
+            <div id="cogs-reconciliation-grid" class="metric-grid"></div>
+            <p id="cogs-reconciliation-status" class="muted" role="status"></p>
+            <h4>Разница по неделям и документам</h4>
+            <div class="table-wrap">
+              <table class="products-table data-table cogs-reconciliation-table">
+                <thead>
+                  <tr>
+                    <th>Компонент</th>
+                    <th>Неделя WB</th>
+                    <th>Дата 1С</th>
+                    <th>Документы</th>
+                    <th>P&amp;L WB</th>
+                    <th>1С тех же недель</th>
+                    <th>1С календарь</th>
+                    <th>Разница недели</th>
+                    <th>Граница месяца</th>
+                    <th>Статус</th>
+                    <th>Что делать</th>
+                  </tr>
+                </thead>
+                <tbody id="cogs-reconciliation-rows"></tbody>
+              </table>
+            </div>
+            <h4>Строки себестоимости, требующие проверки</h4>
+            <div class="table-wrap">
+              <table class="products-table data-table cogs-cost-issues-table">
+                <thead>
+                  <tr>
+                    <th>Неделя WB</th>
+                    <th>Товар</th>
+                    <th>Артикул 1С</th>
+                    <th>Количество</th>
+                    <th>Себестоимость</th>
+                    <th>На единицу</th>
+                    <th>Подбор</th>
+                    <th>Период источника</th>
+                    <th>Документ 1С</th>
+                    <th>Причина</th>
+                  </tr>
+                </thead>
+                <tbody id="cogs-cost-issue-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section
+            id="detail-panel-marketplace-expense-reconciliation"
+            class="detail-tab-panel"
+            data-reconciliation-panel="expenses"
+            role="tabpanel"
+            aria-labelledby="reconciliation-tab-expenses"
+            hidden
+          >
+            <div class="detail-panel-header">
+              <div>
+                <p class="eyebrow">Расходы маркетплейса</p>
+                <h3 id="marketplace-expense-reconciliation-title">Сверка расходов WB ↔ 1С</h3>
+                <p class="muted">
+                  P&amp;L WB показан в применённой налоговой базе. Документная сверка
+                  сравнивает суммы с НДС; дельта считается как 1С − WB.
+                </p>
+              </div>
+              <span id="marketplace-expense-reconciliation-count" class="muted"></span>
+            </div>
+            <div id="marketplace-expense-reconciliation-grid" class="metric-grid"></div>
+            <p id="marketplace-expense-reconciliation-status" class="muted" role="status"></p>
+            <h4>Контрольные группы</h4>
+            <div class="table-scroll">
+              <table class="products-table data-table">
+                <thead>
+                  <tr>
+                    <th>Период</th>
+                    <th>Организация / кабинет</th>
+                    <th>Контрольная группа</th>
+                    <th>WB с НДС</th>
+                    <th>1С с НДС</th>
+                    <th>Дельта 1С − WB</th>
+                    <th>Статус</th>
+                    <th>Что делать</th>
+                  </tr>
+                </thead>
+                <tbody id="marketplace-expense-reconciliation-groups"></tbody>
+              </table>
+            </div>
+            <h4>Документы и строки услуг 1С</h4>
+            <div class="table-scroll">
+              <table class="products-table data-table">
+                <thead>
+                  <tr>
+                    <th>Период</th>
+                    <th>Дата 1С</th>
+                    <th>Документ</th>
+                    <th>Услуга</th>
+                    <th>Без НДС</th>
+                    <th>НДС</th>
+                    <th>С НДС</th>
+                    <th>Источник</th>
+                    <th>Статус</th>
+                    <th>Что делать</th>
+                  </tr>
+                </thead>
+                <tbody id="marketplace-expense-reconciliation-rows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section
+            id="detail-panel-buyout-reconciliation"
+            class="detail-tab-panel"
+            data-reconciliation-panel="buyouts"
+            role="tabpanel"
+            aria-labelledby="reconciliation-tab-buyouts"
+            hidden
+          >
+            <div class="detail-panel-header">
+              <div>
+                <p class="eyebrow">Сверка документов</p>
+                <h3 id="buyout-reconciliation-title">Расшифровка выкупов WB ↔ 1С</h3>
+                <p class="muted">
+                  Правильная денежная сверка сопоставляет «Сумму выкупа» из
+                  первичного уведомления WB с накладной 1С. Розница WB показана
+                  отдельно и не считается расхождением.
+                </p>
+              </div>
+              <span id="buyout-reconciliation-count" class="muted"></span>
+            </div>
+            <div id="buyout-reconciliation-grid" class="metric-grid"></div>
+            <p id="buyout-reconciliation-status" class="muted" role="status"></p>
+            <div class="table-wrap">
+              <table class="products-table data-table buyout-reconciliation-table">
+                <thead>
+                  <tr>
+                    <th>Период WB</th>
+                    <th>Документы WB</th>
+                    <th>Дата 1С</th>
+                    <th>Накладная 1С</th>
+                    <th>Первичка WB</th>
+                    <th>Накладная 1С</th>
+                    <th>Дельта первички</th>
+                    <th>Розница WB · справочно</th>
+                    <th>Количество</th>
+                    <th>Что это значит</th>
+                  </tr>
+                </thead>
+                <tbody id="buyout-reconciliation-rows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section
+          id="analytics-panel"
+          class="panel full-width analytics-panel report-page-section"
+          data-workspace-panel="overview"
+          aria-labelledby="analytics-title"
+        >
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">По текущей витрине отчета</p>
+              <h2 id="analytics-title">Аналитика</h2>
+            </div>
           </div>
           <div class="analytics-grid" aria-label="Аналитические визуализации">
-            <article class="analytics-chart" aria-labelledby="money-trend-title">
+            <article class="analytics-chart analytics-chart-wide sales-trend-card" aria-labelledby="money-trend-title">
               <div class="analytics-chart-header">
-                <h3 id="money-trend-title">Динамика денег</h3>
-                <p>Выручка, прибыль и маржа по месяцам.</p>
+                <h3 id="money-trend-title">Динамика продаж</h3>
+                <p>По месяцам текущего загруженного отчёта; 12 месяцев показываются как год.</p>
               </div>
-              <div id="money-trend-chart" class="analytics-chart-body"></div>
+              <div id="money-trend-chart" class="analytics-chart-body sales-trend-chart"></div>
             </article>
+          </div>
+          <div
+            id="action-insights-panel"
+            class="action-insights-panel analytics-signals"
+            aria-labelledby="action-insights-title"
+          >
+            <div class="action-insights-heading">
+              <p class="eyebrow">Показатели доходности</p>
+              <h3 id="action-insights-title">Финансовые сигналы</h3>
+            </div>
+            <div id="action-insights-list" class="action-insights-list"></div>
+          </div>
+          <div class="analytics-grid analytics-grid-support" aria-label="Дополнительные аналитические визуализации">
             <article class="analytics-chart" aria-labelledby="unit-pl-title">
               <div class="analytics-chart-header">
                 <h3 id="unit-pl-title">Прибыли и убытки юнит-экономики</h3>
@@ -582,17 +1350,22 @@
               </div>
               <div id="returns-chart" class="analytics-chart-body"></div>
             </article>
-            <article class="analytics-chart tax-input-chart-card" aria-labelledby="tax-input-title">
+            <article
+              id="ozon-article-economics-card"
+              class="analytics-chart ozon-article-economics-card"
+              aria-labelledby="ozon-article-economics-title"
+              hidden
+            >
               <div class="analytics-chart-header">
-                <h3 id="tax-input-title">Сверка входящего НДС</h3>
-                <p>Начисления, сторно, нетто, подтверждение 1С и право на вычет.</p>
+                <h3 id="ozon-article-economics-title">Статьи экономики Ozon</h3>
+                <p>Расходы, распределение и контрольные строки отдельным широким блоком.</p>
               </div>
-              <div id="tax-input-chart" class="analytics-chart-body"></div>
+              <div id="ozon-article-economics-chart" class="analytics-chart-body"></div>
             </article>
           </div>
         </section>
 
-        <section class="control-room report-page-section" aria-labelledby="overview-title">
+        <section class="control-room report-page-section" data-workspace-panel="overview" aria-labelledby="overview-title">
           <div id="readiness-card" class="decision-strip readiness-neutral">
             <div class="decision-main">
               <div class="decision-status">
@@ -686,6 +1459,7 @@
 
         <section
           class="panel full-width detail-workspace report-page-section"
+          data-workspace-panel="tables"
           aria-labelledby="details-title"
         >
           <div class="panel-header">
@@ -866,15 +1640,15 @@
                 Месяц 1С
                 <select id="filter-month" name="month"></select>
               </label>
-              <label>
+              <label class="global-filter-shadow">
                 Начало
                 <input id="filter-period-start" name="period_start" type="date" />
               </label>
-              <label>
+              <label class="global-filter-shadow">
                 Конец
                 <input id="filter-period-end" name="period_end" type="date" />
               </label>
-              <label>
+              <label class="global-filter-shadow">
                 Кабинет
                 <select id="filter-cabinet" name="cabinet"></select>
               </label>
@@ -924,6 +1698,78 @@
             </div>
           </section>
         </section>
+
+        <section
+          id="user-guide-page"
+          class="user-guide-page"
+          data-workspace-panel="guide"
+          aria-labelledby="user-guide-title"
+        >
+          <div class="guide-intro panel">
+            <div>
+              <p class="eyebrow">Справка по текущему кабинету</p>
+              <h2 id="user-guide-title">Как пользоваться сервисом</h2>
+              <p class="muted">
+                Выберите контекст отчёта, изучите результат на «Обзоре»,
+                разберите замечания в «Проверках» и только потом готовьте
+                клиентский вывод или Excel.
+              </p>
+            </div>
+            <p id="user-guide-status" class="guide-sync-note" role="status">
+              Инструкция собирается из текущего интерфейса.
+            </p>
+          </div>
+
+          <section class="guide-section" aria-labelledby="guide-start-title">
+            <div class="guide-section-heading">
+              <p class="eyebrow">Шаг 1</p>
+              <h2 id="guide-start-title">С чего начать</h2>
+            </div>
+            <ol id="guide-start-list" class="guide-card-list guide-card-list-numbered"></ol>
+          </section>
+
+          <section class="guide-section" aria-labelledby="guide-sections-title">
+            <div class="guide-section-heading">
+              <p class="eyebrow">Шаг 2</p>
+              <h2 id="guide-sections-title">Разделы кабинета</h2>
+            </div>
+            <ul id="guide-sections-list" class="guide-card-list"></ul>
+          </section>
+
+          <section class="guide-section" aria-labelledby="guide-actions-title">
+            <div class="guide-section-heading">
+              <p class="eyebrow">Шаг 3</p>
+              <h2 id="guide-actions-title">Что можно сделать дальше</h2>
+            </div>
+            <ul id="guide-actions-list" class="guide-card-list"></ul>
+          </section>
+
+          <section class="guide-section" aria-labelledby="guide-checks-title">
+            <div class="guide-section-heading">
+              <p class="eyebrow">Подробный сценарий</p>
+              <h2 id="guide-checks-title">Как работать с вкладкой «Проверки»</h2>
+              <p class="muted">
+                Идите по шагам по порядку. Пропускайте сопоставление, Ozon-only
+                и полную пересборку, если для них нет отдельной причины.
+              </p>
+            </div>
+            <ol
+              id="guide-checks-list"
+              class="guide-card-list guide-card-list-numbered"
+            ></ol>
+          </section>
+
+          <aside class="guide-safety-note" aria-labelledby="guide-safety-title">
+            <h2 id="guide-safety-title">Перед отправкой клиенту</h2>
+            <p>
+              Проверьте период и кабинет, откройте «Проверки» и убедитесь, что
+              замечания по источникам, себестоимости и сопоставлению разобраны.
+              Предварительный расчёт с замечаниями можно изучать, но не следует
+              выдавать за подтверждённый итог.
+            </p>
+          </aside>
+        </section>
+      </div>
       </section>
 
       <div
@@ -952,6 +1798,20 @@
               </button>
             </div>
           </div>
+          <section id="ai-context-strip" class="ai-context-strip" aria-labelledby="ai-context-title">
+            <div class="ai-context-heading">
+              <div>
+                <p class="eyebrow">Контекст текущего отчёта</p>
+                <h3 id="ai-context-title">Факты для вопроса</h3>
+              </div>
+              <span id="ai-context-readiness" class="status-pill">Нет отчёта</span>
+            </div>
+            <div id="ai-context-metrics" class="metric-grid ai-context-metrics"></div>
+            <div id="ai-context-bars" class="ai-context-bars"></div>
+            <p id="ai-context-empty" class="analytics-empty">
+              Выберите клиента и дождитесь загрузки отчёта — здесь появится краткий контекст.
+            </p>
+          </section>
           <div class="quick-questions" aria-label="Быстрые вопросы AI">
             <button type="button" data-ai-question="Что самое важное по убыточности?">
               Что убыточно?
@@ -965,6 +1825,9 @@
             <button type="button" data-ai-question="Сформируй короткий вывод клиенту.">
               Вывод клиенту
             </button>
+          </div>
+          <div id="chatkit-shell" class="chatkit-shell" hidden>
+            <openai-chatkit id="chatkit-element"></openai-chatkit>
           </div>
           <div class="ai-workspace">
             <div class="ai-chat" aria-live="polite">
@@ -1002,23 +1865,82 @@
           <div class="panel-header widget-header">
             <div>
               <p class="eyebrow">Для отправки клиенту</p>
-              <h2 id="draft-title">Отчёт для клиента</h2>
+              <h2 id="draft-title">Отчёт клиенту</h2>
             </div>
             <div class="widget-actions">
-              <button id="draft-refresh-button" type="button" class="secondary-button">
-                Обновить
-              </button>
               <button
                 id="client-output-widget-close"
                 type="button"
                 class="secondary-button"
-                aria-label="Закрыть отчёт для клиента"
+                aria-label="Закрыть отчёт клиенту"
               >
                 Закрыть
               </button>
             </div>
           </div>
-          <div id="draft-status" class="draft-status"></div>
+          <p class="client-report-copy">
+            Сформируйте отчёт клиенту по открытым данным и скачайте нужный
+            формат здесь же.
+          </p>
+          <div class="client-report-period-control">
+            <label>
+              <span>Период отчёта клиенту</span>
+              <select id="client-report-scope">
+                <option value="last_closed_week">Последняя закрытая неделя</option>
+                <option value="full">Весь период отчёта</option>
+                <option value="custom">Указать даты</option>
+              </select>
+            </label>
+            <div id="client-report-period-fields" hidden>
+              <label>
+                <span>Дата начала</span>
+                <input id="client-report-period-start" type="date" />
+              </label>
+              <label>
+                <span>Дата конца</span>
+                <input id="client-report-period-end" type="date" />
+              </label>
+            </div>
+            <small>
+              По умолчанию формируется последняя завершённая неделя с
+              понедельника по воскресенье.
+            </small>
+          </div>
+          <div
+            id="draft-status"
+            class="draft-status"
+            role="status"
+            aria-live="polite"
+          ></div>
+          <div class="client-report-actions" aria-label="Файлы отчёта клиенту">
+            <a
+              id="client-report-excel-download"
+              class="button-link secondary-button"
+              href="#"
+              hidden
+            >
+              Скачать Excel
+            </a>
+            <button id="client-report-generate-button" type="button">
+              Сформировать отчёт клиенту
+            </button>
+            <a
+              id="client-report-docx-download"
+              class="button-link"
+              href="#"
+              hidden
+            >
+              Скачать DOCX
+            </a>
+            <a
+              id="client-report-pdf-download"
+              class="button-link secondary-button"
+              href="#"
+              hidden
+            >
+              Скачать PDF
+            </a>
+          </div>
         </section>
       </div>
 
@@ -1069,7 +1991,7 @@
             <label>
               <span>Что сформировать</span>
               <select id="report-wizard-mode">
-                <option value="full">Клиентский отчёт WB + 1С</option>
+                <option value="full">Отчёт клиенту WB + 1С</option>
                 <option value="ozon-only">Диагностика Ozon + 1С без публикации отчёта</option>
               </select>
               <small id="report-wizard-mode-hint" class="muted"></small>
@@ -1107,6 +2029,48 @@
               role="status"
               aria-live="polite"
             ></div>
+            <section id="report-wizard-result" class="report-wizard-result" hidden>
+              <div>
+                <strong id="report-wizard-result-title">Отчёт готов — выберите файл</strong>
+                <span id="report-wizard-result-copy">
+                  Excel можно скачать сразу. DOCX отчёта клиенту формируется
+                  отдельно по этим же данным.
+                </span>
+              </div>
+              <div class="report-wizard-downloads">
+                <a
+                  id="report-wizard-excel-download"
+                  class="button-link"
+                  href="#"
+                  hidden
+                >
+                  Скачать Excel
+                </a>
+                <button
+                  id="report-wizard-client-report-generate"
+                  type="button"
+                  class="secondary-button"
+                >
+                  Сформировать отчёт клиенту
+                </button>
+                <a
+                  id="report-wizard-docx-download"
+                  class="button-link"
+                  href="#"
+                  hidden
+                >
+                  Скачать DOCX
+                </a>
+                <a
+                  id="report-wizard-pdf-download"
+                  class="button-link secondary-button"
+                  href="#"
+                  hidden
+                >
+                  Скачать PDF
+                </a>
+              </div>
+            </section>
             <div class="report-wizard-actions">
               <button id="report-wizard-submit" type="submit">
                 Проверить и сформировать
@@ -1480,379 +2444,10 @@
           </div>
         </section>
       </div>
-
-      <div
-        id="reconciliation-hub-overlay"
-        class="widget-overlay reconciliation-hub-overlay"
-        aria-labelledby="reconciliation-hub-title"
-        aria-modal="true"
-        role="dialog"
-        hidden
-      >
-        <section class="panel widget-shell reconciliation-hub-widget">
-          <div class="panel-header widget-header">
-            <div>
-              <p class="eyebrow">Сверка источников</p>
-              <h2 id="reconciliation-hub-title">Сверка WB ↔ 1С</h2>
-            </div>
-            <div class="widget-actions">
-              <button
-                id="reconciliation-hub-close"
-                type="button"
-                class="secondary-button"
-                aria-label="Закрыть сверку WB и 1С"
-              >
-                Закрыть
-              </button>
-            </div>
-          </div>
-          <div class="detail-tabs reconciliation-hub-tabs" role="tablist" aria-label="Раздел сверки WB ↔ 1С">
-            <button
-              id="reconciliation-tab-documents"
-              type="button"
-              class="active"
-              data-reconciliation-tab="documents"
-              role="tab"
-              aria-selected="true"
-              aria-controls="detail-panel-onec-reconciliation"
-            >
-              Документы 1С
-            </button>
-            <button
-              id="reconciliation-tab-cogs"
-              type="button"
-              data-reconciliation-tab="cogs"
-              role="tab"
-              aria-selected="false"
-              aria-controls="detail-panel-cogs-reconciliation"
-            >
-              Себестоимость
-            </button>
-            <button
-              id="reconciliation-tab-expenses"
-              type="button"
-              data-reconciliation-tab="expenses"
-              role="tab"
-              aria-selected="false"
-              aria-controls="detail-panel-marketplace-expense-reconciliation"
-            >
-              Расходы маркетплейса
-            </button>
-            <button
-              id="reconciliation-tab-buyouts"
-              type="button"
-              data-reconciliation-tab="buyouts"
-              role="tab"
-              aria-selected="false"
-              aria-controls="detail-panel-buyout-reconciliation"
-            >
-              Выкупы
-            </button>
-          </div>
-          <section
-            id="detail-panel-onec-reconciliation"
-            class="detail-tab-panel active"
-            data-reconciliation-panel="documents"
-            role="tabpanel"
-            aria-labelledby="reconciliation-tab-documents"
-          >
-            <div class="detail-panel-header">
-              <div>
-                <p class="eyebrow">Сверка источников</p>
-                <h3 id="onec-reconciliation-title">Сверка документов</h3>
-                <p class="muted">
-                  Единый стандарт сверки использует календарь 1С: отчёты
-                  комиссионера сверяются с WB, а выкупы — по сумме накладной
-                  1С нетто. Розница WB остаётся отдельной операционной базой.
-                </p>
-              </div>
-              <span id="onec-reconciliation-count" class="muted"></span>
-            </div>
-            <h4>Выручка 1С за календарный период, WB-сверка и штрафы</h4>
-            <div id="financial-reconciliation-grid" class="metric-grid"></div>
-            <p id="financial-reconciliation-source" class="muted"></p>
-            <form id="onec-reconciliation-filter-form" class="filters-bar">
-              <label class="filter-search">
-                Поиск
-                <input
-                  id="onec-filter-query"
-                  name="query"
-                  type="search"
-                  placeholder="Документ, кабинет, организация"
-                  autocomplete="off"
-                />
-              </label>
-              <label>
-                Статус
-                <select id="onec-filter-status" name="status"></select>
-              </label>
-              <label>
-                Статья
-                <select id="onec-filter-control-type" name="control_type">
-                  <option value="">Все статьи</option>
-                  <option value="revenue_with_vat">Выручка с НДС</option>
-                  <option value="penalties">Штрафы</option>
-                </select>
-              </label>
-              <label>
-                Начало
-                <input id="onec-filter-period-start" name="period_start" type="date" />
-              </label>
-              <label>
-                Конец
-                <input id="onec-filter-period-end" name="period_end" type="date" />
-              </label>
-              <label>
-                Кабинет
-                <select id="onec-filter-cabinet" name="wb_cabinet_id"></select>
-              </label>
-              <label>
-                Организация
-                <select id="onec-filter-organization" name="client_company_id"></select>
-              </label>
-              <label>
-                Тип документа
-                <select id="onec-filter-document-type" name="document_type"></select>
-              </label>
-              <label class="filter-checkbox">
-                <input id="onec-filter-delta-only" name="delta_only" type="checkbox" />
-                Только расхождения
-              </label>
-              <div class="filter-actions">
-                <button
-                  id="onec-reset-filters-button"
-                  type="button"
-                  class="secondary-button"
-                >
-                  Сбросить
-                </button>
-              </div>
-            </form>
-            <div class="table-wrap">
-              <table class="products-table data-table financial-reconciliation-table">
-                <thead>
-                  <tr>
-                    <th>Статья</th>
-                    <th>Период WB</th>
-                    <th>Документ WB</th>
-                    <th>Документ 1С</th>
-                    <th>WB сумма</th>
-                    <th>1С сумма</th>
-                    <th>Дельта 1С − WB, где сравнимо</th>
-                    <th data-tooltip="Сходится — суммы WB и 1С совпадают. Справочно — сравнение здесь не применяется. Остальное — расхождение или не найден документ, нужна проверка.">Статус</th>
-                    <th>Что проверить</th>
-                  </tr>
-                </thead>
-                <tbody id="financial-reconciliation-rows"></tbody>
-              </table>
-            </div>
-            <div class="detail-panel-header">
-              <div>
-                <h4>Техническая сверка документов WB ↔ 1С</h4>
-                <p class="muted">
-                  Количество, выплаты и полнота загрузки документов.
-                </p>
-              </div>
-              <span id="onec-reconciliation-technical-count" class="muted"></span>
-            </div>
-            <div id="onec-reconciliation-grid" class="metric-grid"></div>
-            <div class="table-wrap">
-              <table class="products-table data-table onec-reconciliation-table">
-                <thead>
-                  <tr>
-                    <th>Период продаж</th>
-                    <th>Кабинет WB</th>
-                    <th>Организация 1С</th>
-                    <th>Тип документа</th>
-                    <th>Ожидаемая дата</th>
-                    <th>Документы 1С</th>
-                    <th>WB количество</th>
-                    <th>1С количество</th>
-                    <th>Дельта количества</th>
-                    <th>WB сумма</th>
-                    <th>1С сумма</th>
-                    <th>Дельта суммы, где сравнимо</th>
-                    <th data-tooltip="Показывает, найден ли документ 1С и сходится ли количество с WB.">Статус</th>
-                    <th data-tooltip="Зелёный — выплата сошлась. Жёлтый/красный — нужна проверка или есть расхождение.">Статус выплаты</th>
-                    <th>Комментарий</th>
-                  </tr>
-                </thead>
-                <tbody id="onec-reconciliation-rows"></tbody>
-              </table>
-            </div>
-          </section>
-          <section
-            id="detail-panel-cogs-reconciliation"
-            class="detail-tab-panel"
-            data-reconciliation-panel="cogs"
-            role="tabpanel"
-            aria-labelledby="reconciliation-tab-cogs"
-            hidden
-          >
-            <div class="detail-panel-header">
-              <div>
-                <p class="eyebrow">Себестоимость и период</p>
-                <h3 id="cogs-reconciliation-title">Почему себестоимость WB и 1С отличается</h3>
-                <p class="muted">
-                  P&amp;L относится к месяцу окончания недели WB. Контроль 1С — к
-                  календарной дате проведения документа. Здесь разница разложена
-                  на воспроизводимые части.
-                </p>
-              </div>
-              <span id="cogs-reconciliation-count" class="muted"></span>
-            </div>
-            <div id="cogs-reconciliation-grid" class="metric-grid"></div>
-            <p id="cogs-reconciliation-status" class="muted" role="status"></p>
-            <h4>Разница по неделям и документам</h4>
-            <div class="table-wrap">
-              <table class="products-table data-table cogs-reconciliation-table">
-                <thead>
-                  <tr>
-                    <th>Компонент</th>
-                    <th>Неделя WB</th>
-                    <th>Дата 1С</th>
-                    <th>Документы</th>
-                    <th>P&amp;L WB</th>
-                    <th>1С тех же недель</th>
-                    <th>1С календарь</th>
-                    <th>Разница недели</th>
-                    <th>Граница месяца</th>
-                    <th>Статус</th>
-                    <th>Что делать</th>
-                  </tr>
-                </thead>
-                <tbody id="cogs-reconciliation-rows"></tbody>
-              </table>
-            </div>
-            <h4>Строки себестоимости, требующие проверки</h4>
-            <div class="table-wrap">
-              <table class="products-table data-table cogs-cost-issues-table">
-                <thead>
-                  <tr>
-                    <th>Неделя WB</th>
-                    <th>Товар</th>
-                    <th>Артикул 1С</th>
-                    <th>Количество</th>
-                    <th>Себестоимость</th>
-                    <th>На единицу</th>
-                    <th>Подбор</th>
-                    <th>Период источника</th>
-                    <th>Документ 1С</th>
-                    <th>Причина</th>
-                  </tr>
-                </thead>
-                <tbody id="cogs-cost-issue-rows"></tbody>
-              </table>
-            </div>
-          </section>
-          <section
-            id="detail-panel-marketplace-expense-reconciliation"
-            class="detail-tab-panel"
-            data-reconciliation-panel="expenses"
-            role="tabpanel"
-            aria-labelledby="reconciliation-tab-expenses"
-            hidden
-          >
-            <div class="detail-panel-header">
-              <div>
-                <p class="eyebrow">Расходы маркетплейса</p>
-                <h3 id="marketplace-expense-reconciliation-title">Сверка расходов WB ↔ 1С</h3>
-                <p class="muted">
-                  P&amp;L WB показан в применённой налоговой базе. Документная сверка
-                  сравнивает суммы с НДС; дельта считается как 1С − WB.
-                </p>
-              </div>
-              <span id="marketplace-expense-reconciliation-count" class="muted"></span>
-            </div>
-            <div id="marketplace-expense-reconciliation-grid" class="metric-grid"></div>
-            <p id="marketplace-expense-reconciliation-status" class="muted" role="status"></p>
-            <h4>Контрольные группы</h4>
-            <div class="table-scroll">
-              <table class="products-table data-table">
-                <thead>
-                  <tr>
-                    <th>Период</th>
-                    <th>Организация / кабинет</th>
-                    <th>Контрольная группа</th>
-                    <th>WB с НДС</th>
-                    <th>1С с НДС</th>
-                    <th>Дельта 1С − WB</th>
-                    <th>Статус</th>
-                    <th>Что делать</th>
-                  </tr>
-                </thead>
-                <tbody id="marketplace-expense-reconciliation-groups"></tbody>
-              </table>
-            </div>
-            <h4>Документы и строки услуг 1С</h4>
-            <div class="table-scroll">
-              <table class="products-table data-table">
-                <thead>
-                  <tr>
-                    <th>Период</th>
-                    <th>Дата 1С</th>
-                    <th>Документ</th>
-                    <th>Услуга</th>
-                    <th>Без НДС</th>
-                    <th>НДС</th>
-                    <th>С НДС</th>
-                    <th>Источник</th>
-                    <th>Статус</th>
-                    <th>Что делать</th>
-                  </tr>
-                </thead>
-                <tbody id="marketplace-expense-reconciliation-rows"></tbody>
-              </table>
-            </div>
-          </section>
-          <section
-            id="detail-panel-buyout-reconciliation"
-            class="detail-tab-panel"
-            data-reconciliation-panel="buyouts"
-            role="tabpanel"
-            aria-labelledby="reconciliation-tab-buyouts"
-            hidden
-          >
-            <div class="detail-panel-header">
-              <div>
-                <p class="eyebrow">Сверка документов</p>
-                <h3 id="buyout-reconciliation-title">Расшифровка выкупов WB ↔ 1С</h3>
-                <p class="muted">
-                  Правильная денежная сверка сопоставляет «Сумму выкупа» из
-                  первичного уведомления WB с накладной 1С. Розница WB показана
-                  отдельно и не считается расхождением.
-                </p>
-              </div>
-              <span id="buyout-reconciliation-count" class="muted"></span>
-            </div>
-            <div id="buyout-reconciliation-grid" class="metric-grid"></div>
-            <p id="buyout-reconciliation-status" class="muted" role="status"></p>
-            <div class="table-wrap">
-              <table class="products-table data-table buyout-reconciliation-table">
-                <thead>
-                  <tr>
-                    <th>Период WB</th>
-                    <th>Документы WB</th>
-                    <th>Дата 1С</th>
-                    <th>Накладная 1С</th>
-                    <th>Первичка WB</th>
-                    <th>Накладная 1С</th>
-                    <th>Дельта первички</th>
-                    <th>Розница WB · справочно</th>
-                    <th>Количество</th>
-                    <th>Что это значит</th>
-                  </tr>
-                </thead>
-                <tbody id="buyout-reconciliation-rows"></tbody>
-              </table>
-            </div>
-          </section>
-        </section>
-      </div>
     </main>
-    <script
-      src="/static/app.js?v=20260713-reconciliation-incremental-v1"
-      defer
-    ></script>
+    <script src="/static/report-scenarios.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/app.js?v=20260716-report-download-flow-v1" defer></script>
   </body>
 </html>

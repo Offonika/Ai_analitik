@@ -6,11 +6,11 @@ Requires=postgresql@16-main.service
 
 [Service]
 Type=exec
-WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics
-EnvironmentFile=/etc/shumeiko-web.env
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
 Environment=SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true
-ExecStart=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/run_source_refresh_worker.py --run-id %i --worker-id systemd:%i --once
-ExecStopPost=/opt/shumeyko-partners-wb-unit-economics/.venv/bin/python scripts/repair_source_refresh_run.py --run-id %i --failure-code worker_interrupted --apply
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh_worker.py --run-id %i --worker-id systemd:%i --once
+ExecStopPost=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/repair_source_refresh_run.py --run-id %i --failure-code worker_interrupted --apply
 RuntimeMaxSec=2h
 TimeoutStopSec=60
 MemoryHigh=3G

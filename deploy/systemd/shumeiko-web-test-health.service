@@ -1,0 +1,13 @@
+[Unit]
+Description=Shumeyko test cabinet health check
+After=shumeiko-web-test.service
+Requires=shumeiko-web-test.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-runtime/test/current
+ExecStart=/opt/shumeyko-runtime/test/current/.venv/bin/python scripts/check_runtime_health.py --url http://127.0.0.1:8098/api/health --environment test
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

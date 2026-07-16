@@ -3,10 +3,11 @@ spec_id: "month-close-control-pilot"
 title: "Пилот контроля закрытия месяца по 1С"
 doc_type: spec
 domain: "accounting-operations"
-status: draft
+status: superseded
 owner: "engineering"
 audience: ["engineering", "consultant", "operations"]
 source_of_truth: false
+superseded_by: docs/specs/month-close-control-report-implementation.md
 related_code:
   - scripts/month_close_cabinet_settings.py
   - scripts/probe_onec_month_close_osv.py
@@ -35,8 +36,9 @@ updated_at: "2026-07-09"
 скринов или подтверждений из процессной системы, и какие вопросы остаются до
 полной автоматизации.
 
-Этот документ не является accepted implementation spec. Он фиксирует discovery и
-безопасную рамку пилота. Конкретные клиентские имена, URL OData, raw-ответы,
+Этот документ superseded принятой spec
+`docs/specs/month-close-control-report-implementation.md`. Он сохраняет discovery
+и безопасную рамку пилота. Конкретные клиентские имена, URL OData, raw-ответы,
 скрины, Excel-файлы и audit pack хранятся только локально в `data/` и
 `reports/`.
 

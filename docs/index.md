@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-13"
+updated_at: "2026-07-16"
 ---
 
 # Индекс документации проекта
@@ -29,7 +29,7 @@ implementation spec, затем общий MVP spec, затем клиентск
 - `docs/specs/wb-unit-economics-excel-mvp-implementation.md` — accepted spec
   текущего Excel MVP.
 - `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — accepted ADR по
-  налоговым профилям, ОСНО, НДС к уплате и прибыли до НДФЛ.
+  налоговым профилям, ОСНО, НДС к уплате и прибыли до налогов.
 - `docs/specs/marketplace-1c-mapping-service.md` — implemented spec собственного
   сервиса сопоставления WB/Ozon и 1С; это текущий источник правды для
   `sku_mapping`.
@@ -42,6 +42,11 @@ implementation spec, затем общий MVP spec, затем клиентск
 - `docs/specs/wb-unit-economics-db-first-report-marts.md` — accepted spec
   DB-first публикации: БД как источник готового отчета, Excel/web/DOCX/PDF/CSV
   как экспорты.
+- `docs/specs/wb-logistics-cost-analysis-implementation.md` — accepted spec
+  анализа фактических затрат на логистику, проблемных товаров, факторов,
+  детализации заказов и последующих сценарных калькуляторов.
+- `docs/specs/client-analytical-report-implementation.md` — accepted spec
+  клиентского аналитического Markdown/DOCX/PDF/HTML по одному `report_id`.
 - `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` —
   accepted spec hardening `source_refresh`, provider registry и retention CLI.
 - `docs/specs/source-refresh-database-retention.md` — accepted spec пакетной
@@ -71,10 +76,17 @@ implementation spec, затем общий MVP spec, затем клиентск
 | `tax-methodology` | `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` | 100 |
 | `mapping` | `docs/specs/marketplace-1c-mapping-service.md` | 100 |
 | `report-publication` | `docs/specs/wb-unit-economics-db-first-report-marts.md` | 100 |
+| `logistics-cost-analysis` | `docs/specs/wb-logistics-cost-analysis-implementation.md` | 100 |
+| `client-analytical-report` | `docs/specs/client-analytical-report-implementation.md` | 100 |
 | `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 |
+| `runtime-contours` | `docs/specs/web-cabinet-runtime-contours.md` | 100 |
 | `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 |
 | `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 |
 | `ozon` | `docs/specs/marketplace-unit-economics-ozon-integration.md` | 100 |
+| `multi-report-cabinet` | `docs/specs/multi-report-cabinet-implementation.md` | 100 |
+| `month-close-control` | `docs/specs/month-close-control-report-implementation.md` | 100 |
+| `tax-load-report` | `docs/specs/tax-load-report-implementation.md` | 100 |
+| `accounting-reports-smart-process` | `docs/specs/accounting-reports-smart-process-onepage.md` | 100 |
 | `development-workflow` | `docs/specs/wb-unit-economics-ai-git-workflow.md` | 100 |
 
 ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
@@ -93,11 +105,18 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | Marketplace/1C mapping | `docs/specs/marketplace-1c-mapping-service.md` | implemented | Меняется сервис сопоставления WB/Ozon и 1С, статусы, решения оператора, candidate import или экспорт `sku_mapping`. |
 | 1C marketplace mapping fallback | `docs/specs/onec-marketplace-mapping-client-extension.md` | superseded | Нужно понять старый путь импорта кандидатов из расширения `ИС_Маркетплейс`; не использовать как основной источник правды. |
 | DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
+| WB logistics cost analysis | `docs/specs/wb-logistics-cost-analysis-implementation.md` | accepted | Меняется блок фактической логистики, проблемных товаров, факторов затрат, детализации заказов или сценарных калькуляторов. |
+| Client analytical report | `docs/specs/client-analytical-report-implementation.md` | accepted | Меняется состав, DB-first источник, DOCX/PDF/HTML-рендеринг, рекомендации или налоговое пояснение клиентского отчёта. |
 | Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
+| Runtime contours | `docs/specs/web-cabinet-runtime-contours.md` | accepted | Меняются production/test домены, БД, systemd/nginx, release promotion, test sanitization или rollback. |
+| Multi-report cabinet | `docs/specs/multi-report-cabinet-implementation.md` | accepted | Реализуется каталог `report_kind`, асинхронная генерация из read-only evidence, независимый current и staff-only rollout. |
 | Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
 | Source refresh DB retention | `docs/specs/source-refresh-database-retention.md` | accepted | Меняются правила хранения raw snapshot rows PostgreSQL или процедура освобождения диска. |
 | Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
-| Month close pilot | `docs/specs/month-close-control-pilot.md` | draft | Нужно понять пилотный read-only контур закрытия месяца: онлайн-ОСВ, налоги, ЕНС, НДС, скрины и процессные подтверждения до CRM. |
+| Month close pilot | `docs/specs/month-close-control-pilot.md` | superseded | Исторический discovery-контур закрытия месяца; действующая реализация описана в accepted report spec. |
+| Month close report | `docs/specs/month-close-control-report-implementation.md` | accepted | Реализуется staff-only web + Excel сценарий календарного закрытия месяца с evidence v2 и advisory-проверками. |
+| Tax load report | `docs/specs/tax-load-report-implementation.md` | accepted | Реализуется staff-only отчет налоговой нагрузки за месяц и YTD, web + Excel, без неподтвержденных значений. |
+| Accounting reports smart process | `docs/specs/accounting-reports-smart-process-onepage.md` | implemented | Меняется реализованный за выключенным feature-флагом staff-only модуль: Канбан закрытия к зарплате, одна ежемесячная карточка клиента и организации, две задачи, ручная отправка `tax_load`, evidence, контрольный контакт и SLA. |
 | AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
 
@@ -114,12 +133,15 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/client-methodology.md` — методика расчета простым языком.
 - `docs/calculation-formulas.md` — формулы расчета показателей, сверок и
   статусов.
-- `docs/power-bi-wb-model-reference.md` — безопасная выжимка из ранней Power
-  BI-модели WB: структура, страницы, идеи формул и ограничения переноса.
-- `docs/wb-financial-report-power-bi-measures-review.md` — сверка текущего
-  расчета финансового отчета WB с ранними Power BI-мерами и список улучшений.
-- `docs/client-analytical-report-draft.md` — шаблон AI-черновика аналитической
-  записки к Excel-отчету для проверки консультантом.
+- `docs/client-analytical-report-draft.md` — superseded Excel-first шаблон;
+  сохранён как исторический ориентир.
+
+# Исторические материалы
+
+- `docs/power-bi-wb-model-reference.md` — superseded-reference ранней Power
+  BI-модели; сохранён только как история до перехода на сервис.
+- `docs/wb-financial-report-power-bi-measures-review.md` — superseded-анализ
+  ранней Power BI-модели; сохранён только как история.
 
 # Доступы и операционные инструкции
 
@@ -134,9 +156,12 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/runbooks/power-bi-power-query.md` — путь от регулярного Excel/CSV к
   Power Query и Power BI поверх расчетных витрин.
 - `docs/runbooks/web-cabinet-operations.md` — эксплуатация web-кабинета:
-  пользователи, импорт report runs, AI, live checks, backup и monitor.
-- `docs/runbooks/source-refresh-schedule.md` — установка systemd timers для
-  daily/weekly source refresh WB/1C.
+  production/test, пользователи, импорт report runs, AI, backup и monitor.
+- `docs/runbooks/accounting-workflow-operations.md` — безопасное включение,
+  dry-run, расписание, проверка evidence и rollback бухгалтерского
+  смарт-процесса.
+- `docs/runbooks/source-refresh-schedule.md` — active runbook для systemd
+  timers, отдельного worker и staff incremental source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
   локальные проверки, GitHub CI, коммит, push и pre-commit hook.
 
@@ -144,6 +169,10 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 
 - `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — действующее решение
   по налоговым профилям и клиентской семантике прибыли.
+- `docs/decisions/2026-07-14-accounting-reports-accountant-questions.md` —
+  active-реестр: налоговый профиль и формула ФНС уже зафиксированы, а оставшиеся
+  вопросы ограничивают подтвержденные статусы, enforced-проверки и клиентскую
+  публикацию, но не accepted staff-only advisory v1.
 - `docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md` — superseded
   решение с legacy-формулой `НДС 5/105 + УСН 1%`.
 - `docs/decisions/2026-06-23-db-first-publication-baseline.md` — исторический
@@ -152,6 +181,10 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
   решение по provider registry, blocked statuses и dry-run-first retention.
 - `docs/changelogs/excel-mvp.md` — полная история изменений accepted Excel MVP,
   вынесенная из длинного implementation spec.
+- `docs/changelogs/web-cabinet.md` — полная история изменений accepted
+  web-cabinet implementation spec.
+- `docs/changelogs/ozon-integration.md` — полная история изменений accepted
+  Ozon integration spec.
 
 # Проверки документации
 

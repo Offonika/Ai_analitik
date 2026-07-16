@@ -333,6 +333,7 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "margin": demo._round(
                     first_present(
                         row,
+                        "Маржинальность до налогов",
                         "Маржа WB без НДС",
                         "Маржа WB после налогов",
                     ),
@@ -341,6 +342,7 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "unitProfit": demo._round(
                     first_present(
                         row,
+                        "Прибыль до налогов на шт",
                         "Управленческая прибыль WB на шт",
                         "Маржинальный доход WB после налогов на шт",
                     )
@@ -501,11 +503,15 @@ def options(
 
     document_reconciliation = document_reconciliation or []
     row_months = {row["month"] for row in rows}
-    weeks = sorted(demo._text(row.get("week")) for row in rows if row.get("week"))
+    period_dates = sorted(
+        period_date
+        for row in rows
+        if (period_date := _row_filter_period_date(row)) is not None
+    )
     return {
         "months": sorted(row_months, key=_month_label_sort_key),
-        "periodStart": weeks[0] if weeks else "",
-        "periodEnd": weeks[-1] if weeks else "",
+        "periodStart": period_dates[0].isoformat() if period_dates else "",
+        "periodEnd": period_dates[-1].isoformat() if period_dates else "",
         "cabinets": unique("cabinet"),
         "organizations": unique("organization"),
         "schemes": unique("scheme"),
@@ -531,6 +537,16 @@ def options(
             }
         ),
     }
+
+
+def _row_filter_period_date(row: dict[str, Any]) -> date | None:
+    week = parse_date_value(row.get("week"))
+    if week is not None:
+        return week + timedelta(days=6)
+    accounting_period_date = parse_date_value(row.get("accountingPeriodDate"))
+    if accounting_period_date is not None:
+        return accounting_period_date
+    return parse_date_value(row.get("wbReportDate"))
 
 
 def build_dashboard_payload(workbook_path: Path) -> dict[str, Any]:

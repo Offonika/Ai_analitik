@@ -13,9 +13,10 @@ related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py
 related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_contracts.py, tests/test_provider_registry.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_sku_mapping, marketplace_api_snapshot, unit_economics_report]
 depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
+changelog_path: docs/changelogs/ozon-integration.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Implementation Status
@@ -140,7 +141,7 @@ Recorder указан; система не выбирает одного авт�
 deprecated alias для `profitBeforeTax`. Для ОСНО P&L без НДС допускается
 только при подтвержденной выручке, себестоимости без НДС и входящем НДС. Без
 годовой базы НДФЛ `profitAfterTax` не публикуется; UI показывает
-«Управленческая прибыль до НДФЛ».
+«Управленческая прибыль до налогов».
 
 В Excel и статье P&L `vatPayable`, `revenueTax` и `incomeTax` имеют отрицательное
 `effectAmount`. `vatOutput` и `vatInput` являются строками налогового моста с
@@ -739,12 +740,14 @@ Web/Excel должен показывать разрез `Маркетплейс
    transaction with unknown outcome inside the same run.
    `ozon-only` preflight requires Ozon + 1C and does not block on an unrelated
    WB integration status.
-5. Reload Sabura in `ozon-only`, validate April, then inspect May and the open
-   June. Sabura keeps `taxProfile.status = missing` when 1C has no explicit
-   regime; do not add an override without accountant confirmation.
-6. Reload Galustov and validate one closed month against 1C. Then reload the
-   Mukhamedov client and enable the same contract only after the pilot checks
-   pass. Publish a mixed report only after consultant acceptance.
+5. Reload the first pilot client in `ozon-only`, validate one closed month, then
+   inspect an incomplete and an open month. Keep `taxProfile.status = missing`
+   when 1C has no explicit regime; do not add an override without accountant
+   confirmation.
+6. Validate a second pilot client for one closed month against 1C, then repeat
+   the same contract for the next client only after the pilot checks pass.
+   Publish a mixed report only after consultant acceptance. Exact client ids and
+   periods belong to local acceptance evidence outside Git.
 
 Rollback: keep the new additive tables/column, disable the new mart/UI path and
 restore the previous application version. Do not delete snapshots, profiles or
@@ -779,21 +782,19 @@ Integration:
   commissioner revenue, 1C COGS and SKU-level Ozon expenses;
 - monthly mart uses period cost by organization and item; a later open month
   cannot change the result of earlier closed months;
-- Sabura April control: 1C revenue `26 149 512.63`, Ozon expenses
-  `5 433 950.60`, signed monthly COGS `12 487 433.55`, pre-tax profit
-  `8 228 128.48`, mart average unit cost about `895.41`, direct 1C register
-  average about `896.65`, deviation about `0.14%`;
-- former controls `11 700 778.70` for April and `38 734 121.76` for March-May
-  are superseded because they used the erroneous whole-snapshot average; a new
-  March-May control is accepted only after May is complete;
+- an anonymized closed-period fixture reconciles 1C revenue, Ozon expenses,
+  signed monthly COGS and pre-tax profit; mart average unit cost must stay within
+  the accepted tolerance of the direct 1C register average;
+- controls derived from a whole-snapshot average are superseded; a multi-month
+  control is accepted only when every included month is complete;
 - non-material cost anomaly returns `warning`; material anomaly, missing or
   nonpositive cost returns `blocked` and null profit. A closed incomplete May
   is listed in `excludedIncompletePeriods`; open June is listed only in
   `excludedOpenPeriods`;
-- on immutable snapshot `source_refresh_c349dd3c521a4e668346cc2114f066aa`,
-  May has seven missing-cost rows, zero ambiguous mappings and zero incomplete
-  expense rows; the earlier `5/2/2` composition belongs to another snapshot.
-  The durable acceptance invariant is null May profit plus explicit blockers;
+- an anonymized incomplete-period fixture keeps profit `null` and exposes
+  missing-cost, ambiguous-mapping and incomplete-expense blockers separately;
+  exact production report ids, snapshot ids and business totals stay in local
+  acceptance evidence outside Git;
 - tax profile tests cover explicit 1C USN, OSNO with confirmed input VAT,
   missing profile, missing annual NDFL base, overlapping profiles and multiple
   organizations of one client;
@@ -855,156 +856,4 @@ Acceptance:
 
 # Changelog
 
-- 2026-07-12: Добавлен полный typed shadow для Ozon: cash-flow service lines,
-  realization/posting, mutual settlement, buyout, B2B и product catalog
-  материализуются из verified immutable files. Legacy DB rows и typed путь
-  сравниваются по всем строкам, P&L, mart, mapping, выкупам и сверкам; порядок
-  preview и технические row ids исключены из business grain.
-
-- 2026-07-12: отчет комиссионера Ozon снова загружается с товарными частями;
-  header-only snapshot помечается `partial_source` и не может заменить
-  последний пригодный Ozon draft.
-
-- 2026-07-12: Успешный production `ozon-only` создает staff-only Ozon draft,
-  закрепленный за исходным refresh run. Добавлены mode-scoped статус загрузки,
-  воспроизводимая сводка/Excel и явное разделение служебной витрины, черновика
-  и опубликованного клиентского отчета.
-
-- 2026-07-11: Разделены источники выручки Ozon: верхний факт берется только из
-  регистра продаж 1C, а Ozon realization + buyout используются как ожидаемая
-  первичка. Добавлен контроль отсутствующих, непроведенных, датированных не тем
-  периодом и отличающихся по сумме документов с read-only перепроверкой после
-  исправления в 1C.
-
-- 2026-07-11: при отсутствии клиентского отчета контроль перед отправкой
-  показывает состояние и диагностику Ozon + 1C вместо пустого блока загрузки.
-- 2026-07-11: итоговый P&L Ozon приведен к прямому регистру продаж 1C и
-  включает выкупы; SKU-детализация сохранена без искусственного распределения
-  дополнительных документов по товарам.
-- 2026-07-11: витрина Ozon сохраняет KPI и SKU-P&L без клиентского отчета;
-  SKU-P&L явно отделен от верхних итогов регистра 1C, а себестоимость помечена
-  как сумму, в которой НДС не выделен.
-- 2026-07-11: верхние KPI Ozon переключены на прямые итоги регистра продаж 1C
-  (включая выкупы); SKU-P&L сохранен отдельным и явно помечен как расчет без
-  выкупов.
-- 2026-07-11: made revenue coverage depend on unknown nonzero revenue rather
-  than unmapped quantity, and marked nonpositive direct 1C COGS unavailable.
-- 2026-07-11: Isolated direct 1C COGS control by counterparty inside Recorder
-  and made unlabeled movements with multiple counterparties unavailable.
-- 2026-07-11: Removed single-company/single-organization guessing, made
-  documentless direct COGS control conservative, added unknown-revenue row
-  counters and preserved the actually applied monthly materiality thresholds.
-- 2026-07-10: Replaced the superseded Sabura April whole-snapshot control with
-  signed monthly COGS `12 487 433.55` and pre-tax profit `8 228 128.48`; added
-  `costQuality`, materiality rules, `excludedIncompletePeriods` and the
-  1,000-row resumable snapshot-persistence requirement.
-- 2026-07-10: Accepted canonical monthly Ozon P&L v2, organization-bound
-  immutable tax profiles, audited overrides, open-period profit blocking,
-  duplicate snapshot controls and deprecated legacy `pnl` isolation.
-- 2026-07-10: Enforced project mapping service current decisions as the first
-  Ozon mart mapping source and added reconciliation-only matching between the
-  realization-report debit and an equal 1C service document without changing
-  P&L expenses.
-- 2026-07-09: Excluded Ozon realization nested
-  `delivery_commission.standard_fee` / `return_commission.standard_fee` from
-  direct SKU commission fields after live diagnostics showed they inflate Ozon
-  commission; service acts remain period residual fallback.
-- 2026-07-08: Grouped Ozon mart rows by seller `offer_id` before applying the
-  one-1C-item-many-Ozon conflict rule, so internal Ozon `sku`/`product_id`
-  variants do not block 1C revenue and COGS.
-- 2026-07-08: Changed Ozon expense attribution priority: SKU-level
-  realization/detail expenses are primary; mutual settlement is a period
-  control; only positive unattributed residual is allocated by 1C revenue share.
-- 2026-07-08: Added Finmodel 2.0 inspired Ozon article breakdown for mart v1:
-  `articleRows` in the mart payload and per-SKU `expenseArticles`, while keeping
-  Ozon/1C source boundaries and reconciliation visible.
-- 2026-07-08: Added staff-only Ozon diagnostics Excel export and
-  `articleDrilldown`: article-to-SKU allocations are separated from Ozon/1C
-  reconciliation rows so unmatched 1C-only documents remain visible but do not
-  affect SKU-profit.
-- 2026-07-08: Added article-level expense reconciliation rows for 1C service
-  documents without Ozon API pair in the selected month, including a visible
-  hint to check adjacent mutual-settlement periods or separate Ozon service
-  documents.
-- 2026-07-08: Switched Ozon mapping priority from direct 1C marketplace
-  extension reads to the project-owned marketplace/1C mapping service; 1C
-  extension rows are candidate import only.
-- 2026-07-08: Added Ozon mart auto-narrowing for ambiguous fallback article
-  matches when exactly one 1C candidate is present in both commissioner revenue
-  and period COGS; unresolved multi-candidate rows remain manual review.
-- 2026-07-09: Excluded mutual settlement `Отчет о реализации` from period
-  expenses so realization/control document amounts do not inflate Ozon
-  commission and SKU profit.
-- 2026-07-07: Added 1C `ИС_Маркетплейс 3.5.57.0` as the priority read-only
-  Ozon mapping source and clarified Ozon mart as pre-tax.
-- 2026-07-07: Corrected Ozon mart direct expense method after April 2026
-  reconciliation with 1C supplier service documents: nested realization
-  `standard_fee`/`amount`/`total` are not direct SKU expenses in V1 and must not
-  be used for profit without separate 1C service-document allocation.
-- 2026-07-07: Switched Ozon expense source of truth to Seller API
-  cash-flow details and added 1C incoming invoice/service expense control as
-  reconciliation, not as the primary expense source.
-- 2026-07-07: Excluded positive `details.delivery.total` from Ozon expense
-  adjustments; delivery remains visible for diagnostics but does not reduce V1
-  marketplace expenses.
-- 2026-07-07: Added expense reconciliation detail rows for Ozon API categories,
-  top operation types and 1C control operations; clarified that period expenses
-  are not automatically distributed to SKU rows.
-- 2026-07-07: Added Ozon mutual settlement as a read-only monthly report source
-  for expense article reconciliation before SKU allocation.
-- 2026-07-07: Added Ozon V1 SKU allocation for mutual-settlement period
-  expenses by 1C commissioner revenue share, with explicit
-  `allocated_period_expense` row status and visible allocation basis.
-- 2026-07-07: Switched Ozon P&L direct expense basis from cash-flow details to
-  mutual settlement document rows after live April reconciliation showed mutual
-  settlement matches 1C service/incoming documents, while cash-flow reflects a
-  different money movement basis.
-- 2026-07-07: Tightened Ozon diagnostics period filtering: monthly realization
-  rows are matched to the selected period through collection manifest row
-  ranges/page metadata so an April request does not include May pages with the
-  same page index.
-- 2026-07-07: Hardened Ozon mapping and snapshot metadata: generic
-  `onec_marketplace_mapping` rows are accepted for Ozon only with explicit
-  `marketplace=ozon`, and persisted Ozon technical metadata takes precedence
-  over same-named fields in raw source rows.
-- 2026-07-06: Added staff-only `Ozon Unit Economics Mart v1` contract and
-  calculation rules: 1C commissioner SKU revenue, 1C COGS, SKU-level Ozon
-  expenses, no auto-allocation, June as missing 1C close, buyout as separate
-  reconciliation.
-- 2026-07-06: Added Ozon buyout reconciliation rule: parse 1C expense invoices
-  with `Выкуп`, extract buyout report number/period from comments, and compare
-  against `ozon_products_buyout` without changing revenue basis.
-- 2026-07-06: Added fallback Ozon buyout reconciliation by monthly period total
-  when `ozon_products_buyout` has matching amount and quantity but does not
-  expose the 1C buyout report number.
-- 2026-07-06: Added final Ozon vs 1C revenue reconciliation formula and fixed
-  buyout source counters to show API chunks, product rows, quantity and amount
-  instead of a misleading zero row count.
-- 2026-07-06: Removed Ozon cash-flow from the visible Ozon v1 vitrina and made
-  1C sales register by Ozon counterparty the revenue basis.
-- 2026-07-06: Added optional Ozon reconciliation collectors for posting
-  realization, product buyouts and B2B sales JSON to explain 1C deltas without
-  changing the revenue basis.
-- 2026-07-06: Added Ozon issue vitrina requirements: status badge, first-action
-  cards and accountant-owned mapping correction for `missing`/`ambiguous`.
-- 2026-07-06: Added `Ozon v1` calculation vitrina requirements for 1C-based
-  Ozon revenue, with explicit partial-source handling.
-- 2026-07-06: Extended `ozon-only` source plan with Ozon realization and
-  provisional 1C cost application when item-level rows, mapping and sales
-  register cost are available.
-- 2026-07-06: Fixed Ozon realization v2 request contract to send monthly
-  `month`/`year` payloads instead of legacy `date` payloads.
-- 2026-07-06: Treated missing current-month Ozon realization reports as
-  `empty_expected` and exposed realization row-limit metadata in Ozon P&L.
-- 2026-07-06: Connected web period filters to Ozon v1 1C sales-register totals.
-- 2026-07-06: Moved Ozon diagnostics from the report detail tabs to a visible
-  top-level client block so clients without a WB report still show Ozon + 1C
-  readiness.
-- 2026-07-05: Added staff-only Ozon + 1C diagnostics endpoint and web vitrina
-  for latest `ozon-only` runs; preview is bounded and does not expose raw
-  payloads, paths, hashes or credentials.
-- 2026-07-05: Changed Ozon live-check away from `/v1/seller/info` to actual
-  read-only source endpoints; added staff-only Ozon preview as the first web
-  step before mixed marketplace reporting.
-- 2026-07-03: Accepted V1 Ozon integration spec; added provider, source
-  collectors, raw contracts and common marketplace snapshot contract.
+Полная история изменений вынесена в `docs/changelogs/ozon-integration.md`.

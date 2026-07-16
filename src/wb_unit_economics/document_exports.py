@@ -26,6 +26,11 @@ ORANGE = "B87922"
 GRAY = "595959"
 WHITE = "FFFFFF"
 BLACK = "262626"
+BRAND_BADGES = (
+    "Юнит-экономика WB",
+    "Возвраты и убыточность",
+    "Упущенные продажи",
+)
 
 
 def markdown_sha256(markdown: str) -> str:
@@ -41,7 +46,7 @@ def render_markdown_docx(
     landscape: bool = True,
     brand_name: str = "Шумейко и Партнеры",
     footer_text: str = "Шумейко и Партнеры · AI-аналитик отчетов",
-    cover_title: str = "Аналитический отчет по юнит-экономике WB",
+    cover_title: str = "Аналитический отчёт по юнит-экономике WB",
     cover_subtitle: str = "",
     source_sha256: str | None = None,
 ) -> Path:
@@ -144,17 +149,28 @@ def normalized_markdown_tokens(markdown: str) -> list[str]:
 def normalized_docx_tokens(path: Path) -> list[str]:
     document = Document(path)
     tokens: list[str] = []
-    for block in _iter_document_blocks(document):
+    blocks = list(_iter_document_blocks(document))
+    branded = any(
+        isinstance(block, Table) and _is_brand_badge_table(block)
+        for block in blocks
+    )
+    for block in blocks:
         if isinstance(block, Paragraph):
             normalized = _normalize_token(block.text)
             if normalized:
                 tokens.append(normalized)
+            continue
+        if _is_brand_badge_table(block):
             continue
         for row in block.rows:
             for cell in row.cells:
                 normalized = _normalize_token(cell.text)
                 if normalized:
                     tokens.append(normalized)
+    if branded and len(tokens) > 2 and tokens[1] in tokens[2:]:
+        # The cover subtitle repeats the report period that is already present
+        # in the source-backed body. Ignore only that decorative duplicate.
+        del tokens[1]
     return tokens
 
 
@@ -175,7 +191,9 @@ def _body_lines(markdown: str) -> list[str]:
 
 
 def _normalize_token(value: str) -> str:
-    return " ".join(str(value).replace("\xa0", " ").split())
+    return " ".join(
+        str(value).replace("\xa0", " ").replace("**", "").split()
+    )
 
 
 def _iter_document_blocks(document: DocumentObject) -> Iterator[Paragraph | Table]:
@@ -269,9 +287,7 @@ def _add_brand_cover(
 def _add_brand_badges(document: DocumentObject) -> None:
     table = document.add_table(rows=1, cols=3)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    for index, label in enumerate(
-        ("Юнит-экономика WB", "Возвраты и убыточность", "Упущенные продажи")
-    ):
+    for index, label in enumerate(BRAND_BADGES):
         cell = table.cell(0, index)
         _set_cell_shading(cell, PALE_BLUE)
         _set_cell_border(cell, BLUE)
@@ -280,6 +296,13 @@ def _add_brand_badges(document: DocumentObject) -> None:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = paragraph.add_run(label)
         _set_run_font(run, size=9, bold=True, color=NAVY)
+
+
+def _is_brand_badge_table(table: Table) -> bool:
+    if len(table.rows) != 1 or len(table.columns) != len(BRAND_BADGES):
+        return False
+    values = tuple(_normalize_token(cell.text) for cell in table.rows[0].cells)
+    return values == BRAND_BADGES
 
 
 def _add_paragraph(
@@ -292,9 +315,19 @@ def _add_paragraph(
     paragraph = document.add_paragraph(style=style)
     if align is not None:
         paragraph.alignment = align
-    run = paragraph.add_run(str(value))
-    _set_run_font(run)
+    _add_inline_markdown_runs(paragraph, str(value))
     return paragraph
+
+
+def _add_inline_markdown_runs(paragraph: Paragraph, value: str) -> None:
+    parts = re.split(r"(\*\*.+?\*\*)", value)
+    for part in parts:
+        if not part:
+            continue
+        bold = part.startswith("**") and part.endswith("**")
+        text = part[2:-2] if bold else part
+        run = paragraph.add_run(text)
+        _set_run_font(run, bold=True if bold else None)
 
 
 def _parse_markdown_table(lines: list[str], start: int) -> tuple[list[list[str]], int]:
@@ -316,6 +349,10 @@ def _add_docx_table(document: DocumentObject, rows: list[list[str]]) -> None:
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.style = "Table Grid"
     for row_index, row in enumerate(rows):
+        table_row = table.rows[row_index]
+        _prevent_table_row_split(table_row)
+        if row_index == 0:
+            _repeat_table_header(table_row)
         for column_index in range(column_count):
             value = row[column_index] if column_index < len(row) else ""
             cell = table.cell(row_index, column_index)
@@ -337,6 +374,23 @@ def _add_docx_table(document: DocumentObject, rows: list[list[str]]) -> None:
                 color=WHITE if row_index == 0 else BLACK,
             )
     document.add_paragraph()
+
+
+def _repeat_table_header(row: Any) -> None:
+    properties = row._tr.get_or_add_trPr()
+    header = properties.find(qn("w:tblHeader"))
+    if header is None:
+        header = OxmlElement("w:tblHeader")
+        properties.append(header)
+    header.set(qn("w:val"), "true")
+
+
+def _prevent_table_row_split(row: Any) -> None:
+    properties = row._tr.get_or_add_trPr()
+    no_split = properties.find(qn("w:cantSplit"))
+    if no_split is None:
+        no_split = OxmlElement("w:cantSplit")
+        properties.append(no_split)
 
 
 def _set_run_font(

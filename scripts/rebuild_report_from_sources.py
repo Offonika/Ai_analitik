@@ -278,6 +278,19 @@ def build_db_first_payload(
         port=args.postgres_port,
         user=args.postgres_user,
     )
+    supplied_summary_rows = getattr(args, "wb_sales_report_summary_rows", None)
+    wb_summary_rows = (
+        list(supplied_summary_rows)
+        if supplied_summary_rows is not None
+        else (
+            load_wb_sales_report_summary_rows(
+                args.wb_report_list_dir, client_id=args.client_id
+            )
+            if args.wb_report_list_dir
+            and (args.wb_report_list_dir / "manifest.json").exists()
+            else []
+        )
+    )
     if args.wb_finance_source == "postgres":
         wb_snapshots = load_wb_finance_snapshots_from_postgres(
             target=postgres_target,
@@ -374,19 +387,6 @@ def build_db_first_payload(
             client_id=args.client_id,
             amount_field=args.cost_amount_field,
         )
-    supplied_summary_rows = getattr(args, "wb_sales_report_summary_rows", None)
-    wb_summary_rows = (
-        list(supplied_summary_rows)
-        if supplied_summary_rows is not None
-        else (
-            load_wb_sales_report_summary_rows(
-                args.wb_report_list_dir, client_id=args.client_id
-            )
-            if args.wb_report_list_dir
-            and (args.wb_report_list_dir / "manifest.json").exists()
-            else []
-        )
-    )
     expense_allocation_bases = load_wb_expense_allocation_bases(
         client_id=args.client_id,
         paid_storage_dir=args.wb_paid_storage_dir,
@@ -544,6 +544,14 @@ def _wb_snapshots_from_daily_facts(
                 raw_payload_hash=fact.source_hash_digest,
                 is_partial_source=fact.is_partial_source,
                 source_row_count=max(1, int(fact.source_row_count)),
+                preallocated_finance=True,
+                precomputed_cogs=fact.cogs,
+                precomputed_gross_profit=fact.gross_profit,
+                precomputed_vat_input_from_1c=fact.vat_input_from_1c,
+                precomputed_accounting_service_input_vat=(
+                    fact.accounting_service_input_vat
+                ),
+                precomputed_spp_discount=fact.spp_discount,
             )
         )
     return snapshots
@@ -757,9 +765,7 @@ def _tax_profiles_for_rebuild(
         )
     )
     if vat_deduction_mode is VatDeductionMode.UNKNOWN:
-        raise ValueError(
-            "--vat-deduction-mode must be confirmed with --tax-system"
-        )
+        raise ValueError("--vat-deduction-mode must be confirmed with --tax-system")
     revenue_tax_rate = Decimal(str(getattr(args, "revenue_tax_rate", 0)))
     income_tax_kind = str(
         getattr(args, "income_tax_kind", "ip_ndfl_progressive") or ""
@@ -831,8 +837,7 @@ def _validate_marts(payload: dict) -> None:
             item.get("id")
             for item in lost_sales
             if not isinstance(item.get("calculationContext"), dict)
-            or item["calculationContext"].get("version")
-            != "lost-sales-filter-v1"
+            or item["calculationContext"].get("version") != "lost-sales-filter-v1"
         ]
         if missing_context:
             raise ValueError(

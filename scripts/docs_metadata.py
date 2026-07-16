@@ -7,18 +7,25 @@ from typing import Any
 import yaml
 
 TRUTH_SCOPES = {
+    "accounting-reports-smart-process",
     "configuration",
+    "client-analytical-report",
     "development-workflow",
     "excel-methodology",
+    "logistics-cost-analysis",
     "mapping",
+    "month-close-control",
+    "multi-report-cabinet",
     "ozon",
     "product-scope",
     "project-governance",
     "project-overview",
     "report-publication",
+    "runtime-contours",
     "source-refresh",
     "source-retention",
     "tax-methodology",
+    "tax-load-report",
     "web-cabinet",
 }
 TRUTH_PRIORITY_MIN = 1

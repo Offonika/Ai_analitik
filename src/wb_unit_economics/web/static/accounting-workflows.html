@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Закрытие месяца · Шумейко и Партнеры</title>
+    <link rel="stylesheet" href="/static/accounting-workflows.css" />
+  </head>
+  <body>
+    <header class="workflow-header">
+      <div>
+        <p class="eyebrow">Шумейко и Партнеры · внутренний контур</p>
+        <h1>Закрытие месяца и налоговая нагрузка</h1>
+        <p class="subtitle">Одна карточка, две задачи и проверяемое закрытие к зарплате.</p>
+      </div>
+      <a class="button secondary" href="/cabinet">Вернуться в кабинет</a>
+    </header>
+
+    <main class="workflow-layout">
+      <section class="workflow-main">
+        <div id="workflow-alert" class="alert" role="status" hidden></div>
+
+        <section class="toolbar" aria-label="Фильтры карточек">
+          <form id="workflow-filters" class="filter-grid">
+            <label>
+              Месяц
+              <input id="filter-period" type="month" />
+            </label>
+            <label>
+              Стадия
+              <select id="filter-stage"><option value="">Все стадии</option></select>
+            </label>
+            <label>
+              Клиент
+              <select id="filter-client"><option value="">Все клиенты</option></select>
+            </label>
+            <label>
+              Организация
+              <select id="filter-organization"><option value="">Все организации</option></select>
+            </label>
+            <label>
+              Ответственный
+              <select id="filter-responsible"><option value="">Все сотрудники</option></select>
+            </label>
+            <label>
+              Руководитель
+              <select id="filter-supervisor"><option value="">Все руководители</option></select>
+            </label>
+            <label class="checkbox-label">
+              <input id="filter-overdue" type="checkbox" />
+              Только просроченные
+            </label>
+            <button type="submit">Применить</button>
+            <button id="workflow-refresh" type="button" class="secondary">Обновить</button>
+          </form>
+          <div class="view-switch" role="group" aria-label="Режим отображения">
+            <button type="button" data-view="board" aria-pressed="true">Канбан</button>
+            <button type="button" data-view="table" aria-pressed="false">Таблица</button>
+          </div>
+        </section>
+
+        <section id="monthly-run-panel" class="panel" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Руководитель</p>
+              <h2>Создать карточки месяца</h2>
+            </div>
+          </div>
+          <form id="monthly-run-form" class="form-grid">
+            <label>Месяц <input id="monthly-period" type="month" required /></label>
+            <label>
+              Ответственный
+              <select id="monthly-responsible" required></select>
+            </label>
+            <label>
+              Руководитель
+              <select id="monthly-supervisor" required></select>
+            </label>
+            <button type="submit">Создать без дублей</button>
+          </form>
+        </section>
+
+        <section id="workflow-board" class="workflow-board" aria-label="Канбан"></section>
+
+        <section id="workflow-table" class="panel" hidden>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Клиент</th>
+                  <th>Организация</th>
+                  <th>Месяц</th>
+                  <th>Стадия</th>
+                  <th>Ответственный</th>
+                  <th>Срок</th>
+                  <th>Задачи</th>
+                </tr>
+              </thead>
+              <tbody id="workflow-table-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <aside id="workflow-detail" class="workflow-detail" aria-live="polite">
+        <div class="empty-state">
+          <h2>Карточка не выбрана</h2>
+          <p>Откройте карточку в Канбане или таблице.</p>
+        </div>
+      </aside>
+    </main>
+
+    <template id="workflow-detail-template">
+      <div class="detail-heading">
+        <div>
+          <p class="eyebrow" data-field="period"></p>
+          <h2 data-field="title"></h2>
+          <p data-field="stage" class="stage-pill"></p>
+        </div>
+        <button type="button" data-action="close-detail" class="icon-button" aria-label="Закрыть">×</button>
+      </div>
+      <dl class="detail-facts">
+        <div><dt>Ответственный</dt><dd data-field="responsible"></dd></div>
+        <div><dt>Руководитель</dt><dd data-field="supervisor"></dd></div>
+        <div><dt>Целевой срок</dt><dd data-field="target-due"></dd></div>
+        <div><dt>Предельный срок</dt><dd data-field="hard-due"></dd></div>
+      </dl>
+
+      <section class="detail-section">
+        <h3>Переход карточки</h3>
+        <form data-form="transition" class="stack-form">
+          <select name="targetStage" required></select>
+          <select name="responsibleUserId"><option value="">Ответственный без изменения</option></select>
+          <select name="supervisorUserId"><option value="">Руководитель без изменения</option></select>
+          <textarea name="reason" rows="2" placeholder="Причина для блокировки, доработки или отмены"></textarea>
+          <button type="submit">Выполнить переход</button>
+        </form>
+      </section>
+
+      <section class="detail-section">
+        <h3>Две связанные задачи</h3>
+        <div data-field="tasks" class="task-list"></div>
+      </section>
+
+      <section class="detail-section">
+        <h3>Доказательство отправки</h3>
+        <form data-form="evidence" class="stack-form">
+          <input name="evidence" type="file" accept="image/png,image/jpeg,application/pdf" required />
+          <button type="submit" class="secondary">Загрузить защищённый файл</button>
+          <output data-field="attachment-status"></output>
+        </form>
+        <form data-form="delivery" class="stack-form">
+          <input name="attachmentId" type="hidden" />
+          <label>Дата отправки <input name="sentAt" type="datetime-local" required /></label>
+          <label>
+            Канал
+            <select name="channel" required>
+              <option value="email">Email</option>
+              <option value="messenger">Мессенджер</option>
+              <option value="meeting">Встреча</option>
+              <option value="other_approved">Другой согласованный</option>
+            </select>
+          </label>
+          <input name="channelDetail" placeholder="Название другого канала" />
+          <input name="maskedRecipient" placeholder="Получатель, например i***@mail.ru" required />
+          <textarea name="contactResult" rows="2" placeholder="Результат контакта"></textarea>
+          <label class="checkbox-label"><input name="preliminary" type="checkbox" /> Предварительная версия</label>
+          <button type="submit">Зафиксировать отправку</button>
+        </form>
+        <div data-field="deliveries" class="timeline"></div>
+      </section>
+
+      <section class="detail-section">
+        <h3>Контрольные контакты</h3>
+        <div data-field="followups" class="timeline"></div>
+      </section>
+
+      <section class="detail-section">
+        <h3>Общая лента</h3>
+        <form data-form="comment" class="stack-form">
+          <textarea name="body" rows="3" maxlength="4000" required placeholder="Комментарий без секретов и raw-данных"></textarea>
+          <button type="submit">Добавить комментарий</button>
+        </form>
+        <div data-field="comments" class="timeline"></div>
+      </section>
+
+      <details class="detail-section">
+        <summary>Журнал аудита</summary>
+        <div data-field="audit" class="timeline"></div>
+      </details>
+    </template>
+
+    <script src="/static/accounting-workflows.js" defer></script>
+  </body>
+</html>

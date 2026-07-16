@@ -7,9 +7,15 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from docx import Document
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+
+from wb_unit_economics.client_report import (
+    ClientReportModel,
+    build_client_analytical_markdown,
+    render_client_report_html,
+)
+from wb_unit_economics.document_exports import markdown_sha256, render_markdown_docx
 
 EXPORT_SHEETS = {
     "unitRows": "Юнит экономика",
@@ -495,11 +501,11 @@ COLUMN_LABELS = {
     "incomeTaxBase": "База НДФЛ",
     "incomeTax": "НДФЛ",
     "incomeTaxIncluded": "НДФЛ включен",
-    "profitBeforeTax": "Управленческая прибыль до НДФЛ",
+    "profitBeforeTax": "Управленческая прибыль WB",
     "marginBeforeTax": "Маржа до налогов",
-    "profitBeforeIncomeTax": "Управленческая прибыль до НДФЛ",
-    "profitAfterTax": "Прибыль после налогов",
-    "marginAfterTax": "Маржа после налогов",
+    "profitBeforeIncomeTax": "Управленческая прибыль WB",
+    "profitAfterTax": "Прибыль до налогов",
+    "marginAfterTax": "Маржинальность до налогов",
     "revenueTax": "Налог с выручки",
     "taxSystem": "Налоговый режим",
     "profit": "Управленческая прибыль WB",
@@ -837,8 +843,8 @@ def _aggregate_unit_rows(
             ("returns", "Возвраты, шт"),
             ("revenue", "Выручка с НДС"),
             ("revenueWithoutVat", "Выручка без НДС"),
-            ("profitBeforeTax", "Прибыль до налогов"),
-            ("profit", "Прибыль после налогов"),
+            ("profitBeforeTax", "Управленческая прибыль WB"),
+            ("profit", "Прибыль до налогов"),
         ):
             target[label] = float(target.get(label) or 0) + float(row.get(source) or 0)
     return list(totals.values())
@@ -854,8 +860,8 @@ def _dashboard_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         ("Исходящий НДС", "vatOutput"),
         ("Налог УСН", "revenueTax"),
         ("Всего налогов", "totalTax"),
-        ("Прибыль до налогов", "profitBeforeTax"),
-        ("Прибыль после налогов", "profitAfterTax"),
+        ("Управленческая прибыль WB", "profitBeforeTax"),
+        ("Прибыль до налогов", "profitAfterTax"),
     )
     rows = [
         {"Показатель": label, "Значение": kpis.get(key)} for label, key in labels
@@ -1153,7 +1159,7 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
         ("income_tax", "НДФЛ / налог на доход", "incomeTax", "tax", "expense"),
         (
             "profit_after_tax",
-            "Прибыль после налогов",
+            "Прибыль до налогов",
             "profitAfterTax",
             "result",
             "result",
@@ -1182,7 +1188,10 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
                 "actionText": (
                     "Действие не требуется."
                     if value is not None
-                    else "Подтвердить налоговый профиль и полноту налоговой базы."
+                    else (
+                        "Обновить настройки налогообложения из 1С и проверить "
+                        "полноту налоговой базы."
+                    )
                 ),
             }
         )
@@ -1316,29 +1325,15 @@ def write_csv_marts(summary: dict[str, Any], output_dir: Path) -> list[Path]:
 
 def write_html_summary(summary: dict[str, Any], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    meta = summary.get("meta", {})
-    rows = summary.get("unitRows", [])
-    lost = summary.get("lostSales", [])
-    body = [
-        '<!doctype html><html lang="ru"><meta charset="utf-8">',
-        "<title>DB-first report marts</title>",
-        "<style>body{font-family:Arial,sans-serif;margin:32px;color:#1f2933}"
-        "table{border-collapse:collapse;width:100%;margin:16px 0}"
-        "th,td{border:1px solid #d9e2ec;padding:6px;font-size:12px}"
-        "th{background:#edf4fb;text-align:left}</style>",
-        f"<h1>{_html(meta.get('title', 'DB-first report marts'))}</h1>",
-        f"<p>{_html(meta.get('client', ''))} · {_html(meta.get('period', ''))}</p>",
-        f"<p><strong>Период отчета:</strong> "
-        f"{_html(meta.get('reportPeriod', meta.get('period', '')))}</p>",
-        f"<p><strong>Покрытие источников:</strong> "
-        f"{_html(meta.get('sourceCoverage', ''))}</p>",
-        f"<p><strong>Статус готовности:</strong> "
-        f"{_html(_readiness_label(summary))}</p>",
-        _html_table("KPI", _kpi_rows(rows)),
-        _html_table("Упущенные продажи", lost[:50]),
-        "</html>",
-    ]
-    output_path.write_text("\n".join(body), encoding="utf-8")
+    model = ClientReportModel.from_payload(summary)
+    markdown = build_client_analytical_markdown(model)
+    output_path.write_text(
+        render_client_report_html(
+            markdown,
+            title=str(model.meta.get("title") or "Аналитический отчёт WB"),
+        ),
+        encoding="utf-8",
+    )
     return output_path
 
 
@@ -1350,26 +1345,16 @@ def write_markdown_summary(summary: dict[str, Any], output_path: Path) -> Path:
 
 def write_docx_summary(summary: dict[str, Any], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    meta = summary.get("meta", {})
-    doc = Document()
-    doc.add_heading(str(meta.get("title") or "DB-first report marts"), level=1)
-    doc.add_paragraph(f"{meta.get('client', '')} · {meta.get('period', '')}")
-    doc.add_paragraph(
-        f"Период отчета: {meta.get('reportPeriod', meta.get('period', ''))}"
+    model = ClientReportModel.from_payload(summary)
+    markdown = build_client_analytical_markdown(model)
+    return render_markdown_docx(
+        markdown,
+        output_path,
+        branded=False,
+        landscape=False,
+        cover_subtitle=str(model.meta.get("reportPeriod") or model.meta.get("period")),
+        source_sha256=markdown_sha256(markdown),
     )
-    doc.add_paragraph(f"Покрытие источников: {meta.get('sourceCoverage', '')}")
-    doc.add_paragraph(f"Статус готовности: {_readiness_label(summary)}")
-    doc.add_heading("KPI", level=2)
-    for row in _kpi_rows(summary.get("unitRows", [])):
-        doc.add_paragraph(f"{row['metric']}: {row['value']}")
-    doc.add_heading("Упущенные продажи", level=2)
-    for row in summary.get("lostSales", [])[:20]:
-        doc.add_paragraph(
-            f"{row.get('product', '')}: {row.get('lostRevenue', 0)} руб., "
-            f"1С остаток {row.get('onecStock', 0)}"
-        )
-    doc.save(output_path)
-    return output_path
 
 
 def convert_docx_to_pdf(docx_path: Path) -> tuple[Path | None, str, str]:
@@ -1402,29 +1387,7 @@ def convert_docx_to_pdf(docx_path: Path) -> tuple[Path | None, str, str]:
 
 
 def build_markdown_summary(summary: dict[str, Any]) -> str:
-    meta = summary.get("meta", {})
-    lines = [
-        f"# {meta.get('title', 'DB-first report marts')}",
-        "",
-        f"- Клиент: {meta.get('client', '')}",
-        f"- Период: {meta.get('period', '')}",
-        f"- Период отчета: {meta.get('reportPeriod', meta.get('period', ''))}",
-        f"- Покрытие источников: {meta.get('sourceCoverage', '')}",
-        f"- Статус готовности: {_readiness_label(summary)}",
-        f"- Методика: {meta.get('methodologyVersion', '')}",
-        f"- Lineage: {meta.get('lineageType', '')}",
-        "",
-        "## KPI",
-    ]
-    for row in _kpi_rows(summary.get("unitRows", [])):
-        lines.append(f"- {row['metric']}: {row['value']}")
-    lines.extend(["", "## Упущенные продажи"])
-    for row in summary.get("lostSales", [])[:20]:
-        lines.append(
-            f"- {row.get('product', '')}: lostRevenue={row.get('lostRevenue', 0)}, "
-            f"onecStock={row.get('onecStock', 0)}"
-        )
-    return "\n".join(lines) + "\n"
+    return build_client_analytical_markdown(summary)
 
 
 def _write_readme(sheet: Any, summary: dict[str, Any]) -> None:
@@ -1543,47 +1506,3 @@ def _localized_source(value: object) -> str:
     if text == "DB report marts":
         return "Расчетные витрины отчета"
     return _localized_status(text)
-
-
-def _kpi_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    revenue = sum(float(row.get("revenue") or 0) for row in rows)
-    profit = sum(float(row.get("profit") or 0) for row in rows)
-    sales = sum(float(row.get("sales") or 0) for row in rows)
-    returns = sum(float(row.get("returns") or 0) for row in rows)
-    margin = profit / revenue if revenue else None
-    return [
-        {"metric": "Строк отчета", "value": len(rows)},
-        {"metric": "Выручка", "value": round(revenue, 2)},
-        {"metric": "Прибыль", "value": round(profit, 2)},
-        {"metric": "Маржа", "value": round(margin, 4) if margin is not None else ""},
-        {"metric": "Продажи, шт", "value": round(sales, 2)},
-        {"metric": "Возвраты, шт", "value": round(returns, 2)},
-    ]
-
-
-def _html_table(title: str, rows: list[dict[str, Any]]) -> str:
-    if not rows:
-        return f"<h2>{_html(title)}</h2><p>Нет строк</p>"
-    headers = sorted({key for row in rows for key in row})
-    header_html = "".join(f"<th>{_html(header)}</th>" for header in headers)
-    body = []
-    for row in rows:
-        body.append(
-            "<tr>"
-            + "".join(f"<td>{_html(row.get(header, ''))}</td>" for header in headers)
-            + "</tr>"
-        )
-    return (
-        f"<h2>{_html(title)}</h2><table><thead><tr>{header_html}</tr></thead>"
-        f"<tbody>{''.join(body)}</tbody></table>"
-    )
-
-
-def _html(value: object) -> str:
-    return (
-        str(value)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )

@@ -55,9 +55,10 @@ depends_on:
   - workspace-shumeyko-partners-wb-unit-economics-mvp
 related_specs:
   - docs/specs/marketplace-1c-mapping-service.md
+changelog_path: docs/changelogs/excel-mvp.md
 supersedes: []
 rollout_required: false
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Implementation Status
@@ -569,9 +570,17 @@ draft и при обычной публикации без отдельного 
 Сводный API отчета различает валовую выручку и выручку без НДС. Поля
 `kpis.revenueWithVat`, `kpis.revenueWithoutVat`, `kpis.vatOutput`,
 `kpis.revenueTax`, `kpis.totalTax`, `kpis.profitBeforeTax`,
-`kpis.profitAfterTax` и `kpis.taxBridgeCalculated` образуют проверяемый
-налоговый мост. Legacy-поля сохраняются для обратной совместимости, но web UI
-не использует их для подписей УСН/НДФЛ.
+`kpis.profitAfterTax`, `kpis.marginAfterTax` и `kpis.taxBridgeCalculated`
+образуют проверяемый налоговый мост. `marginAfterTax` равен
+`profitAfterTax / revenue_for_pnl`: для ОСНО знаменателем является выручка без
+НДС, для остальных режимов — база выручки применённого профиля. При нулевой
+выручке, неприменённом профиле или несходящемся мосте поле равно `null`, а не
+нулю. `totalTax` остаётся полной справочной суммой налоговых обязательств; для
+ОСНО НДС не входит в товарный P&L, поэтому налоговый мост вычитает только налоги,
+включённые в P&L, и не вычитает НДС повторно. Пока НДФЛ ИП не распределён по
+SKU, `profitAfterTax` является результатом юнит-экономики с явной оговоркой, а
+не полной чистой прибылью бизнеса. Legacy-поля сохраняются для обратной
+совместимости, но web UI не использует их для подписей УСН/НДФЛ.
 
 ## `wb_api_snapshot`
 
@@ -1194,8 +1203,12 @@ notes и строках без других проблем.
 полностью взаимно закрылись и `net quantity = 0`, COGS также равен нулю и
 отсутствующий cost snapshot не должен создавать ложный `missing_cost`.
 
-В web-кабинете блокер `cogs_reconciliation_failed` открывает только строки
-с проблемой себестоимости, а не общий список всех строк со статусом не `ОК`.
+В web-кабинете предупреждение `cogs_reconciliation_failed` открывает только
+строки с проблемой себестоимости, а не общий список всех строк со статусом не
+`ОК`. Код сохраняется для обратной совместимости API, но причина возвращается в
+`reviewReasons`, а не в `blockingReasons`. Приближенная или отсутствующая
+себестоимость не блокирует формирование, скачивание или публикацию Excel:
+ограничение остается видимым в статусах строк, расшифровке и листе ошибок.
 Расшифровка обязана раздельно показывать:
 
 - строки `Себестоимость 1С требует сверки`, где в расчет уже подставлена
@@ -1208,10 +1221,9 @@ notes и строках без других проблем.
 аддитивный `costIssueBreakdown` с общим количеством, количеством строк для
 сверки и количеством строк без себестоимости. Формат `items` и URL API не
 меняются. Окно расшифровки показывает причину статуса, использованную сумму
-себестоимости и конкретное следующее действие. Финансовый блокер нельзя снять
-локальной отметкой в браузере: он исчезает только после исправления источника и
-пересборки immutable report run. Некритические задачи можно лишь отметить как
-просмотренные; такая отметка явно не меняет расчетный статус.
+себестоимости и конкретное следующее действие. Предупреждение можно отметить как
+просмотренное, но это не меняет расчетный статус строк. Само предупреждение
+исчезает только после обновления данных 1С и пересборки immutable report run.
 
 # Excel Workbook
 
@@ -1284,8 +1296,8 @@ WB и WB-расходам.
 штуках, чистое количество, процент возвратов, выручка до СПП, СПП, `% СПП`,
 выручка после СПП, НДС, выручка без НДС, себестоимость 1С, комиссия WB,
 логистика WB, хранение WB, приемка WB, продвижение WB, штрафы/доплаты WB,
-эквайринг WB, `НДС к уплате`, `Управленческую прибыль WB`, `прибыль до НДФЛ`,
-маржу до НДФЛ, прибыль до НДФЛ на штуку,
+эквайринг WB, `НДС к уплате`, `Управленческую прибыль WB`, `прибыль до налогов`,
+маржу до НДФЛ, прибыль до налогов на штуку,
 русский статус данных, причину статуса, статус СПП, налоговый режим/ставку и
 источник налогового профиля.
 
@@ -1294,8 +1306,8 @@ WB и WB-расходам.
 `Юнит экономика`, сгруппированных по месяцу, организации 1С, кабинету WB,
 товару, артикулам WB/1С, баркоду и схеме продажи. Статус ликвидности считается
 на месячном агрегате, чтобы один товар в одном месяце не получал разные
-недельные статусы. Основной итог и сортировка — `Маржинальный доход WB после
-налогов`; каскад МД1-МД6 выводится как диагностика причины:
+недельные статусы. Основной итог и сортировка — `Прибыль до налогов`; каскад
+МД1-МД6 выводится как диагностика причины:
 
 ```text
 МД1 = Выручка после СПП - Себестоимость 1С
@@ -1303,14 +1315,15 @@ WB и WB-расходам.
 МД3 = МД2 - Хранение WB
 МД4 = МД3 - Логистика WB - Приемка WB
 МД5 = МД4 - Продвижение WB
-МД6 до НДФЛ = МД5 - Штрафы/доплаты WB - Эквайринг WB
-Упр. прибыль = МД6 до НДФЛ - налог с выручки/НДФЛ, если он включается в строку
+Управленческая прибыль WB = МД5 - Штрафы/доплаты WB - Эквайринг WB
+Прибыль до налогов = Управленческая прибыль WB - подтвержденный профильный налог
+  на доход, кроме НДФЛ предпринимателя
 ```
 
 `Приемка WB` входит в МД4, чтобы каскад не расходился с принятой формулой
-прибыли. Для итоговых колонок `МД6 до НДФЛ` и `Упр. прибыль` витрина
-суммирует принятые строковые значения `Маржинальный доход WB до налогов` и
-`Управленческая прибыль WB` из `Юнит экономика`, если они доступны;
+прибыли. Для итоговых колонок `Управленческая прибыль WB` и `Прибыль до налогов`
+витрина суммирует принятые строковые значения из `Юнит экономика`, если они
+доступны;
 это защищает месячную группировку от копеечного дрейфа округлений и сохраняет
 сверку с исходной витриной. Статусы ликвидности: `Только затраты - нет продаж`, `Нулевая
 маржинальность`, прибыльные группы `до 500`, `500-1000`, `1000-30000` и
@@ -1322,7 +1335,7 @@ WB и WB-расходам.
 решения без проверки источников.
 
 В блоке `Топ убыточных товаров` на дашборде строки сортируются по
-`прибыли до НДФЛ` по возрастанию, затем по прибыли до НДФЛ на штуку,
+`прибыли до налогов` по возрастанию, затем по прибыли до налогов на штуку,
 затем по доле возвратов по убыванию. Блок показывает товар, артикулы, чистое
 количество, возвраты, процент возвратов, выручку после СПП, маржинальный доход,
 доход на штуку, класс убытка, главную причину убытка и статус данных.
@@ -1364,7 +1377,7 @@ WB-расчету и расходы МП по ОПиУ. WB-себестоимо�
 возвраты, итоговое количество, выручка, комиссии, логистика, хранение, приемка,
 `WB Продвижение`, удержания/штрафы/доплаты, эквайринг, себестоимость 1С,
 `НДС к уплате`, профильный налог на доход, `Управленческая прибыль WB`,
-`прибыль до НДФЛ`, маржа до НДФЛ, статус
+`прибыль до налогов`, маржа до налогов, статус
 данных и количество строк витрины. Этот лист нужен для ручной сверки с
 финмоделью/fact-таблицей по номеру отчета WB.
 
@@ -1484,13 +1497,16 @@ Web-сверка продаж WB ↔ 1С использует единый уч�
 показываются отдельно и не уменьшают расходную накладную без подтвержденного
 возвратного документа 1С.
 
-Главная карточка выручки web-кабинета — `Выручка 1С с НДС`. Она равна сумме
-поля `Сумма` проведенных документов 1С за выбранный календарный период, то есть
-экрану 1С `Валовая прибыль по номенклатуре` при тех же датах и организации. В
-нее входят `ОтчетКомиссионера`, `РасходнаяНакладная` по выкупу и отдельные
-корректировки 1С; дата отбора — дата проведения документа в 1С. Если
-подтвержденных документов нет, карточка показывает `Не рассчитано`, а не ноль
-и не подменяется данными WB.
+На `Обзоре` главная карточка выручки показывает выручку товарной юнит-экономики
+WB в базе применённого налогового профиля. В той же карточке вторичной строкой
+показывается календарная `Выручка 1С с НДС`: сумма поля `Сумма` проведённых
+документов 1С за выбранный календарный период, соответствующая экрану 1С
+`Валовая прибыль по номенклатуре` при тех же датах и организации. В неё входят
+`ОтчетКомиссионера`, `РасходнаяНакладная` по выкупу и отдельные корректировки
+1С; дата отбора — дата проведения документа в 1С. Разные базы подписываются и
+не складываются. Если подтвержденных документов 1С нет, вторичная строка
+показывает явное отсутствие данных, а не ноль и не подменяется данными WB.
+Подробная календарная сверка остаётся во вкладке `Проверки`.
 
 В той же витрине показатель `Выручка WB по документам, с НДС` всегда имеет
 явную формулу `Выручка комиссионера WB + Розница выкупов WB`, где обе части
@@ -1598,7 +1614,7 @@ Web-кабинет визуально разделяет `Юнит-эконом�
 Лист `Товары по отчетам 1С` повторяет ту же 1С-пакетизацию, но на уровне товара:
 `nmId`, артикул, баркод, номенклатура 1С, модель продаж, количества, реализация,
 возвраты, расходы WB, себестоимость, валовая прибыль 1С, `Управленческая прибыль
-WB`, `НДС к уплате`, профильный налог, `прибыль до НДФЛ`, маржа до НДФЛ и
+WB`, `НДС к уплате`, профильный налог, `прибыль до налогов`, маржа до налогов и
 статус данных.
 
 В листе `Сверка с 1С` валовая прибыль 1С считается как
@@ -1747,14 +1763,14 @@ MVP принят, если:
 - прибыль учитывает эквайринг;
 - товарные строки показывают НДС к уплате, исходящий НДС, входящий НДС, НДС
   входящий WB, НДС входящий 1С, расхождение НДС, налог с выручки/НДФЛ,
-  налоговый метод, полноту налогового расчета и `прибыль до НДФЛ`;
+  налоговый метод, полноту налогового расчета и `прибыль до налогов`;
 - товарные строки показывают продажи, возвраты, чистое количество, процент
-  возвратов и прибыль до НДФЛ на штуку;
+  возвратов и прибыль до налогов на штуку;
 - налоги считаются расчетно по налоговому профилю организации 1С;
 - главный лист `Юнит экономика` показывает хранение WB, продвижение WB и налоги
   рядом с прибыльностью товара русскими терминами без технических кодов;
 - лист `Ликвидность МД` виден клиенту, не содержит формул и сводных кэшей,
-  группирует товары по месяцу и показывает каскад МД1-МД6, прибыль до НДФЛ,
+  группирует товары по месяцу и показывает каскад МД1-МД6, прибыль до налогов,
   статус ликвидности, драйвер, статус данных и причину статуса;
 - обычный пользователь видит только клиентские вкладки, а технические листы
   скрыты;
@@ -1778,7 +1794,7 @@ MVP принят, если:
 - витрина `Ликвидность МД` не содержит Excel-ошибок деления на ноль: маржа,
   процент возвратов и МД на штуку остаются пустыми, если знаменатель равен
   нулю;
-- топ убыточных товаров сортируется по прибыли до НДФЛ, прибыли на штуку
+- топ убыточных товаров сортируется по прибыли до налогов, прибыли на штуку
   и доле возвратов, а также показывает класс убытка;
 - аналитика упущенных продаж описана как будущая витрина и не содержит
   расчетных цифр без источника остатков WB;
@@ -1791,7 +1807,7 @@ MVP принят, если:
   приоритет явного профиля 1С над ручным исключением, периоды действия и
   конфликтующие профили, ОСНО с НДС 22/122, входящий НДС, missing input VAT,
   missing tax profile,
-  НДФЛ ИП по годовой прогрессивной базе, прибыль до НДФЛ,
+  НДФЛ ИП по годовой прогрессивной базе, прибыль до налогов,
   эквайринг, возвраты, себестоимость 1С с уже распределенными допрасходами,
   FBO/FBS, missing mapping, ambiguous mapping, missing cost, реклама excluded,
   partial period/week, продажи, возвраты, чистое количество, процент возвратов,
@@ -1970,81 +1986,5 @@ read-only 1С и не угадывает систему налогообложе
   `Себестоимость`.
 
 # Changelog
-
-- 2026-07-12 — separated WB unit economics from calendar 1C controls, persisted
-  row-level COGS lineage, and added a reproducible COGS reconciliation endpoint
-  and drilldown for boundary weeks, same-scope differences and adjustments.
-- 2026-07-12 — added the audited Galustov management input-VAT policy from
-  2026-03-01, import cost-difference and WB service 22/122 scenarios, actual
-  purchase-book priority, explicit API/UI fields and a review task without a
-  false accounting-confirmation claim.
-- 2026-07-11 — replaced the circular buyout reconciliation with the generic
-  `WB redeem-notification purchase amount ↔ 1C expense invoice` standard;
-  reports without persisted WB primary documents now show `not verified`
-  instead of a false retail-vs-1C discrepancy or an automatic zero delta.
-- 2026-07-11 — added the explicitly named unified WB↔1C accounting
-  reconciliation: 1C calendar dates, WB commissioner retail and 1C buyout
-  invoice net; it never mutates 1C dates or WB operational revenue.
-- 2026-07-11 — made `Выручка 1С с НДС` the primary web KPI on the calendar
-  posting-date basis, retained WB revenue as explicitly labelled reference
-  metrics, and added formula tooltips to KPI cards.
-- 2026-07-11 — defined the WB document-revenue bridge as commissioner revenue
-  plus buyout retail revenue; the cabinet now shows the commissioner equality
-  check and the separately non-comparable buyout amounts instead of an
-  unexplained WB total.
-- 2026-07-11 — added the calendar 1C revenue total with both commissioner
-  reports and buyout invoices, so it can be reconciled directly to the 1C
-  gross-profit report without changing the WB sales-week metrics.
-- 2026-07-11 — synchronized the web WB↔1C sales reconciliation by WB sales
-  week, limited comparable revenue to commissioner reports, and made buyout
-  invoice amounts informational because WB retail and 1C net invoices use
-  different monetary bases.
-- 2026-07-11 — направил `cogs_reconciliation_failed` в отдельную расшифровку
-  себестоимости, разделил приближенную и отсутствующую себестоимость и запретил
-  локальной отметке `Проверено` создавать видимость снятого блокера.
-- 2026-07-11 — aligned the stock-history collector with the provider's rolling
-  three-calendar-month window relative to the current Moscow date, rejected
-  unlinked manual snapshot rebuilds, and required the exact registered
-  stock-history collection for repair builds.
-- 2026-07-11 — made an explicitly saved organization tax rate sufficient for
-  calculation and publication; regional-law metadata remains optional audit
-  context and no longer creates `tax_rate_basis_unconfirmed`.
-- 2026-07-10 — added strict same-run WB stock-history coverage, prohibited
-  missing-date-to-zero coercion, defined preliminary lost contribution margin,
-  and added explicit VAT deduction eligibility to organization tax profiles.
-- 2026-07-10 — fixed the reconciled OSNO methodology version as
-  `excel-mvp-q2-2026-v6-osno-reconciled`, made rebuild draft-only by default,
-  and added the financial publication gate.
-- 2026-07-10 — removed automatic tax inference from insurance-contribution
-  fields and `legacy-default`; production priority is explicit 1C profile,
-  audited temporary override, then `missing`.
-- 2026-07-10 — monthly P&L now assigns weekly WB rows by `week_end`; removed
-  synthetic month-end closing dates that moved the 27.04–03.05 week into April,
-  and excluded zero-VAT penalties from service input-VAT allocation.
-- 2026-07-12 — replaced the generic `week_end` monthly assignment with
-  `accounting_period_date` from the matched posted 1C document; retained an
-  explicit `wb_week_end_fallback` only for legacy or unmatched rows.
-- 2026-07-08 — changed `sku_mapping` source of truth from 1C marketplace
-  extension/export to the project-owned marketplace/1C mapping service; old 1C
-  extension/TXT sources are candidate import or emergency fallback only.
-- 2026-07-08 — added organization tax profiles: product unit economics now uses
-  the 1C organization tax profile for VAT and revenue tax rates; actual 1C tax
-  registers remain reconciliation-only and are not allocated to SKU rows.
-- 2026-07-08 — corrected OSNO tax methodology: VAT now has output/input/payable
-  fields, product P&L uses no-VAT amounts only when input VAT is confirmed, and
-  IP NDFL is kept as organization/year-level calculation rather than allocated
-  to SKU rows in v1.
-- 2026-07-04 — added memory-safe `files-stream` rebuild mode for large local WB
-  detail snapshots; formulas and read-only source boundaries remain unchanged.
-- 2026-06-24 — clarified period semantics: `report_period` is selected by the
-  generator/report_run, while WB/1C manifests describe `source_coverage`.
-- 2026-06-24 — product framing renamed to `AI-аналитик отчетов`; this Excel MVP
-  is fixed as the first factual layer of the Shumeyko WB/1C pilot.
-- 2026-06-23 — added client-facing `Ликвидность МД` as a deterministic monthly
-  assortment-liquidity mart over existing unit rows.
-- 2026-06-23 — added own/1C warehouse stock columns to `Упущенные продажи` and
-  kept lost profit as a preliminary management estimate.
-- 2026-06-23 — changed monthly `Сверка с 1С ОПиУ` COGS grouping to the actual
-  matched 1C document date; OPIU remains a reference layer.
 
 Полная история изменений вынесена в `docs/changelogs/excel-mvp.md`.

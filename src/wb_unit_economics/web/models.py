@@ -96,9 +96,7 @@ class ClientCompany(Base):
             "client_id",
             "onec_organization_id",
             unique=True,
-            postgresql_where=text(
-                "onec_organization_id <> '' AND status = 'active'"
-            ),
+            postgresql_where=text("onec_organization_id <> '' AND status = 'active'"),
             sqlite_where=text("onec_organization_id <> '' AND status = 'active'"),
         ),
         {"schema": "wb_unit_economics"},
@@ -141,12 +139,8 @@ class ClientCompanyAlias(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(
-        ForeignKey("wb_unit_economics.tenants.id")
-    )
-    client_id: Mapped[str] = mapped_column(
-        ForeignKey("wb_unit_economics.clients.id")
-    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
     client_company_id: Mapped[str] = mapped_column(
         ForeignKey("wb_unit_economics.client_companies.id", ondelete="CASCADE")
     )
@@ -289,9 +283,7 @@ class OrganizationInputVatPolicy(Base):
         ForeignKey("wb_unit_economics.client_companies.id")
     )
     organization_id: Mapped[str] = mapped_column(String, nullable=False)
-    mode: Mapped[str] = mapped_column(
-        String, nullable=False, default="accounting_fact"
-    )
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="accounting_fact")
     product_vat_basis: Mapped[str] = mapped_column(
         String, nullable=False, default="sales_cost_difference"
     )
@@ -457,6 +449,10 @@ class ReportRun(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
     client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
     client_name: Mapped[str] = mapped_column(String, nullable=False)
+    report_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="marketplace_unit_economics"
+    )
+    organization_id: Mapped[str | None] = mapped_column(String)
     title: Mapped[str] = mapped_column(String, nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
@@ -508,6 +504,49 @@ class ReportRun(Base):
     artifacts: Mapped[list[ReportArtifact]] = relationship(
         back_populates="report",
         cascade="all, delete-orphan",
+    )
+    logistics_context: Mapped[ReportLogisticsAnalysisContext | None] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    logistics_order_rows: Mapped[list[ReportLogisticsOrderRow]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+    )
+    logistics_sku_rows: Mapped[list[ReportLogisticsSkuRow]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+    )
+
+
+class MonthCloseControlReport(Base):
+    __tablename__ = "month_close_control_reports"
+    __table_args__ = {"schema": "wb_unit_economics"}
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    contract_version: Mapped[str] = mapped_column(String, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class TaxLoadReport(Base):
+    __tablename__ = "tax_load_reports"
+    __table_args__ = {"schema": "wb_unit_economics"}
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    contract_version: Mapped[str] = mapped_column(String, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
@@ -647,9 +686,7 @@ class ReportUnitRow(Base):
     cost: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric)
     cost_method: Mapped[str] = mapped_column(String, nullable=False, default="")
-    cost_match_status: Mapped[str] = mapped_column(
-        String, nullable=False, default=""
-    )
+    cost_match_status: Mapped[str] = mapped_column(String, nullable=False, default="")
     cost_source_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
     cost_source_period_start: Mapped[date | None] = mapped_column(Date)
     cost_source_period_end: Mapped[date | None] = mapped_column(Date)
@@ -688,6 +725,260 @@ class ReportUnitRow(Base):
     )
 
     report: Mapped[ReportRun] = relationship(back_populates="unit_rows")
+
+
+class ReportLogisticsAnalysisContext(Base):
+    __tablename__ = "report_logistics_analysis_contexts"
+    __table_args__ = (
+        Index(
+            "ix_report_logistics_context_status",
+            "tenant_id",
+            "data_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    source_snapshot_set_id: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    data_status: Mapped[str] = mapped_column(String, nullable=False)
+    methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    chain_key_version: Mapped[str] = mapped_column(String, nullable=False)
+    source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    logistics_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    keyed_logistics_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    product_logistics_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    key_coverage_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    product_coverage_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    classification_row_coverage_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 4)
+    )
+    cross_cabinet_collision_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    raw_logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    order_logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    sku_logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    report_logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    order_delta: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    sku_delta: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    blocking_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    review_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    report: Mapped[ReportRun] = relationship(back_populates="logistics_context")
+
+
+class ReportLogisticsOrderRow(Base):
+    __tablename__ = "report_logistics_order_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "chain_segment_key",
+            name="uq_report_logistics_order_segment",
+        ),
+        Index(
+            "ix_report_logistics_orders_filter",
+            "report_run_id",
+            "financial_week_start",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+        ),
+        Index(
+            "ix_report_logistics_orders_product",
+            "report_run_id",
+            "product_key",
+            "nm_id",
+            "sku",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    chain_key: Mapped[str] = mapped_column(String, nullable=False)
+    chain_segment_key: Mapped[str] = mapped_column(String, nullable=False)
+    countable_order: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    financial_week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    operation_date_start: Mapped[date] = mapped_column(Date, nullable=False)
+    operation_date_end: Mapped[date] = mapped_column(Date, nullable=False)
+    order_date: Mapped[date | None] = mapped_column(Date)
+    product_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    nm_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sku: Mapped[str] = mapped_column(String, nullable=False, default="")
+    vendor_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
+    warehouse: Mapped[str] = mapped_column(String, nullable=False, default="")
+    destination: Mapped[str] = mapped_column(String, nullable=False, default="")
+    logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_forward: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_reverse: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_adjustment: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_unclassified: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    sales_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    return_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    net_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    source_revenue: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    logistics_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    classified_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False)
+    classification_status: Mapped[str] = mapped_column(String, nullable=False)
+    coverage_status: Mapped[str] = mapped_column(String, nullable=False)
+    data_quality_status: Mapped[str] = mapped_column(String, nullable=False)
+
+    report: Mapped[ReportRun] = relationship(back_populates="logistics_order_rows")
+
+
+class ReportLogisticsSkuRow(Base):
+    __tablename__ = "report_logistics_sku_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "row_uid",
+            name="uq_report_logistics_sku_row",
+        ),
+        Index(
+            "ix_report_logistics_sku_filter",
+            "report_run_id",
+            "financial_week_start",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+        ),
+        Index(
+            "ix_report_logistics_sku_product",
+            "report_run_id",
+            "product_key",
+            "nm_id",
+            "sku",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    financial_week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    nm_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sku: Mapped[str] = mapped_column(String, nullable=False, default="")
+    vendor_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product: Mapped[str] = mapped_column(String, nullable=False, default="")
+    logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_forward: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_reverse: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_adjustment: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_unclassified: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    revenue: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False, default=0)
+    profit_before_tax: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    profit_without_logistics: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    profit_effect_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    logistics_share_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    logistics_per_order: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    logistics_per_sale: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    sales_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    return_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    chain_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    logistics_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    classified_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    low_sample: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    classification_status: Mapped[str] = mapped_column(String, nullable=False)
+    coverage_status: Mapped[str] = mapped_column(String, nullable=False)
+    data_quality_status: Mapped[str] = mapped_column(String, nullable=False)
+    recommendation_flags: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False)
+
+    report: Mapped[ReportRun] = relationship(back_populates="logistics_sku_rows")
 
 
 class ReportLostSalesRow(Base):
@@ -798,9 +1089,7 @@ class ReportMarketplaceExpenseRow(Base):
         Numeric, nullable=False, default=0
     )
     vat: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
-    amount_with_vat: Mapped[Decimal] = mapped_column(
-        Numeric, nullable=False, default=0
-    )
+    amount_with_vat: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     source_kind: Mapped[str] = mapped_column(String, nullable=False, default="")
     match_status: Mapped[str] = mapped_column(String, nullable=False, default="")
     source_row_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
@@ -928,9 +1217,7 @@ class SourceLoad(Base):
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     coverage_start: Mapped[date | None] = mapped_column(Date)
     coverage_end: Mapped[date | None] = mapped_column(Date)
-    lineage_role: Mapped[str] = mapped_column(
-        String, nullable=False, default="current"
-    )
+    lineage_role: Mapped[str] = mapped_column(String, nullable=False, default="current")
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -954,6 +1241,12 @@ class SourceRefreshRun(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
     client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    target_report_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="marketplace_unit_economics"
+    )
+    organization_id: Mapped[str | None] = mapped_column(String)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    generation_stage: Mapped[str] = mapped_column(String, nullable=False, default="")
     requested_by_user_id: Mapped[str | None] = mapped_column(
         ForeignKey("wb_unit_economics.users.id")
     )
@@ -1003,6 +1296,35 @@ class SourceRefreshRun(Base):
     )
 
 
+class ReportGenerationRequest(Base):
+    __tablename__ = "report_generation_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "client_id",
+            "idempotency_key",
+            name="uq_report_generation_request_key",
+        ),
+        Index(
+            "ix_report_generation_requests_run",
+            "generation_run_id",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.clients.id"))
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    generation_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class SourceRefreshCollection(Base):
     __tablename__ = "source_refresh_collections"
     __table_args__ = (
@@ -1022,6 +1344,7 @@ class SourceRefreshCollection(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
     client_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    organization_id: Mapped[str | None] = mapped_column(String)
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     source_label: Mapped[str] = mapped_column(String, nullable=False)
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -1130,6 +1453,9 @@ class MarketplaceFinanceDailyFact(Base):
     return_amount: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
+    spp_discount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
     net_revenue: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
@@ -1153,10 +1479,16 @@ class MarketplaceFinanceDailyFact(Base):
         Numeric(20, 2), nullable=False, default=0
     )
     cogs: Mapped[Decimal] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    gross_profit: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
     vat_input_from_marketplace: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
     vat_input_from_1c: Mapped[Decimal] = mapped_column(
+        Numeric(20, 2), nullable=False, default=0
+    )
+    accounting_service_input_vat: Mapped[Decimal] = mapped_column(
         Numeric(20, 2), nullable=False, default=0
     )
     source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1629,17 +1961,378 @@ class AuditEvent(Base):
     )
 
 
+class AccountingWorkflowCard(Base):
+    __tablename__ = "accounting_workflow_cards"
+    __table_args__ = (
+        Index(
+            "uq_accounting_workflow_base_card",
+            "tenant_id",
+            "client_id",
+            "organization_id",
+            "report_period",
+            unique=True,
+            postgresql_where=text("supersedes_card_id IS NULL"),
+            sqlite_where=text("supersedes_card_id IS NULL"),
+        ),
+        Index(
+            "uq_accounting_workflow_active_card",
+            "tenant_id",
+            "client_id",
+            "organization_id",
+            "report_period",
+            unique=True,
+            postgresql_where=text("stage NOT IN ('closed_payroll', 'cancelled')"),
+            sqlite_where=text("stage NOT IN ('closed_payroll', 'cancelled')"),
+        ),
+        Index(
+            "ix_accounting_workflow_cards_board",
+            "tenant_id",
+            "report_period",
+            "stage",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    organization_id: Mapped[str] = mapped_column(String, nullable=False)
+    report_period: Mapped[date] = mapped_column(Date, nullable=False)
+    stage: Mapped[str] = mapped_column(String, nullable=False, default="new")
+    previous_stage: Mapped[str] = mapped_column(String, nullable=False, default="")
+    creation_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="scheduled"
+    )
+    responsible_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    supervisor_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    target_due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    hard_due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    blocking_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cancellation_reason: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cancellation_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    supersedes_card_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.accounting_workflow_cards.id")
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AccountingWorkflowTask(Base):
+    __tablename__ = "accounting_workflow_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "card_id", "report_kind", name="uq_accounting_workflow_task_kind"
+        ),
+        Index("ix_accounting_workflow_tasks_card", "card_id", "status"),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    card_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_cards.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    report_kind: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    current_report_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id")
+    )
+    current_payload_sha256: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    facts_confirmed_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    facts_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    text_approved_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    text_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocking_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AccountingWorkflowReportRevision(Base):
+    __tablename__ = "accounting_workflow_report_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id", "report_id", name="uq_accounting_workflow_task_report"
+        ),
+        Index(
+            "ix_accounting_workflow_revisions_task",
+            "task_id",
+            "is_current_for_task",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_tasks.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    report_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    payload_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    is_final: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_current_for_task: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    attached_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AccountingWorkflowAttachment(Base):
+    __tablename__ = "accounting_workflow_attachments"
+    __table_args__ = (
+        Index("ix_accounting_workflow_attachments_card", "card_id", "created_at"),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    card_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_cards.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    storage_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    original_name: Mapped[str] = mapped_column(String, nullable=False)
+    content_type: Mapped[str] = mapped_column(String, nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    uploaded_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AccountingWorkflowDelivery(Base):
+    __tablename__ = "accounting_workflow_deliveries"
+    __table_args__ = (
+        Index("ix_accounting_workflow_deliveries_card", "card_id", "sent_at"),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    card_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_cards.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_tasks.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    report_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    payload_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    delivery_channel: Mapped[str] = mapped_column(String, nullable=False)
+    channel_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    masked_recipient: Mapped[str] = mapped_column(String, nullable=False)
+    attachment_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.accounting_workflow_attachments.id"),
+        nullable=False,
+    )
+    contact_result: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_preliminary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id"), nullable=False
+    )
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalidation_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AccountingWorkflowFollowup(Base):
+    __tablename__ = "accounting_workflow_followups"
+    __table_args__ = (
+        Index("ix_accounting_workflow_followups_due", "status", "due_at"),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    card_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_cards.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    delivery_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_deliveries.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="scheduled")
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    repeated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    escalation_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supervisor_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AccountingWorkflowSupervisor(Base):
+    __tablename__ = "accounting_workflow_supervisors"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "user_id", name="uq_accounting_workflow_supervisor"
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id"), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    granted_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id"), nullable=False
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AccountingWorkflowComment(Base):
+    __tablename__ = "accounting_workflow_comments"
+    __table_args__ = (
+        Index("ix_accounting_workflow_comments_card", "card_id", "created_at"),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    card_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "wb_unit_economics.accounting_workflow_cards.id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id"), nullable=False
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AccountingWorkflowAuditEvent(Base):
+    __tablename__ = "accounting_workflow_audit_events"
+    __table_args__ = (
+        Index("ix_accounting_workflow_audit_card", "card_id", "created_at"),
+        Index("ix_accounting_workflow_audit_tenant", "tenant_id", "created_at"),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    card_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.accounting_workflow_cards.id")
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.users.id")
+    )
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    entity_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    entity_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class AiThread(Base):
     __tablename__ = "ai_threads"
     __table_args__ = {"schema": "wb_unit_economics"}
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.tenants.id"))
+    client_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id")
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("wb_unit_economics.users.id"))
     report_run_id: Mapped[str | None] = mapped_column(
         ForeignKey("wb_unit_economics.report_runs.id")
     )
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    scope_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -1655,6 +2348,7 @@ class AiMessage(Base):
     )
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    chatkit_item_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     tool_name: Mapped[str] = mapped_column(String, nullable=False, default="")
     citations: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(

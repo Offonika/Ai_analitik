@@ -6,7 +6,7 @@ audience: ["engineering", "consultant"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-07-12"
+updated_at: "2026-07-15"
 ---
 
 # Excel MVP changelog
@@ -15,6 +15,22 @@ updated_at: "2026-07-12"
 в `docs/specs/wb-unit-economics-excel-mvp-implementation.md`; этот файл нужен,
 чтобы не перегружать implementation spec длинной хроникой.
 
+## Accepted-spec revisions since July 2026
+
+- 2026-07-15 — aligned client-facing profit terminology with the accepted tax
+  ADR: methodology and liquidity guidance now distinguish `Управленческая
+  прибыль WB` from `Прибыль до налогов`, while legacy field names remain internal.
+- 2026-07-14 — kept WB unit-economics revenue as the main overview value and
+  moved calendar 1C revenue with VAT into the same card as an explicitly
+  labelled secondary comparison; detailed calendar reconciliation remains in
+  the Checks workspace and the two bases are never added together.
+- 2026-07-13 — перевел `cogs_reconciliation_failed` из финансового блокера в
+  предупреждение: приближенная и отсутствующая себестоимость остается видимой
+  в Excel и web-расшифровке, но не блокирует формирование, скачивание и
+  публикацию отчета.
+- 2026-07-12 — separated WB unit economics from calendar 1C controls, persisted
+  row-level COGS lineage, and added a reproducible COGS reconciliation endpoint
+  and drilldown for boundary weeks, same-scope differences and adjustments.
 - 2026-07-12 — added the audited Galustov management input-VAT scenario:
   import cost difference, WB services at 22/122 without penalties, actual
   purchase-book priority, explicit API/UI labels and a persistent review task.
@@ -22,15 +38,73 @@ updated_at: "2026-07-12"
   calendar quantity and COGS now include `ОтчетКомиссионера`, buyout
   `РасходнаяНакладная` and month-close cost adjustments, while `reportType=1`
   and `reportType=2` receive separate document-specific unit-cost layers.
+- 2026-07-12 — replaced the generic `week_end` monthly assignment with
+  `accounting_period_date` from the matched posted 1C document; retained an
+  explicit `wb_week_end_fallback` only for legacy or unmatched rows.
+- 2026-07-11 — replaced the circular buyout reconciliation with the generic
+  `WB redeem-notification purchase amount ↔ 1C expense invoice` standard;
+  reports without persisted WB primary documents now show `not verified`
+  instead of a false retail-vs-1C discrepancy or an automatic zero delta.
+- 2026-07-11 — added the explicitly named unified WB↔1C accounting
+  reconciliation: 1C calendar dates, WB commissioner retail and 1C buyout
+  invoice net; it never mutates 1C dates or WB operational revenue.
+- 2026-07-11 — made `Выручка 1С с НДС` the primary web KPI on the calendar
+  posting-date basis, retained WB revenue as explicitly labelled reference
+  metrics, and added formula tooltips to KPI cards.
+- 2026-07-11 — defined the WB document-revenue bridge as commissioner revenue
+  plus buyout retail revenue; the cabinet now shows the commissioner equality
+  check and the separately non-comparable buyout amounts instead of an
+  unexplained WB total.
+- 2026-07-11 — added the calendar 1C revenue total with both commissioner
+  reports and buyout invoices, so it can be reconciled directly to the 1C
+  gross-profit report without changing the WB sales-week metrics.
+- 2026-07-11 — synchronized the web WB↔1C sales reconciliation by WB sales
+  week, limited comparable revenue to commissioner reports, and made buyout
+  invoice amounts informational because WB retail and 1C net invoices use
+  different monetary bases.
+- 2026-07-11 — направил `cogs_reconciliation_failed` в отдельную расшифровку
+  себестоимости, разделил приближенную и отсутствующую себестоимость и запретил
+  локальной отметке `Проверено` создавать видимость снятого блокера.
+- 2026-07-11 — aligned the stock-history collector with the provider's rolling
+  three-calendar-month window relative to the current Moscow date, rejected
+  unlinked manual snapshot rebuilds, and required the exact registered
+  stock-history collection for repair builds.
+- 2026-07-11 — made an explicitly saved organization tax rate sufficient for
+  calculation and publication; regional-law metadata remains optional audit
+  context and no longer creates `tax_rate_basis_unconfirmed`.
+- 2026-07-10 — added strict same-run WB stock-history coverage, prohibited
+  missing-date-to-zero coercion, defined preliminary lost contribution margin,
+  and added explicit VAT deduction eligibility to organization tax profiles.
+- 2026-07-10 — fixed the reconciled OSNO methodology version as
+  `excel-mvp-q2-2026-v6-osno-reconciled`, made rebuild draft-only by default,
+  and added the financial publication gate.
+- 2026-07-10 — removed automatic tax inference from insurance-contribution
+  fields and `legacy-default`; production priority is explicit 1C profile,
+  audited temporary override, then `missing`.
+- 2026-07-10 — monthly P&L now assigns weekly WB rows by `week_end`; removed
+  synthetic month-end closing dates that moved the 27.04–03.05 week into April,
+  and excluded zero-VAT penalties from service input-VAT allocation.
 - 2026-07-08 — changed `sku_mapping` source of truth from 1C marketplace
   extension/export to the project-owned marketplace/1C mapping service; old
   1C extension/TXT sources are candidate import or emergency fallback only.
+- 2026-07-08 — added organization tax profiles: product unit economics now uses
+  the 1C organization tax profile for VAT and revenue tax rates; actual 1C tax
+  registers remain reconciliation-only and are not allocated to SKU rows.
+- 2026-07-08 — corrected OSNO tax methodology: VAT now has output/input/payable
+  fields, product P&L uses no-VAT amounts only when input VAT is confirmed, and
+  IP NDFL is kept as organization/year-level calculation rather than allocated
+  to SKU rows in v1.
+- 2026-07-04 — added memory-safe `files-stream` rebuild mode for large local WB
+  detail snapshots; formulas and read-only source boundaries remain unchanged.
 - 2026-06-24 — clarified period semantics: `report_period` is selected by the
   generator/report_run, while WB/1C manifests describe `source_coverage`; old
   April-June and March-June dates are report revisions, not permanent product
   limits.
 - 2026-06-24 — product framing renamed to `AI-аналитик отчетов`; this Excel MVP
   is fixed as the first factual layer of the Shumeyko WB/1C pilot.
+
+## Earlier implementation history
+
 - 2026-06-16 — accepted implementation spec created for Excel MVP.
 - 2026-06-17 — added WB Finance detailed exporter, article mapping builder,
   provisional 1C cost extraction, and snapshot-to-Excel MVP command.

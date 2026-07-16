@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
 import time
-from datetime import date
+from calendar import monthrange
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
+from chatkit.server import NonStreamingResult, StreamingResult
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
+    Header,
     HTTPException,
     Request,
     Response,
@@ -25,12 +32,17 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from scripts.build_client_analytical_report import (
+from wb_unit_economics.client_report import (
+    CLIENT_REPORT_CONTRACT_VERSION,
     ClientAnalyticalReportArtifacts,
     build_client_analytical_report,
 )
-from wb_unit_economics.report_exports import write_ozon_diagnostics_excel
+from wb_unit_economics.report_exports import (
+    artifact_record,
+    write_ozon_diagnostics_excel,
+)
 from wb_unit_economics.web import (
+    accounting_workflow,
     integrations,
     mapping_service,
     providers,
@@ -38,6 +50,11 @@ from wb_unit_economics.web import (
     security,
 )
 from wb_unit_economics.web.ai import AiAnalyst
+from wb_unit_economics.web.chatkit_server import (
+    CabinetChatKitContext,
+    CabinetChatKitServer,
+    CabinetChatKitStore,
+)
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
 from wb_unit_economics.web.database import (
     init_db,
@@ -52,6 +69,17 @@ from wb_unit_economics.web.refresh import (
     AutoRefreshUnavailableError,
     OnecAutoRefreshService,
 )
+from wb_unit_economics.web.report_kinds import (
+    ACCOUNTING_REPORT_KINDS,
+    MARKETPLACE_UNIT_ECONOMICS,
+    require_report_kind,
+)
+from wb_unit_economics.web.report_scope import (
+    last_closed_week_period,
+    report_summary_for_last_closed_week,
+    report_summary_for_period,
+)
+from wb_unit_economics.web.reports.excel import write_scenario_excel
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
     SourceRefreshBusyError,
@@ -63,15 +91,30 @@ from wb_unit_economics.web.source_refresh import (
 from wb_unit_economics.web.source_refresh_worker import (
     SourceRefreshWorkerLaunchError,
     enqueue_source_refresh_worker,
+    launch_source_refresh_worker,
     production_source_refresh_worker_launcher,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260713-cost-review-breakdown-v1"
+WEB_BUILD_ID = "20260716-weekly-client-report-v3"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
 logger = logging.getLogger(__name__)
+
+
+def _run_report_generation_background(
+    session_factory: sessionmaker[Session],
+    source_refresh_service: SourceRefreshService,
+    generation_run_id: str,
+) -> None:
+    with session_factory() as db:
+        source_refresh_service.run_existing(
+            db,
+            generation_run_id,
+            worker_id=f"background:{generation_run_id}",
+        )
+        db.commit()
 
 
 def _log_report_endpoint_timing(
@@ -96,6 +139,23 @@ def _log_report_endpoint_timing(
     )
 
 
+def _require_enabled_report_kind_or_404(
+    user: User,
+    *,
+    tenant_id: str,
+    report_kind: str,
+    settings: WebSettings,
+) -> None:
+    try:
+        definition = require_report_kind(report_kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="report kind not found") from exc
+    if report_kind not in settings.enabled_report_kind_set:
+        raise HTTPException(status_code=404, detail="report kind not found")
+    if not repository.roles_for_tenant(user, tenant_id).intersection(definition.roles):
+        raise HTTPException(status_code=404, detail="report kind not found")
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1)
@@ -106,6 +166,7 @@ class ThreadCreateRequest(BaseModel):
     report_id: str | None = None
     client_id: str | None = None
     title: str = "AI-аналитик"
+    scope: dict[str, Any] = Field(default_factory=dict)
 
 
 class MessageRequest(BaseModel):
@@ -215,6 +276,12 @@ class ReportImportRequest(BaseModel):
     tenant_name: str | None = None
 
 
+class ReportGenerateRequest(BaseModel):
+    reportKind: str = Field(pattern="^(month_close_control|tax_load)$")
+    organizationId: str = Field(min_length=1, max_length=240)
+    periodMonth: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
 class LiveCheckRequest(BaseModel):
     lookup: str = Field(min_length=1, max_length=240)
 
@@ -226,6 +293,12 @@ class OnecAutoRefreshRequest(BaseModel):
 
 class AnalyticalReportRequest(BaseModel):
     branded: bool = True
+    scope: str = Field(
+        default="last_closed_week",
+        pattern="^(last_closed_week|full|custom)$",
+    )
+    periodStart: date | None = None
+    periodEnd: date | None = None
 
 
 class PublishWithTasksRequest(BaseModel):
@@ -284,6 +357,61 @@ class MappingReasonRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class AccountingWorkflowMonthlyRunRequest(BaseModel):
+    tenantId: str = Field(min_length=1, max_length=120)
+    periodMonth: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    responsibleUserId: str | None = Field(default=None, max_length=160)
+    supervisorUserId: str | None = Field(default=None, max_length=160)
+
+
+class AccountingWorkflowCorrectionRequest(BaseModel):
+    supersedesCardId: str = Field(min_length=1, max_length=160)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AccountingWorkflowTransitionRequest(BaseModel):
+    targetStage: str = Field(min_length=1, max_length=80)
+    reason: str = Field(default="", max_length=2000)
+    responsibleUserId: str | None = Field(default=None, max_length=160)
+    supervisorUserId: str | None = Field(default=None, max_length=160)
+
+
+class AccountingWorkflowTaskActionRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=80)
+    reportId: str | None = Field(default=None, max_length=160)
+    payloadSha256: str | None = Field(default=None, max_length=128)
+    reason: str = Field(default="", max_length=2000)
+
+
+class AccountingWorkflowDeliveryRequest(BaseModel):
+    sentAt: datetime
+    channel: str = Field(min_length=1, max_length=80)
+    channelDetail: str = Field(default="", max_length=500)
+    maskedRecipient: str = Field(min_length=3, max_length=240)
+    attachmentId: str = Field(min_length=1, max_length=160)
+    contactResult: str = Field(default="", max_length=2000)
+    preliminary: bool = False
+
+
+class AccountingWorkflowCommentRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class AccountingWorkflowSupervisorRequest(BaseModel):
+    tenantId: str = Field(min_length=1, max_length=120)
+    userId: str = Field(min_length=1, max_length=160)
+    active: bool = True
+
+
+class AccountingWorkflowFollowupActionRequest(BaseModel):
+    action: str = Field(pattern="^(repeat|complete)$")
+    result: str = Field(min_length=1, max_length=2000)
+
+
+class AccountingWorkflowDueRunRequest(BaseModel):
+    tenantId: str = Field(min_length=1, max_length=120)
+
+
 def create_app(
     settings: WebSettings | None = None,
     session_factory: sessionmaker[Session] | None = None,
@@ -310,6 +438,7 @@ def create_app(
     app.state.settings = runtime_settings
     app.state.session_factory = session_factory
     app.state.analyst = analyst
+    app.state.chatkit_server = CabinetChatKitServer(CabinetChatKitStore())
     app.state.auto_refresh_service = refresh_service
     app.state.source_refresh_service = source_refresh_service
     app.state.source_refresh_worker_launcher = worker_launcher
@@ -331,11 +460,20 @@ def create_app(
     def integrations_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
+    @app.get("/accounting-workflows")
+    def accounting_workflows_page(current: CurrentUser) -> FileResponse:
+        if not runtime_settings.accounting_workflow_enabled:
+            raise HTTPException(status_code=404, detail="page not found")
+        if not repository.has_role(current, repository.STAFF_ROLES):
+            raise HTTPException(status_code=404, detail="page not found")
+        return FileResponse(STATIC_DIR / "accounting-workflows.html")
+
     @app.get("/api/health")
     def health(db: DbSession) -> dict[str, Any]:
         bind = db.get_bind()
         health_tenant_id = runtime_settings.source_refresh_tenant.strip()
         report_conditions = [
+            ReportRun.report_kind == MARKETPLACE_UNIT_ECONOMICS,
             ReportRun.publication_status == "published",
             ReportRun.is_current.is_(True),
         ]
@@ -348,7 +486,7 @@ def create_app(
         )
         if not health_tenant_id and latest_report is not None:
             health_tenant_id = latest_report.tenant_id
-        refresh_conditions = []
+        refresh_conditions = [SourceRefreshRun.mode != "report-generation"]
         if health_tenant_id:
             refresh_conditions.append(SourceRefreshRun.tenant_id == health_tenant_id)
         latest_refresh = db.scalar(
@@ -400,8 +538,13 @@ def create_app(
             "status": health_status,
             "backendBuildId": WEB_BUILD_ID,
             "staticBuildId": WEB_BUILD_ID,
+            "runtimeEnvironment": runtime_settings.runtime_environment,
+            "maintenanceMessage": runtime_settings.maintenance_message.strip()[:500],
             "databaseType": bind.dialect.name,
             "schemaVersion": schema_version(bind),
+            "aiConfigured": bool(runtime_settings.resolved_openai_api_key),
+            "aiModel": runtime_settings.openai_model,
+            "chatkitEnabled": runtime_settings.chatkit_enabled,
             "sourceRefreshTenantId": health_tenant_id,
             "latestPublishedReportId": latest_report.id if latest_report else "",
             "latestSourceRefreshStatus": displayed_refresh.status
@@ -430,6 +573,85 @@ def create_app(
             ),
         }
 
+    @app.get("/api/ai/config")
+    def ai_config(current: CurrentUser) -> dict[str, Any]:
+        return {
+            "transport": "chatkit" if runtime_settings.chatkit_enabled else "sse",
+            "chatkitEnabled": runtime_settings.chatkit_enabled,
+            "attachmentsEnabled": False,
+            "externalActionsEnabled": False,
+            "historyLimit": 20,
+        }
+
+    @app.post("/api/chatkit")
+    async def chatkit_protocol(
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> Response:
+        if not runtime_settings.chatkit_enabled:
+            raise HTTPException(status_code=404, detail="ChatKit is disabled")
+        origin = request.headers.get("origin", "")
+        host = request.headers.get("host", "")
+        if origin and urlparse(origin).netloc != host:
+            raise HTTPException(status_code=403, detail="cross-origin request denied")
+        raw_request = await request.body()
+        try:
+            protocol_request = json.loads(raw_request)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="invalid ChatKit request"
+            ) from exc
+        metadata = protocol_request.get("metadata") or {}
+        report_id = str(metadata.get("reportId") or "")
+        client_id = str(metadata.get("clientId") or "")
+        scope = metadata.get("scope") or {}
+        if not isinstance(scope, dict):
+            raise HTTPException(status_code=400, detail="invalid ChatKit scope")
+        if protocol_request.get("type") == "threads.create":
+            if not report_id:
+                raise HTTPException(status_code=409, detail="reportId is required")
+            report = _require_report_or_404(db, current, report_id)
+            if client_id and client_id != report.client_id:
+                raise HTTPException(
+                    status_code=409, detail="report/client scope mismatch"
+                )
+            client_id = report.client_id
+        context = CabinetChatKitContext(
+            db=db,
+            user=current,
+            analyst=app.state.analyst,
+            report_id=report_id,
+            client_id=client_id,
+            scope=scope,
+        )
+        try:
+            result = await app.state.chatkit_server.process(raw_request, context)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="thread not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if isinstance(result, NonStreamingResult):
+            db.commit()
+            return Response(content=result.json, media_type="application/json")
+
+        assert isinstance(result, StreamingResult)
+
+        async def stream_chatkit():
+            try:
+                async for chunk in result:
+                    yield chunk
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+        return StreamingResponse(
+            stream_chatkit(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.post("/api/auth/login")
     def login(
         payload: LoginRequest,
@@ -442,6 +664,10 @@ def create_app(
         if user is None or not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         if not security.verify_password(payload.password, user.password_hash):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+        if not runtime_settings.client_login_enabled and not repository.has_role(
+            user, repository.STAFF_ROLES
+        ):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         ttl_hours = (
             runtime_settings.remember_me_session_ttl_hours
@@ -469,7 +695,15 @@ def create_app(
             samesite="lax",
             path="/",
         )
-        return me_payload(user, clients)
+        return me_payload(
+            user,
+            clients,
+            accounting_workflow_enabled=runtime_settings.accounting_workflow_enabled,
+            logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
+            logistics_analysis_client_enabled=(
+                runtime_settings.logistics_analysis_client_enabled
+            ),
+        )
 
     @app.post("/api/auth/logout")
     def logout(request: Request, response: Response, db: DbSession) -> dict[str, str]:
@@ -492,7 +726,394 @@ def create_app(
     def me(current: CurrentUser, db: DbSession) -> dict[str, Any]:
         clients = repository.list_clients_for_user(db, current)
         db.commit()
-        return me_payload(current, clients)
+        return me_payload(
+            current,
+            clients,
+            accounting_workflow_enabled=runtime_settings.accounting_workflow_enabled,
+            logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
+            logistics_analysis_client_enabled=(
+                runtime_settings.logistics_analysis_client_enabled
+            ),
+        )
+
+    @app.get("/api/accounting-workflows/config")
+    def accounting_workflow_config(
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+        tenantId: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            tenant_id = _workflow_tenant_id(current, tenantId)
+            accounting_workflow.require_staff(current, tenant_id)
+            return {
+                "enabled": True,
+                "tenantId": tenant_id,
+                "isSupervisor": accounting_workflow.is_supervisor(
+                    db, current, tenant_id
+                ),
+                "csrfToken": _workflow_csrf_token(request, runtime_settings),
+                "stages": sorted(accounting_workflow.CARD_STAGES),
+                "deliveryChannels": sorted(accounting_workflow.DELIVERY_CHANNELS),
+                "evidenceContentTypes": sorted(
+                    accounting_workflow.ALLOWED_EVIDENCE_TYPES
+                ),
+                "evidenceMaxBytes": (
+                    runtime_settings.accounting_workflow_evidence_max_bytes
+                ),
+                "staffUsers": accounting_workflow.list_staff_users(
+                    db, current, tenant_id
+                ),
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows/supervisors")
+    def accounting_workflow_supervisors(
+        current: CurrentUser,
+        db: DbSession,
+        tenantId: str,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            return {
+                "items": accounting_workflow.list_supervisors(db, current, tenantId)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows")
+    def accounting_workflow_cards(
+        current: CurrentUser,
+        db: DbSession,
+        tenantId: str | None = None,
+        clientId: str | None = None,
+        organizationId: str | None = None,
+        periodMonth: str | None = None,
+        stage: str | None = None,
+        responsibleUserId: str | None = None,
+        supervisorUserId: str | None = None,
+        overdue: bool | None = None,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            items = accounting_workflow.list_cards(
+                db,
+                user=current,
+                tenant_id=tenantId,
+                client_id=clientId,
+                organization_id=organizationId,
+                report_period=(_workflow_period(periodMonth) if periodMonth else None),
+                stage=stage,
+                responsible_user_id=responsibleUserId,
+                supervisor_user_id=supervisorUserId,
+                overdue=overdue,
+            )
+            return {"items": items}
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows/{card_id}")
+    def accounting_workflow_card(
+        card_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/monthly-runs")
+    def accounting_workflow_monthly_run(
+        payload: AccountingWorkflowMonthlyRunRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            result = accounting_workflow.create_month_cards(
+                db,
+                settings=runtime_settings,
+                tenant_id=payload.tenantId,
+                report_period=_workflow_period(payload.periodMonth),
+                user=current,
+                creation_kind="manual_catch_up",
+                responsible_user_id=payload.responsibleUserId,
+                supervisor_user_id=payload.supervisorUserId,
+            )
+            db.commit()
+            return result
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/corrections")
+    def accounting_workflow_correction(
+        payload: AccountingWorkflowCorrectionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            card = accounting_workflow.create_correction_card(
+                db,
+                settings=runtime_settings,
+                user=current,
+                supersedes_card_id=payload.supersedesCardId,
+                reason=payload.reason,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card.id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/transitions")
+    def accounting_workflow_transition(
+        card_id: str,
+        payload: AccountingWorkflowTransitionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            card = accounting_workflow.transition_card(
+                db,
+                user=current,
+                card_id=card_id,
+                target_stage=payload.targetStage,
+                reason=payload.reason,
+                responsible_user_id=payload.responsibleUserId,
+                supervisor_user_id=payload.supervisorUserId,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card.id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/tasks/{task_id}/actions")
+    def accounting_workflow_task_action(
+        card_id: str,
+        task_id: str,
+        payload: AccountingWorkflowTaskActionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.task_action(
+                db,
+                user=current,
+                card_id=card_id,
+                task_id=task_id,
+                action=payload.action,
+                report_id=payload.reportId,
+                payload_sha256=payload.payloadSha256,
+                reason=payload.reason,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/evidence")
+    async def accounting_workflow_evidence_upload(
+        card_id: str,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+        evidence: Annotated[UploadFile, File()],
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            content = await evidence.read(
+                runtime_settings.accounting_workflow_evidence_max_bytes + 1
+            )
+            item = accounting_workflow.save_attachment(
+                db,
+                settings=runtime_settings,
+                user=current,
+                card_id=card_id,
+                filename=evidence.filename or "evidence",
+                content_type=evidence.content_type or "",
+                content=content,
+            )
+            db.commit()
+            return {
+                "attachment": {
+                    "id": item.id,
+                    "name": item.original_name,
+                    "contentType": item.content_type,
+                    "byteSize": item.byte_size,
+                    "sha256": item.sha256,
+                }
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows/evidence/{attachment_id}")
+    def accounting_workflow_evidence_download(
+        attachment_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> FileResponse:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            item = accounting_workflow.require_attachment(db, current, attachment_id)
+            path = accounting_workflow.attachment_path(runtime_settings, item)
+            return FileResponse(
+                path,
+                media_type=item.content_type,
+                filename=item.original_name,
+                headers={"Cache-Control": "no-store"},
+            )
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/deliveries")
+    def accounting_workflow_delivery(
+        card_id: str,
+        payload: AccountingWorkflowDeliveryRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            accounting_workflow.record_delivery(
+                db,
+                settings=runtime_settings,
+                user=current,
+                card_id=card_id,
+                sent_at=payload.sentAt,
+                delivery_channel=payload.channel,
+                channel_detail=payload.channelDetail,
+                masked_recipient=payload.maskedRecipient,
+                attachment_id=payload.attachmentId,
+                contact_result=payload.contactResult,
+                preliminary=payload.preliminary,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/comments")
+    def accounting_workflow_comment(
+        card_id: str,
+        payload: AccountingWorkflowCommentRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            accounting_workflow.add_comment(
+                db, user=current, card_id=card_id, body=payload.body
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/followups/{followup_id}/actions")
+    def accounting_workflow_followup_action(
+        card_id: str,
+        followup_id: str,
+        payload: AccountingWorkflowFollowupActionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            accounting_workflow.followup_action(
+                db,
+                settings=runtime_settings,
+                user=current,
+                card_id=card_id,
+                followup_id=followup_id,
+                action=payload.action,
+                result=payload.result,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/followups/run-due")
+    def accounting_workflow_followups_run_due(
+        payload: AccountingWorkflowDueRunRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, int]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            result = accounting_workflow.process_due_followups(
+                db,
+                settings=runtime_settings,
+                user=current,
+                tenant_id=payload.tenantId,
+            )
+            db.commit()
+            return result
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/supervisors")
+    def accounting_workflow_supervisor_save(
+        payload: AccountingWorkflowSupervisorRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            item = accounting_workflow.grant_supervisor(
+                db,
+                admin=current,
+                tenant_id=payload.tenantId,
+                user_id=payload.userId,
+                active=payload.active,
+            )
+            db.commit()
+            return {
+                "item": {
+                    "userId": item.user_id,
+                    "active": item.is_active,
+                    "grantedAt": item.granted_at.isoformat(),
+                    "revokedAt": item.revoked_at.isoformat()
+                    if item.revoked_at
+                    else None,
+                }
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
 
     @app.get("/api/clients")
     def list_clients(current: CurrentUser, db: DbSession) -> dict[str, Any]:
@@ -1287,9 +1908,7 @@ def create_app(
         db.commit()
         return {"overrideId": override.id, "status": "confirmed"}
 
-    @app.get(
-        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies"
-    )
+    @app.get("/api/clients/{client_id}/companies/{company_id}/input-vat-policies")
     def list_client_company_input_vat_policies(
         client_id: str,
         company_id: str,
@@ -1309,9 +1928,7 @@ def create_app(
             raise HTTPException(status_code=403, detail="staff role required") from exc
         return {"items": [repository.input_vat_policy_payload(item) for item in items]}
 
-    @app.post(
-        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies"
-    )
+    @app.post("/api/clients/{client_id}/companies/{company_id}/input-vat-policies")
     def create_client_company_input_vat_policy(
         client_id: str,
         company_id: str,
@@ -1599,6 +2216,11 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
     ) -> dict[str, Any]:
+        if not runtime_settings.external_integrations_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="Внешние проверки отключены для этого контура.",
+            )
         resolved_tenant_id, _client_id = _resolve_client_tenant_or_400(
             db,
             current,
@@ -1720,20 +2342,94 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
         client_id: str | None = None,
+        report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
-        reports = repository.list_reports_for_user(db, current, client_id=client_id)
+        try:
+            require_report_kind(report_kind)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=404, detail="report kind not found"
+            ) from exc
+        if report_kind not in runtime_settings.enabled_report_kind_set:
+            raise HTTPException(status_code=404, detail="report kind not found")
+        if client_id:
+            client = repository.require_client_access(db, current, client_id)
+            _require_enabled_report_kind_or_404(
+                current,
+                tenant_id=client.tenant_id,
+                report_kind=report_kind,
+                settings=runtime_settings,
+            )
+        reports = repository.list_reports_for_user(
+            db,
+            current,
+            client_id=client_id,
+            report_kind=report_kind,
+            organization_id=organization_id,
+        )
         return {"items": [_report_list_item(report) for report in reports]}
+
+    @app.get("/api/clients/{client_id}/report-kinds")
+    def list_client_report_kinds(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            client = repository.require_client_access(db, current, client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
+        return {
+            "reportKinds": repository.report_kinds_for_user(
+                current,
+                tenant_id=client.tenant_id,
+                enabled_kinds=runtime_settings.enabled_report_kind_set,
+            )
+        }
 
     @app.get("/api/clients/{client_id}/reports")
     def list_client_reports(
         client_id: str,
         current: CurrentUser,
         db: DbSession,
+        report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         try:
-            reports = repository.list_reports_for_client(db, current, client_id)
+            client = repository.require_client_access(db, current, client_id)
+            _require_enabled_report_kind_or_404(
+                current,
+                tenant_id=client.tenant_id,
+                report_kind=report_kind,
+                settings=runtime_settings,
+            )
+            if report_kind in ACCOUNTING_REPORT_KINDS and not organization_id:
+                raise HTTPException(
+                    status_code=400, detail="organization_id is required"
+                )
+            reports = repository.list_reports_for_client(
+                db,
+                current,
+                client_id,
+                report_kind=report_kind,
+                organization_id=organization_id,
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail="client not found") from exc
+        repository.audit(
+            db,
+            action="report_kind_viewed",
+            user=current,
+            tenant_id=client.tenant_id,
+            entity_type="client",
+            entity_id=client.id,
+            payload={
+                "reportKind": report_kind,
+                "organizationId": organization_id,
+            },
+        )
+        db.commit()
         return {"items": [_report_list_item(report) for report in reports]}
 
     @app.get("/api/reports/latest/summary")
@@ -1741,9 +2437,29 @@ def create_app(
         current: CurrentUser,
         db: DbSession,
         client_id: str | None = None,
+        report_kind: str = MARKETPLACE_UNIT_ECONOMICS,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         resolved_client_id = _resolve_latest_client_id_or_400(db, current, client_id)
-        report = repository.latest_report_for_client(db, current, resolved_client_id)
+        try:
+            client = repository.require_client_access(db, current, resolved_client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
+        _require_enabled_report_kind_or_404(
+            current,
+            tenant_id=client.tenant_id,
+            report_kind=report_kind,
+            settings=runtime_settings,
+        )
+        if report_kind in ACCOUNTING_REPORT_KINDS and not organization_id:
+            raise HTTPException(status_code=400, detail="organization_id is required")
+        report = repository.latest_report_for_client(
+            db,
+            current,
+            resolved_client_id,
+            report_kind=report_kind,
+            organization_id=organization_id,
+        )
         if report is None:
             raise HTTPException(status_code=404, detail="report not found")
         repository.audit(
@@ -1760,6 +2476,119 @@ def create_app(
             report,
             include_staff_readiness=_include_staff_readiness(current, report.tenant_id),
         )
+
+    @app.post("/api/clients/{client_id}/reports/generate", status_code=202)
+    def generate_client_report(
+        client_id: str,
+        payload: ReportGenerateRequest,
+        background_tasks: BackgroundTasks,
+        current: CurrentUser,
+        db: DbSession,
+        idempotency_key: Annotated[
+            str, Header(alias="Idempotency-Key", min_length=1, max_length=160)
+        ],
+    ) -> dict[str, Any]:
+        try:
+            client = repository.require_client_access(db, current, client_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="client not found") from exc
+        _require_enabled_report_kind_or_404(
+            current,
+            tenant_id=client.tenant_id,
+            report_kind=payload.reportKind,
+            settings=runtime_settings,
+        )
+        try:
+            year, month = (int(value) for value in payload.periodMonth.split("-"))
+            period_start = date(year, month, 1)
+            period_end = date(year, month, monthrange(year, month)[1])
+            run, deduplicated = repository.generate_accounting_report(
+                db,
+                user=current,
+                client_id=client_id,
+                report_kind=payload.reportKind,
+                organization_id=payload.organizationId,
+                period_start=period_start,
+                period_end=period_end,
+                idempotency_key=idempotency_key,
+            )
+        except LookupError as exc:
+            raise HTTPException(
+                status_code=404, detail="organization not found"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            db.rollback()
+            repository.audit(
+                db,
+                action="report_generation_failed",
+                user=current,
+                tenant_id=client.tenant_id,
+                entity_type="client",
+                entity_id=client.id,
+                payload={
+                    "reportKind": payload.reportKind,
+                    "organizationId": payload.organizationId,
+                    "periodMonth": payload.periodMonth,
+                },
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail="Не удалось сформировать отчет; исходные данные не изменялись.",
+            ) from exc
+        db.commit()
+        if not deduplicated and run.status == "queued":
+            if app.state.source_refresh_worker_launcher is None:
+                background_tasks.add_task(
+                    _run_report_generation_background,
+                    app.state.session_factory,
+                    app.state.source_refresh_service,
+                    run.id,
+                )
+            else:
+                try:
+                    launch_source_refresh_worker(
+                        db,
+                        refresh_run_id=run.id,
+                        worker_launcher=app.state.source_refresh_worker_launcher,
+                        user=current,
+                        fallback_payload=repository.generation_run_payload(run),
+                    )
+                except SourceRefreshWorkerLaunchError as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Не удалось запустить отдельный процесс формирования; "
+                            "исходные данные не изменялись."
+                        ),
+                    ) from exc
+        result = repository.generation_run_payload(run)
+        result["deduplicated"] = deduplicated
+        return result
+
+    @app.get("/api/report-generations/{generation_run_id}")
+    def report_generation_status(
+        generation_run_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        run = db.get(SourceRefreshRun, generation_run_id)
+        if run is None or run.mode != "report-generation":
+            raise HTTPException(status_code=404, detail="generation not found")
+        try:
+            client = repository.require_client_access(db, current, run.client_id)
+            repository.require_staff(current, client.tenant_id)
+        except (LookupError, PermissionError) as exc:
+            raise HTTPException(status_code=404, detail="generation not found") from exc
+        _require_enabled_report_kind_or_404(
+            current,
+            tenant_id=client.tenant_id,
+            report_kind=run.target_report_kind,
+            settings=runtime_settings,
+        )
+        return repository.generation_run_payload(run)
 
     @app.get("/api/reports/{report_id}/summary")
     def report_summary(
@@ -1798,6 +2627,138 @@ def create_app(
             started_at=started_at,
             outcome="ok",
         )
+        return payload
+
+    @app.get("/api/reports/{report_id}/logistics/summary")
+    def report_logistics_summary(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+        return repository.report_logistics_summary_payload(
+            db,
+            report,
+            period_start=periodStart,
+            period_end=periodEnd,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+        )
+
+    @app.get("/api/reports/{report_id}/logistics/products")
+    def report_logistics_products(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+        sortBy: str = "logisticsTotal",
+        sortOrder: str = "desc",
+        offset: int = 0,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+        return repository.report_logistics_products_payload(
+            db,
+            report,
+            period_start=periodStart,
+            period_end=periodEnd,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+            offset=max(offset, 0),
+            limit=min(max(limit, 1), 1000),
+        )
+
+    @app.get("/api/reports/{report_id}/logistics/orders")
+    def report_logistics_orders(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+        productKey: str = "",
+        sortBy: str = "operationDateEnd",
+        sortOrder: str = "desc",
+        offset: int = 0,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+            staff_only=True,
+        )
+        return repository.report_logistics_orders_payload(
+            db,
+            report,
+            period_start=periodStart,
+            period_end=periodEnd,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+            product_key=productKey,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+            offset=max(offset, 0),
+            limit=min(max(limit, 1), 1000),
+        )
+
+    @app.get("/api/reports/{report_id}/scenario")
+    def report_scenario(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        if report.report_kind not in ACCOUNTING_REPORT_KINDS:
+            raise HTTPException(status_code=404, detail="scenario not found")
+        _require_staff_or_403(current, report.tenant_id)
+        try:
+            payload = repository.scenario_payload_for_report(db, report)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="scenario not found") from exc
+        repository.audit(
+            db,
+            action="report_viewed",
+            user=current,
+            tenant_id=report.tenant_id,
+            entity_type="report_run",
+            entity_id=report.id,
+            payload={"reportKind": report.report_kind, "surface": "scenario"},
+        )
+        db.commit()
         return payload
 
     @app.get("/api/reports/{report_id}/freshness")
@@ -1942,7 +2903,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_staff_or_403(current, report.tenant_id)
-        thread_id = _checked_optional_thread_id(db, current, payload.thread_id)
+        thread_id = _checked_optional_thread_id(
+            db, current, payload.thread_id, report_id=report.id
+        )
         summary = repository.report_full_payload(db, report)
         try:
             draft = repository.create_client_draft_revision(
@@ -1974,7 +2937,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_staff_or_403(current, report.tenant_id)
-        thread_id = _checked_optional_thread_id(db, current, payload.thread_id)
+        thread_id = _checked_optional_thread_id(
+            db, current, payload.thread_id, report_id=report.id
+        )
         latest = repository.latest_client_draft(db, report)
         instruction = _client_draft_instruction(payload)
         result = app.state.analyst.refine_client_draft(
@@ -2060,18 +3025,54 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _reject_client_report_recommendations(db, current, report)
-        workbook_path = repository.report_file_path(
-            report, runtime_settings.export_root_path
-        )
-        if workbook_path is None or not workbook_path.exists():
-            raise HTTPException(status_code=404, detail="workbook not found")
+        try:
+            if payload.scope == "last_closed_week":
+                if payload.periodStart is not None or payload.periodEnd is not None:
+                    raise ValueError(
+                        "Для последней закрытой недели даты определяются автоматически."
+                    )
+                period_start, period_end, summary = report_summary_for_last_closed_week(
+                    db, report
+                )
+            else:
+                period_start, period_end = _analytical_report_period(report, payload)
+                summary = report_summary_for_period(
+                    db,
+                    report,
+                    period_start=(None if payload.scope == "full" else period_start),
+                    period_end=(None if payload.scope == "full" else period_end),
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         output_dir = _analytical_report_dir(runtime_settings, report.id)
         artifacts = build_client_analytical_report(
-            workbook_path=workbook_path,
+            summary=summary,
             output_dir=output_dir,
-            basename=_analytical_report_basename(report, branded=payload.branded),
+            basename=_analytical_report_basename(
+                report,
+                branded=payload.branded,
+                period_start=period_start,
+                period_end=period_end,
+            ),
             branded=payload.branded,
         )
+        artifact_paths = {
+            "analytical_markdown": artifacts.markdown_path,
+            "analytical_docx": artifacts.docx_path,
+        }
+        if artifacts.pdf_path is not None:
+            artifact_paths["analytical_pdf"] = artifacts.pdf_path
+        for artifact_type, path in artifact_paths.items():
+            record = artifact_record(path)
+            repository.record_report_artifact(
+                db,
+                report,
+                artifact_type=artifact_type,
+                path=path,
+                sha256=record["hash"],
+                byte_size=record["byte_size"],
+                status=record["status"],
+            )
         repository.audit(
             db,
             action="analytical_report_generated",
@@ -2079,9 +3080,20 @@ def create_app(
             tenant_id=report.tenant_id,
             entity_type="report_run",
             entity_id=report.id,
+            payload={
+                "scope": payload.scope,
+                "periodStart": period_start.isoformat(),
+                "periodEnd": period_end.isoformat(),
+            },
         )
         db.commit()
-        return _analytical_report_payload(report.id, artifacts)
+        return _analytical_report_payload(
+            report.id,
+            artifacts,
+            scope=payload.scope,
+            period_start=period_start,
+            period_end=period_end,
+        )
 
     @app.get("/api/reports/{report_id}/analytical-report.{extension}")
     def download_analytical_report(
@@ -2308,6 +3320,42 @@ def create_app(
         wb_cabinet_id: str = "",
     ) -> FileResponse:
         report = _require_report_or_404(db, current, report_id)
+        if report.report_kind in ACCOUNTING_REPORT_KINDS:
+            _require_staff_or_403(current, report.tenant_id)
+            payload = repository.scenario_payload_for_report(db, report)
+            payload_sha256 = str(payload.pop("payloadSha256"))
+            output_dir = (
+                runtime_settings.export_root_path
+                / "accounting_reports"
+                / _safe_path_segment(report.client_id)
+            ).resolve()
+            allowed = runtime_settings.export_root_path.resolve()
+            if output_dir != allowed and allowed not in output_dir.parents:
+                raise HTTPException(
+                    status_code=400, detail="export path is outside reports"
+                )
+            path = output_dir / f"{_safe_path_segment(report.id)}.xlsx"
+            write_scenario_excel(payload, payload_sha256, path)
+            repository.audit(
+                db,
+                action="report_exported",
+                user=current,
+                tenant_id=report.tenant_id,
+                entity_type="report_run",
+                entity_id=report.id,
+                payload={
+                    "reportKind": report.report_kind,
+                    "payloadSha256": payload_sha256,
+                },
+            )
+            db.commit()
+            return FileResponse(
+                path,
+                media_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                filename=f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx",
+            )
         if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
             _require_staff_or_403(current, report.tenant_id)
             diagnostics = repository.ozon_draft_diagnostics_payload(
@@ -2466,7 +3514,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_staff_or_403(current, report.tenant_id)
-        thread_id = _checked_optional_thread_id(db, current, payload.thread_id)
+        thread_id = _checked_optional_thread_id(
+            db, current, payload.thread_id, report_id=report.id
+        )
         try:
             result = app.state.auto_refresh_service.run(
                 db,
@@ -2551,31 +3601,53 @@ def create_app(
             settings=runtime_settings,
         )
 
+    @app.get("/api/ai/threads")
+    def list_threads(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        limit: int = 1,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        threads = repository.list_ai_threads(
+            db,
+            user=current,
+            report_id=report.id,
+            limit=limit,
+        )
+        return {
+            "items": [
+                thread_payload(
+                    thread,
+                    repository.thread_messages(db, thread, limit=100),
+                    repository.thread_events(db, current, thread),
+                )
+                for thread in threads
+            ]
+        }
+
     @app.post("/api/ai/threads")
     def create_thread(
         payload: ThreadCreateRequest,
         current: CurrentUser,
         db: DbSession,
     ) -> dict[str, Any]:
-        report_id = payload.report_id
-        report = None
-        if report_id:
-            report = _require_report_or_404(db, current, report_id)
-        elif payload.client_id:
-            client_id = _resolve_latest_client_id_or_400(db, current, payload.client_id)
-            report = repository.latest_report_for_client(db, current, client_id)
-        else:
-            client_id = _resolve_latest_client_id_or_400(db, current, None)
-            report = repository.latest_report_for_client(db, current, client_id)
-        access = repository.primary_access(
-            current, report.tenant_id if report else None
-        )
+        if not payload.report_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Для AI-аналитика нужно выбрать конкретный расчет отчета.",
+            )
+        report = _require_report_or_404(db, current, payload.report_id)
+        if payload.client_id and payload.client_id != report.client_id:
+            raise HTTPException(status_code=409, detail="report/client scope mismatch")
         thread = repository.create_ai_thread(
             db,
             user=current,
-            tenant_id=access.tenant_id,
-            report_id=report.id if report else None,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            report_id=report.id,
             title=payload.title,
+            scope=payload.scope,
         )
         db.commit()
         return thread_payload(thread, [], [])
@@ -2629,7 +3701,11 @@ def create_app(
             question=payload.content,
         )
         repository.add_ai_message(
-            db, thread=thread, role="assistant", content=answer.content
+            db,
+            thread=thread,
+            role="assistant",
+            content=answer.content,
+            citations=list(answer.citations),
         )
         repository.add_ai_event(
             db,
@@ -2669,6 +3745,9 @@ def create_app(
         def generate():
             sent_ids: set[int] = set()
             try:
+                sent_ids.update(
+                    item["id"] for item in repository.thread_events(db, current, thread)
+                )
                 repository.add_ai_message(
                     db, thread=thread, role="user", content=payload.content
                 )
@@ -2701,7 +3780,11 @@ def create_app(
                     question=payload.content,
                 )
                 repository.add_ai_message(
-                    db, thread=thread, role="assistant", content=answer.content
+                    db,
+                    thread=thread,
+                    role="assistant",
+                    content=answer.content,
+                    citations=list(answer.citations),
                 )
                 done = repository.add_ai_event(
                     db,
@@ -2779,6 +3862,7 @@ def get_current_user(request: Request, db: DbSession) -> User:
     user = repository.get_user_by_session(db, token)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    user._enabled_report_kind_set = settings.enabled_report_kind_set
     return user
 
 
@@ -2788,6 +3872,10 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 def me_payload(
     user: User,
     clients: list[dict[str, Any]] | None = None,
+    *,
+    accounting_workflow_enabled: bool = False,
+    logistics_analysis_enabled: bool = False,
+    logistics_analysis_client_enabled: bool = False,
 ) -> dict[str, Any]:
     tenants = [
         {
@@ -2803,7 +3891,66 @@ def me_payload(
         "name": user.name,
         "tenants": tenants,
         "clients": clients or [],
+        "accountingWorkflowEnabled": accounting_workflow_enabled
+        and any(item.role in repository.STAFF_ROLES for item in user.access),
+        "logisticsAnalysisEnabled": logistics_analysis_enabled
+        and (
+            logistics_analysis_client_enabled
+            or any(item.role in repository.STAFF_ROLES for item in user.access)
+        ),
+        "logisticsAnalysisClientEnabled": (
+            logistics_analysis_enabled and logistics_analysis_client_enabled
+        ),
+        "logisticsOrdersEnabled": logistics_analysis_enabled
+        and any(item.role in repository.STAFF_ROLES for item in user.access),
     }
+
+
+def _workflow_period(value: str) -> date:
+    try:
+        year, month = (int(item) for item in value.split("-", 1))
+        return date(year, month, 1)
+    except (TypeError, ValueError) as exc:
+        raise accounting_workflow.WorkflowError("invalid periodMonth") from exc
+
+
+def _workflow_tenant_id(user: User, requested: str | None) -> str:
+    if requested:
+        return requested
+    for item in user.access:
+        if item.role in repository.STAFF_ROLES:
+            return item.tenant_id
+    raise accounting_workflow.WorkflowPermissionError("staff role required")
+
+
+def _workflow_csrf_token(request: Request, settings: WebSettings) -> str:
+    session_token = request.cookies.get(settings.session_cookie_name, "")
+    if not session_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    return hmac.new(
+        settings.session_secret.encode("utf-8"),
+        session_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _require_workflow_csrf(request: Request, settings: WebSettings) -> None:
+    if not settings.accounting_workflow_enabled:
+        raise HTTPException(status_code=404, detail="accounting workflow is disabled")
+    expected = _workflow_csrf_token(request, settings)
+    actual = request.headers.get("X-CSRF-Token", "")
+    if not actual or not security.constant_time_equal(actual, expected):
+        raise HTTPException(status_code=403, detail="invalid CSRF token")
+
+
+def _raise_workflow_http_error(
+    db: Session, exc: accounting_workflow.WorkflowError
+) -> None:
+    if getattr(exc, "persist_changes", False):
+        db.commit()
+    else:
+        db.rollback()
+    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def user_payload(user: User, viewer: User) -> dict[str, Any]:
@@ -2832,14 +3979,18 @@ def thread_payload(
     return {
         "id": thread.id,
         "tenantId": thread.tenant_id,
+        "clientId": thread.client_id,
         "reportId": thread.report_run_id,
         "title": thread.title,
+        "scope": thread.scope or {},
+        "scopeHash": thread.scope_hash,
         "messages": [
             {
                 "id": message.id,
                 "role": message.role,
                 "content": message.content,
                 "toolName": message.tool_name,
+                "citations": message.citations or [],
                 "createdAt": message.created_at.isoformat(),
             }
             for message in messages
@@ -2970,9 +4121,13 @@ def _report_list_item(report: ReportRun) -> dict[str, Any]:
         "id": report.id,
         "tenantId": report.tenant_id,
         "clientId": report.client_id,
+        "reportKind": report.report_kind,
+        "organizationId": report.organization_id,
         "title": report.title,
         "client": report.client_name,
         "period": f"{report.period_start:%d.%m.%Y} - {report.period_end:%d.%m.%Y}",
+        "periodStart": report.period_start.isoformat(),
+        "periodEnd": report.period_end.isoformat(),
         "periodStatus": report.period_status,
         "generatedAt": report.generated_at.isoformat(),
         "methodologyVersion": report.methodology_version,
@@ -2998,9 +4153,13 @@ def _report_excel_export_path(
 
 def _require_report_or_404(db: Session, user: User, report_id: str):
     try:
-        return repository.require_report(db, user, report_id)
+        report = repository.require_report(db, user, report_id)
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail="report not found") from exc
+    enabled = getattr(user, "_enabled_report_kind_set", {MARKETPLACE_UNIT_ECONOMICS})
+    if report.report_kind not in enabled:
+        raise HTTPException(status_code=404, detail="report not found")
+    return report
 
 
 def _require_thread_or_404(db: Session, user: User, thread_id: str):
@@ -3015,6 +4174,21 @@ def _require_staff_or_403(user: User, tenant_id: str) -> None:
         repository.require_staff(user, tenant_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="staff role required") from exc
+
+
+def _require_logistics_access_or_404(
+    user: User,
+    tenant_id: str,
+    settings: WebSettings,
+    *,
+    staff_only: bool = False,
+) -> None:
+    is_staff = repository.has_role(user, repository.STAFF_ROLES, tenant_id)
+    allowed = settings.logistics_analysis_enabled and (
+        is_staff or (settings.logistics_analysis_client_enabled and not staff_only)
+    )
+    if not allowed:
+        raise HTTPException(status_code=404, detail="logistics analysis not found")
 
 
 def _reject_client_financial_recommendations(db: Session, user: User, thread) -> None:
@@ -3091,11 +4265,17 @@ def _include_staff_readiness(user: User, tenant_id: str) -> bool:
 
 
 def _checked_optional_thread_id(
-    db: Session, user: User, thread_id: str | None
+    db: Session,
+    user: User,
+    thread_id: str | None,
+    *,
+    report_id: str,
 ) -> str | None:
     if not thread_id:
         return None
     thread = _require_thread_or_404(db, user, thread_id)
+    if thread.report_run_id != report_id:
+        raise HTTPException(status_code=409, detail="thread/report scope mismatch")
     return thread.id
 
 
@@ -3166,23 +4346,70 @@ def _safe_path_segment(value: str) -> str:
     return safe.strip("_") or "report"
 
 
-def _analytical_report_basename(report, *, branded: bool) -> str:
-    period = f"{report.period_start:%d.%m.%Y}-{report.period_end:%d.%m.%Y}"
+def _analytical_report_period(
+    report: ReportRun,
+    payload: AnalyticalReportRequest,
+) -> tuple[date, date]:
+    if payload.scope == "full":
+        if payload.periodStart is not None or payload.periodEnd is not None:
+            raise ValueError("Для полного периода отдельные даты не указываются.")
+        return report.period_start, report.period_end
+    if payload.scope == "last_closed_week":
+        if payload.periodStart is not None or payload.periodEnd is not None:
+            raise ValueError(
+                "Для последней закрытой недели даты определяются автоматически."
+            )
+        return last_closed_week_period(report)
+    if payload.periodStart is None or payload.periodEnd is None:
+        raise ValueError("Для произвольного периода укажите дату начала и конца.")
+    if payload.periodStart > payload.periodEnd:
+        raise ValueError("Дата начала не может быть позже даты конца.")
+    if (
+        payload.periodStart < report.period_start
+        or payload.periodEnd > report.period_end
+    ):
+        raise ValueError(
+            "Выбранный период должен находиться внутри периода report_id "
+            f"{report.period_start}..{report.period_end}."
+        )
+    return payload.periodStart, payload.periodEnd
+
+
+def _analytical_report_basename(
+    report: ReportRun,
+    *,
+    branded: bool,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> str:
+    start = period_start or report.period_start
+    end = period_end or report.period_end
+    period = f"{start:%d.%m.%Y}-{end:%d.%m.%Y}"
     if branded:
         return (
-            "Фирменный аналитический отчет Шумейко и Партнеры "
+            "Фирменный аналитический отчёт Шумейко и Партнеры "
             f"по юнит-экономике WB за период {period}"
         )
-    return f"Аналитический отчет по юнит-экономике WB за период {period}"
+    return f"Аналитический отчёт по юнит-экономике WB за период {period}"
 
 
 def _analytical_report_payload(
     report_id: str,
     artifacts: ClientAnalyticalReportArtifacts,
+    *,
+    scope: str,
+    period_start: date,
+    period_end: date,
 ) -> dict[str, Any]:
     return {
         "reportId": report_id,
         "status": "ready",
+        "contractVersion": CLIENT_REPORT_CONTRACT_VERSION,
+        "scope": scope,
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "period": f"{period_start:%d.%m.%Y} - {period_end:%d.%m.%Y}",
+        "sourceSha256": getattr(artifacts, "source_sha256", ""),
         "files": {
             "markdown": {
                 "status": "ok",
@@ -3206,9 +4433,8 @@ def _analytical_report_payload(
             },
         },
         "limitations": [
-            "Июнь неполный.",
-            "Причина возврата не передается текущими источниками.",
-            "AI и генератор отчета не меняют данные WB, 1С или CRM.",
+            "Ограничения конкретного периода и источников включены в документ.",
+            "Генератор отчёта не меняет данные WB, 1С или CRM.",
         ],
     }
 
@@ -3264,7 +4490,9 @@ def _live_check(
             source_type=source_type,
             check_type=check_type,
             lookup_key=lookup,
-            enabled=settings.live_checks_enabled,
+            enabled=(
+                settings.external_integrations_enabled and settings.live_checks_enabled
+            ),
             cache_ttl_minutes=settings.live_check_cache_ttl_minutes,
         )
     except ValueError as exc:

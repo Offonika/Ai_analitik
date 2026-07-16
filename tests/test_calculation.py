@@ -22,6 +22,7 @@ from wb_unit_economics.contracts import (
     DataQualityStatus,
     InputVatPolicy,
     MappingStatus,
+    MarketplaceFinanceDailyFact,
     OnecMarketplaceServiceRow,
     OnecUnfCostSnapshot,
     ReportStatus,
@@ -1368,6 +1369,126 @@ def test_daily_fact_rebuild_preserves_full_financial_calculation() -> None:
     assert financial_payload(rebuilt_report) == financial_payload(source_report)
 
 
+def test_daily_fact_rebuild_uses_preallocated_financial_values() -> None:
+    common = {
+        "client_id": CLIENT_ID,
+        "seller_account_id": "WB_ACCOUNT_1",
+        "organization_id": "1C_ORG_1",
+        "marketplace_report_id": "726807272",
+        "document_kind": "commissioner_report",
+        "sales_model": "fbo",
+        "operation_group": "sale",
+        "quantity": Decimal("1"),
+        "sales_quantity": Decimal("1"),
+        "net_revenue": Decimal("100"),
+        "vat_input_from_marketplace": Decimal("1"),
+        "source_row_count": 1,
+        "methodology_version": "test-v1",
+    }
+    facts = [
+        MarketplaceFinanceDailyFact(
+            **common,
+            fact_date=date(2026, 4, 6),
+            nm_id=101,
+            vendor_code="A-1",
+            barcode="111",
+            onec_item_id="ONEC-1",
+            storage=Decimal("30"),
+            marketplace_promotion=Decimal("20"),
+            cogs=Decimal("12.34"),
+            gross_profit=Decimal("22.13"),
+            vat_input_from_1c=Decimal("3"),
+            accounting_service_input_vat=Decimal("2.50"),
+            spp_discount=Decimal("25"),
+            source_hash_digest="a" * 64,
+        ),
+        MarketplaceFinanceDailyFact(
+            **common,
+            fact_date=date(2026, 4, 7),
+            nm_id=303,
+            vendor_code="AMB-3",
+            barcode="333",
+            onec_item_id="ONEC-3",
+            storage=Decimal("70"),
+            marketplace_promotion=Decimal("80"),
+            cogs=Decimal("56.78"),
+            gross_profit=Decimal("-117.31"),
+            vat_input_from_1c=Decimal("7"),
+            accounting_service_input_vat=Decimal("7.50"),
+            spp_discount=Decimal("75"),
+            source_hash_digest="b" * 64,
+        ),
+    ]
+    summary = WbSalesReportSummaryRow(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        account_name="WB_ACCOUNT_1",
+        report_id="726807272",
+        date_from=date(2026, 4, 6),
+        date_to=date(2026, 4, 12),
+        create_date=date(2026, 4, 13),
+        report_type=1,
+        paid_storage_sum=Decimal("100"),
+        deduction_sum=Decimal("100"),
+        cashback_discount_sum=Decimal("100"),
+        raw_payload_hash="summary-hash-preallocated",
+    )
+    service_row = OnecMarketplaceServiceRow(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        counterparty_id="WB",
+        document_id="service-preallocated",
+        document_number="1",
+        document_date=date(2026, 4, 13),
+        week_start=date(2026, 4, 6),
+        week_end=date(2026, 4, 12),
+        service_category="Комиссия WB",
+        service_name="Комиссия WB",
+        amount=Decimal("90"),
+        vat=Decimal("10"),
+        total=Decimal("100"),
+        source_row_hash="service-preallocated-hash",
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=_wb_snapshots_from_daily_facts(facts),
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        wb_sales_report_summary_rows=[summary],
+        onec_marketplace_service_rows=[service_row],
+        tax_profiles=[
+            TaxProfile(
+                client_id=CLIENT_ID,
+                organization_id="1C_ORG_1",
+                tax_system="ОСНО",
+                vat_rate=Decimal("22"),
+                vat_mode=VatMode.INCLUDED,
+                vat_deduction_mode=VatDeductionMode.ALLOWED,
+                revenue_tax_rate=Decimal("0"),
+                source="test",
+            )
+        ],
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+    rows = {row.nm_id: row for row in report.rows}
+
+    assert rows[101].storage == Decimal("30.00")
+    assert rows[303].storage == Decimal("70.00")
+    assert rows[101].wb_promotion == Decimal("20.00")
+    assert rows[303].wb_promotion == Decimal("80.00")
+    assert rows[101].cogs_from_1c_with_extra_costs == Decimal("12.34")
+    assert rows[303].cogs_from_1c_with_extra_costs == Decimal("56.78")
+    assert rows[101].vat_input_from_1c == Decimal("3.00")
+    assert rows[303].vat_input_from_1c == Decimal("7.00")
+    assert rows[101].gross_profit == Decimal("22.13")
+    assert rows[303].gross_profit == Decimal("-117.31")
+    assert rows[101].spp_discount == Decimal("25.00")
+    assert rows[303].spp_discount == Decimal("75.00")
+
+
 def test_product_level_mapping_matches_size_level_wb_sku() -> None:
     product_mapping = SkuMapping(
         client_id=CLIENT_ID,
@@ -1875,7 +1996,7 @@ def test_custom_report_period_controls_status_and_partial_weeks() -> None:
     assert report.rows[0].is_partial_week is True
 
 
-def test_daily_fact_cogs_cents_reconcile_to_weekly_report_grain() -> None:
+def test_daily_fact_money_cents_reconcile_to_weekly_report_grain() -> None:
     grouped: dict[tuple[object, ...], dict[str, object]] = {}
     for fact_date in (date(2026, 3, 2), date(2026, 3, 3)):
         key = (
@@ -1906,6 +2027,7 @@ def test_daily_fact_cogs_cents_reconcile_to_weekly_report_grain() -> None:
             "penalties_and_holdbacks": Decimal("0"),
             "acquiring": Decimal("0"),
             "cogs": Decimal("1.005"),
+            "gross_profit": Decimal("2.005"),
             "vat_input_from_marketplace": Decimal("0"),
             "vat_input_from_1c": Decimal("0"),
             "source_row_count": 1,
@@ -1920,3 +2042,8 @@ def test_daily_fact_cogs_cents_reconcile_to_weekly_report_grain() -> None:
 
     assert [fact.cogs for fact in facts] == [Decimal("1.00"), Decimal("1.01")]
     assert sum((fact.cogs for fact in facts), Decimal("0")) == Decimal("2.01")
+    assert [fact.gross_profit for fact in facts] == [
+        Decimal("2.00"),
+        Decimal("2.01"),
+    ]
+    assert sum((fact.gross_profit for fact in facts), Decimal("0")) == Decimal("4.01")

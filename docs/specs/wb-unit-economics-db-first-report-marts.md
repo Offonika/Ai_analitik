@@ -16,7 +16,7 @@ depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementat
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-16"
 ---
 
 # Implementation Status
@@ -59,8 +59,10 @@ Excel, сайт, DOCX/PDF, HTML, CSV и Power Query являются экспо�
 - обновленный `SourceRefreshService`: `daily` не публикует клиентский отчет,
   `weekly/full` в DB-first режиме публикуют только после validation и export;
 - единый effective tax-profile input для DB-first calculation и readiness:
-  профиль текущего read-only снимка 1С, затем действующее аудируемое ручное
-  исключение, затем явный `missing`, без наследования опубликованного отчета;
+  профиль текущего read-only снимка настроек организации 1С, затем действующее
+  аудируемое ручное исключение как fallback, затем явный `missing`, без
+  наследования опубликованного отчета и без отдельного ручного подтверждения
+  уже загруженных настроек 1С;
 - production health без секретов: тип БД, schema version, latest published
   report, latest source refresh.
 
@@ -162,6 +164,9 @@ Legacy recovery import:
   даже если отчет опубликован вручную без нового `source_refresh_run`.
 - Excel export `reports/shumeyko_wb_excel_mvp.xlsx` строится из сохраненного
   `report_id`.
+- Клиентский Markdown/DOCX/PDF/HTML строится через единый
+  `ClientReportModel` из `report_full_payload` того же `report_id`; workbook и
+  локальные каталоги `latest` не читаются.
 - Artifact registry пишет path/hash/status без raw secrets.
 - `daily` source refresh не публикует клиентский report.
 - `weekly/full` source refresh публикуют только после validation/export.
@@ -241,3 +246,5 @@ Parity-решение и источник старого ориентира `188
 - 2026-06-24: added persistent source coverage to `report_runs` so published
   DB-first reports keep `report_period` and `source_coverage` separate without
   relying on the latest refresh run.
+- 2026-07-16: switched the client analytical document from Excel parsing to a
+  single DB-first report model and clarified automatic 1C tax-settings input.

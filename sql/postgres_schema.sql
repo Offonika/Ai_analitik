@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     create_date date,
     date_from date,
     date_to date,
+    order_uid text,
+    order_id text,
+    shk_id text,
+    sticker_id text,
+    trbx_id text,
     nm_id bigint,
     vendor_code text NOT NULL DEFAULT '',
     title text NOT NULL DEFAULT '',
@@ -64,6 +69,14 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     doc_type_name text NOT NULL DEFAULT '',
     seller_oper_name text NOT NULL DEFAULT '',
     delivery_method text NOT NULL DEFAULT '',
+    office_name text,
+    ppvz_office_name text,
+    ppvz_office_id text,
+    country text,
+    gi_box_type_name text,
+    dlv_prc numeric,
+    fix_tariff_date_from date,
+    fix_tariff_date_to date,
     sales_model text NOT NULL,
     operation_type text NOT NULL DEFAULT '',
     quantity numeric NOT NULL DEFAULT 0,
@@ -73,6 +86,9 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     ppvz_sales_commission numeric NOT NULL DEFAULT 0,
     wb_commission numeric NOT NULL DEFAULT 0,
     delivery_service numeric NOT NULL DEFAULT 0,
+    delivery_amount numeric,
+    return_amount numeric,
+    rebill_logistic_cost numeric,
     logistics numeric NOT NULL DEFAULT 0,
     paid_storage numeric NOT NULL DEFAULT 0,
     storage numeric NOT NULL DEFAULT 0,
@@ -88,6 +104,24 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     srid text NOT NULL DEFAULT '',
     inserted_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE wb_unit_economics.wb_finance_detail_raw
+    ADD COLUMN IF NOT EXISTS order_uid text,
+    ADD COLUMN IF NOT EXISTS order_id text,
+    ADD COLUMN IF NOT EXISTS shk_id text,
+    ADD COLUMN IF NOT EXISTS sticker_id text,
+    ADD COLUMN IF NOT EXISTS trbx_id text,
+    ADD COLUMN IF NOT EXISTS office_name text,
+    ADD COLUMN IF NOT EXISTS ppvz_office_name text,
+    ADD COLUMN IF NOT EXISTS ppvz_office_id text,
+    ADD COLUMN IF NOT EXISTS country text,
+    ADD COLUMN IF NOT EXISTS gi_box_type_name text,
+    ADD COLUMN IF NOT EXISTS dlv_prc numeric,
+    ADD COLUMN IF NOT EXISTS fix_tariff_date_from date,
+    ADD COLUMN IF NOT EXISTS fix_tariff_date_to date,
+    ADD COLUMN IF NOT EXISTS delivery_amount numeric,
+    ADD COLUMN IF NOT EXISTS return_amount numeric,
+    ADD COLUMN IF NOT EXISTS rebill_logistic_cost numeric;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_wb_finance_detail_raw_snapshot_row
     ON wb_unit_economics.wb_finance_detail_raw (
@@ -212,3 +246,182 @@ GROUP BY
     title,
     sales_model,
     currency;
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_cards (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    organization_id text NOT NULL,
+    report_period date NOT NULL,
+    stage text NOT NULL DEFAULT 'new',
+    previous_stage text NOT NULL DEFAULT '',
+    creation_kind text NOT NULL DEFAULT 'scheduled',
+    responsible_user_id text REFERENCES wb_unit_economics.users(id),
+    supervisor_user_id text REFERENCES wb_unit_economics.users(id),
+    target_due_at timestamptz NOT NULL,
+    hard_due_at timestamptz NOT NULL,
+    blocking_reason text NOT NULL DEFAULT '',
+    cancellation_reason text NOT NULL DEFAULT '',
+    cancellation_detail text NOT NULL DEFAULT '',
+    supersedes_card_id text REFERENCES wb_unit_economics.accounting_workflow_cards(id),
+    created_by_user_id text REFERENCES wb_unit_economics.users(id),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    closed_at timestamptz,
+    cancelled_at timestamptz
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_accounting_workflow_base_card
+    ON wb_unit_economics.accounting_workflow_cards (
+        tenant_id, client_id, organization_id, report_period
+    )
+    WHERE supersedes_card_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_accounting_workflow_active_card
+    ON wb_unit_economics.accounting_workflow_cards (
+        tenant_id, client_id, organization_id, report_period
+    )
+    WHERE stage NOT IN ('closed_payroll', 'cancelled');
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_cards_board
+    ON wb_unit_economics.accounting_workflow_cards (
+        tenant_id, report_period, stage
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_tasks (
+    id text PRIMARY KEY,
+    card_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_cards(id) ON DELETE CASCADE,
+    report_kind text NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    current_report_id text REFERENCES wb_unit_economics.report_runs(id),
+    current_payload_sha256 text NOT NULL DEFAULT '',
+    is_final boolean NOT NULL DEFAULT false,
+    reviewed_by_user_id text REFERENCES wb_unit_economics.users(id),
+    reviewed_at timestamptz,
+    facts_confirmed_by_user_id text REFERENCES wb_unit_economics.users(id),
+    facts_confirmed_at timestamptz,
+    text_approved_by_user_id text REFERENCES wb_unit_economics.users(id),
+    text_approved_at timestamptz,
+    blocking_reason text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CONSTRAINT uq_accounting_workflow_task_kind UNIQUE (card_id, report_kind)
+);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_tasks_card
+    ON wb_unit_economics.accounting_workflow_tasks (card_id, status);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_report_revisions (
+    id text PRIMARY KEY,
+    task_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_tasks(id) ON DELETE CASCADE,
+    report_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id),
+    payload_sha256 text NOT NULL,
+    is_final boolean NOT NULL DEFAULT false,
+    is_current_for_task boolean NOT NULL DEFAULT true,
+    attached_by_user_id text NOT NULL REFERENCES wb_unit_economics.users(id),
+    created_at timestamptz NOT NULL,
+    CONSTRAINT uq_accounting_workflow_task_report UNIQUE (task_id, report_id)
+);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_attachments (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    card_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_cards(id) ON DELETE CASCADE,
+    storage_key text NOT NULL UNIQUE,
+    original_name text NOT NULL,
+    content_type text NOT NULL,
+    byte_size integer NOT NULL,
+    sha256 text NOT NULL,
+    uploaded_by_user_id text NOT NULL REFERENCES wb_unit_economics.users(id),
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_revisions_task
+    ON wb_unit_economics.accounting_workflow_report_revisions (
+        task_id, is_current_for_task
+    );
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_attachments_card
+    ON wb_unit_economics.accounting_workflow_attachments (card_id, created_at);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_deliveries (
+    id text PRIMARY KEY,
+    card_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_cards(id) ON DELETE CASCADE,
+    task_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_tasks(id) ON DELETE CASCADE,
+    report_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id),
+    payload_sha256 text NOT NULL,
+    sent_at timestamptz NOT NULL,
+    delivery_channel text NOT NULL,
+    channel_detail text NOT NULL DEFAULT '',
+    masked_recipient text NOT NULL,
+    attachment_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_attachments(id),
+    contact_result text NOT NULL DEFAULT '',
+    is_preliminary boolean NOT NULL DEFAULT false,
+    created_by_user_id text NOT NULL REFERENCES wb_unit_economics.users(id),
+    invalidated_at timestamptz,
+    invalidation_reason text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_followups (
+    id text PRIMARY KEY,
+    card_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_cards(id) ON DELETE CASCADE,
+    delivery_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_deliveries(id) ON DELETE CASCADE,
+    status text NOT NULL DEFAULT 'scheduled',
+    due_at timestamptz NOT NULL,
+    repeated_at timestamptz,
+    escalation_due_at timestamptz,
+    supervisor_notified_at timestamptz,
+    completed_at timestamptz,
+    result text NOT NULL DEFAULT '',
+    updated_by_user_id text REFERENCES wb_unit_economics.users(id),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_deliveries_card
+    ON wb_unit_economics.accounting_workflow_deliveries (card_id, sent_at);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_supervisors (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    user_id text NOT NULL REFERENCES wb_unit_economics.users(id),
+    is_active boolean NOT NULL DEFAULT true,
+    granted_by_user_id text NOT NULL REFERENCES wb_unit_economics.users(id),
+    granted_at timestamptz NOT NULL,
+    revoked_by_user_id text REFERENCES wb_unit_economics.users(id),
+    revoked_at timestamptz,
+    CONSTRAINT uq_accounting_workflow_supervisor UNIQUE (tenant_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_comments (
+    id text PRIMARY KEY,
+    card_id text NOT NULL REFERENCES wb_unit_economics.accounting_workflow_cards(id) ON DELETE CASCADE,
+    user_id text NOT NULL REFERENCES wb_unit_economics.users(id),
+    body text NOT NULL,
+    created_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.accounting_workflow_audit_events (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    card_id text REFERENCES wb_unit_economics.accounting_workflow_cards(id),
+    user_id text REFERENCES wb_unit_economics.users(id),
+    action text NOT NULL,
+    entity_type text NOT NULL DEFAULT '',
+    entity_id text NOT NULL DEFAULT '',
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_comments_card
+    ON wb_unit_economics.accounting_workflow_comments (card_id, created_at);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_followups_due
+    ON wb_unit_economics.accounting_workflow_followups (status, due_at);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_audit_card
+    ON wb_unit_economics.accounting_workflow_audit_events (card_id, created_at);
+
+CREATE INDEX IF NOT EXISTS ix_accounting_workflow_audit_tenant
+    ON wb_unit_economics.accounting_workflow_audit_events (tenant_id, created_at);

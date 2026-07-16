@@ -180,6 +180,12 @@ class WbApiSnapshot(ProjectModel):
     original_sale_date: date | None = None
     is_partial_source: bool = False
     source_row_count: int = Field(default=1, ge=1)
+    preallocated_finance: bool = False
+    precomputed_cogs: Decimal | None = None
+    precomputed_gross_profit: Decimal | None = None
+    precomputed_vat_input_from_1c: Decimal | None = None
+    precomputed_accounting_service_input_vat: Decimal | None = None
+    precomputed_spp_discount: Decimal | None = None
 
     @field_validator(
         "quantity",
@@ -193,10 +199,17 @@ class WbApiSnapshot(ProjectModel):
         "acquiring",
         "vat_input_from_wb",
         "advertising",
+        "precomputed_cogs",
+        "precomputed_gross_profit",
+        "precomputed_vat_input_from_1c",
+        "precomputed_accounting_service_input_vat",
+        "precomputed_spp_discount",
         mode="before",
     )
     @classmethod
-    def decimal_from_value(cls, value: object) -> Decimal:
+    def decimal_from_value(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
         return Decimal(str(value))
 
     @model_validator(mode="after")
@@ -224,6 +237,7 @@ class MarketplaceFinanceDailyFact(ProjectModel):
     return_quantity: Decimal = Decimal("0")
     quantity: Decimal = Decimal("0")
     return_amount: Decimal = Decimal("0")
+    spp_discount: Decimal = Decimal("0")
     net_revenue: Decimal = Decimal("0")
     wb_commission: Decimal = Decimal("0")
     logistics: Decimal = Decimal("0")
@@ -233,8 +247,10 @@ class MarketplaceFinanceDailyFact(ProjectModel):
     penalties_and_holdbacks: Decimal = Decimal("0")
     acquiring: Decimal = Decimal("0")
     cogs: Decimal = Decimal("0")
+    gross_profit: Decimal = Decimal("0")
     vat_input_from_marketplace: Decimal = Decimal("0")
     vat_input_from_1c: Decimal = Decimal("0")
+    accounting_service_input_vat: Decimal = Decimal("0")
     source_row_count: int = 0
     source_hash_digest: str
     is_partial_source: bool = False
@@ -245,6 +261,7 @@ class MarketplaceFinanceDailyFact(ProjectModel):
         "return_quantity",
         "quantity",
         "return_amount",
+        "spp_discount",
         "net_revenue",
         "wb_commission",
         "logistics",
@@ -254,8 +271,10 @@ class MarketplaceFinanceDailyFact(ProjectModel):
         "penalties_and_holdbacks",
         "acquiring",
         "cogs",
+        "gross_profit",
         "vat_input_from_marketplace",
         "vat_input_from_1c",
+        "accounting_service_input_vat",
         mode="before",
     )
     @classmethod

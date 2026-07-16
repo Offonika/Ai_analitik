@@ -8,7 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import validate_docs_manifest  # noqa: E402
-from validate_docs_manifest import validate_truth_precedence  # noqa: E402
+from validate_docs_manifest import (  # noqa: E402
+    validate_changelog_registration,
+    validate_index_consistency,
+    validate_truth_precedence,
+)
 from validate_specs import validate_dependency_graph  # noqa: E402
 
 from scripts.build_client_tz_docx import check_docx, render_client_tz  # noqa: E402
@@ -18,7 +22,10 @@ from scripts.docs_metadata import (  # noqa: E402
     string_list,
 )
 from scripts.validate_documentation_contracts import (  # noqa: E402
+    UserGuideContractParser,
+    validate_client_profit_terminology,
     validate_excel_sheet_contract,
+    validate_user_guide_contract,
 )
 from wb_unit_economics.document_exports import markdown_sha256  # noqa: E402
 
@@ -45,6 +52,30 @@ def test_superseded_documents_have_replacement_and_banner() -> None:
 
 def test_excel_sheet_contract_matches_code() -> None:
     assert validate_excel_sheet_contract() == []
+
+
+def test_user_guide_contract_matches_primary_interface() -> None:
+    assert validate_user_guide_contract() == []
+
+
+def test_user_guide_contract_rejects_undocumented_workspace() -> None:
+    parser = UserGuideContractParser()
+    parser.feed('<button data-workspace-nav="new-section">Новый раздел</button>')
+
+    assert "button: expected data-guide-entry='sections'" in parser.failures
+    assert "button: guide description is missing" in parser.failures
+
+
+def test_user_guide_contract_rejects_undocumented_source_refresh_action() -> None:
+    parser = UserGuideContractParser()
+    parser.feed(
+        '<div class="source-refresh-actions">'
+        '<button id="new-refresh-action">Новая загрузка</button>'
+        "</div>"
+    )
+
+    assert "new-refresh-action: expected data-guide-entry='checks'" in parser.failures
+    assert "new-refresh-action: guide description is missing" in parser.failures
 
 
 def test_manifest_metadata_parity_validator() -> None:
@@ -86,6 +117,127 @@ def test_truth_precedence_rejects_equal_leaders() -> None:
     assert validate_truth_precedence(records) == [
         "truth_scope 'source-refresh' must have one highest-priority document; "
         "found a.md, b.md"
+    ]
+
+
+def test_changelog_registration_requires_registered_back_reference(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "current.md"
+    spec.write_text(
+        "---\nchangelog_path: history.md\n---\nCurrent requirements\n\n"
+        "# Changelog\n\nFull history: `history.md`.\n",
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.md"
+    history.write_text(
+        "---\nsource_spec: wrong.md\n---\nHistory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    records = [
+        {"path": "current.md", "doc_type": "spec"},
+        {"path": "history.md", "doc_type": "reference"},
+    ]
+
+    failures = validate_changelog_registration(records, {"current.md"})
+
+    assert failures == [
+        "current.md: changelog_path must reference doc_type changelog: history.md",
+        "history.md: source_spec must point back to current.md",
+    ]
+
+
+def test_changelog_registration_rejects_inline_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "current.md"
+    spec.write_text(
+        "---\nchangelog_path: history.md\n---\nCurrent requirements\n\n"
+        "# Changelog\n\nFull history: `history.md`.\n"
+        "- 2026-07-15: duplicated inline change.\n",
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.md"
+    history.write_text(
+        "---\nsource_spec: current.md\n---\nHistory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    records = [
+        {"path": "current.md", "doc_type": "spec"},
+        {"path": "history.md", "doc_type": "changelog"},
+    ]
+
+    failures = validate_changelog_registration(records, {"current.md"})
+
+    assert failures == [
+        "current.md: inline changelog must contain only the external history pointer"
+    ]
+
+
+def test_changelog_registration_rejects_stale_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spec = tmp_path / "current.md"
+    spec.write_text(
+        "---\nchangelog_path: history.md\nupdated_at: '2026-07-15'\n---\n"
+        "Current requirements\n\n# Changelog\n\nFull history: `history.md`.\n",
+        encoding="utf-8",
+    )
+    history = tmp_path / "history.md"
+    history.write_text(
+        "---\nsource_spec: current.md\nupdated_at: '2026-07-14'\n---\nHistory\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(validate_docs_manifest, "ROOT", tmp_path)
+    records = [
+        {"path": "current.md", "doc_type": "spec"},
+        {"path": "history.md", "doc_type": "changelog"},
+    ]
+
+    failures = validate_changelog_registration(records, {"current.md"})
+
+    assert failures == [
+        "history.md: updated_at 2026-07-14 is older than source spec 2026-07-15"
+    ]
+
+
+def test_index_consistency_rejects_missing_scope_and_stale_status() -> None:
+    records = [
+        {
+            "path": "docs/specs/current.md",
+            "status": "accepted",
+            "source_of_truth": True,
+            "truth_scope": "source-refresh",
+            "truth_priority": 100,
+        },
+        {
+            "path": "docs/specs/old.md",
+            "status": "superseded",
+            "source_of_truth": False,
+        },
+    ]
+    index_text = (
+        "| Scope | Canonical | Priority |\n"
+        "| --- | --- | ---: |\n"
+        "| Contour | `docs/specs/old.md` | draft | Description |\n"
+    )
+
+    failures = validate_index_consistency(records, index_text)
+
+    assert "docs/index.md: missing truth_scope row 'source-refresh'" in failures
+    assert any("docs/specs/old.md" in failure for failure in failures)
+
+
+def test_client_profit_terminology_rejects_deprecated_label(tmp_path: Path) -> None:
+    document = tmp_path / "current.md"
+    document.write_text("Прибыль после налогов", encoding="utf-8")
+
+    failures = validate_client_profit_terminology((document,))
+
+    assert failures == [
+        "current.md: deprecated client profit term remains: 'прибыль после налогов'"
     ]
 
 

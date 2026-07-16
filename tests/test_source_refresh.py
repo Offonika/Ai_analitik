@@ -36,6 +36,9 @@ from wb_unit_economics.web.models import (
     OrganizationTaxProfile,
     OrganizationTaxProfileOverride,
     ReportArtifact,
+    ReportLogisticsAnalysisContext,
+    ReportLogisticsOrderRow,
+    ReportLogisticsSkuRow,
     ReportRun,
     SourceLoad,
     SourceRefreshCollection,
@@ -738,6 +741,85 @@ def minimal_payload() -> dict:
         "reconciliationMonthly": [],
         "documentReconciliation": [],
     }
+
+
+def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = (
+        _source_refresh_context(tmp_path)
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = db.query(repository.ReportUnitRow).filter_by(
+            report_run_id=report.id
+        ).one()
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="logistics-gate-test",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="logistics gate test",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            collection,
+            row_number=1,
+            raw_payload_hash="logistics-row-hash",
+            source_row_id="rrd-1",
+            wb_cabinet_id=unit_row.wb_cabinet_id,
+            row_payload={
+                "rrDate": "2026-04-06",
+                "orderDt": "2026-04-05",
+                "orderUid": "order-1",
+                "nmId": "1001",
+                "sku": "BAR-1",
+                "vendorCode": "WB-1",
+                "title": "Товар",
+                "deliveryMethod": "FBO",
+                "docTypeName": "Логистика",
+                "sellerOperName": "Логистика",
+                "deliveryService": "50",
+                "deliveryAmount": "1",
+                "returnAmount": "0",
+            },
+        )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            refresh_runs=[refresh_run],
+        )
+        db.commit()
+
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        order_rows = db.query(ReportLogisticsOrderRow).all()
+        sku_rows = db.query(ReportLogisticsSkuRow).all()
+
+    assert context is not None
+    assert context.data_status == "ready"
+    assert context.key_coverage_pct == Decimal("100")
+    assert context.order_delta == 0
+    assert context.sku_delta == 0
+    assert len(order_rows) == 1
+    assert len(sku_rows) == 1
+    assert sku_rows[0].logistics_total == Decimal("50")
 
 
 def test_page_limit_exhaustion_detects_full_last_page_per_source_group() -> None:
@@ -1770,6 +1852,169 @@ def test_incremental_refresh_reuses_valid_full_daily_facts_base(
     assert coverage_issue == (
         f"daily_facts_coverage_gap:{report.period_start.isoformat()}"
     )
+
+
+def test_incremental_materialization_uses_exact_window_and_report_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    captured: dict[str, object] = {}
+    import scripts.rebuild_report_from_sources as rebuild
+
+    monkeypatch.setattr(
+        source_refresh,
+        "_reverify_collection_raw_integrity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_build(args, **_kwargs):
+        captured["args"] = args
+        return {"daily_facts": []}
+
+    monkeypatch.setattr(rebuild, "build_db_first_payload", fake_build)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-materialization-context",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="base",
+        )
+        repository.update_source_refresh_run(
+            db,
+            base,
+            status="report_created",
+            finished_at=datetime.now().astimezone(),
+        )
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="incremental-materialization-context",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="incremental",
+        )
+        refresh_run.base_source_refresh_run_id = base.id
+        refresh_run.source_window_start = date(2026, 5, 21)
+        refresh_run.source_window_end = date(2026, 6, 17)
+        expected_period_start = date(2026, 5, 18)
+        expected_period_end = date(2026, 6, 21)
+        current_summary = SimpleNamespace(
+            seller_account_id="seller",
+            report_id="current-summary",
+            date_from=date(2026, 6, 12),
+            date_to=date(2026, 6, 17),
+            create_date=date(2026, 6, 18),
+        )
+        service = SourceRefreshService(settings)
+        monkeypatch.setattr(
+            service,
+            "_incremental_wb_summary_rows",
+            lambda *_args, **_kwargs: [current_summary],
+        )
+        monkeypatch.setattr(
+            service,
+            "_calculation_sku_mappings",
+            lambda *_args, **_kwargs: [],
+        )
+
+        def fake_save(*_args, **kwargs):
+            captured["save_kwargs"] = kwargs
+
+        monkeypatch.setattr(service, "_save_wb_daily_facts", fake_save)
+        service._materialize_wb_daily_facts(
+            db,
+            refresh_run,
+            wb_finance_dir=tmp_path,
+            onec_dir=tmp_path,
+            wb_report_list_dir=tmp_path,
+            wb_cards_dir=tmp_path,
+            wb_stock_history_dir=tmp_path,
+        )
+
+    args = captured["args"]
+    assert args.report_period_start == expected_period_start
+    assert args.report_period_end == expected_period_end
+    assert args.wb_sales_report_summary_rows == [current_summary]
+    assert captured["save_kwargs"]["replacement_summary_rows"] == [
+        current_summary
+    ]
+
+
+def test_daily_facts_report_selection_includes_opening_partial_week(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="opening-partial-week",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 6, 17),
+            user=user,
+            source_report=report,
+            reason="opening partial week",
+        )
+        facts = [
+            MarketplaceFinanceDailyFact(
+                client_id=report.client_id,
+                seller_account_id="seller",
+                organization_id="org",
+                fact_date=fact_date,
+                marketplace_report_id=f"report-{fact_date.isoformat()}",
+                document_kind="commissioner_report",
+                source_row_count=1,
+                source_hash_digest=str(index) * 64,
+                methodology_version="test-v1",
+            )
+            for index, fact_date in enumerate(
+                (date(2026, 2, 22), date(2026, 2, 23), date(2026, 3, 1)),
+                start=1,
+            )
+        ]
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            refresh_run,
+            facts,
+            marketplace="wb",
+            coverage_start=date(2026, 2, 22),
+            coverage_end=date(2026, 6, 17),
+        )
+        selected = SourceRefreshService(settings)._daily_facts_for_report(
+            db,
+            refresh_run,
+        )
+
+    assert [item.fact_date for item in selected] == [
+        date(2026, 2, 23),
+        date(2026, 3, 1),
+    ]
 
 
 def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:

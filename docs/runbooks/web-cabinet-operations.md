@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-13"
+updated_at: "2026-07-15"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -15,18 +15,96 @@ updated_at: "2026-07-13"
 > документационной синхронизации не выполнялся. Повышать runbook до `active`
 > можно только после отдельной безопасной проверки полного сценария.
 
-Кабинет `shumeiko.offonika.ru` работает как read-only продукт:
-HTML-оболочка открывается публично, но данные отчета, Excel export, AI-чат и
-live checks доступны только после входа.
+Production-кабинет `analitika.offonika.ru` работает как read-only продукт.
+`shumeiko.offonika.ru` является staff-only test-контуром. HTML-оболочки
+открываются публично, но данные отчета, Excel export, AI-чат и live checks
+доступны только после входа.
 
 # Runtime Contours
 
-В production есть два связанных контура:
+Runtime разделен на два процесса:
 
-- `FastAPI backend` в `/opt/shumeyko-partners-wb-unit-economics`, systemd service
-  `shumeiko-web.service`, локальный адрес `127.0.0.1:8096`;
-- `nginx` на домене `https://shumeiko.offonika.ru`, который проксирует
-  публичный shell и API в FastAPI.
+- production: `shumeiko-web-prod.service`, `127.0.0.1:8097`,
+  `/etc/shumeiko-web-prod.env`, `https://analitika.offonika.ru`;
+- test: `shumeiko-web-test.service`, `127.0.0.1:8098`,
+  `/etc/shumeiko-web-test.env`, `https://shumeiko.offonika.ru`.
+
+Legacy `shumeiko-web.service` на `8096` сохраняется только на 24-часовое окно
+rollback и после cutover не имеет публичного nginx-маршрута.
+
+Оба локальных процесса контролируются отдельными timers:
+
+```bash
+systemctl status shumeiko-web-prod-health.timer
+systemctl status shumeiko-web-test-health.timer
+systemctl start shumeiko-web-prod-health.service
+systemctl start shumeiko-web-test-health.service
+```
+
+Проверка считается успешной только при `status=ok`, правильном
+`runtimeEnvironment` и одинаковых `backendBuildId`/`staticBuildId`.
+
+## Environment files
+
+Production environment задает `SHUMEYKO_RUNTIME_ENVIRONMENT=production`,
+`SHUMEYKO_CLIENT_LOGIN_ENABLED=true`, отдельное имя cookie и
+`SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=true`. Test environment задает
+`SHUMEYKO_RUNTIME_ENVIRONMENT=test`, `SHUMEYKO_CLIENT_LOGIN_ENABLED=false`,
+отдельную test БД/report root/source root и по умолчанию
+`SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false`.
+
+Если test БД принадлежит отдельной PostgreSQL-роли, перед запуском
+`scripts/create_runtime_env_files.py --apply` нужно передать ее полный URL через
+одноразовую переменную окружения `SHUMEYKO_TEST_DATABASE_URL`. Скрипт проверит,
+что URL ведет в БД из `--test-database`, и не выведет URL или пароль. После
+команды переменную нужно удалить из shell environment.
+
+После restore production backup в test БД сначала выполнить dry-run, затем
+применение sanitization только через test EnvironmentFile:
+
+```bash
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-prepare-test-db \
+  --property=WorkingDirectory=/opt/shumeyko-runtime/test/current \
+  --property=EnvironmentFile=/etc/shumeiko-web-test.env \
+  /opt/shumeyko-runtime/test/current/.venv/bin/python \
+  scripts/prepare_test_database.py
+
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-prepare-test-db-apply \
+  --property=WorkingDirectory=/opt/shumeyko-runtime/test/current \
+  --property=EnvironmentFile=/etc/shumeiko-web-test.env \
+  /opt/shumeyko-runtime/test/current/.venv/bin/python \
+scripts/prepare_test_database.py --apply
+```
+
+До запуска test создать отдельного system user и передать ему только test
+каталоги (production report/snapshot/backup каталоги не менять):
+
+```bash
+systemd-sysusers deploy/sysusers.d/shumeiko-runtime.conf
+chown -R shumeyko-test:shumeyko-test /data/shumeyko/test
+find /data/shumeyko/test -type d -exec chmod 0750 {} +
+find /data/shumeyko/test -type f -exec chmod 0640 {} +
+```
+
+Скрипт отказывается работать вне `runtime_environment=test` или с БД, имя
+которой не заканчивается на `_test`. Боевые integration secrets после clone
+не сохраняются. Отдельные read-only test-ключи вводятся staff вручную и только
+после этого master-switch внешних интеграций может быть включен.
+Повторный `--apply` допустим: файлы current reports, уже находящиеся внутри
+test report root, должны быть отмечены как `reused`, а не `unavailable`.
+
+## Maintenance communication
+
+До плановых работ задать безопасный `SHUMEYKO_MAINTENANCE_MESSAGE`, перезапустить
+production web до начала окна и отправить клиенту сообщение:
+
+> Плановые технические работы в кабинете аналитики: `<дата и время по Москве>`.
+> В это время кабинет может быть временно недоступен. После завершения отдельно
+> подтвердим восстановление работы.
+
+После smoke-check очистить сообщение и повторно проверить `/api/health`.
 
 Nginx должен проксировать в FastAPI:
 
@@ -40,18 +118,19 @@ Nginx должен проксировать в FastAPI:
 Старый статический shell из `/var/www/offonika-shumeiko/shumeiko/index.html`
 нельзя использовать для web-кабинета: он хранит устаревший контракт и может
 обращаться к `unitRows` из public summary. Актуальный nginx-шаблон лежит в
+`deploy/nginx/analitika.offonika.ru.conf` и
 `deploy/nginx/shumeiko.offonika.ru.conf`.
 
 # Безопасный запуск backend
 
-`shumeiko-web.service` нельзя включать после аварийной остановки без лимита
+`shumeiko-web-prod.service` нельзя включать после аварийной остановки без лимита
 памяти и smoke-check. Актуальный шаблон лежит в
-`deploy/systemd/shumeiko-web.service` и задает:
+`deploy/systemd/shumeiko-web-prod.service` и задает:
 
 - `MemoryMax=2G`;
-- один `uvicorn` worker на `127.0.0.1:8096`;
+- один `uvicorn` worker на `127.0.0.1:8097`;
 - `Restart=on-failure`;
-- `EnvironmentFile=/etc/shumeiko-web.env`.
+- `EnvironmentFile=/etc/shumeiko-web-prod.env`.
 
 Установка/обновление unit:
 
@@ -59,7 +138,8 @@ Nginx должен проксировать в FastAPI:
 sudo install -d /etc/systemd/system/postgresql@16-main.service.d
 sudo cp deploy/systemd/postgresql-16-main-data.conf \
   /etc/systemd/system/postgresql@16-main.service.d/shumeiko-data.conf
-sudo cp deploy/systemd/shumeiko-web.service /etc/systemd/system/
+sudo cp deploy/systemd/shumeiko-web-prod.service /etc/systemd/system/
+sudo cp deploy/systemd/shumeiko-web-test.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -72,6 +152,7 @@ cluster.
 Установка/обновление nginx-маршрута:
 
 ```bash
+sudo cp deploy/nginx/analitika.offonika.ru.conf /etc/nginx/sites-available/
 sudo cp deploy/nginx/shumeiko.offonika.ru.conf /etc/nginx/sites-available/
 sudo nginx -t
 sudo systemctl reload nginx
@@ -91,23 +172,26 @@ PostgreSQL timeout настроен через `SHUMEYKO_POSTGRES_STATEMENT_TIME
 Порядок первого запуска:
 
 ```bash
-sudo systemctl start shumeiko-web.service
-curl --noproxy '*' -fsS http://127.0.0.1:8096/api/health
+sudo systemctl start shumeiko-web-prod.service shumeiko-web-test.service
+curl --noproxy '*' -fsS http://127.0.0.1:8097/api/health
+curl --noproxy '*' -fsS http://127.0.0.1:8098/api/health
 free -h
 ps aux --sort=-%mem | head -20
-journalctl -u shumeiko-web.service -n 100 --no-pager
+journalctl -u shumeiko-web-prod.service -n 100 --no-pager
+journalctl -u shumeiko-web-test.service -n 100 --no-pager
 ```
 
 После nginx reload проверить, что публичный домен отдает FastAPI shell, а не
 legacy static:
 
 ```bash
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/cabinet | grep -q '/static/app.js'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/ai | grep -q '/static/app.js'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/integrations | grep -q '/static/app.js'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/static/app.js | grep -q 'function asArray'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/static/app.js | grep -vq 'summary.unitRows'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health
+curl --noproxy '*' -fsS https://analitika.offonika.ru/cabinet | grep -q '/static/app.js'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/ai | grep -q '/static/app.js'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/integrations | grep -q '/static/app.js'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/static/app.js | grep -q 'function asArray'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/static/app.js | grep -vq 'summary.unitRows'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/api/health
+curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health | grep -q '"runtimeEnvironment":"test"'
 ```
 
 Открыть кабинет в браузере и повторить проверку памяти. Если после входа и
@@ -115,15 +199,15 @@ curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health
 автозапуск:
 
 ```bash
-sudo systemctl enable shumeiko-web.service
+sudo systemctl enable shumeiko-web-prod.service shumeiko-web-test.service
 ```
 
 Если память снова растет до лимита или health-check нестабилен, остановить
 сервис и оставить его disabled до разбора:
 
 ```bash
-sudo systemctl stop shumeiko-web.service
-sudo systemctl disable shumeiko-web.service
+sudo systemctl stop shumeiko-web-prod.service shumeiko-web-test.service
+sudo systemctl disable shumeiko-web-prod.service shumeiko-web-test.service
 ```
 
 # Доступы
@@ -201,8 +285,98 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/import_web_report_from_excel.
 используют локальный fallback `sqlite:///data/web/shumeyko_web.sqlite3`. Это
 нормально для локального smoke, но для production может создать “обновили не ту
 базу” эффект. Перед production-публикацией всегда использовать тот же runtime
-database URL, что и `shumeiko-web.service`; значение не печатать в чат, логи
+database URL, что и `shumeiko-web-prod.service`; значение не печатать в чат, логи
 или документацию.
+
+Идемпотентные schema migrations и backfill запускаются отдельной командой до
+restart web. На production безопаснее передать существующий EnvironmentFile
+через systemd, не читая и не печатая его содержимое:
+
+```bash
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-web-migrate \
+  --property=WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics \
+  --property=EnvironmentFile=/etc/shumeiko-web-prod.env \
+  /opt/shumeyko-partners-wb-unit-economics/.venv/bin/python \
+  scripts/migrate_web_database.py
+```
+
+Команда выводит только примененную `schema_version`; database URL и секреты
+не выводятся.
+
+Для canary до клиентской публикации staff-run можно поставить в очередь через
+тот же runtime-контур, не выводя organization ID или учетные данные:
+
+```bash
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-accounting-canary-enqueue \
+  --property=WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics \
+  --property=EnvironmentFile=/etc/shumeiko-web-prod.env \
+  /opt/shumeyko-partners-wb-unit-economics/.venv/bin/python \
+  scripts/enqueue_accounting_report.py \
+  --client-match '<уникальная часть имени клиента>' \
+  --reference-organization-file data/.../organizations.raw.json \
+  --period-month YYYY-MM --report-kind month_close_control \
+  --idempotency-key '<стабильный canary key>'
+```
+
+Reference-файл должен находиться в локальном `data/`, содержать ровно одну
+организацию и не выводится командой. Вместо него допускается безопасный
+уникальный `--company-match`. Скрипт выбирает активного staff-пользователя для
+audit и печатает только ID и статус generation run. CLI только ставит canary в
+очередь; после получения `generation_run_id` оператор запускает тот же worker
+template, который использует web-кнопка:
+
+```bash
+systemctl start \
+  'shumeiko-source-refresh-worker@<generation_run_id>.service'
+```
+
+Повторный запуск unit безопасен: завершенный или уже занятый generation run не
+создает новый report run.
+
+Production drop-in worker этого пилота задает
+`SHUMEYKO_ACCOUNTING_RECORDTYPE_PAGE_SIZE=50000` только после live GET-пробы
+той же публикации. Общий default приложения равен 10000; повышать значение для
+другой 1С без отдельной проверки статуса `200` и полного размера страницы
+нельзя.
+
+Для ручного ввода идентификаторов поддерживается пара
+`--tenant-id ... --client-id ...`, но CLI проверяет их принадлежность друг
+другу. Для audit-pack предпочтителен `--client-match`: он атомарно разрешает
+оба идентификатора по единственному клиенту и не позволяет случайно запустить
+контрольную сверку в общем tenant другого клиента.
+
+После завершения month-close canary проверить payload hash, состав Excel и
+сверку со штатной ОСВ безопасным агрегатным валидатором:
+
+```bash
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-accounting-canary-verify \
+  --property=WorkingDirectory=/opt/shumeyko-partners-wb-unit-economics \
+  --property=EnvironmentFile=/etc/shumeiko-web-prod.env \
+  /opt/shumeyko-partners-wb-unit-economics/.venv/bin/python \
+  scripts/verify_month_close_canary.py \
+  --report-id '<report_id>' \
+  --reference-workbook reports/.../osv_reconciliation.xlsx \
+  --reference-side standard \
+  --excel-output reports/canary/month_close_control.xlsx \
+  --expected-report-accounts 33 \
+  --expected-reference-accounts 40 \
+  --expected-common-accounts 31 \
+  --expected-exact-accounts 30 \
+  --expected-mismatch-accounts 1 \
+  --expected-report-only-accounts 2 \
+  --expected-reference-only-accounts 9
+```
+
+Валидатор не печатает названия организаций, номера счетов или суммы: только
+hash/parity и агрегированные количества exact/mismatch/missing. Если
+`payload_hash_valid` или `excel_parity` ложны либо бухгалтерская сверка не
+соответствует контрольному audit-pack, `accounting_baseline_match=false`,
+команда завершается ненулевым кодом и вид включать нельзя. Значения expected
+относятся только к зафиксированному audit-pack; после изменения исходных
+проводок требуется новая штатная ОСВ и новый baseline, а не подгонка expected.
 
 Или через авторизованный admin API:
 
@@ -234,9 +408,9 @@ UI shell живет в FastAPI assets внутри этого репозитор
 После изменения клиентской страницы проверить публичный HTML, JS и API:
 
 ```bash
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/ | grep -q '/static/app.js'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/static/app.js | grep -q 'function asArray'
-curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health
+curl --noproxy '*' -fsS https://analitika.offonika.ru/ | grep -q '/static/app.js'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/static/app.js | grep -q 'function asArray'
+curl --noproxy '*' -fsS https://analitika.offonika.ru/api/health
 ```
 
 Для клиентской вкладки `Упущенные продажи` публичный shell должен показывать
@@ -246,7 +420,7 @@ curl --noproxy '*' -fsS https://shumeiko.offonika.ru/api/health
 # AI
 
 Ключ OpenAI задается только в runtime окружении сервиса, например в
-`/etc/shumeiko-web.env`.
+`/etc/shumeiko-web-prod.env`.
 
 AI-инструменты работают только поверх расчетной витрины и audit:
 
@@ -260,6 +434,19 @@ AI-инструменты работают только поверх расче�
 
 Если ключ пустой или OpenAI недоступен, кабинет отвечает deterministic fallback
 по тем же серверным tool outputs.
+
+Для self-hosted ChatKit custom-server режима нужен
+`SHUMEYKO_CHATKIT_ENABLED=true`. Web component подключается к same-origin
+`/api/chatkit` через `apiURL` и custom `fetch`; domain key не используется.
+До staff acceptance production оставляет feature flag выключенным.
+`/api/ai/config` показывает выбранный transport, а `/api/chatkit` при
+выключенном флаге возвращает `404`. Откат — вернуть
+`SHUMEYKO_CHATKIT_ENABLED=false`; существующие private AI threads и сообщения
+остаются доступны штатному SSE UI.
+
+Для test acceptance установить versioned drop-in
+`deploy/systemd/shumeiko-web-test.service.d/chatkit.conf`, выполнить
+`systemctl daemon-reload` и перезапустить только `shumeiko-web-test.service`.
 
 В UI панель `AI-аналитик` должна явно показывать источник ответа:
 
@@ -301,7 +488,7 @@ timestamps. OpenAI key остается сервисным runtime secret в о�
 SHUMEYKO_INTEGRATION_SECRET_KEY=<fernet-key>
 ```
 
-Значение хранить только в `/etc/shumeiko-web.env` или другом root-only runtime
+Значение хранить только в `/etc/shumeiko-web-prod.env` или другом root-only runtime
 контуре. Не записывать его в Git, Markdown, HTML, JSON или чат. Если ключ
 шифрования не задан, новый tenant secret сохраняется в `hash_only` режиме:
 кабинет покажет, что ключ введен, но `Проверить` вернет `check_failed` и
@@ -499,6 +686,34 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
 БД недоступна. Дополнительно проверить `journalctl` по timer service: в логах не
 должно быть токенов, connection strings или raw payload.
 
+## Staff-ready анализ логистики
+
+До проверки нового снимка оба флага должны оставаться выключенными:
+
+```text
+SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false
+SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
+```
+
+Порядок test-rollout:
+
+1. Применить additive schema через штатный `init_db` и включить только
+   `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=true` на test.
+2. Запустить новый `full` source refresh с read-only WB-доступом. Витрина
+   строится из сохраненных `source_snapshot_rows`, а не из ответа API на лету.
+3. Открыть draft-отчет под consultant/admin. В разделе `Логистика` статус должен
+   быть `ready` или явно `partial`; `blocked` нельзя обходить fallback-ключом.
+4. Сверить общую сумму с текущим отчетом, покрытие ключа и товара, компоненты и
+   несколько обезличенных цепочек. Старый отчет должен показывать
+   `needs_rebuild`.
+5. Клиентский флаг оставить `false` до отдельного согласования.
+
+Rollback выполняется установкой
+`SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
+маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
+витрины. Raw payload, внешние order-id и source hashes не должны появляться в
+API, UI, AI-контексте или логах.
+
 # Backup
 
 PostgreSQL backup:
@@ -634,8 +849,9 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/check_web_cabinet_health.py
 
 # Deployment Smoke
 
-- `https://shumeiko.offonika.ru` открывает login/UI по HTTPS;
-- `https://shumeiko.offonika.ru/cabinet` открывает тот же login/UI shell;
+- `https://analitika.offonika.ru` открывает production login/UI по HTTPS;
+- `https://analitika.offonika.ru/cabinet` открывает тот же login/UI shell;
+- `https://shumeiko.offonika.ru` показывает staff-only test banner;
 - `/api/health` отвечает `200`;
 - unauthenticated `/api/reports` отвечает `401`;
 - после login первый экран показывает readiness panel и качество отчета;

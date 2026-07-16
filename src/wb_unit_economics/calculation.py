@@ -598,6 +598,8 @@ def _controlled_expense_allocations(
         )
         for snapshot in snapshots
     ]
+    if snapshots and all(snapshot.preallocated_finance for snapshot in snapshots):
+        return result
     for key, items in snapshots_by_key.items():
         control = summary_controls.get(key)
         report_ids = tuple(sorted(control["report_ids"])) if control else ()
@@ -634,6 +636,52 @@ def _vat_input_allocations(
     expense_allocations: list[_ControlledExpenses],
     service_rows: list[OnecMarketplaceServiceRow],
 ) -> list[_VatInputAllocation]:
+    if snapshots and all(snapshot.preallocated_finance for snapshot in snapshots):
+        completeness_by_key: dict[tuple[str, str, date, date], str] = {}
+        snapshots_by_key: dict[
+            tuple[str, str, date, date],
+            list[WbApiSnapshot],
+        ] = defaultdict(list)
+        for snapshot in snapshots:
+            snapshots_by_key[
+                (
+                    snapshot.client_id,
+                    snapshot.organization_id,
+                    *week_bounds(snapshot.period_start),
+                )
+            ].append(snapshot)
+        for key, items in snapshots_by_key.items():
+            wb_total = money(
+                sum((item.vat_input_from_wb for item in items), Decimal("0"))
+            )
+            onec_total = money(
+                sum(
+                    (
+                        item.precomputed_vat_input_from_1c or Decimal("0")
+                        for item in items
+                    ),
+                    Decimal("0"),
+                )
+            )
+            completeness_by_key[key] = _vat_input_reconciliation_status(
+                wb_total,
+                onec_total,
+            )
+        return [
+            _VatInputAllocation(
+                from_wb=money(snapshot.vat_input_from_wb),
+                from_1c=money(snapshot.precomputed_vat_input_from_1c or Decimal("0")),
+                completeness=completeness_by_key[
+                    (
+                        snapshot.client_id,
+                        snapshot.organization_id,
+                        *week_bounds(snapshot.period_start),
+                    )
+                ],
+            )
+            for snapshot in snapshots
+        ]
+
     wb_allocated = [
         Decimal("0")
         if _is_penalty_only_snapshot(snapshot)
@@ -856,6 +904,30 @@ def _spp_discount_allocations(
         )
         for _snapshot in snapshots
     ]
+    if snapshots and all(snapshot.preallocated_finance for snapshot in snapshots):
+        for key, items in snapshots_by_key.items():
+            control = summary_controls.get(key)
+            if control is None:
+                continue
+            control_amount = money(Decimal(str(control["spp_discount"])))
+            weights = [abs(item.net_revenue) for _index, item in items]
+            method = (
+                "Равная доля по строкам"
+                if sum(weights, Decimal("0")) == 0
+                else "Доля по выручке WB после СПП"
+            )
+            for snapshot_index, snapshot in items:
+                result[snapshot_index] = _SppAllocation(
+                    discount=money(snapshot.precomputed_spp_discount or Decimal("0")),
+                    control_amount=control_amount,
+                    distribution_method=method,
+                    source_status=(
+                        "СПП из WB sales-reports/list cashbackDiscountSum; "
+                        f"распределение: {method}"
+                    ),
+                )
+        return result
+
     for key, items in snapshots_by_key.items():
         control = summary_controls.get(key)
         if control is None:
@@ -1416,6 +1488,10 @@ def _marketplace_finance_daily_facts(
         tuple[object, ...],
         list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
     ] = defaultdict(list)
+    gross_profit_by_report_grain: dict[
+        tuple[object, ...],
+        list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
+    ] = defaultdict(list)
     for key in sorted(grouped, key=lambda item: tuple(str(value) for value in item)):
         (
             client_id,
@@ -1453,6 +1529,7 @@ def _marketplace_finance_daily_facts(
             return_quantity=Decimal(bucket["return_quantity"]),
             quantity=Decimal(bucket["quantity"]),
             return_amount=money(Decimal(bucket["return_amount"])),
+            spp_discount=money(Decimal(bucket.get("spp_discount", Decimal("0")))),
             net_revenue=money(Decimal(bucket["net_revenue"])),
             wb_commission=money(Decimal(bucket["wb_commission"])),
             logistics=money(Decimal(bucket["logistics"])),
@@ -1462,10 +1539,14 @@ def _marketplace_finance_daily_facts(
             penalties_and_holdbacks=money(Decimal(bucket["penalties_and_holdbacks"])),
             acquiring=money(Decimal(bucket["acquiring"])),
             cogs=money(Decimal(bucket["cogs"])),
+            gross_profit=money(Decimal(bucket.get("gross_profit", Decimal("0")))),
             vat_input_from_marketplace=money(
                 Decimal(bucket["vat_input_from_marketplace"])
             ),
             vat_input_from_1c=money(Decimal(bucket["vat_input_from_1c"])),
+            accounting_service_input_vat=money(
+                Decimal(bucket.get("accounting_service_input_vat", Decimal("0")))
+            ),
             source_row_count=int(bucket["source_row_count"]),
             source_hash_digest=source_hash_digest,
             is_partial_source=bool(bucket["is_partial_source"]),
@@ -1493,26 +1574,45 @@ def _marketplace_finance_daily_facts(
                 len(facts) - 1,
             )
         )
+        gross_profit_by_report_grain[report_grain].append(
+            (
+                fact,
+                Decimal(bucket.get("gross_profit", Decimal("0"))),
+                len(facts) - 1,
+            )
+        )
 
-    _reconcile_daily_cogs_to_report_grain(cogs_by_report_grain)
+    _reconcile_daily_money_to_report_grain(
+        cogs_by_report_grain,
+        field_name="cogs",
+    )
+    _reconcile_daily_money_to_report_grain(
+        gross_profit_by_report_grain,
+        field_name="gross_profit",
+    )
     return facts
 
 
-def _reconcile_daily_cogs_to_report_grain(
+def _reconcile_daily_money_to_report_grain(
     grouped: dict[
         tuple[object, ...],
         list[tuple[MarketplaceFinanceDailyFact, Decimal, int]],
     ],
+    *,
+    field_name: str,
 ) -> None:
-    """Keep daily COGS cents equal to the report grain after rounding."""
+    """Keep daily monetary cents equal to the final report grain."""
     cent = Decimal("0.01")
     for report_grain in sorted(
         grouped,
         key=lambda item: tuple(str(value) for value in item),
     ):
         entries = grouped[report_grain]
-        target = money(sum((raw_cogs for _, raw_cogs, _ in entries), Decimal("0")))
-        current = sum((fact.cogs for fact, _, _ in entries), Decimal("0"))
+        target = money(sum((raw_value for _, raw_value, _ in entries), Decimal("0")))
+        current = sum(
+            (getattr(fact, field_name) for fact, _, _ in entries),
+            Decimal("0"),
+        )
         difference = target - current
         if difference == 0:
             continue
@@ -1520,12 +1620,16 @@ def _reconcile_daily_cogs_to_report_grain(
         remaining = int(abs(difference) / cent)
         candidates = sorted(
             entries,
-            key=lambda item: (item[1] - item[0].cogs, item[2]),
+            key=lambda item: (item[1] - getattr(item[0], field_name), item[2]),
             reverse=difference > 0,
         )
         for index in range(remaining):
             fact = candidates[index % len(candidates)][0]
-            fact.cogs = money(fact.cogs + step)
+            setattr(
+                fact,
+                field_name,
+                money(getattr(fact, field_name) + step),
+            )
 
 
 def build_unit_economics_report(
@@ -1667,17 +1771,25 @@ def build_unit_economics_report(
         goods_quantity = _goods_quantity(snapshot)
         cost_input_vat = _cost_input_vat_value(cost)
         cogs = (
-            _pnl_cost_value(mapping, cost, cost_input_vat)
-            if without_vat_pnl
-            else _usable_cost_value(mapping, cost)
-        ) * goods_quantity
+            snapshot.precomputed_cogs
+            if snapshot.preallocated_finance and snapshot.precomputed_cogs is not None
+            else (
+                _pnl_cost_value(mapping, cost, cost_input_vat)
+                if without_vat_pnl
+                else _usable_cost_value(mapping, cost)
+            )
+            * goods_quantity
+        )
         product_input_vat = (
             cost_input_vat * goods_quantity
             if cost_input_vat is not None
             else Decimal("0")
         )
-        accounting_service_input_vat = _deductible_service_input_vat(
-            vat_input_allocation
+        accounting_service_input_vat = (
+            snapshot.precomputed_accounting_service_input_vat
+            if snapshot.preallocated_finance
+            and snapshot.precomputed_accounting_service_input_vat is not None
+            else _deductible_service_input_vat(vat_input_allocation)
         )
         management_policy_active = bool(
             input_vat_policy is not None
@@ -1746,7 +1858,7 @@ def build_unit_economics_report(
         service_vat_for_pnl = (
             accounting_service_input_vat if without_vat_pnl else Decimal("0")
         )
-        gross_profit = (
+        calculated_gross_profit = (
             revenue_for_pnl
             - snapshot.wb_commission
             - snapshot.logistics
@@ -1757,6 +1869,12 @@ def build_unit_economics_report(
             - snapshot.acquiring
             + service_vat_for_pnl
             - cogs
+        )
+        gross_profit = (
+            snapshot.precomputed_gross_profit
+            if snapshot.preallocated_finance
+            and snapshot.precomputed_gross_profit is not None
+            else calculated_gross_profit
         )
         key = (
             snapshot.client_id,
@@ -2063,6 +2181,7 @@ def build_unit_economics_report(
                     "return_quantity": Decimal("0"),
                     "quantity": Decimal("0"),
                     "return_amount": Decimal("0"),
+                    "spp_discount": Decimal("0"),
                     "net_revenue": Decimal("0"),
                     "wb_commission": Decimal("0"),
                     "logistics": Decimal("0"),
@@ -2072,8 +2191,10 @@ def build_unit_economics_report(
                     "penalties_and_holdbacks": Decimal("0"),
                     "acquiring": Decimal("0"),
                     "cogs": Decimal("0"),
+                    "gross_profit": Decimal("0"),
                     "vat_input_from_marketplace": Decimal("0"),
                     "vat_input_from_1c": Decimal("0"),
+                    "accounting_service_input_vat": Decimal("0"),
                     "source_row_count": 0,
                     "hashes": [],
                     "is_partial_source": False,
@@ -2085,6 +2206,7 @@ def build_unit_economics_report(
                 daily_bucket["return_quantity"] += abs(goods_quantity)
                 daily_bucket["return_amount"] += abs(snapshot.net_revenue)
             daily_bucket["quantity"] += goods_quantity
+            daily_bucket["spp_discount"] += spp_allocation.discount
             daily_bucket["net_revenue"] += snapshot.net_revenue
             daily_bucket["wb_commission"] += snapshot.wb_commission
             daily_bucket["logistics"] += snapshot.logistics
@@ -2096,8 +2218,10 @@ def build_unit_economics_report(
             daily_bucket["penalties_and_holdbacks"] += snapshot.penalties_and_holdbacks
             daily_bucket["acquiring"] += snapshot.acquiring
             daily_bucket["cogs"] += cogs
+            daily_bucket["gross_profit"] += gross_profit
             daily_bucket["vat_input_from_marketplace"] += vat_input_allocation.from_wb
             daily_bucket["vat_input_from_1c"] += vat_input_allocation.from_1c
+            daily_bucket["accounting_service_input_vat"] += accounting_service_input_vat
             daily_bucket["source_row_count"] += source_row_count
             daily_bucket["hashes"].append(snapshot.raw_payload_hash)
             daily_bucket["is_partial_source"] = bool(
@@ -2200,9 +2324,7 @@ def build_unit_economics_report(
                 cost_match_status=_worst_cost_match_status(
                     bucket["cost_match_statuses"]
                 ),
-                cost_source_kind=_joined_cost_lineage(
-                    bucket["cost_source_kinds"]
-                ),
+                cost_source_kind=_joined_cost_lineage(bucket["cost_source_kinds"]),
                 cost_source_period_start=(
                     min(bucket["cost_source_period_starts"])
                     if bucket["cost_source_period_starts"]

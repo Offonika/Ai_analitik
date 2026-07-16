@@ -9,7 +9,7 @@ import re
 import shutil
 import zipfile
 from calendar import monthrange
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -20,11 +20,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from scripts.build_excel_mvp_from_snapshots import build_excel_mvp_from_args
-from wb_unit_economics.calculation import METHODOLOGY_VERSION
+from wb_unit_economics.calculation import METHODOLOGY_VERSION, week_bounds
 from wb_unit_economics.contracts import (
     MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactContract,
 )
@@ -32,7 +32,13 @@ from wb_unit_economics.contracts import (
     SkuMapping,
     WbSalesReportSummaryRow,
 )
+from wb_unit_economics.logistics_analysis import (
+    UnitEconomicsSlice,
+    build_logistics_analysis,
+    source_row_from_payload,
+)
 from wb_unit_economics.onec_odata import (
+    ACCOUNTING_REPORT_SAMPLE_COLLECTIONS,
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
     INPUT_VAT_SAMPLE_COLLECTIONS,
@@ -43,6 +49,8 @@ from wb_unit_economics.onec_odata import (
     OnecODataSettings,
     OnecSampleExportResult,
     check_onec_odata_metadata,
+    export_onec_accounting_balance_and_turnovers,
+    export_onec_accounting_recordtype_balances,
     export_onec_samples,
 )
 from wb_unit_economics.ozon import (
@@ -104,7 +112,9 @@ from wb_unit_economics.web.models import (
 )
 from wb_unit_economics.web.models import (
     MarketplaceOperationFact,
+    ReportLogisticsAnalysisContext,
     ReportRun,
+    ReportUnitRow,
     SourceRefreshCollection,
     SourceRefreshRun,
     SourceSnapshotRow,
@@ -112,6 +122,14 @@ from wb_unit_economics.web.models import (
     TenantIntegration,
     User,
     WbCabinet,
+)
+from wb_unit_economics.web.report_kinds import (
+    ACCOUNTING_REPORT_KINDS,
+    MONTH_CLOSE_CONTROL,
+)
+from wb_unit_economics.web.reports.evidence import (
+    AccountingEvidenceSource,
+    materialize_accounting_evidence,
 )
 from wb_unit_economics.web.settings import WebSettings
 
@@ -292,6 +310,12 @@ class SourceRefreshService:
         onec_exporter: Callable[..., list[OnecSampleExportResult]] = (
             export_onec_samples
         ),
+        onec_accounting_balance_exporter: Callable[
+            ..., OnecSampleExportResult
+        ] = export_onec_accounting_balance_and_turnovers,
+        onec_accounting_recordtype_exporter: Callable[
+            ..., OnecSampleExportResult
+        ] = export_onec_accounting_recordtype_balances,
         onec_metadata_checker: Callable[
             [OnecODataSettings], OnecODataMetadataCheckResult
         ]
@@ -319,6 +343,10 @@ class SourceRefreshService:
         self._ozon_stocks_exporter = ozon_stocks_exporter
         self._ozon_returns_exporter = ozon_returns_exporter
         self._onec_exporter = onec_exporter
+        self._onec_accounting_balance_exporter = onec_accounting_balance_exporter
+        self._onec_accounting_recordtype_exporter = (
+            onec_accounting_recordtype_exporter
+        )
         self._onec_metadata_checker = onec_metadata_checker or check_onec_odata_metadata
         self._workbook_builder = workbook_builder
         self._dashboard_payload_builder = dashboard_payload_builder
@@ -433,7 +461,277 @@ class SourceRefreshService:
             if refresh_run.requested_by_user_id
             else None
         )
+        if refresh_run.mode == "report-generation":
+            return self._execute_accounting_report_generation(
+                db,
+                refresh_run,
+                user=user,
+            )
         return self._execute_run(db, refresh_run, user=user)
+
+    def _execute_accounting_report_generation(
+        self,
+        db: Session,
+        generation: SourceRefreshRun,
+        *,
+        user: User | None,
+    ) -> dict[str, Any]:
+        if generation.target_report_kind not in ACCOUNTING_REPORT_KINDS:
+            raise SourceRefreshConfigError("unsupported report generation kind")
+        root_dir = (
+            self.settings.source_refresh_root_path / generation.snapshot_set_id
+        ).resolve()
+        try:
+            repository.update_source_refresh_run(
+                db,
+                generation,
+                status="running",
+                started_at=generation.started_at or security.utcnow(),
+                heartbeat_at=security.utcnow(),
+                root_dir=str(root_dir),
+            )
+            generation.generation_stage = "refreshing_sources"
+            generation.failure_code = ""
+            _commit_source_refresh_progress(db)
+            disk_issue = self._low_disk_issue()
+            if disk_issue is not None:
+                raise SourceRefreshConfigError(disk_issue["error_message"])
+            credentials = self._credentials(
+                db,
+                tenant_id=generation.tenant_id,
+                credential_source=generation.credential_source,
+                mode=generation.mode,
+            )
+            for issue in (*credentials.issues, *credentials.optional_issues):
+                repository.add_source_refresh_collection(
+                    db,
+                    generation,
+                    source_type=issue["source_type"],
+                    source_label=issue["source_label"],
+                    required=issue["required"],
+                    status=issue["status"],
+                    error_message=issue.get("error_message", ""),
+                    payload=issue.get("payload", {}),
+                    organization_id=generation.organization_id,
+                )
+            if credentials.issues or credentials.onec_settings is None:
+                raise SourceRefreshConfigError("onec_readonly_not_ready")
+            metadata_result = self._record_onec_metadata_check(
+                db,
+                generation,
+                credentials.onec_settings,
+            )
+            _commit_source_refresh_progress(db)
+            if not metadata_result.ok:
+                raise SourceRefreshConfigError("onec_odata_metadata_unavailable")
+
+            output_dir = root_dir / "onec_accounting"
+            evidence_start = generation.source_window_start or generation.period_start
+            accounting_collections = tuple(
+                collection
+                for collection in ACCOUNTING_REPORT_SAMPLE_COLLECTIONS
+                if collection.sample_id != "accounting_register_records"
+            )
+            results = self._onec_exporter(
+                credentials.onec_settings,
+                accounting_collections,
+                output_dir,
+                top=max(self._onec_page_size(), 5000),
+                # Period-local accounting collections can start well after the
+                # generic refresh cap. They retain every fetched GET page as
+                # raw evidence but materialize only the requested period.
+                max_pages=max(self._onec_max_pages(), 1000),
+                period_start=evidence_start,
+                period_end=generation.period_end,
+                source_identity=hashlib.sha256(
+                    credentials.onec_settings.base_url.encode("utf-8")
+                ).hexdigest(),
+            )
+            if generation.target_report_kind == MONTH_CLOSE_CONTROL:
+                balance_result = self._onec_accounting_balance_exporter(
+                    credentials.onec_settings,
+                    output_dir,
+                    period_start=generation.period_start,
+                    period_end=generation.period_end,
+                )
+                results = [
+                    *results,
+                    balance_result,
+                ]
+                if not balance_result.ok or balance_result.row_count == 0:
+                    results = [
+                        *results,
+                        self._onec_accounting_recordtype_exporter(
+                            credentials.onec_settings,
+                            output_dir,
+                            period_start=generation.period_start,
+                            period_end=generation.period_end,
+                            page_size=max(
+                                self._onec_page_size(),
+                                self.settings.accounting_recordtype_page_size,
+                            ),
+                            max_pages=max(self._onec_max_pages(), 1000),
+                        ),
+                    ]
+            self._record_onec(db, generation, output_dir, results)
+            repository.sync_organization_tax_profiles(db, generation, user=user)
+            repository.validate_source_snapshot_duplicates(db, generation)
+            generation.generation_stage = "materializing_evidence"
+            generation.heartbeat_at = security.utcnow()
+            _commit_source_refresh_progress(db)
+
+            sources = self._accounting_evidence_sources(db, generation, root_dir)
+            if not any(
+                source.status in {"loaded", "ready", "complete", "partial_source"}
+                for source in sources.values()
+            ):
+                raise LookupError("accounting evidence sources are unavailable")
+            evidence = materialize_accounting_evidence(
+                report_kind=generation.target_report_kind,
+                organization_id=str(generation.organization_id or ""),
+                period_start=generation.period_start,
+                period_end=generation.period_end,
+                refresh_run_id=generation.id,
+                sources=sources,
+            )
+            if generation.target_report_kind == MONTH_CLOSE_CONTROL and not (
+                evidence.get("osvBalanceAndTurnovers", {}).get("rows")
+                or evidence.get("osvRecordTypeFallback", {}).get("rows")
+            ):
+                raise LookupError("accounting osv evidence is unavailable")
+            evidence_source_type = f"{generation.target_report_kind}_evidence"
+            repository.add_source_refresh_collection(
+                db,
+                generation,
+                source_type=evidence_source_type,
+                source_label="Normalized accounting evidence v2",
+                required=True,
+                status="loaded",
+                snapshot_hash=str(evidence["evidenceSha256"]),
+                row_count=1,
+                payload={
+                    "contractVersion": evidence["contractVersion"],
+                    "organizationId": generation.organization_id,
+                    "payloadSha256": evidence["evidenceSha256"],
+                    "sourceSnapshotIds": sorted(
+                        {
+                            source.snapshot_id
+                            for source in sources.values()
+                            if source.snapshot_id
+                        }
+                    ),
+                    "normalizedEvidence": evidence,
+                },
+                organization_id=generation.organization_id,
+            )
+            generation.generation_stage = "building_report"
+            generation.heartbeat_at = security.utcnow()
+            _commit_source_refresh_progress(db)
+            repository.complete_accounting_report_generation(
+                db,
+                generation=generation,
+                user=user,
+            )
+            _commit_source_refresh_progress(db)
+            return repository.generation_run_payload(generation)
+        except Exception as exc:
+            safe_error = _safe_error(exc)
+            with suppress(Exception):
+                db.rollback()
+            generation = db.get(SourceRefreshRun, generation.id) or generation
+            repository.update_source_refresh_run(
+                db,
+                generation,
+                status="failed",
+                failure_code=(
+                    "accounting_evidence_missing"
+                    if isinstance(exc, LookupError)
+                    else "report_generation_failed"
+                ),
+                error_message=safe_error,
+                finished_at=security.utcnow(),
+            )
+            generation.generation_stage = "failed"
+            repository.audit(
+                db,
+                action="report_generation_failed",
+                user=user,
+                tenant_id=generation.tenant_id,
+                entity_type="source_refresh_run",
+                entity_id=generation.id,
+                payload={
+                    "reportKind": generation.target_report_kind,
+                    "organizationId": generation.organization_id,
+                    "errorType": exc.__class__.__name__,
+                },
+            )
+            _commit_source_refresh_progress(db)
+            return repository.generation_run_payload(generation)
+
+    def _accounting_evidence_sources(
+        self,
+        db: Session,
+        generation: SourceRefreshRun,
+        root_dir: Path,
+    ) -> dict[str, AccountingEvidenceSource]:
+        result: dict[str, AccountingEvidenceSource] = {}
+        collections = list(
+            db.scalars(
+                select(SourceRefreshCollection).where(
+                    SourceRefreshCollection.refresh_run_id == generation.id,
+                    SourceRefreshCollection.source_type.like("onec_%"),
+                    SourceRefreshCollection.source_type.notin_(
+                        {"onec_odata_metadata", "onec_tax_profiles"}
+                    ),
+                )
+            )
+        )
+        for collection in collections:
+            rows = [
+                row.row_payload or {}
+                for row in db.scalars(
+                    select(SourceSnapshotRow)
+                    .where(SourceSnapshotRow.collection_id == collection.id)
+                    .order_by(SourceSnapshotRow.row_number)
+                )
+            ]
+            if not rows:
+                rows = self._read_onec_collection_rows(
+                    collection.raw_path,
+                    allowed_root=root_dir,
+                )
+            result[collection.source_type] = AccountingEvidenceSource(
+                source_type=collection.source_type,
+                status=collection.status,
+                snapshot_id=collection.snapshot_hash or str(collection.id),
+                rows=tuple(row for row in rows if isinstance(row, Mapping)),
+            )
+        return result
+
+
+    @staticmethod
+    def _read_onec_collection_rows(
+        raw_path: str,
+        *,
+        allowed_root: Path,
+    ) -> list[dict[str, Any]]:
+        if not raw_path:
+            return []
+        path = Path(raw_path).resolve()
+        root = allowed_root.resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return []
+        try:
+            if path.stat().st_size > 100 * 1024 * 1024:
+                return []
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(payload, dict):
+            return []
+        return [
+            row for row in _extract_onec_rows(payload) if isinstance(row, dict)
+        ]
 
     def _create_refresh_run(
         self,
@@ -468,6 +766,10 @@ class SourceRefreshService:
         if resume_mode == "never" and resume_from_run_id:
             raise SourceRefreshConfigError(
                 "resume_from_run_id cannot be used with resume_mode=never"
+            )
+        if not self.settings.external_integrations_enabled and not dry_run:
+            raise SourceRefreshDisabledError(
+                "Внешние интеграции отключены для этого контура."
             )
         if not self.settings.source_refresh_enabled and not dry_run:
             raise SourceRefreshDisabledError(
@@ -1260,11 +1562,15 @@ class SourceRefreshService:
             wb_summary_rows: list[WbSalesReportSummaryRow] | None = None
             if mode == "incremental":
                 contributing_runs = self._daily_fact_contributing_runs(db, refresh_run)
-                wb_daily_facts = self._daily_facts_for_report(db, refresh_run)
                 wb_summary_rows = self._incremental_wb_summary_rows(
                     refresh_run,
                     base_refresh_run=base_refresh_run,
                     current_report_list_dir=wb_report_list_dir,
+                )
+                wb_daily_facts = self._daily_facts_for_report(
+                    db,
+                    refresh_run,
+                    wb_summary_rows=wb_summary_rows,
                 )
             report_snapshot_set_id = self._report_snapshot_set_id(
                 refresh_run,
@@ -1344,6 +1650,15 @@ class SourceRefreshService:
             mapping_report_scope = repository.reconcile_report_mapping_source_load(
                 db, new_report
             )
+            logistics_context = db.get(
+                ReportLogisticsAnalysisContext,
+                new_report.id,
+            )
+            logistics_needs_review = bool(
+                self.settings.logistics_analysis_enabled
+                and logistics_context is not None
+                and logistics_context.data_status != "ready"
+            )
             final_status = (
                 "needs_review"
                 if self._needs_review(
@@ -1353,6 +1668,7 @@ class SourceRefreshService:
                         mapping_report_scope["mappingIssueRows"] == 0
                     ),
                 )
+                or logistics_needs_review
                 else "report_created"
             )
             repository.update_source_refresh_run(
@@ -2879,10 +3195,32 @@ class SourceRefreshService:
             source_root=self.settings.source_refresh_root_path,
         )
 
+        replacement_summary_rows = self._incremental_wb_summary_rows(
+            refresh_run,
+            base_refresh_run=None,
+            current_report_list_dir=wb_report_list_dir,
+        )
+        coverage_start = refresh_run.source_window_start or refresh_run.period_start
+        coverage_end = refresh_run.source_window_end or refresh_run.period_end
+        materialization_boundary_dates = [
+            coverage_start,
+            coverage_end,
+            *(item.date_from for item in replacement_summary_rows),
+            *(item.date_to for item in replacement_summary_rows),
+            *(item.create_date for item in replacement_summary_rows),
+        ]
+        materialization_period_start = week_bounds(
+            min(materialization_boundary_dates)
+        )[0]
+        materialization_period_end = week_bounds(
+            max(materialization_boundary_dates)
+        )[1]
+
         args = argparse.Namespace(
             client_id=refresh_run.client_id,
             wb_finance_dir=wb_finance_dir,
             wb_finance_source="files-stream",
+            wb_sales_report_summary_rows=replacement_summary_rows,
             stream_cache_dir=(
                 Path("data/.cache/source_refresh_stream") / refresh_run.id
             ),
@@ -2908,12 +3246,8 @@ class SourceRefreshService:
             wb_stock_history_dir=wb_stock_history_dir,
             onec_stock_dir=onec_dir,
             onec_opiu_config=None,
-            report_period_start=(
-                refresh_run.source_window_start or refresh_run.period_start
-            ),
-            report_period_end=(
-                refresh_run.source_window_end or refresh_run.period_end
-            ),
+            report_period_start=materialization_period_start,
+            report_period_end=materialization_period_end,
             cost_amount_field="Сумма",
             sales_cost_amount_field="auto",
             source_refresh_run_id=refresh_run.id,
@@ -2975,6 +3309,7 @@ class SourceRefreshService:
             refresh_run,
             build,
             calculation_parity=calculation_parity,
+            replacement_summary_rows=replacement_summary_rows,
         )
         _commit_source_refresh_progress(db)
 
@@ -2985,15 +3320,42 @@ class SourceRefreshService:
         build: dict[str, Any],
         *,
         calculation_parity: dict[str, Any] | None = None,
+        replacement_summary_rows: Iterable[WbSalesReportSummaryRow] | None = None,
     ) -> None:
         all_daily_facts = list(build.get("daily_facts", []))
         parity = _wb_daily_fact_parity(build, all_daily_facts)
         coverage_start = refresh_run.source_window_start or refresh_run.period_start
         coverage_end = refresh_run.source_window_end or refresh_run.period_end
+        replacement_report_keys = (
+            {
+                (
+                    str(item.seller_account_id).strip(),
+                    str(item.marketplace_report_id).strip(),
+                )
+                for item in all_daily_facts
+                if str(item.seller_account_id).strip()
+                and str(item.marketplace_report_id).strip()
+            }
+            if replacement_summary_rows is None
+            else {
+                (
+                    str(item.seller_account_id).strip(),
+                    str(item.report_id).strip(),
+                )
+                for item in replacement_summary_rows
+                if str(item.seller_account_id).strip()
+                and str(item.report_id).strip()
+            }
+        )
         daily_facts = [
             item
             for item in all_daily_facts
             if coverage_start <= item.fact_date <= coverage_end
+            or (
+                item.seller_account_id,
+                item.marketplace_report_id,
+            )
+            in replacement_report_keys
         ]
         daily_fact_count = repository.replace_marketplace_finance_daily_facts(
             db,
@@ -3006,6 +3368,7 @@ class SourceRefreshService:
             ),
             coverage_start=coverage_start,
             coverage_end=coverage_end,
+            report_keys=replacement_report_keys,
         )
         persisted_parity = _persisted_daily_facts_parity(
             db,
@@ -3048,7 +3411,40 @@ class SourceRefreshService:
         self,
         db: Session,
         refresh_run: SourceRefreshRun,
+        *,
+        wb_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
     ) -> list[MarketplaceFinanceDailyFactContract]:
+        report_keys = sorted(
+            {
+                (
+                    str(item.seller_account_id).strip(),
+                    str(item.report_id).strip(),
+                )
+                for item in wb_summary_rows
+                if str(item.seller_account_id).strip()
+                and str(item.report_id).strip()
+            }
+        )
+        fact_period_start = week_bounds(refresh_run.period_start)[0]
+        fact_period_end = week_bounds(refresh_run.period_end)[1]
+        report_scope = and_(
+            MarketplaceFinanceDailyFactModel.fact_date
+            >= fact_period_start,
+            MarketplaceFinanceDailyFactModel.fact_date <= fact_period_end,
+        )
+        if report_keys:
+            report_scope = or_(
+                report_scope,
+                *(
+                    and_(
+                        MarketplaceFinanceDailyFactModel.seller_account_id
+                        == seller_account_id,
+                        MarketplaceFinanceDailyFactModel.marketplace_report_id
+                        == report_id,
+                    )
+                    for seller_account_id, report_id in report_keys
+                ),
+            )
         rows = list(
             db.scalars(
                 select(MarketplaceFinanceDailyFactModel)
@@ -3058,10 +3454,7 @@ class SourceRefreshService:
                     MarketplaceFinanceDailyFactModel.client_id
                     == refresh_run.client_id,
                     MarketplaceFinanceDailyFactModel.marketplace == "wb",
-                    MarketplaceFinanceDailyFactModel.fact_date
-                    >= refresh_run.period_start,
-                    MarketplaceFinanceDailyFactModel.fact_date
-                    <= refresh_run.period_end,
+                    report_scope,
                 )
                 .order_by(
                     MarketplaceFinanceDailyFactModel.fact_date,
@@ -3272,7 +3665,12 @@ class SourceRefreshService:
             self.settings.marketplace_daily_facts_enabled
             and wb_daily_facts is None
         ):
-            self._save_wb_daily_facts(db, refresh_run, build)
+            self._save_wb_daily_facts(
+                db,
+                refresh_run,
+                build,
+                replacement_summary_rows=wb_summary_rows,
+            )
         report = repository.save_report_marts(
             db,
             build["payload"],
@@ -3290,6 +3688,16 @@ class SourceRefreshService:
             base_refresh_run=base_refresh_run,
             contributing_runs=contributing_runs,
         )
+        if self.settings.logistics_analysis_enabled:
+            logistics_refresh_runs = [refresh_run, integrity_refresh_run]
+            if base_refresh_run is not None:
+                logistics_refresh_runs.append(base_refresh_run)
+            logistics_refresh_runs.extend(contributing_runs)
+            _build_and_persist_logistics_analysis(
+                db,
+                report,
+                refresh_runs=logistics_refresh_runs,
+            )
         _validate_marts(build["payload"])
         db.commit()
         artifact_payload = repository.report_full_payload(db, report)
@@ -5315,6 +5723,85 @@ def _persist_wb_finance_rows(
         _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _build_and_persist_logistics_analysis(
+    db: Session,
+    report: ReportRun,
+    *,
+    refresh_runs: Iterable[SourceRefreshRun],
+) -> None:
+    source_rows = []
+    seen_rows: set[tuple[str, str]] = set()
+    refresh_run_ids = sorted({item.id for item in refresh_runs if item is not None})
+    snapshot_rows = db.scalars(
+        select(SourceSnapshotRow)
+        .where(
+            SourceSnapshotRow.refresh_run_id.in_(refresh_run_ids),
+            SourceSnapshotRow.tenant_id == report.tenant_id,
+            SourceSnapshotRow.client_id == report.client_id,
+            SourceSnapshotRow.source_type == "wb_finance_detail",
+        )
+        .order_by(
+            SourceSnapshotRow.loaded_at,
+            SourceSnapshotRow.refresh_run_id,
+            SourceSnapshotRow.row_number,
+        )
+    )
+    for snapshot_row in snapshot_rows:
+        payload = snapshot_row.row_payload
+        if not isinstance(payload, Mapping):
+            continue
+        wb_cabinet_id = str(snapshot_row.wb_cabinet_id or "").strip()
+        if not wb_cabinet_id:
+            continue
+        cabinet = db.get(WbCabinet, wb_cabinet_id)
+        client_company_id = (
+            str(cabinet.client_company_id or "")
+            if cabinet is not None and cabinet.client_id == report.client_id
+            else ""
+        )
+        source_hash = str(snapshot_row.raw_payload_hash or _hash_payload(payload))
+        dedupe_key = (wb_cabinet_id, source_hash)
+        if dedupe_key in seen_rows:
+            continue
+        seen_rows.add(dedupe_key)
+        row = source_row_from_payload(
+            payload,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+            source_row_id=snapshot_row.source_row_id,
+            source_hash=source_hash,
+            fallback_date=report.period_start,
+        )
+        if report.period_start <= row.financial_date <= report.period_end:
+            source_rows.append(row)
+
+    unit_rows = []
+    for row in db.scalars(
+        select(ReportUnitRow).where(ReportUnitRow.report_run_id == report.id)
+    ):
+        financial_date = row.week or row.accounting_period_date or report.period_start
+        week_start = financial_date - timedelta(days=financial_date.weekday())
+        unit_rows.append(
+            UnitEconomicsSlice(
+                financial_week_start=week_start,
+                wb_cabinet_id=row.wb_cabinet_id,
+                client_company_id=row.client_company_id,
+                scheme=row.scheme,
+                nm_id=row.nm_id,
+                sku=row.barcode,
+                vendor_code=row.article_wb,
+                product=row.product,
+                revenue=Decimal(row.revenue),
+                profit_before_tax=Decimal(row.profit_before_tax),
+                logistics=Decimal(row.logistics),
+            )
+        )
+    result = build_logistics_analysis(source_rows, unit_rows)
+    repository.replace_report_logistics_analysis(db, report, result)
 
 
 def _persist_wb_report_list_rows(
