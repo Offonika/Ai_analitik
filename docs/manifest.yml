@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-07-15"
+updated_at: "2026-07-16"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -267,10 +267,10 @@ documents:
   - path: "docs/power-bi-wb-model-reference.md"
     title: "Power BI WB model reference"
     doc_type: "reference"
-    status: "draft"
+    status: "superseded"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Безопасная выжимка из ранней Power BI-модели WB: структура, страницы, идеи формул и ограничения переноса."
+    summary: "Superseded-reference ранней Power BI-модели; сохранён как история до перехода на Excel-методику и web-сервис."
   - path: "docs/wb-financial-report-power-bi-measures-review.md"
     title: "Сверка финансового отчета WB с ранними Power BI-мерами"
     doc_type: "analysis"

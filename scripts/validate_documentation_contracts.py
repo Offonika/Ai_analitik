@@ -45,7 +45,6 @@ CURRENT_CLIENT_SEMANTICS_DOCS = (
     ROOT / "docs" / "client-methodology.md",
     ROOT / "docs" / "client-tz.md",
     ROOT / "docs" / "calculation-formulas.md",
-    ROOT / "docs" / "power-bi-wb-model-reference.md",
 )
 FORBIDDEN_CLIENT_PROFIT_TERMS = (
     "маржинальный доход wb после налогов",

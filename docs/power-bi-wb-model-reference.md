@@ -3,12 +3,18 @@ title: "Power BI WB model reference"
 doc_type: "reference"
 domain: "marketplace-analytics"
 audience: ["engineering", "consultant"]
-status: "draft"
+status: "superseded"
 source_of_truth: false
-last_reconciled_with: "docs/decisions/2026-07-10-tax-profiles-osno-profit.md @ 2026-07-13"
-updated_at: "2026-07-15"
+superseded_by:
+  - "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
+  - "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
+updated_at: "2026-07-16"
 source_artifact: "reports/power_bi_export_input/modelWB.pbip"
 ---
+
+> **Устаревший reference.** Power BI был ранним источником идей, но не является
+> текущим продуктовым контуром. Расчёты определяет accepted Excel spec, а
+> пользовательский сервис — accepted web-cabinet spec.
 
 # Power BI WB model reference
 
@@ -273,10 +279,9 @@ unit_profit_before_tax =
   - cogs_from_1c
 ```
 
-В текущем отчете этот операционный слой называется `Управленческая прибыль WB`.
-После применения подтвержденного профильного налога клиент видит отдельный KPI
-`Прибыль до НДФЛ`. Ни один из этих показателей не является полной `Чистой
-прибылью` бизнеса.
+В раннем прототипе клиентский показатель назывался `Маржинальный доход WB после
+налогов`, а не полной `Чистой прибылью`. Это историческое название не определяет
+терминологию текущего сервиса.
 
 ## Налоги
 
@@ -287,21 +292,16 @@ unit_profit_before_tax =
 НалогУСНЗак = [Заказано руб] * 0.02
 ```
 
-Это нельзя переносить в текущий MVP. Действующая рамка определяется налоговым
-профилем организации 1С:
+В раннем переносе модели использовалась legacy-рамка:
 
 ```text
-revenue_without_vat = revenue_with_vat - vat_output
-vat_payable = vat_output - confirmed_vat_input
-management_profit_wb =
-  revenue_without_vat - cogs_without_vat - wb_expenses_without_vat
-profit_before_ndfl = management_profit_wb - confirmed_non_ndfl_income_tax
+vat_5_105 = revenue_after_spp * 5 / 105
+usn_1 = revenue_after_spp * 0.01
+profit_after_tax = unit_profit_before_tax - vat_5_105 - usn_1
 ```
 
-`НДС к уплате` остается отдельной сверкой и не вычитается из P&L повторно.
-Без подтвержденного профиля налоговые KPI остаются неопределенными, а формула
-`НДС 5/105 + УСН 1%` допустима только для legacy-отчетов с явно закрепленной
-старой версией методики.
+Эта формула сохранена только как история Power BI-прототипа. Для новых отчетов
+ее применять нельзя; действующие правила находятся в superseding Excel spec.
 
 ## СПП и цена после СПП
 

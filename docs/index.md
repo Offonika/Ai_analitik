@@ -122,12 +122,15 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/client-methodology.md` — методика расчета простым языком.
 - `docs/calculation-formulas.md` — формулы расчета показателей, сверок и
   статусов.
-- `docs/power-bi-wb-model-reference.md` — безопасная выжимка из ранней Power
-  BI-модели WB: структура, страницы, идеи формул и ограничения переноса.
-- `docs/wb-financial-report-power-bi-measures-review.md` — superseded-анализ
-  ранней Power BI-модели; сохранен только как история.
 - `docs/client-analytical-report-draft.md` — шаблон AI-черновика аналитической
   записки к Excel-отчету для проверки консультантом.
+
+# Исторические материалы
+
+- `docs/power-bi-wb-model-reference.md` — superseded-reference ранней Power
+  BI-модели; сохранён только как история до перехода на сервис.
+- `docs/wb-financial-report-power-bi-measures-review.md` — superseded-анализ
+  ранней Power BI-модели; сохранён только как история.
 
 # Доступы и операционные инструкции
 
