@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260716-tax-input-checks-v1"
+      content="20260716-report-download-flow-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260716-tax-input-checks-v1"
+      href="/static/styles.css?v=20260716-report-download-flow-v1"
     />
   </head>
   <body>
@@ -191,9 +191,9 @@
                   aria-controls="client-output-widget-overlay"
                   data-guide-entry="actions"
                   data-guide-order="30"
-                  data-guide-description="Откройте подготовленный вывод по отчёту для проверки и передачи клиенту."
+                  data-guide-description="Откройте отчёт клиенту, сформируйте файл и скачайте нужный формат."
                 >
-                  Клиентский вывод
+                  Отчёт клиенту
                 </button>
                 <button
                   id="integrations-open-button"
@@ -1719,23 +1719,58 @@
           <div class="panel-header widget-header">
             <div>
               <p class="eyebrow">Для отправки клиенту</p>
-              <h2 id="draft-title">Отчёт для клиента</h2>
+              <h2 id="draft-title">Отчёт клиенту</h2>
             </div>
             <div class="widget-actions">
-              <button id="draft-refresh-button" type="button" class="secondary-button">
-                Обновить
-              </button>
               <button
                 id="client-output-widget-close"
                 type="button"
                 class="secondary-button"
-                aria-label="Закрыть отчёт для клиента"
+                aria-label="Закрыть отчёт клиенту"
               >
                 Закрыть
               </button>
             </div>
           </div>
-          <div id="draft-status" class="draft-status"></div>
+          <p class="client-report-copy">
+            Сформируйте отчёт клиенту по открытым данным и скачайте нужный
+            формат здесь же.
+          </p>
+          <div
+            id="draft-status"
+            class="draft-status"
+            role="status"
+            aria-live="polite"
+          ></div>
+          <div class="client-report-actions" aria-label="Файлы отчёта клиенту">
+            <a
+              id="client-report-excel-download"
+              class="button-link secondary-button"
+              href="#"
+              hidden
+            >
+              Скачать Excel
+            </a>
+            <button id="client-report-generate-button" type="button">
+              Сформировать отчёт клиенту
+            </button>
+            <a
+              id="client-report-docx-download"
+              class="button-link"
+              href="#"
+              hidden
+            >
+              Скачать DOCX
+            </a>
+            <a
+              id="client-report-pdf-download"
+              class="button-link secondary-button"
+              href="#"
+              hidden
+            >
+              Скачать PDF
+            </a>
+          </div>
         </section>
       </div>
 
@@ -1786,7 +1821,7 @@
             <label>
               <span>Что сформировать</span>
               <select id="report-wizard-mode">
-                <option value="full">Клиентский отчёт WB + 1С</option>
+                <option value="full">Отчёт клиенту WB + 1С</option>
                 <option value="ozon-only">Диагностика Ozon + 1С без публикации отчёта</option>
               </select>
               <small id="report-wizard-mode-hint" class="muted"></small>
@@ -1824,6 +1859,48 @@
               role="status"
               aria-live="polite"
             ></div>
+            <section id="report-wizard-result" class="report-wizard-result" hidden>
+              <div>
+                <strong id="report-wizard-result-title">Отчёт готов — выберите файл</strong>
+                <span id="report-wizard-result-copy">
+                  Excel можно скачать сразу. DOCX отчёта клиенту формируется
+                  отдельно по этим же данным.
+                </span>
+              </div>
+              <div class="report-wizard-downloads">
+                <a
+                  id="report-wizard-excel-download"
+                  class="button-link"
+                  href="#"
+                  hidden
+                >
+                  Скачать Excel
+                </a>
+                <button
+                  id="report-wizard-client-report-generate"
+                  type="button"
+                  class="secondary-button"
+                >
+                  Сформировать отчёт клиенту
+                </button>
+                <a
+                  id="report-wizard-docx-download"
+                  class="button-link"
+                  href="#"
+                  hidden
+                >
+                  Скачать DOCX
+                </a>
+                <a
+                  id="report-wizard-pdf-download"
+                  class="button-link secondary-button"
+                  href="#"
+                  hidden
+                >
+                  Скачать PDF
+                </a>
+              </div>
+            </section>
             <div class="report-wizard-actions">
               <button id="report-wizard-submit" type="submit">
                 Проверить и сформировать
@@ -2198,9 +2275,9 @@
         </section>
       </div>
     </main>
-    <script src="/static/report-scenarios.js?v=20260716-tax-input-checks-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260716-tax-input-checks-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260716-tax-input-checks-v1" defer></script>
-    <script src="/static/app.js?v=20260716-tax-input-checks-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/app.js?v=20260716-report-download-flow-v1" defer></script>
   </body>
 </html>

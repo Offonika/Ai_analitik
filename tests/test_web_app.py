@@ -2621,8 +2621,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260716-tax-input-checks-v1"
-    assert health.json()["staticBuildId"] == "20260716-tax-input-checks-v1"
+    assert health.json()["backendBuildId"] == "20260716-report-download-flow-v1"
+    assert health.json()["staticBuildId"] == "20260716-report-download-flow-v1"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2687,6 +2687,12 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="report-wizard-period-start"' in cabinet.text
     assert 'id="report-wizard-period-end"' in cabinet.text
     assert 'id="report-wizard-dry-run"' in cabinet.text
+    assert 'id="report-wizard-result"' in cabinet.text
+    assert 'id="report-wizard-excel-download"' in cabinet.text
+    assert 'id="report-wizard-client-report-generate"' in cabinet.text
+    assert 'id="report-wizard-docx-download"' in cabinet.text
+    assert 'id="report-wizard-pdf-download"' in cabinet.text
+    assert "Отчёт готов — выберите файл" in cabinet.text
     assert "Сформировать отчёт" in cabinet.text
     assert 'id="report-download-button"' in cabinet.text
     assert "Скачать Excel" in cabinet.text
@@ -2745,8 +2751,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260716-tax-input-checks-v1" in cabinet.text
-    assert "app.js?v=20260716-tax-input-checks-v1" in cabinet.text
+    assert "styles.css?v=20260716-report-download-flow-v1" in cabinet.text
+    assert "app.js?v=20260716-report-download-flow-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -2866,6 +2872,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="done-reasons"' in cabinet.text
     assert 'id="next-action-button"' in cabinet.text
     assert 'id="client-output-button"' in cabinet.text
+    assert 'id="client-report-generate-button"' in cabinet.text
+    assert 'id="client-report-excel-download"' in cabinet.text
+    assert 'id="client-report-docx-download"' in cabinet.text
+    assert 'id="client-report-pdf-download"' in cabinet.text
+    assert "Сформируйте отчёт клиенту" in cabinet.text
     assert 'class="brand-lockup is-info"' in cabinet.text
     assert 'class="workspace-sidebar"' in cabinet.text
     assert 'data-workspace-nav="overview"' in cabinet.text
@@ -2877,9 +2888,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Как пользоваться сервисом" in cabinet.text
     assert 'id="workspace-actions-menu"' in cabinet.text
     assert 'class="secondary-button session-button"' in cabinet.text
-    assert "Отчёт для клиента" in cabinet.text
+    assert "Отчёт клиенту" in cabinet.text
     assert "Текст для клиента" not in cabinet.text
-    assert "Клиентский вывод" in cabinet.text
+    assert "Клиентский вывод" not in cabinet.text
     assert 'id="cost-review-workflow"' in cabinet.text
     assert 'data-check-panel="cost"' in cabinet.text
     assert "Найти строки" in cabinet.text
@@ -2968,7 +2979,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     client = make_client(tmp_path)
 
     app_js = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
     assert app_js.status_code == 200
+    assert styles.status_code == 200
     assert "/api/reports" in app_js.text
     assert "/summary" in app_js.text
     assert "/freshness" in app_js.text
@@ -2990,6 +3003,13 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "generatedAtIso" in app_js.text
     assert "openReportWizard" in app_js.text
     assert "onReportWizardSubmit" in app_js.text
+    assert "renderReportWizardResult" in app_js.text
+    assert "generateClientAnalyticalReport" in app_js.text
+    assert "/analytical-report" in app_js.text
+    assert "Отчёт клиенту ещё не сформирован" in app_js.text
+    assert "Черновик еще не подготовлен" not in app_js.text
+    assert ".report-wizard-result" in styles.text
+    assert ".client-report-actions" in styles.text
     assert "period_start: periodStart || null" in app_js.text
     assert "period_end: periodEnd || null" in app_js.text
     assert "Только проверить готовность" in app_js.text

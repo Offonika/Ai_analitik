@@ -359,7 +359,7 @@ UI readiness behavior:
   `source-refresh-actions` без `data-guide-*` пояснения;
 - the authenticated cabinet uses one analyst workspace shell with a persistent
   navigation rail and four page entries: `Обзор`, `Проверки`, `Таблицы` and
-  `Инструкция`; `Клиентский вывод` remains a report action, while `Настройки`
+  `Инструкция`; `Отчёт клиенту` remains a report action, while `Настройки`
   is shown only to `consultant/admin` and opens the existing integrations
   widget rather than a new page;
 - the browser URL may expose UI-only fragments `#overview`, `#checks`,
@@ -388,7 +388,7 @@ UI readiness behavior:
   success, review/warning and blocking/error information; the action area keeps
   report, management and session actions in separate responsive groups so
   `Выход` does not drift when action labels or available staff actions change;
-- navigation entry `Клиентский вывод` opens the staff/client output state as a
+- navigation entry `Отчёт клиенту` opens the staff/client output state as a
   modal widget over the current report instead of scrolling to a lower report
   section;
 - staff navigation entry `Настройки` opens read-only WB/Ozon/1C tenant
@@ -701,8 +701,9 @@ UI readiness behavior:
   отдельный мастер, а не сразу скачивает Excel. Мастер явно показывает клиента,
   контур `WB + 1С` или служебную диагностику `Ozon + 1С`, период по настройкам
   клиента либо собственные даты, режим `только проверить` и текущий статус
-  сборки. Скачивание уже опубликованного Excel остается отдельным действием
-  внутри мастера;
+  сборки. На шаге `Готовый отчёт` уже опубликованный Excel скачивается прямой
+  кнопкой, а `Отчёт клиенту` можно сформировать и скачать в DOCX/PDF на том
+  же экране без поиска в меню `Дополнительные действия`;
 - мастер передает выбранные `period_start`/`period_end` в staff-only source
   refresh API, не обещает фильтрацию по одному кабинету, если backend собирает
   все активные подключения клиента, и явно сообщает, что `ozon-only` не

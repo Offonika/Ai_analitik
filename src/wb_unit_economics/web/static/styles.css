@@ -2873,6 +2873,24 @@ button.action-insight-card {
   overflow: auto;
 }
 
+.client-report-copy {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.client-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.client-report-actions .button-link,
+.client-report-actions button {
+  min-height: 42px;
+}
+
 .new-client-widget {
   width: min(760px, 100%);
   display: grid;
@@ -3085,6 +3103,47 @@ button.action-insight-card {
   border-left-color: var(--ready);
   background: var(--ready-bg);
   color: var(--ready);
+}
+
+.report-wizard-result {
+  grid-column: 1 / -1;
+  border: 1px solid color-mix(in srgb, var(--ready), white 55%);
+  border-radius: 8px;
+  background: var(--ready-bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px;
+}
+
+.report-wizard-result > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.report-wizard-result strong {
+  color: var(--ready);
+  font-size: 15px;
+}
+
+.report-wizard-result span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.report-wizard-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.report-wizard-downloads .button-link,
+.report-wizard-downloads button {
+  min-height: 42px;
 }
 
 .report-wizard-actions {
@@ -4994,8 +5053,19 @@ td {
     flex-direction: column-reverse;
   }
 
+  .report-wizard-result,
+  .client-report-actions,
+  .report-wizard-downloads {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .report-wizard-actions .button-link,
-  .report-wizard-actions button {
+  .report-wizard-actions button,
+  .client-report-actions .button-link,
+  .client-report-actions button,
+  .report-wizard-downloads .button-link,
+  .report-wizard-downloads button {
     width: 100%;
   }
 

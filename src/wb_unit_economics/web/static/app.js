@@ -12,6 +12,9 @@ const state = {
   generationIdempotencyKey: "",
   reports: [],
   reportId: null,
+  clientReportPayload: null,
+  clientReportReportId: "",
+  clientReportBusy: false,
   clientLoadToken: 0,
   rowsRequestKey: "",
   drilldownRequestKey: "",
@@ -121,6 +124,15 @@ const els = {
   reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
   reportWizardDryRun: document.querySelector("#report-wizard-dry-run"),
   reportWizardStatus: document.querySelector("#report-wizard-status"),
+  reportWizardResult: document.querySelector("#report-wizard-result"),
+  reportWizardResultTitle: document.querySelector("#report-wizard-result-title"),
+  reportWizardResultCopy: document.querySelector("#report-wizard-result-copy"),
+  reportWizardExcelDownload: document.querySelector("#report-wizard-excel-download"),
+  reportWizardClientReportGenerate: document.querySelector(
+    "#report-wizard-client-report-generate",
+  ),
+  reportWizardDocxDownload: document.querySelector("#report-wizard-docx-download"),
+  reportWizardPdfDownload: document.querySelector("#report-wizard-pdf-download"),
   reportDownloadButton: document.querySelector("#report-download-button"),
   reportWizardSubmit: document.querySelector("#report-wizard-submit"),
   aiOpenButton: document.querySelector("#ai-open-button"),
@@ -276,7 +288,10 @@ const els = {
   ozonArticleEconomicsChart: document.querySelector("#ozon-article-economics-chart"),
   draftPanel: document.querySelector("#draft-panel"),
   draftStatus: document.querySelector("#draft-status"),
-  draftRefreshButton: document.querySelector("#draft-refresh-button"),
+  clientReportGenerateButton: document.querySelector("#client-report-generate-button"),
+  clientReportExcelDownload: document.querySelector("#client-report-excel-download"),
+  clientReportDocxDownload: document.querySelector("#client-report-docx-download"),
+  clientReportPdfDownload: document.querySelector("#client-report-pdf-download"),
   aiPanel: document.querySelector("#ai-panel"),
   aiSourceStatus: document.querySelector("#ai-source-status"),
   aiMessages: document.querySelector("#ai-messages"),
@@ -503,6 +518,10 @@ function init() {
   );
   els.reportWizardDryRun.addEventListener("change", renderReportWizardSettings);
   els.reportWizardForm.addEventListener("submit", onReportWizardSubmit);
+  els.reportWizardClientReportGenerate.addEventListener(
+    "click",
+    generateClientAnalyticalReport,
+  );
   els.nextActionButton.addEventListener("click", onNextAction);
   els.nextActionUploadFile.addEventListener("change", () =>
     onMappingFileSelected("next"),
@@ -680,8 +699,9 @@ function init() {
   });
   document.addEventListener("click", onAnalyticsAction);
   document.addEventListener("keydown", onAnalyticsAction);
-  els.draftRefreshButton.addEventListener("click", () =>
-    loadClientDraft(currentClientLoadContext()),
+  els.clientReportGenerateButton.addEventListener(
+    "click",
+    generateClientAnalyticalReport,
   );
   els.aiForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1329,18 +1349,125 @@ function closeAiWidget(options = {}) {
 function openClientOutputWidget() {
   openWidgetOverlay(els.clientOutputWidgetOverlay);
   els.draftPanel.hidden = false;
+  syncClientReportControls();
   if (!state.reportId) {
     els.draftStatus.textContent = "Сначала выберите клиента и отчет.";
     return;
   }
-  if (!els.draftStatus.textContent) {
-    els.draftStatus.textContent = "Отчёт для клиента ещё не подготовлен.";
+  const payload = currentClientReportPayload();
+  if (payload) {
+    renderClientReportReadyState(payload);
+  } else {
+    els.draftStatus.textContent =
+      "Отчёт клиенту ещё не сформирован. Нажмите «Сформировать отчёт клиенту».";
   }
-  window.setTimeout(() => els.draftRefreshButton.focus(), 0);
+  const focusTarget = payload?.files?.docx?.url
+    ? els.clientReportDocxDownload
+    : !els.clientReportGenerateButton.hidden
+      ? els.clientReportGenerateButton
+      : els.clientOutputWidgetClose;
+  window.setTimeout(() => focusTarget.focus(), 0);
 }
 
 function closeClientOutputWidget(options = {}) {
   closeWidgetOverlay(els.clientOutputWidgetOverlay, options);
+}
+
+function clientReportCanGenerate() {
+  return Boolean(
+    state.reportId &&
+      !isAccountingReportKind() &&
+      normalize(state.summary?.marketplace) !== "ozon",
+  );
+}
+
+function currentClientReportPayload() {
+  return state.clientReportReportId === state.reportId
+    ? state.clientReportPayload
+    : null;
+}
+
+function setClientReportDownloadLink(link, file) {
+  const available = Boolean(file?.status === "ok" && file?.url);
+  link.hidden = !available;
+  link.href = available ? file.url : "#";
+}
+
+function syncClientReportControls() {
+  const payload = currentClientReportPayload();
+  const excel = reportDownloadContext();
+  [els.clientReportExcelDownload, els.reportWizardExcelDownload].forEach((link) => {
+    link.hidden = !excel.visible;
+    link.href = excel.visible ? excel.href : "#";
+  });
+  [els.clientReportDocxDownload, els.reportWizardDocxDownload].forEach((link) =>
+    setClientReportDownloadLink(link, payload?.files?.docx),
+  );
+  [els.clientReportPdfDownload, els.reportWizardPdfDownload].forEach((link) =>
+    setClientReportDownloadLink(link, payload?.files?.pdf),
+  );
+  const canGenerate = clientReportCanGenerate();
+  [els.clientReportGenerateButton, els.reportWizardClientReportGenerate].forEach(
+    (button) => {
+      button.hidden = !canGenerate;
+      button.disabled = state.clientReportBusy;
+      button.textContent = state.clientReportBusy
+        ? "Формируем документ…"
+        : payload
+          ? "Сформировать заново"
+          : "Сформировать отчёт клиенту";
+    },
+  );
+}
+
+function renderClientReportReadyState(payload) {
+  const pdfReady = payload?.files?.pdf?.status === "ok";
+  els.draftStatus.textContent = pdfReady
+    ? "Отчёт клиенту готов. Выберите DOCX или PDF."
+    : "DOCX отчёта клиенту готов. PDF на сервере недоступен — скачайте DOCX.";
+  els.reportWizardResultCopy.textContent = pdfReady
+    ? "Excel и отчёт клиенту готовы. Выберите нужный формат."
+    : "Excel и DOCX отчёта клиенту готовы. PDF на сервере недоступен.";
+  syncClientReportControls();
+}
+
+async function generateClientAnalyticalReport() {
+  const reportId = state.reportId;
+  if (!reportId || !clientReportCanGenerate() || state.clientReportBusy) {
+    return;
+  }
+  state.clientReportBusy = true;
+  els.draftStatus.textContent = "Формируем отчёт клиенту в DOCX…";
+  els.reportWizardResultCopy.textContent =
+    "Формируем отчёт клиенту. Excel уже можно скачать.";
+  syncClientReportControls();
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/analytical-report`,
+      {
+        method: "POST",
+        body: JSON.stringify({ branded: true }),
+      },
+    );
+    if (state.reportId !== reportId) {
+      return;
+    }
+    state.clientReportPayload = payload;
+    state.clientReportReportId = reportId;
+    renderClientReportReadyState(payload);
+  } catch (error) {
+    if (state.reportId !== reportId) {
+      return;
+    }
+    const message =
+      error?.message || "Не удалось сформировать отчёт клиенту.";
+    els.draftStatus.textContent = message;
+    els.reportWizardResultCopy.textContent =
+      `${message} Excel остаётся доступен для скачивания.`;
+  } finally {
+    state.clientReportBusy = false;
+    syncClientReportControls();
+  }
 }
 
 async function onReportBuildButtonClick() {
@@ -1516,6 +1643,38 @@ function renderReportWizardSettings() {
       ? "Запустить диагностику"
       : "Проверить и сформировать";
   updateReportDownloadControl();
+  renderReportWizardResult(state.latestSourceRefresh);
+}
+
+function renderReportWizardResult(refresh = state.latestSourceRefresh) {
+  const mode = els.reportWizardMode.value || "full";
+  const reportIsOzon = normalize(state.summary?.marketplace) === "ozon";
+  const reportMatchesMode = mode === "ozon-only" ? reportIsOzon : !reportIsOzon;
+  const excel = reportDownloadContext();
+  const visible = Boolean(
+    state.reportId &&
+      reportMatchesMode &&
+      !isActiveSourceRefresh(refresh) &&
+      (excel.visible || clientReportCanGenerate()),
+  );
+  els.reportWizardResult.hidden = !visible;
+  if (!visible) {
+    syncClientReportControls();
+    return;
+  }
+  const justCreated = Boolean(
+    refresh?.newReportRunId === state.reportId ||
+      normalize(refresh?.status) === "report_created",
+  );
+  els.reportWizardResultTitle.textContent = justCreated
+    ? "Отчёт готов — скачайте файл"
+    : "Текущий отчёт можно скачать";
+  if (!currentClientReportPayload()) {
+    els.reportWizardResultCopy.textContent = mode === "ozon-only"
+      ? "Служебная Excel-диагностика готова для скачивания."
+      : "Excel можно скачать сразу. DOCX отчёта клиенту формируется по этим же данным.";
+  }
+  syncClientReportControls();
 }
 
 function renderReportWizardStatus(refresh) {
@@ -1538,6 +1697,7 @@ function renderReportWizardStatus(refresh) {
     step.classList.toggle("done", index < activeStep);
   });
   updateReportDownloadControl();
+  renderReportWizardResult(refresh);
   if (!refresh) {
     els.reportWizardStatus.className = "report-wizard-status";
     els.reportWizardStatus.textContent =
@@ -2854,6 +3014,9 @@ async function loadReportKinds(context = currentClientLoadContext()) {
 function clearReportSelection() {
   state.reports = [];
   state.reportId = null;
+  state.clientReportPayload = null;
+  state.clientReportReportId = "";
+  state.clientReportBusy = false;
   state.summary = null;
   state.scenario = null;
   state.freshness = null;
@@ -3033,6 +3196,11 @@ async function loadReports(context = currentClientLoadContext()) {
 async function loadReport(reportId, context = currentClientLoadContext()) {
   if (!isCurrentClientLoad(context)) {
     return;
+  }
+  if (state.clientReportReportId !== reportId) {
+    state.clientReportPayload = null;
+    state.clientReportReportId = "";
+    state.clientReportBusy = false;
   }
   state.reportId = reportId;
   state.aiThreadId = null;
@@ -3301,20 +3469,20 @@ async function loadClientDraft(context = {}) {
       return;
     }
     els.draftPanel.hidden = false;
-    if (!payload.latest) {
-      els.draftStatus.textContent = "Черновик еще не подготовлен.";
+    if (currentClientReportPayload()) {
+      renderClientReportReadyState(currentClientReportPayload());
       return;
     }
-    const status = payload.latest.status === "ready" ? "готов" : "черновик";
-    els.draftStatus.textContent = `Версия ${payload.latest.revision}: ${status}.`;
+    els.draftStatus.textContent =
+      "Отчёт клиенту ещё не сформирован. Нажмите «Сформировать отчёт клиенту».";
   } catch (error) {
     if (reportId !== state.reportId || !isCurrentClientLoad(context)) {
       return;
     }
     els.draftPanel.hidden = false;
     els.draftStatus.textContent = isStaffUser()
-      ? "Отчёт для клиента пока не подготовлен."
-      : "Отчёт для клиента готовит консультант. Данные отчета не менялись.";
+      ? "Отчёт клиенту ещё не сформирован. Нажмите «Сформировать отчёт клиенту»."
+      : "Отчёт клиенту готовит консультант. Данные отчета не менялись.";
   }
 }
 
@@ -4852,6 +5020,7 @@ function updateReportDownloadControl() {
   const { href, visible } = reportDownloadContext();
   els.reportDownloadButton.hidden = !visible;
   els.reportDownloadButton.href = visible ? href : "#";
+  syncClientReportControls();
 }
 
 function updateReportBuildButton(refresh = state.latestSourceRefresh) {
@@ -7825,7 +7994,7 @@ function nextAction({ readiness, quality, sourceLoads, refresh }) {
   if (readinessHasCode(readiness, "client_draft_missing")) {
     return {
       title: "Подготовить отчёт для клиента",
-      copy: "Данные готовы к работе, но клиентский текст еще не подготовлен.",
+      copy: "Данные готовы к работе, но отчёт клиенту ещё не сформирован.",
       button: "Открыть вывод",
       action: "clientOutput",
       meta: "AI может собрать черновик по рассчитанным фактам.",
@@ -13501,6 +13670,9 @@ function resetClientScopedState(options = {}) {
   }
   state.reports = [];
   state.reportId = null;
+  state.clientReportPayload = null;
+  state.clientReportReportId = "";
+  state.clientReportBusy = false;
   state.reportKinds = [];
   state.scenario = null;
   state.generationIdempotencyKey = "";
