@@ -17,6 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+RELEASE_SITE_MODULE = "shumeyko_release_site.py"
+RELEASE_SITE_PTH = "00-shumeyko-release-src.pth"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -48,6 +51,27 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _install_release_source_bootstrap(venv: Path) -> str:
+    """Force the copied venv to import the package from its own release."""
+
+    site_packages = sorted((venv / "lib").glob("python*/site-packages"))
+    if len(site_packages) != 1:
+        raise SystemExit("Copied runtime venv must contain one site-packages directory")
+    module = site_packages[0] / RELEASE_SITE_MODULE
+    pth = site_packages[0] / RELEASE_SITE_PTH
+    module_content = (
+        "from pathlib import Path\n"
+        "import sys\n\n"
+        "release_src = str(Path(__file__).resolve().parents[4] / 'src')\n"
+        "if release_src not in sys.path:\n"
+        "    sys.path.insert(0, release_src)\n"
+    )
+    pth_content = "import shumeyko_release_site\n"
+    module.write_text(module_content, encoding="utf-8")
+    pth.write_text(pth_content, encoding="utf-8")
+    return hashlib.sha256(f"{module_content}\0{pth_content}".encode()).hexdigest()
 
 
 def main() -> int:
@@ -86,13 +110,19 @@ def main() -> int:
             target_is_directory=True,
         )
         shutil.copytree(venv, app_dir / ".venv", symlinks=True)
+        runtime_bootstrap_sha256 = _install_release_source_bootstrap(
+            app_dir / ".venv"
+        )
 
         freeze = _run(str(venv / "bin" / "python"), "-m", "pip", "freeze")
         freeze_path = app_dir / "python-freeze.txt"
         freeze_path.write_text(freeze + "\n", encoding="utf-8")
         freeze_sha256 = _sha256(freeze_path)
         content_sha256 = hashlib.sha256(
-            f"{archive_sha256}:{freeze_sha256}".encode()
+            (
+                f"{archive_sha256}:{freeze_sha256}:"
+                f"{runtime_bootstrap_sha256}"
+            ).encode()
         ).hexdigest()
         manifest = {
             "releaseId": release_id,
@@ -101,6 +131,7 @@ def main() -> int:
             "createdAt": datetime.now(UTC).isoformat(),
             "archiveSha256": archive_sha256,
             "pythonFreezeSha256": freeze_sha256,
+            "runtimeBootstrapSha256": runtime_bootstrap_sha256,
             "contentSha256": content_sha256,
         }
         (app_dir / "release-manifest.json").write_text(

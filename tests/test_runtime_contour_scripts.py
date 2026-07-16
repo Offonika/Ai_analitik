@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
 
+from scripts.build_runtime_release import (
+    RELEASE_SITE_MODULE,
+    RELEASE_SITE_PTH,
+    _install_release_source_bootstrap,
+)
 from scripts.prepare_test_database import _safe_current_source
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_runtime_release_bootstrap_prefers_its_own_source(tmp_path: Path) -> None:
+    release = tmp_path / "runtime-release"
+    site_packages = release / ".venv/lib/python3.12/site-packages"
+    release_src = release / "src"
+    site_packages.mkdir(parents=True)
+    release_src.mkdir()
+
+    bootstrap_hash = _install_release_source_bootstrap(release / ".venv")
+
+    module = site_packages / RELEASE_SITE_MODULE
+    pth = site_packages / RELEASE_SITE_PTH
+    assert len(bootstrap_hash) == 64
+    assert pth.read_text(encoding="utf-8") == "import shumeyko_release_site\n"
+    original = list(sys.path)
+    try:
+        runpy.run_path(module)
+        assert Path(sys.path[0]).resolve() == release_src.resolve()
+    finally:
+        sys.path[:] = original
 
 
 def _read_env(path: Path) -> dict[str, str]:

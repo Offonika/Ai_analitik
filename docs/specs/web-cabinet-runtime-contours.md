@@ -82,6 +82,11 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 сборки immutable. Test и production имеют независимые атомарные symlinks
 `current`; production получает ровно проверенный test artifact.
 
+Скопированный runtime `.venv` обязан импортировать пакет только из `src` того
+же immutable release. Editable-ссылка на рабочий репозиторий или другой внешний
+checkout запрещена; bootstrap выбора `release/src` входит отдельным hash в
+manifest и в общий content hash.
+
 Миграции до окончания 24-часового окна rollback только additive и обратно
 совместимы. Rollback меняет production symlink или временно возвращает nginx
 на legacy 8096; клиентская БД не восстанавливается без отдельного решения об
@@ -103,6 +108,9 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 
 # Changelog
 
+- 2026-07-16: закреплена изоляция Python-импортов внутри immutable release;
+  runtime bootstrap и его hash запрещают copied `.venv` использовать editable
+  checkout рабочего репозитория.
 - 2026-07-15: accepted разделение production/test, DB clone sanitization,
   immutable promotion и zero-downtime cutover.
 - 2026-07-15: зафиксирована безопасная передача URL отдельной PostgreSQL-роли
