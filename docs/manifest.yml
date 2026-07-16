@@ -223,7 +223,7 @@ documents:
     source_of_truth: true
     truth_scope: "accounting-reports-smart-process"
     truth_priority: 100
-    summary: "Accepted ONEPAGE Канбана: одна ежемесячная карточка клиента и организации, две связанные задачи, ручная отправка tax_load и проверяемое закрытие к зарплате."
+    summary: "Accepted контракт еще не реализованного внутреннего workflow-модуля: ежемесячный Канбан, две задачи, ручная отправка tax_load, SLA и проверяемое закрытие к зарплате."
   - path: "docs/specs/wb-unit-economics-ai-git-workflow.md"
     title: "AI development Git workflow"
     doc_type: "spec"

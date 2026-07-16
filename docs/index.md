@@ -111,7 +111,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | Month close pilot | `docs/specs/month-close-control-pilot.md` | superseded | Исторический discovery-контур закрытия месяца; действующая реализация описана в accepted report spec. |
 | Month close report | `docs/specs/month-close-control-report-implementation.md` | accepted | Реализуется staff-only web + Excel сценарий календарного закрытия месяца с evidence v2 и advisory-проверками. |
 | Tax load report | `docs/specs/tax-load-report-implementation.md` | accepted | Реализуется staff-only отчет налоговой нагрузки за месяц и YTD, web + Excel, без неподтвержденных значений. |
-| Accounting reports smart process | `docs/specs/accounting-reports-smart-process-onepage.md` | accepted | Меняется Канбан закрытия к зарплате: одна ежемесячная карточка клиента и организации, две связанные задачи, ручная отправка `tax_load`, follow-up и правила закрытия. |
+| Accounting reports smart process | `docs/specs/accounting-reports-smart-process-onepage.md` | accepted | Проектируется еще не реализованный внутренний модуль кабинета: Канбан закрытия к зарплате, одна ежемесячная карточка клиента и организации, две задачи, ручная отправка `tax_load`, контрольный контакт и SLA. |
 | AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
 | Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
 
