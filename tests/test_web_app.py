@@ -14,6 +14,11 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import event, select, text
 
+from wb_unit_economics.logistics_analysis import (
+    LogisticsSourceRow,
+    UnitEconomicsSlice,
+    build_logistics_analysis,
+)
 from wb_unit_economics.web import dashboard_payload, integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.app import create_app
@@ -1377,6 +1382,230 @@ def login_as(client: TestClient, email: str, password: str) -> None:
         json={"email": email, "password": password},
     )
     assert response.status_code == 200
+
+
+def persist_logistics_fixture(client: TestClient) -> None:
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        source_rows = [
+            LogisticsSourceRow(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="cabinet-logistics",
+                client_company_id="company-logistics",
+                source_row_id="logistics-1",
+                source_hash="safe-source-hash-1",
+                financial_date=date(2026, 4, 6),
+                order_date=date(2026, 4, 5),
+                order_uid="external-order-must-not-leak",
+                nm_id="101",
+                sku="sku-101",
+                vendor_code="A-101",
+                product="Товар для проверки логистики",
+                scheme="fbo",
+                warehouse="Коледино",
+                destination="Россия",
+                document_type="Логистика",
+                operation_name="Логистика",
+                quantity=Decimal("0"),
+                retail_amount=Decimal("0"),
+                delivery_service=Decimal("10"),
+                delivery_amount=Decimal("1"),
+                return_amount=Decimal("0"),
+                rebill_logistic_cost=Decimal("0"),
+            )
+        ]
+        unit_rows = [
+            UnitEconomicsSlice(
+                financial_week_start=date(2026, 4, 6),
+                wb_cabinet_id="cabinet-logistics",
+                client_company_id="company-logistics",
+                scheme="fbo",
+                nm_id="101",
+                sku="sku-101",
+                vendor_code="A-101",
+                product="Товар для проверки логистики",
+                revenue=Decimal("100"),
+                profit_before_tax=Decimal("20"),
+                logistics=Decimal("10"),
+            )
+        ]
+        repository.replace_report_logistics_analysis(
+            db,
+            report,
+            build_logistics_analysis(source_rows, unit_rows),
+        )
+        db.commit()
+
+
+def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
+    tmp_path: Path,
+) -> None:
+    disabled_path = tmp_path / "disabled"
+    enabled_path = tmp_path / "enabled"
+    disabled_path.mkdir()
+    enabled_path.mkdir()
+    disabled = make_client(disabled_path)
+    login(disabled)
+    assert disabled.get("/api/reports/report-1/logistics/summary").status_code == 404
+    assert "logisticsAnalysis" not in disabled.get(
+        "/api/reports/report-1/summary"
+    ).json()
+    assert disabled.get("/api/me").json()["logisticsAnalysisEnabled"] is False
+
+    enabled = make_client(
+        enabled_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    login(enabled)
+    response = enabled.get("/api/reports/report-1/logistics/summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dataStatus"] == "needs_rebuild"
+    assert payload["kpis"]["logisticsTotal"] is None
+    assert payload["dynamics"] == []
+    assert enabled.get("/api/me").json()["logisticsAnalysisEnabled"] is True
+
+
+def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    login(client)
+
+    cabinet = client.get("/cabinet")
+    script = client.get("/static/app.js")
+    assert 'data-workspace-nav="logistics"' in cabinet.text
+    assert 'id="logistics-data-status"' in cabinet.text
+    assert 'id="logistics-products-rows"' in cabinet.text
+    assert 'id="logistics-orders-rows"' in cabinet.text
+    assert "loadLogisticsAnalysis" in script.text
+
+    summary = client.get("/api/reports/report-1/logistics/summary")
+    products = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={"product": "проверки", "limit": 10000},
+    )
+    orders = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={"productKey": "nm:101"},
+    )
+
+    assert summary.status_code == 200
+    assert summary.json()["dataStatus"] == "ready"
+    assert summary.json()["kpis"]["logisticsTotal"] == 10
+    assert summary.json()["kpis"]["logisticsSharePct"] == 10
+    assert summary.json()["components"] == {
+        "forward": 10,
+        "reverse": 0,
+        "adjustment": 0,
+        "unclassified": 0,
+    }
+    assert products.status_code == 200
+    assert products.json()["limit"] == 1000
+    assert products.json()["items"][0]["lowSample"] is True
+    assert orders.status_code == 200
+    assert orders.json()["items"][0]["chainRef"]
+    serialized = f"{summary.text}{products.text}{orders.text}"
+    assert "external-order-must-not-leak" not in serialized
+    assert "safe-source-hash-1" not in serialized
+
+
+def test_blocked_logistics_gate_is_non_overridable_publication_blocker(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        source_rows = [
+            LogisticsSourceRow(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="cabinet-logistics",
+                client_company_id="company-logistics",
+                source_row_id="missing-order-key",
+                source_hash="missing-order-key-hash",
+                financial_date=date(2026, 4, 6),
+                order_date=date(2026, 4, 5),
+                order_uid="",
+                nm_id="101",
+                sku="sku-101",
+                vendor_code="A-101",
+                product="Товар без ключа заказа",
+                scheme="fbo",
+                warehouse="Коледино",
+                destination="Россия",
+                document_type="Логистика",
+                operation_name="Логистика",
+                quantity=Decimal("0"),
+                retail_amount=Decimal("0"),
+                delivery_service=Decimal("10"),
+                delivery_amount=Decimal("1"),
+                return_amount=Decimal("0"),
+                rebill_logistic_cost=Decimal("0"),
+            )
+        ]
+        unit_rows = [
+            UnitEconomicsSlice(
+                financial_week_start=date(2026, 4, 6),
+                wb_cabinet_id="cabinet-logistics",
+                client_company_id="company-logistics",
+                scheme="fbo",
+                nm_id="101",
+                sku="sku-101",
+                vendor_code="A-101",
+                product="Товар без ключа заказа",
+                revenue=Decimal("100"),
+                profit_before_tax=Decimal("20"),
+                logistics=Decimal("10"),
+            )
+        ]
+        result = build_logistics_analysis(source_rows, unit_rows)
+        assert result.context.data_status == "blocked"
+        repository.replace_report_logistics_analysis(db, report, result)
+        db.flush()
+
+        blocker = next(
+            item
+            for item in repository.report_publication_blockers(db, report)
+            if item["code"] == "logistics_analysis_blocked"
+        )
+
+    assert blocker["nonOverridable"] is True
+
+
+def test_logistics_client_flag_does_not_expose_order_chains(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_analysis_client_enabled": True,
+        },
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="logistics-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "logistics-client@example.com", "secret")
+
+    assert client.get("/api/reports/report-1/logistics/summary").status_code == 200
+    assert client.get("/api/reports/report-1/logistics/products").status_code == 200
+    assert client.get("/api/reports/report-1/logistics/orders").status_code == 404
+    assert client.get("/api/reports/other-report/logistics/summary").status_code == 404
 
 
 def test_import_dashboard_payload_replaces_existing_report_rows(tmp_path: Path) -> None:
@@ -2936,7 +3165,7 @@ def test_user_guide_is_generated_from_current_interface_metadata(
 
     assert app_js.status_code == 200
     assert 'if (value === "guide")' in app_js.text
-    assert '["overview", "checks", "tables", "guide"]' in app_js.text
+    assert '["overview", "checks", "tables", "logistics", "guide"]' in app_js.text
     assert "function renderUserGuide()" in app_js.text
     assert "document.querySelectorAll(`[data-guide-entry=" in app_js.text
     assert "guideEntryVisibleForRole" in app_js.text

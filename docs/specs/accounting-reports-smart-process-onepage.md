@@ -3,12 +3,23 @@ spec_id: "workspace-shumeyko-accounting-reports-smart-process-onepage"
 title: "ONEPAGE: смарт-процесс закрытия месяца и налоговой нагрузки"
 doc_type: spec
 domain: "accounting-operations"
-status: accepted
+status: implemented
 owner: "operations"
 audience: ["engineering", "consultant", "operations", "accountant"]
 source_of_truth: true
 truth_scope: "accounting-reports-smart-process"
 truth_priority: 100
+related_code:
+  - src/wb_unit_economics/web/accounting_workflow.py
+  - src/wb_unit_economics/web/app.py
+  - src/wb_unit_economics/web/models.py
+  - src/wb_unit_economics/web/settings.py
+  - src/wb_unit_economics/web/static/accounting-workflows.html
+  - src/wb_unit_economics/web/static/accounting-workflows.js
+  - scripts/run_accounting_workflow_scheduler.py
+  - sql/postgres_schema.sql
+related_tests:
+  - tests/test_accounting_workflow.py
 contracts:
   - accounting_reports_workflow
 depends_on:
@@ -22,10 +33,12 @@ updated_at: "2026-07-16"
 
 # Статус документа
 
-Это accepted ONEPAGE-концепция операционного смарт-процесса. Смарт-процесс
-реализуется как модуль web-кабинета этого сервиса. Концепция фиксирует
-согласованную модель Канбана, двух связанных задач и закрытия к зарплате, но
-сама по себе не означает, что модуль уже реализован и развернут.
+Это implemented ONEPAGE-контракт операционного смарт-процесса. Смарт-процесс
+реализован как staff-only модуль web-кабинета этого сервиса: модель хранения,
+API, Канбан, таблица, защищенные доказательства, планировщик, follow-up и audit
+находятся за выключенным по умолчанию feature-флагом. Статус `implemented` не
+означает, что модуль уже включен в production: условия пилота и ручная приемка
+сохраняются в разделе rollout.
 
 Первая версия работает без внешних интеграций: синхронизация с FinKoper или
 другими CRM не выполняется и отнесена ко второму этапу отдельным accepted
@@ -510,6 +523,11 @@ Rollback отключает feature-флаг модуля и создание к
 
 # Changelog
 
+- 2026-07-16: контракт реализован за выключенным feature-флагом: добавлены
+  схема хранения, API и CSRF, отдельное разрешение руководителя, Канбан и
+  таблица, безопасные evidence-вложения, контроль current-ревизий, monthly-run,
+  follow-up, audit, планировщик, runbook и автоматические тесты; production
+  rollout не выполнялся.
 - 2026-07-16: добавлен проверяемый workflow-контракт: стабильные стадии и
   статусы задач, SLA из исходных регламентов, модель хранения и API, отдельное
   разрешение руководителя, правила доказательств, Test Plan и поэтапный rollout;

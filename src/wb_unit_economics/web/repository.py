@@ -44,6 +44,12 @@ from wb_unit_economics.liquidity import (
     liquidity_rows_payload,
     liquidity_statuses,
 )
+from wb_unit_economics.logistics_analysis import (
+    CHAIN_KEY_VERSION,
+    LOGISTICS_METHODOLOGY_VERSION,
+    LOW_SAMPLE_THRESHOLD,
+    LogisticsAnalysisResult,
+)
 from wb_unit_economics.ozon_mart import (
     _onec_commissioner_revenue_by_item,
     build_ozon_unit_economics_mart,
@@ -77,6 +83,9 @@ from wb_unit_economics.web.models import (
     ReportArtifact,
     ReportDocumentReconciliationRow,
     ReportGenerationRequest,
+    ReportLogisticsAnalysisContext,
+    ReportLogisticsOrderRow,
+    ReportLogisticsSkuRow,
     ReportLostSalesRow,
     ReportMarketplaceExpenseRow,
     ReportReconciliationMonthly,
@@ -12826,6 +12835,9 @@ def _set_report_current(db: Session, report: ReportRun) -> None:
 
 def _clear_report_payload(db: Session, report_id: str) -> None:
     for model in (
+        ReportLogisticsSkuRow,
+        ReportLogisticsOrderRow,
+        ReportLogisticsAnalysisContext,
         ReportUnitRow,
         ReportLostSalesRow,
         ReportReconciliationMonthly,
@@ -12836,6 +12848,895 @@ def _clear_report_payload(db: Session, report_id: str) -> None:
         LiveCheckCache,
     ):
         db.execute(delete(model).where(model.report_run_id == report_id))
+
+
+def replace_report_logistics_analysis(
+    db: Session,
+    report: ReportRun,
+    result: LogisticsAnalysisResult,
+) -> ReportLogisticsAnalysisContext:
+    existing = db.get(ReportLogisticsAnalysisContext, report.id)
+    if existing is not None:
+        if existing.input_hash == result.context.input_hash:
+            return existing
+        raise ValueError("logistics analysis marts are immutable for a report")
+    db.execute(
+        delete(ReportLogisticsSkuRow).where(
+            ReportLogisticsSkuRow.report_run_id == report.id
+        )
+    )
+    db.execute(
+        delete(ReportLogisticsOrderRow).where(
+            ReportLogisticsOrderRow.report_run_id == report.id
+        )
+    )
+    db.execute(
+        delete(ReportLogisticsAnalysisContext).where(
+            ReportLogisticsAnalysisContext.report_run_id == report.id
+        )
+    )
+    context = result.context
+    persisted = ReportLogisticsAnalysisContext(
+        report_run_id=report.id,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        source_snapshot_set_id=report.source_snapshot_set_id,
+        data_status=context.data_status,
+        methodology_version=context.methodology_version,
+        chain_key_version=context.chain_key_version,
+        source_row_count=context.source_row_count,
+        logistics_row_count=context.logistics_row_count,
+        keyed_logistics_row_count=context.keyed_logistics_row_count,
+        product_logistics_row_count=context.product_logistics_row_count,
+        key_coverage_pct=context.key_coverage_pct,
+        product_coverage_pct=context.product_coverage_pct,
+        classification_row_coverage_pct=(
+            context.classification_row_coverage_pct
+        ),
+        cross_cabinet_collision_count=context.cross_cabinet_collision_count,
+        raw_logistics_total=context.raw_logistics_total,
+        order_logistics_total=context.order_logistics_total,
+        sku_logistics_total=context.sku_logistics_total,
+        report_logistics_total=context.report_logistics_total,
+        order_delta=context.order_delta,
+        sku_delta=context.sku_delta,
+        blocking_reasons=list(context.blocking_reasons),
+        review_reasons=list(context.review_reasons),
+        input_hash=context.input_hash,
+        created_at=security.utcnow(),
+    )
+    db.add(persisted)
+    for row in result.order_rows:
+        db.add(
+            ReportLogisticsOrderRow(
+                report_run_id=report.id,
+                tenant_id=row.tenant_id,
+                client_id=row.client_id,
+                wb_cabinet_id=row.wb_cabinet_id,
+                client_company_id=row.client_company_id,
+                chain_key=row.chain_key,
+                chain_segment_key=row.chain_segment_key,
+                countable_order=row.countable_order,
+                financial_week_start=row.financial_week_start,
+                operation_date_start=row.operation_date_start,
+                operation_date_end=row.operation_date_end,
+                order_date=row.order_date,
+                product_key=row.product_key,
+                nm_id=row.nm_id,
+                sku=row.sku,
+                vendor_code=row.vendor_code,
+                product=row.product,
+                scheme=row.scheme,
+                warehouse=row.warehouse,
+                destination=row.destination,
+                logistics_total=row.logistics_total,
+                logistics_forward=row.logistics_forward,
+                logistics_reverse=row.logistics_reverse,
+                logistics_adjustment=row.logistics_adjustment,
+                logistics_unclassified=row.logistics_unclassified,
+                sales_quantity=row.sales_quantity,
+                return_quantity=row.return_quantity,
+                net_quantity=row.net_quantity,
+                source_revenue=row.source_revenue,
+                source_row_count=row.source_row_count,
+                logistics_row_count=row.logistics_row_count,
+                classified_row_count=row.classified_row_count,
+                source_hash_digest=row.source_hash_digest,
+                classification_status=row.classification_status,
+                coverage_status=row.coverage_status,
+                data_quality_status=row.data_quality_status,
+            )
+        )
+    for row in result.sku_rows:
+        row_uid = hashlib.sha256(
+            "\x1f".join(
+                (
+                    report.id,
+                    row.financial_week_start.isoformat(),
+                    row.wb_cabinet_id,
+                    row.client_company_id,
+                    row.scheme,
+                    row.product_key,
+                )
+            ).encode()
+        ).hexdigest()
+        db.add(
+            ReportLogisticsSkuRow(
+                report_run_id=report.id,
+                row_uid=row_uid,
+                financial_week_start=row.financial_week_start,
+                wb_cabinet_id=row.wb_cabinet_id,
+                client_company_id=row.client_company_id,
+                scheme=row.scheme,
+                product_key=row.product_key,
+                nm_id=row.nm_id,
+                sku=row.sku,
+                vendor_code=row.vendor_code,
+                product=row.product,
+                logistics_total=row.logistics_total,
+                logistics_forward=row.logistics_forward,
+                logistics_reverse=row.logistics_reverse,
+                logistics_adjustment=row.logistics_adjustment,
+                logistics_unclassified=row.logistics_unclassified,
+                revenue=row.revenue,
+                profit_before_tax=row.profit_before_tax,
+                profit_without_logistics=row.profit_without_logistics,
+                profit_effect_amount=row.profit_effect_amount,
+                logistics_share_pct=row.logistics_share_pct,
+                logistics_per_order=row.logistics_per_order,
+                logistics_per_sale=row.logistics_per_sale,
+                sales_quantity=row.sales_quantity,
+                return_quantity=row.return_quantity,
+                chain_count=row.chain_count,
+                logistics_row_count=row.logistics_row_count,
+                classified_row_count=row.classified_row_count,
+                low_sample=row.low_sample,
+                classification_status=row.classification_status,
+                coverage_status=row.coverage_status,
+                data_quality_status=row.data_quality_status,
+                recommendation_flags=list(row.recommendation_flags),
+                source_hash_digest=row.source_hash_digest,
+            )
+        )
+    audit(
+        db,
+        action="report_logistics_analysis_saved",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "dataStatus": context.data_status,
+            "methodologyVersion": context.methodology_version,
+            "chainKeyVersion": context.chain_key_version,
+            "orderRows": len(result.order_rows),
+            "skuRows": len(result.sku_rows),
+        },
+    )
+    db.flush()
+    return persisted
+
+
+def report_logistics_summary_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+) -> dict[str, Any]:
+    context = db.get(ReportLogisticsAnalysisContext, report.id)
+    meta = _report_logistics_meta(report, context)
+    if context is None or context.data_status == "blocked":
+        return _logistics_json_safe({
+            **meta,
+            "kpis": _empty_logistics_kpis(),
+            "dynamics": [],
+            "components": _empty_logistics_components(),
+            "rankings": {
+                "byTotal": [],
+                "byRevenueShare": [],
+                "byProfitEffect": [],
+            },
+            "recommendations": _logistics_recommendations(context, []),
+        })
+
+    sku_rows = _filtered_logistics_sku_rows(
+        db,
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    order_rows = _filtered_logistics_order_rows(
+        db,
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    products = [
+        item
+        for item in _aggregate_logistics_products(sku_rows, order_rows)
+        if int(item["logisticsRowCount"]) > 0
+    ]
+    logistics_total = _sum_decimal(sku_rows, "logistics_total")
+    revenue = _sum_decimal(sku_rows, "revenue")
+    profit_values = [
+        decimal_value(row.profit_before_tax)
+        for row in sku_rows
+        if row.profit_before_tax is not None
+    ]
+    profit_before_tax = sum(profit_values, Decimal("0")) if profit_values else None
+    profit_effect = _sum_decimal(sku_rows, "profit_effect_amount")
+    countable_chains = {
+        row.chain_key for row in order_rows if row.countable_order and row.chain_key
+    }
+    sales_quantity = _sum_decimal(order_rows, "sales_quantity")
+    return_quantity = _sum_decimal(order_rows, "return_quantity")
+    dynamics: list[dict[str, Any]] = []
+    by_week: dict[date, list[ReportLogisticsSkuRow]] = defaultdict(list)
+    for row in sku_rows:
+        by_week[row.financial_week_start].append(row)
+    for week_start, rows in sorted(by_week.items()):
+        week_logistics = _sum_decimal(rows, "logistics_total")
+        week_revenue = _sum_decimal(rows, "revenue")
+        dynamics.append(
+            {
+                "periodStart": week_start.isoformat(),
+                "logisticsTotal": week_logistics,
+                "revenue": week_revenue,
+                "logisticsSharePct": _positive_share(
+                    week_logistics, week_revenue
+                ),
+            }
+        )
+
+    return _logistics_json_safe({
+        **meta,
+        "kpis": {
+            "logisticsTotal": logistics_total,
+            "logisticsSharePct": _positive_share(logistics_total, revenue),
+            "profitEffectAmount": profit_effect,
+            "profitBeforeTax": profit_before_tax,
+            "profitWithoutLogistics": (
+                profit_before_tax + logistics_total
+                if profit_before_tax is not None
+                else None
+            ),
+            "logisticsPerOrder": (
+                logistics_total / len(countable_chains)
+                if countable_chains
+                else None
+            ),
+            "logisticsPerSale": (
+                logistics_total / sales_quantity
+                if sales_quantity > 0
+                else None
+            ),
+            "orderCount": len(countable_chains),
+            "salesQuantity": sales_quantity,
+            "returnQuantity": return_quantity,
+            "revenue": revenue,
+        },
+        "dynamics": dynamics,
+        "components": {
+            "forward": _sum_decimal(sku_rows, "logistics_forward"),
+            "reverse": _sum_decimal(sku_rows, "logistics_reverse"),
+            "adjustment": _sum_decimal(sku_rows, "logistics_adjustment"),
+            "unclassified": _sum_decimal(
+                sku_rows, "logistics_unclassified"
+            ),
+        },
+        "rankings": {
+            "byTotal": sorted(
+                products,
+                key=lambda item: decimal_value(item["logisticsTotal"]),
+                reverse=True,
+            )[:10],
+            "byRevenueShare": sorted(
+                (
+                    item
+                    for item in products
+                    if item["logisticsSharePct"] is not None
+                ),
+                key=lambda item: decimal_value(item["logisticsSharePct"]),
+                reverse=True,
+            )[:10],
+            "byProfitEffect": sorted(
+                products,
+                key=lambda item: decimal_value(item["profitEffectAmount"]),
+            )[:10],
+        },
+        "recommendations": _logistics_recommendations(context, products),
+    })
+
+
+def report_logistics_products_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+    sort_by: str = "logisticsTotal",
+    sort_order: str = "desc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    context = db.get(ReportLogisticsAnalysisContext, report.id)
+    meta = _report_logistics_meta(report, context)
+    if context is None or context.data_status == "blocked":
+        return _logistics_json_safe(
+            {**meta, "items": [], "total": 0, "offset": offset, "limit": limit}
+        )
+    sku_rows = _filtered_logistics_sku_rows(
+        db,
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    order_rows = _filtered_logistics_order_rows(
+        db,
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    items = [
+        item
+        for item in _aggregate_logistics_products(sku_rows, order_rows)
+        if int(item["logisticsRowCount"]) > 0
+    ]
+    sort_fields = {
+        "logisticsTotal",
+        "logisticsSharePct",
+        "profitEffectAmount",
+        "revenue",
+        "orderCount",
+        "returnQuantity",
+        "product",
+    }
+    field = sort_by if sort_by in sort_fields else "logisticsTotal"
+    reverse = sort_order.casefold() != "asc"
+
+    if field == "product":
+        items.sort(
+            key=lambda item: str(item.get(field) or "").casefold(),
+            reverse=reverse,
+        )
+    else:
+        missing_value = Decimal("-Infinity") if reverse else Decimal("Infinity")
+        items.sort(
+            key=lambda item: (
+                decimal_value(item[field])
+                if item.get(field) is not None
+                else missing_value
+            ),
+            reverse=reverse,
+        )
+    return _logistics_json_safe({
+        **meta,
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "offset": offset,
+        "limit": limit,
+    })
+
+
+def report_logistics_orders_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+    product_key: str = "",
+    sort_by: str = "operationDateEnd",
+    sort_order: str = "desc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    context = db.get(ReportLogisticsAnalysisContext, report.id)
+    meta = _report_logistics_meta(report, context)
+    if context is None or context.data_status == "blocked":
+        return _logistics_json_safe(
+            {**meta, "items": [], "total": 0, "offset": offset, "limit": limit}
+        )
+    rows = _filtered_logistics_order_rows(
+        db,
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+        product_key=product_key,
+    )
+    items = [_logistics_order_payload(row) for row in rows]
+    sort_fields = {
+        "operationDateEnd",
+        "orderDate",
+        "logisticsTotal",
+        "returnQuantity",
+        "product",
+    }
+    field = sort_by if sort_by in sort_fields else "operationDateEnd"
+    reverse = sort_order.casefold() != "asc"
+    if field in {"operationDateEnd", "orderDate", "product"}:
+        missing_text = "" if reverse else "\U0010ffff"
+        items.sort(
+            key=lambda item: (
+                str(item[field]) if item.get(field) is not None else missing_text
+            ),
+            reverse=reverse,
+        )
+    else:
+        missing_value = Decimal("-Infinity") if reverse else Decimal("Infinity")
+        items.sort(
+            key=lambda item: (
+                decimal_value(item[field])
+                if item.get(field) is not None
+                else missing_value
+            ),
+            reverse=reverse,
+        )
+    return _logistics_json_safe({
+        **meta,
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "offset": offset,
+        "limit": limit,
+    })
+
+
+def _report_logistics_meta(
+    report: ReportRun,
+    context: ReportLogisticsAnalysisContext | None,
+) -> dict[str, Any]:
+    if context is None:
+        return {
+            "reportId": report.id,
+            "dataStatus": "needs_rebuild",
+            "methodologyVersion": LOGISTICS_METHODOLOGY_VERSION,
+            "chainKeyVersion": CHAIN_KEY_VERSION,
+            "valueType": "fact",
+            "coverage": {
+                "keyPct": None,
+                "productPct": None,
+                "classificationPct": None,
+                "logisticsRows": 0,
+                "keyedRows": 0,
+                "productRows": 0,
+            },
+        }
+    return {
+        "reportId": report.id,
+        "dataStatus": context.data_status,
+        "methodologyVersion": context.methodology_version,
+        "chainKeyVersion": context.chain_key_version,
+        "valueType": "fact",
+        "coverage": {
+            "keyPct": context.key_coverage_pct,
+            "productPct": context.product_coverage_pct,
+            "classificationPct": context.classification_row_coverage_pct,
+            "logisticsRows": context.logistics_row_count,
+            "keyedRows": context.keyed_logistics_row_count,
+            "productRows": context.product_logistics_row_count,
+            "crossCabinetCollisions": context.cross_cabinet_collision_count,
+        },
+    }
+
+
+def _filtered_logistics_sku_rows(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None,
+    period_end: date | None,
+    wb_cabinet_id: str,
+    client_company_id: str,
+    scheme: str,
+    product_query: str,
+) -> list[ReportLogisticsSkuRow]:
+    conditions: list[Any] = [ReportLogisticsSkuRow.report_run_id == report.id]
+    if period_start is not None:
+        conditions.append(ReportLogisticsSkuRow.financial_week_start >= period_start)
+    if period_end is not None:
+        conditions.append(ReportLogisticsSkuRow.financial_week_start <= period_end)
+    if wb_cabinet_id:
+        conditions.append(ReportLogisticsSkuRow.wb_cabinet_id == wb_cabinet_id)
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsSkuRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(ReportLogisticsSkuRow.scheme == scheme.casefold())
+    query = product_query.strip()
+    if query:
+        pattern = f"%{query}%"
+        conditions.append(
+            or_(
+                ReportLogisticsSkuRow.product.ilike(pattern),
+                ReportLogisticsSkuRow.vendor_code.ilike(pattern),
+                ReportLogisticsSkuRow.nm_id.ilike(pattern),
+                ReportLogisticsSkuRow.sku.ilike(pattern),
+            )
+        )
+    return list(
+        db.scalars(
+            select(ReportLogisticsSkuRow)
+            .where(*conditions)
+            .order_by(
+                ReportLogisticsSkuRow.financial_week_start,
+                ReportLogisticsSkuRow.product_key,
+            )
+        )
+    )
+
+
+def _filtered_logistics_order_rows(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None,
+    period_end: date | None,
+    wb_cabinet_id: str,
+    client_company_id: str,
+    scheme: str,
+    product_query: str,
+    product_key: str = "",
+) -> list[ReportLogisticsOrderRow]:
+    conditions: list[Any] = [ReportLogisticsOrderRow.report_run_id == report.id]
+    if period_start is not None:
+        conditions.append(
+            ReportLogisticsOrderRow.financial_week_start >= period_start
+        )
+    if period_end is not None:
+        conditions.append(
+            ReportLogisticsOrderRow.financial_week_start <= period_end
+        )
+    if wb_cabinet_id:
+        conditions.append(ReportLogisticsOrderRow.wb_cabinet_id == wb_cabinet_id)
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsOrderRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(ReportLogisticsOrderRow.scheme == scheme.casefold())
+    if product_key:
+        conditions.append(ReportLogisticsOrderRow.product_key == product_key)
+    query = product_query.strip()
+    if query:
+        pattern = f"%{query}%"
+        conditions.append(
+            or_(
+                ReportLogisticsOrderRow.product.ilike(pattern),
+                ReportLogisticsOrderRow.vendor_code.ilike(pattern),
+                ReportLogisticsOrderRow.nm_id.ilike(pattern),
+                ReportLogisticsOrderRow.sku.ilike(pattern),
+            )
+        )
+    return list(
+        db.scalars(
+            select(ReportLogisticsOrderRow)
+            .where(*conditions)
+            .order_by(
+                ReportLogisticsOrderRow.operation_date_end.desc(),
+                ReportLogisticsOrderRow.id.desc(),
+            )
+        )
+    )
+
+
+def _aggregate_logistics_products(
+    sku_rows: Iterable[ReportLogisticsSkuRow],
+    order_rows: Iterable[ReportLogisticsOrderRow],
+) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in sku_rows:
+        bucket = buckets.setdefault(
+            row.product_key,
+            {
+                "productKey": row.product_key,
+                "nmId": row.nm_id,
+                "sku": row.sku,
+                "vendorCode": row.vendor_code,
+                "product": row.product,
+                "logisticsTotal": Decimal("0"),
+                "logisticsForward": Decimal("0"),
+                "logisticsReverse": Decimal("0"),
+                "logisticsAdjustment": Decimal("0"),
+                "logisticsUnclassified": Decimal("0"),
+                "revenue": Decimal("0"),
+                "profitBeforeTax": Decimal("0"),
+                "profitKnown": False,
+                "profitEffectAmount": Decimal("0"),
+                "salesQuantity": Decimal("0"),
+                "returnQuantity": Decimal("0"),
+                "logisticsRowCount": 0,
+                "chains": set(),
+                "recommendationFlags": set(),
+                "classificationStatuses": set(),
+                "dataQualityStatuses": set(),
+            },
+        )
+        for target, source in (
+            ("logisticsTotal", row.logistics_total),
+            ("logisticsForward", row.logistics_forward),
+            ("logisticsReverse", row.logistics_reverse),
+            ("logisticsAdjustment", row.logistics_adjustment),
+            ("logisticsUnclassified", row.logistics_unclassified),
+            ("revenue", row.revenue),
+            ("profitEffectAmount", row.profit_effect_amount),
+            ("salesQuantity", row.sales_quantity),
+            ("returnQuantity", row.return_quantity),
+        ):
+            bucket[target] += decimal_value(source)
+        if row.profit_before_tax is not None:
+            bucket["profitBeforeTax"] += decimal_value(row.profit_before_tax)
+            bucket["profitKnown"] = True
+        bucket["recommendationFlags"].update(row.recommendation_flags or [])
+        bucket["classificationStatuses"].add(row.classification_status)
+        bucket["dataQualityStatuses"].add(row.data_quality_status)
+        bucket["logisticsRowCount"] += int(row.logistics_row_count or 0)
+    for row in order_rows:
+        bucket = buckets.get(row.product_key)
+        if bucket is not None and row.countable_order and row.chain_key:
+            bucket["chains"].add(row.chain_key)
+
+    result: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        order_count = len(bucket.pop("chains"))
+        profit_known = bool(bucket.pop("profitKnown"))
+        flags = sorted(bucket.pop("recommendationFlags"))
+        classification_statuses = bucket.pop("classificationStatuses")
+        quality_statuses = bucket.pop("dataQualityStatuses")
+        logistics_total = decimal_value(bucket["logisticsTotal"])
+        revenue = decimal_value(bucket["revenue"])
+        sales = decimal_value(bucket["salesQuantity"])
+        profit = decimal_value(bucket["profitBeforeTax"]) if profit_known else None
+        result.append(
+            {
+                **bucket,
+                "profitBeforeTax": profit,
+                "profitWithoutLogistics": (
+                    profit + logistics_total if profit is not None else None
+                ),
+                "logisticsSharePct": _positive_share(logistics_total, revenue),
+                "logisticsPerOrder": (
+                    logistics_total / order_count if order_count else None
+                ),
+                "logisticsPerSale": (
+                    logistics_total / sales if sales > 0 else None
+                ),
+                "orderCount": order_count,
+                "lowSample": order_count < LOW_SAMPLE_THRESHOLD,
+                "classificationStatus": (
+                    "ready" if classification_statuses == {"ready"} else "partial"
+                ),
+                "dataQualityStatus": (
+                    "ready" if quality_statuses == {"ready"} else "partial"
+                ),
+                "recommendationFlags": flags,
+            }
+        )
+    return result
+
+
+def _logistics_order_payload(row: ReportLogisticsOrderRow) -> dict[str, Any]:
+    return {
+        "chainRef": row.chain_key[:12],
+        "financialWeekStart": row.financial_week_start.isoformat(),
+        "operationDateStart": row.operation_date_start.isoformat(),
+        "operationDateEnd": row.operation_date_end.isoformat(),
+        "orderDate": row.order_date.isoformat() if row.order_date else None,
+        "productKey": row.product_key,
+        "nmId": row.nm_id,
+        "sku": row.sku,
+        "vendorCode": row.vendor_code,
+        "product": row.product,
+        "scheme": row.scheme,
+        "warehouse": row.warehouse,
+        "destination": row.destination,
+        "logisticsTotal": row.logistics_total,
+        "logisticsForward": row.logistics_forward,
+        "logisticsReverse": row.logistics_reverse,
+        "logisticsAdjustment": row.logistics_adjustment,
+        "logisticsUnclassified": row.logistics_unclassified,
+        "salesQuantity": row.sales_quantity,
+        "returnQuantity": row.return_quantity,
+        "netQuantity": row.net_quantity,
+        "sourceRevenue": row.source_revenue,
+        "sourceRowCount": row.source_row_count,
+        "classificationStatus": row.classification_status,
+        "coverageStatus": row.coverage_status,
+        "dataQualityStatus": row.data_quality_status,
+        "valueType": "fact",
+    }
+
+
+def _logistics_recommendations(
+    context: ReportLogisticsAnalysisContext | None,
+    products: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if context is None:
+        return [
+            {
+                "code": "rebuild_report",
+                "priority": 1,
+                "title": "Пересобрать отчёт на новом снимке",
+                "message": (
+                    "Для этого отчёта ещё нет проверенной витрины логистики."
+                ),
+                "valueType": "fact",
+                "evidence": {"dataStatus": "needs_rebuild"},
+            }
+        ]
+    if context.data_status == "blocked":
+        return [
+            {
+                "code": "restore_data_gate",
+                "priority": 1,
+                "title": "Сначала восстановить данные",
+                "message": (
+                    "Расчёт остановлен: обязательная сверка источника не пройдена."
+                ),
+                "valueType": "fact",
+                "evidence": {
+                    "keyCoveragePct": context.key_coverage_pct,
+                    "productCoveragePct": context.product_coverage_pct,
+                    "crossCabinetCollisions": (
+                        context.cross_cabinet_collision_count
+                    ),
+                },
+            }
+        ]
+    recommendations: list[dict[str, Any]] = []
+    reverse_products = [
+        item
+        for item in products
+        if decimal_value(item["logisticsReverse"]) != 0
+    ]
+    if reverse_products:
+        leader = max(
+            reverse_products,
+            key=lambda item: abs(decimal_value(item["logisticsReverse"])),
+        )
+        recommendations.append(
+            {
+                "code": "check_returns",
+                "priority": 1,
+                "title": "Проверить возвратную логистику",
+                "message": (
+                    "Начните с товара с наибольшей возвратной частью. Причину "
+                    "возврата нужно подтвердить отдельно."
+                ),
+                "valueType": "fact",
+                "evidence": {
+                    "productKey": leader["productKey"],
+                    "product": leader["product"],
+                    "reverseLogistics": leader["logisticsReverse"],
+                    "returnQuantity": leader["returnQuantity"],
+                },
+            }
+        )
+    positive_sales = [
+        item
+        for item in products
+        if decimal_value(item["revenue"]) > 0
+        and decimal_value(item["logisticsTotal"]) != 0
+    ]
+    if positive_sales:
+        leader = max(
+            positive_sales,
+            key=lambda item: decimal_value(item["logisticsSharePct"]),
+        )
+        recommendations.append(
+            {
+                "code": "check_margin",
+                "priority": 2,
+                "title": "Проверить цену, упаковку и маржинальность",
+                "message": (
+                    "У товара максимальная доля логистики в положительной "
+                    "выручке выбранного среза."
+                ),
+                "valueType": "fact",
+                "evidence": {
+                    "productKey": leader["productKey"],
+                    "product": leader["product"],
+                    "logisticsSharePct": leader["logisticsSharePct"],
+                    "lowSample": leader["lowSample"],
+                },
+            }
+        )
+    if context.classification_row_coverage_pct != Decimal("100"):
+        recommendations.append(
+            {
+                "code": "restore_classification",
+                "priority": 1,
+                "title": "Проверить нераспределённые операции",
+                "message": (
+                    "Часть логистики входит в общий расход, но направление "
+                    "операции пока не подтверждено."
+                ),
+                "valueType": "fact",
+                "evidence": {
+                    "classificationCoveragePct": (
+                        context.classification_row_coverage_pct
+                    )
+                },
+            }
+        )
+    return recommendations
+
+
+def _sum_decimal(rows: Iterable[Any], field: str) -> Decimal:
+    return sum(
+        (decimal_value(getattr(row, field)) for row in rows),
+        Decimal("0"),
+    )
+
+
+def _positive_share(amount: Decimal, revenue: Decimal) -> Decimal | None:
+    return amount / revenue * Decimal("100") if revenue > 0 else None
+
+
+def _empty_logistics_kpis() -> dict[str, Any]:
+    return {
+        "logisticsTotal": None,
+        "logisticsSharePct": None,
+        "profitEffectAmount": None,
+        "profitBeforeTax": None,
+        "profitWithoutLogistics": None,
+        "logisticsPerOrder": None,
+        "logisticsPerSale": None,
+        "orderCount": 0,
+        "salesQuantity": None,
+        "returnQuantity": None,
+        "revenue": None,
+    }
+
+
+def _empty_logistics_components() -> dict[str, None]:
+    return {
+        "forward": None,
+        "reverse": None,
+        "adjustment": None,
+        "unclassified": None,
+    }
+
+
+def _logistics_json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {key: _logistics_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_logistics_json_safe(item) for item in value]
+    return value
 
 
 def _row_entity_ids(
@@ -13864,6 +14765,32 @@ def report_readiness_payload(
                 "сейчас нечего отправлять клиенту."
             ),
         )
+
+    logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
+    if logistics_context is not None:
+        if logistics_context.data_status == "blocked":
+            blocking_reasons.append(
+                _readiness_reason(
+                    "logistics_analysis_blocked",
+                    (
+                        "Обязательная сверка логистики WB не пройдена; "
+                        "логистические витрины не построены."
+                    ),
+                    nonOverridable=True,
+                )
+            )
+            score = min(score, 40)
+        elif logistics_context.data_status == "partial":
+            review_reasons.append(
+                _readiness_reason(
+                    "logistics_analysis_partial",
+                    (
+                        "Итог логистики сверен, но часть операций пока не "
+                        "распределена по направлениям."
+                    ),
+                )
+            )
+            score -= 10
 
     company_cabinet_mismatch_count = (
         int(row_stats.get("company_cabinet_mismatch_rows") or 0)
@@ -17524,6 +18451,12 @@ def _readiness_next_action(
             "с явным предупреждением."
         ),
         "source_lineage_failed": "Повторить обязательные загрузки источников.",
+        "logistics_analysis_blocked": (
+            "Повторить test-снимок WB и пройти сверку логистики."
+        ),
+        "logistics_analysis_partial": (
+            "Проверить нераспределённые операции логистики."
+        ),
         "required_wb_expense_source_missing": (
             "Загрузить контроль хранения и приемки WB."
         ),

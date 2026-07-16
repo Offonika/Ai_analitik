@@ -686,6 +686,34 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
 БД недоступна. Дополнительно проверить `journalctl` по timer service: в логах не
 должно быть токенов, connection strings или raw payload.
 
+## Staff-ready анализ логистики
+
+До проверки нового снимка оба флага должны оставаться выключенными:
+
+```text
+SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false
+SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
+```
+
+Порядок test-rollout:
+
+1. Применить additive schema через штатный `init_db` и включить только
+   `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=true` на test.
+2. Запустить новый `full` source refresh с read-only WB-доступом. Витрина
+   строится из сохраненных `source_snapshot_rows`, а не из ответа API на лету.
+3. Открыть draft-отчет под consultant/admin. В разделе `Логистика` статус должен
+   быть `ready` или явно `partial`; `blocked` нельзя обходить fallback-ключом.
+4. Сверить общую сумму с текущим отчетом, покрытие ключа и товара, компоненты и
+   несколько обезличенных цепочек. Старый отчет должен показывать
+   `needs_rebuild`.
+5. Клиентский флаг оставить `false` до отдельного согласования.
+
+Rollback выполняется установкой
+`SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
+маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
+витрины. Raw payload, внешние order-id и source hashes не должны появляться в
+API, UI, AI-контексте или логах.
+
 # Backup
 
 PostgreSQL backup:

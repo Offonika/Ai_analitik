@@ -21,7 +21,23 @@ updated_at: "2026-07-16"
 | Метод | Маршрут | Operation ID | OpenAPI summary |
 |---|---|---|---|
 | `GET` | `/` | `cabinet_index__get` | Cabinet Index |
+| `GET` | `/accounting-workflows` | `accounting_workflows_page_accounting_workflows_get` | Accounting Workflows Page |
 | `GET` | `/ai` | `ai_page_ai_get` | Ai Page |
+| `GET` | `/api/accounting-workflows` | `accounting_workflow_cards_api_accounting_workflows_get` | Accounting Workflow Cards |
+| `GET` | `/api/accounting-workflows/config` | `accounting_workflow_config_api_accounting_workflows_config_get` | Accounting Workflow Config |
+| `POST` | `/api/accounting-workflows/corrections` | `accounting_workflow_correction_api_accounting_workflows_corrections_post` | Accounting Workflow Correction |
+| `GET` | `/api/accounting-workflows/evidence/{attachment_id}` | `accounting_workflow_evidence_download_api_accounting_workflows_evidence__attachment_id__get` | Accounting Workflow Evidence Download |
+| `POST` | `/api/accounting-workflows/followups/run-due` | `accounting_workflow_followups_run_due_api_accounting_workflows_followups_run_due_post` | Accounting Workflow Followups Run Due |
+| `POST` | `/api/accounting-workflows/monthly-runs` | `accounting_workflow_monthly_run_api_accounting_workflows_monthly_runs_post` | Accounting Workflow Monthly Run |
+| `GET` | `/api/accounting-workflows/supervisors` | `accounting_workflow_supervisors_api_accounting_workflows_supervisors_get` | Accounting Workflow Supervisors |
+| `POST` | `/api/accounting-workflows/supervisors` | `accounting_workflow_supervisor_save_api_accounting_workflows_supervisors_post` | Accounting Workflow Supervisor Save |
+| `GET` | `/api/accounting-workflows/{card_id}` | `accounting_workflow_card_api_accounting_workflows__card_id__get` | Accounting Workflow Card |
+| `POST` | `/api/accounting-workflows/{card_id}/comments` | `accounting_workflow_comment_api_accounting_workflows__card_id__comments_post` | Accounting Workflow Comment |
+| `POST` | `/api/accounting-workflows/{card_id}/deliveries` | `accounting_workflow_delivery_api_accounting_workflows__card_id__deliveries_post` | Accounting Workflow Delivery |
+| `POST` | `/api/accounting-workflows/{card_id}/evidence` | `accounting_workflow_evidence_upload_api_accounting_workflows__card_id__evidence_post` | Accounting Workflow Evidence Upload |
+| `POST` | `/api/accounting-workflows/{card_id}/followups/{followup_id}/actions` | `accounting_workflow_followup_action_api_accounting_workflows__card_id__followups__followup_id__actions_post` | Accounting Workflow Followup Action |
+| `POST` | `/api/accounting-workflows/{card_id}/tasks/{task_id}/actions` | `accounting_workflow_task_action_api_accounting_workflows__card_id__tasks__task_id__actions_post` | Accounting Workflow Task Action |
+| `POST` | `/api/accounting-workflows/{card_id}/transitions` | `accounting_workflow_transition_api_accounting_workflows__card_id__transitions_post` | Accounting Workflow Transition |
 | `GET` | `/api/admin/audit` | `admin_audit_api_admin_audit_get` | Admin Audit |
 | `POST` | `/api/admin/reports/import` | `admin_import_report_api_admin_reports_import_post` | Admin Import Report |
 | `GET` | `/api/admin/users` | `admin_users_api_admin_users_get` | Admin Users |
@@ -94,6 +110,9 @@ updated_at: "2026-07-16"
 | `POST` | `/api/reports/{report_id}/live-checks/onec-cost` | `live_check_onec_cost_api_reports__report_id__live_checks_onec_cost_post` | Live Check Onec Cost |
 | `POST` | `/api/reports/{report_id}/live-checks/wb-card` | `live_check_wb_card_api_reports__report_id__live_checks_wb_card_post` | Live Check Wb Card |
 | `POST` | `/api/reports/{report_id}/live-checks/wb-stock` | `live_check_wb_stock_api_reports__report_id__live_checks_wb_stock_post` | Live Check Wb Stock |
+| `GET` | `/api/reports/{report_id}/logistics/orders` | `report_logistics_orders_api_reports__report_id__logistics_orders_get` | Report Logistics Orders |
+| `GET` | `/api/reports/{report_id}/logistics/products` | `report_logistics_products_api_reports__report_id__logistics_products_get` | Report Logistics Products |
+| `GET` | `/api/reports/{report_id}/logistics/summary` | `report_logistics_summary_api_reports__report_id__logistics_summary_get` | Report Logistics Summary |
 | `GET` | `/api/reports/{report_id}/management-report` | `report_management_report_api_reports__report_id__management_report_get` | Report Management Report |
 | `POST` | `/api/reports/{report_id}/mapping-file` | `upload_mapping_file_api_reports__report_id__mapping_file_post` | Upload Mapping File |
 | `GET` | `/api/reports/{report_id}/marketplace-expense-reconciliation` | `report_marketplace_expense_reconciliation_api_reports__report_id__marketplace_expense_reconciliation_get` | Report Marketplace Expense Reconciliation |
@@ -108,4 +127,4 @@ updated_at: "2026-07-16"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **87**.
+Всего маршрутов: **106**.

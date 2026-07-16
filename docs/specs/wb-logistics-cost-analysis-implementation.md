@@ -9,8 +9,8 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: logistics-cost-analysis
 truth_priority: 100
-related_code: [src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py]
-related_tests: [tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py]
+related_tests: [tests/test_logistics_analysis.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
@@ -24,8 +24,23 @@ updated_at: "2026-07-16"
 очередности Excel согласованы 16 июля 2026 года.
 
 `Accepted` означает утвержденную цель реализации, но не подтверждает production
-rollout. Разработка начата с технической проверки источников и безопасного
-расширения raw-контракта. Расчетные витрины и интерфейс еще не выпущены.
+rollout. Staff-ready код первой очереди реализован за выключенными по умолчанию
+флагами. Production и клиентское включение не выполнены: обязательный gate на
+новом test-снимке WB и ручная приемка обезличенных цепочек остаются впереди.
+
+# Текущее состояние реализации
+
+Реализованы версия методики `wb-logistics-v1`, ключ
+`wb-order-product-v1`, четыре категории классификатора, неизменяемые витрины
+order/SKU, reconciliation до действующего `ReportUnitRow`, три read-only API,
+staff-only экран, детерминированные рекомендации и безопасный агрегатный контекст
+для AI. Старый отчет без контекста возвращает `needs_rebuild`.
+
+Флаги `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
+`SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED` выключены по умолчанию. Ближайший
+rollout допускается только на test; клиентский флаг остается выключенным до
+отдельного согласования. Габариты, маршруты, тарифы, Excel и калькуляторы в эту
+реализацию не входят.
 
 # Цель
 
@@ -605,6 +620,10 @@ rollback не изменяются.
 
 # Changelog
 
+- 2026-07-16 — реализован staff-ready код первой очереди: детерминированный
+  расчет, immutable order/SKU marts, gate и reconciliation, read-only API,
+  staff-only web-раздел, безопасный AI digest и два выключенных feature flag;
+  новый test-снимок и ручная приемка еще не выполнены.
 - 2026-07-16 — начат этап 0: добавлен безопасный профилировщик, зафиксирована
   матрица готовности, обнаружен запрет на одиночный ключ `orderUid`/`srid`,
   расширены поля финансового raw-контракта и определен gate нового снимка.

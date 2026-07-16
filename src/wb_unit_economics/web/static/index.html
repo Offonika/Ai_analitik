@@ -93,9 +93,26 @@
               <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
               <span>Таблицы</span>
             </button>
+            <button
+              id="logistics-workspace-nav"
+              type="button"
+              data-workspace-nav="logistics"
+              data-guide-entry="sections"
+              data-guide-order="35"
+              data-guide-roles="consultant,admin"
+              data-guide-description="Фактические затраты на прямую и обратную логистику, рейтинг товаров и безопасные рекомендации."
+              hidden
+            >
+              <img src="/static/icons/chart-bar.svg" alt="" aria-hidden="true" />
+              <span>Логистика</span>
+            </button>
             <button type="button" data-workspace-nav="guide">
               <img src="/static/icons/file-text.svg" alt="" aria-hidden="true" />
               <span>Инструкция</span>
+            </button>
+            <button id="accounting-workflow-open" type="button" hidden>
+              <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
+              <span>Закрытие месяца</span>
             </button>
           </nav>
         </aside>
@@ -285,6 +302,135 @@
           data-workspace-panel="tables"
           hidden
         ></section>
+
+        <section
+          id="logistics-workspace"
+          class="logistics-workspace report-page-section"
+          data-workspace-panel="logistics"
+          aria-labelledby="logistics-workspace-title"
+        >
+          <div class="panel logistics-heading">
+            <div>
+              <p class="eyebrow">WB · фактическая витрина</p>
+              <h2 id="logistics-workspace-title">Анализ затрат на логистику</h2>
+              <p class="muted">
+                Сводка строится только после сверки снимка WB с действующим отчётом.
+                Причины возвратов здесь не угадываются.
+              </p>
+            </div>
+            <p id="logistics-data-status" class="logistics-data-status" role="status">
+              Данные ещё не загружены.
+            </p>
+          </div>
+
+          <form id="logistics-filter-form" class="panel logistics-filters">
+            <label>
+              Организация
+              <select id="logistics-organization-filter">
+                <option value="">Все организации</option>
+              </select>
+            </label>
+            <label>
+              Схема
+              <select id="logistics-scheme-filter">
+                <option value="">Все схемы</option>
+              </select>
+            </label>
+            <label>
+              Товар или артикул
+              <input
+                id="logistics-product-filter"
+                type="search"
+                placeholder="Название, nmId, SKU"
+                autocomplete="off"
+              />
+            </label>
+            <button type="submit" class="secondary-button">Показать</button>
+          </form>
+
+          <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
+
+          <div class="logistics-grid-two">
+            <section class="panel" aria-labelledby="logistics-components-title">
+              <p class="eyebrow">Состав затрат</p>
+              <h3 id="logistics-components-title">Прямая и обратная часть</h3>
+              <div id="logistics-components" class="logistics-components"></div>
+            </section>
+            <section class="panel" aria-labelledby="logistics-recommendations-title">
+              <p class="eyebrow">Что проверить в первую очередь</p>
+              <h3 id="logistics-recommendations-title">Рекомендации по фактам</h3>
+              <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="logistics-dynamics-title">
+            <p class="eyebrow">Динамика</p>
+            <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
+            <div id="logistics-dynamics" class="logistics-dynamics"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="logistics-products-title">
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Рейтинг товаров</p>
+                <h3 id="logistics-products-title">Что сильнее всего влияет на результат</h3>
+              </div>
+              <span id="logistics-products-count" class="muted"></span>
+            </div>
+            <div class="table-wrap">
+              <table class="logistics-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Товар</th>
+                    <th scope="col">Логистика</th>
+                    <th scope="col">Доля</th>
+                    <th scope="col">Заказы</th>
+                    <th scope="col">Возвраты</th>
+                    <th scope="col">Влияние на прибыль</th>
+                    <th scope="col">Качество</th>
+                    <th scope="col"><span class="visually-hidden">Действие</span></th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-products-rows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section
+            id="logistics-orders-section"
+            class="panel"
+            aria-labelledby="logistics-orders-title"
+            hidden
+          >
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Обезличенная детализация</p>
+                <h3 id="logistics-orders-title">Цепочки заказов</h3>
+                <p id="logistics-orders-subtitle" class="muted"></p>
+              </div>
+              <button id="logistics-orders-close" type="button" class="secondary-button">
+                Закрыть
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table class="logistics-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Цепочка</th>
+                    <th scope="col">Период операции</th>
+                    <th scope="col">Прямая</th>
+                    <th scope="col">Обратная</th>
+                    <th scope="col">Итого</th>
+                    <th scope="col">Продажи</th>
+                    <th scope="col">Возвраты</th>
+                    <th scope="col">Статус</th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-orders-rows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
 
         <section
           id="source-refresh-panel"

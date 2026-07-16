@@ -32,6 +32,11 @@ from wb_unit_economics.contracts import (
     SkuMapping,
     WbSalesReportSummaryRow,
 )
+from wb_unit_economics.logistics_analysis import (
+    UnitEconomicsSlice,
+    build_logistics_analysis,
+    source_row_from_payload,
+)
 from wb_unit_economics.onec_odata import (
     ACCOUNTING_REPORT_SAMPLE_COLLECTIONS,
     DEFAULT_SAMPLE_COLLECTIONS,
@@ -107,7 +112,9 @@ from wb_unit_economics.web.models import (
 )
 from wb_unit_economics.web.models import (
     MarketplaceOperationFact,
+    ReportLogisticsAnalysisContext,
     ReportRun,
+    ReportUnitRow,
     SourceRefreshCollection,
     SourceRefreshRun,
     SourceSnapshotRow,
@@ -1643,6 +1650,15 @@ class SourceRefreshService:
             mapping_report_scope = repository.reconcile_report_mapping_source_load(
                 db, new_report
             )
+            logistics_context = db.get(
+                ReportLogisticsAnalysisContext,
+                new_report.id,
+            )
+            logistics_needs_review = bool(
+                self.settings.logistics_analysis_enabled
+                and logistics_context is not None
+                and logistics_context.data_status != "ready"
+            )
             final_status = (
                 "needs_review"
                 if self._needs_review(
@@ -1652,6 +1668,7 @@ class SourceRefreshService:
                         mapping_report_scope["mappingIssueRows"] == 0
                     ),
                 )
+                or logistics_needs_review
                 else "report_created"
             )
             repository.update_source_refresh_run(
@@ -3671,6 +3688,16 @@ class SourceRefreshService:
             base_refresh_run=base_refresh_run,
             contributing_runs=contributing_runs,
         )
+        if self.settings.logistics_analysis_enabled:
+            logistics_refresh_runs = [refresh_run, integrity_refresh_run]
+            if base_refresh_run is not None:
+                logistics_refresh_runs.append(base_refresh_run)
+            logistics_refresh_runs.extend(contributing_runs)
+            _build_and_persist_logistics_analysis(
+                db,
+                report,
+                refresh_runs=logistics_refresh_runs,
+            )
         _validate_marts(build["payload"])
         db.commit()
         artifact_payload = repository.report_full_payload(db, report)
@@ -5696,6 +5723,85 @@ def _persist_wb_finance_rows(
         _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _build_and_persist_logistics_analysis(
+    db: Session,
+    report: ReportRun,
+    *,
+    refresh_runs: Iterable[SourceRefreshRun],
+) -> None:
+    source_rows = []
+    seen_rows: set[tuple[str, str]] = set()
+    refresh_run_ids = sorted({item.id for item in refresh_runs if item is not None})
+    snapshot_rows = db.scalars(
+        select(SourceSnapshotRow)
+        .where(
+            SourceSnapshotRow.refresh_run_id.in_(refresh_run_ids),
+            SourceSnapshotRow.tenant_id == report.tenant_id,
+            SourceSnapshotRow.client_id == report.client_id,
+            SourceSnapshotRow.source_type == "wb_finance_detail",
+        )
+        .order_by(
+            SourceSnapshotRow.loaded_at,
+            SourceSnapshotRow.refresh_run_id,
+            SourceSnapshotRow.row_number,
+        )
+    )
+    for snapshot_row in snapshot_rows:
+        payload = snapshot_row.row_payload
+        if not isinstance(payload, Mapping):
+            continue
+        wb_cabinet_id = str(snapshot_row.wb_cabinet_id or "").strip()
+        if not wb_cabinet_id:
+            continue
+        cabinet = db.get(WbCabinet, wb_cabinet_id)
+        client_company_id = (
+            str(cabinet.client_company_id or "")
+            if cabinet is not None and cabinet.client_id == report.client_id
+            else ""
+        )
+        source_hash = str(snapshot_row.raw_payload_hash or _hash_payload(payload))
+        dedupe_key = (wb_cabinet_id, source_hash)
+        if dedupe_key in seen_rows:
+            continue
+        seen_rows.add(dedupe_key)
+        row = source_row_from_payload(
+            payload,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+            source_row_id=snapshot_row.source_row_id,
+            source_hash=source_hash,
+            fallback_date=report.period_start,
+        )
+        if report.period_start <= row.financial_date <= report.period_end:
+            source_rows.append(row)
+
+    unit_rows = []
+    for row in db.scalars(
+        select(ReportUnitRow).where(ReportUnitRow.report_run_id == report.id)
+    ):
+        financial_date = row.week or row.accounting_period_date or report.period_start
+        week_start = financial_date - timedelta(days=financial_date.weekday())
+        unit_rows.append(
+            UnitEconomicsSlice(
+                financial_week_start=week_start,
+                wb_cabinet_id=row.wb_cabinet_id,
+                client_company_id=row.client_company_id,
+                scheme=row.scheme,
+                nm_id=row.nm_id,
+                sku=row.barcode,
+                vendor_code=row.article_wb,
+                product=row.product,
+                revenue=Decimal(row.revenue),
+                profit_before_tax=Decimal(row.profit_before_tax),
+                logistics=Decimal(row.logistics),
+            )
+        )
+    result = build_logistics_analysis(source_rows, unit_rows)
+    repository.replace_report_logistics_analysis(db, report, result)
 
 
 def _persist_wb_report_list_rows(

@@ -227,12 +227,12 @@ documents:
   - path: "docs/specs/accounting-reports-smart-process-onepage.md"
     title: "ONEPAGE: смарт-процесс закрытия месяца и налоговой нагрузки"
     doc_type: "spec"
-    status: "accepted"
+    status: "implemented"
     audience: ["engineering", "consultant", "operations", "accountant"]
     source_of_truth: true
     truth_scope: "accounting-reports-smart-process"
     truth_priority: 100
-    summary: "Accepted контракт еще не реализованного внутреннего workflow-модуля: ежемесячный Канбан, две задачи, ручная отправка tax_load, SLA и проверяемое закрытие к зарплате."
+    summary: "Implemented staff-only workflow-модуль за выключенным feature-флагом: ежемесячный Канбан, две задачи, ручная отправка tax_load, evidence, follow-up, SLA и проверяемое закрытие к зарплате."
   - path: "docs/specs/wb-unit-economics-ai-git-workflow.md"
     title: "AI development Git workflow"
     doc_type: "spec"
@@ -361,6 +361,13 @@ documents:
     audience: ["engineering", "operations"]
     source_of_truth: false
     summary: "Production/test контуры, доступы, импорт report runs, AI, backup, monitor, promotion и deployment smoke."
+  - path: "docs/runbooks/accounting-workflow-operations.md"
+    title: "Эксплуатация смарт-процесса бухгалтерских отчетов"
+    doc_type: "runbook"
+    status: "active"
+    audience: ["engineering", "operations", "consultant"]
+    source_of_truth: false
+    summary: "Безопасное включение, dry-run, расписание, проверка, evidence-хранилище и rollback смарт-процесса закрытия месяца и налоговой нагрузки."
   - path: "docs/runbooks/source-refresh-schedule.md"
     title: "Расписание source refresh WB/1C"
     doc_type: "runbook"

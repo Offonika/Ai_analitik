@@ -36,6 +36,9 @@ from wb_unit_economics.web.models import (
     OrganizationTaxProfile,
     OrganizationTaxProfileOverride,
     ReportArtifact,
+    ReportLogisticsAnalysisContext,
+    ReportLogisticsOrderRow,
+    ReportLogisticsSkuRow,
     ReportRun,
     SourceLoad,
     SourceRefreshCollection,
@@ -738,6 +741,85 @@ def minimal_payload() -> dict:
         "reconciliationMonthly": [],
         "documentReconciliation": [],
     }
+
+
+def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = (
+        _source_refresh_context(tmp_path)
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = db.query(repository.ReportUnitRow).filter_by(
+            report_run_id=report.id
+        ).one()
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="logistics-gate-test",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="logistics gate test",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            collection,
+            row_number=1,
+            raw_payload_hash="logistics-row-hash",
+            source_row_id="rrd-1",
+            wb_cabinet_id=unit_row.wb_cabinet_id,
+            row_payload={
+                "rrDate": "2026-04-06",
+                "orderDt": "2026-04-05",
+                "orderUid": "order-1",
+                "nmId": "1001",
+                "sku": "BAR-1",
+                "vendorCode": "WB-1",
+                "title": "Товар",
+                "deliveryMethod": "FBO",
+                "docTypeName": "Логистика",
+                "sellerOperName": "Логистика",
+                "deliveryService": "50",
+                "deliveryAmount": "1",
+                "returnAmount": "0",
+            },
+        )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            refresh_runs=[refresh_run],
+        )
+        db.commit()
+
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        order_rows = db.query(ReportLogisticsOrderRow).all()
+        sku_rows = db.query(ReportLogisticsSkuRow).all()
+
+    assert context is not None
+    assert context.data_status == "ready"
+    assert context.key_coverage_pct == Decimal("100")
+    assert context.order_delta == 0
+    assert context.sku_delta == 0
+    assert len(order_rows) == 1
+    assert len(sku_rows) == 1
+    assert sku_rows[0].logistics_total == Decimal("50")
 
 
 def test_page_limit_exhaustion_detects_full_last_page_per_source_group() -> None:

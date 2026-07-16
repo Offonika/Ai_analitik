@@ -16,9 +16,7 @@ class WebSettings(BaseSettings):
     )
 
     database_url: str = "sqlite:///data/web/shumeyko_web.sqlite3"
-    runtime_environment: Literal["development", "production", "test"] = (
-        "development"
-    )
+    runtime_environment: Literal["development", "production", "test"] = "development"
     session_secret: str = "dev-only-change-me"
     session_cookie_name: str = "shumeyko_session"
     session_ttl_hours: int = 12
@@ -73,6 +71,15 @@ class WebSettings(BaseSettings):
     source_refresh_worker_unit_prefix: str = "shumeiko-source-refresh-worker"
     db_first_reports_enabled: bool = False
     enabled_report_kinds: str = "marketplace_unit_economics"
+    logistics_analysis_enabled: bool = False
+    logistics_analysis_client_enabled: bool = False
+    accounting_workflow_enabled: bool = False
+    accounting_workflow_scheduler_enabled: bool = False
+    accounting_workflow_calendar_configured: bool = False
+    accounting_workflow_non_working_dates: str = ""
+    accounting_workflow_working_dates: str = ""
+    accounting_workflow_evidence_root: str = "data/accounting_workflow_evidence"
+    accounting_workflow_evidence_max_bytes: int = 5 * 1024 * 1024
     postgres_statement_timeout_ms: int = 15000
     cors_allow_origins: list[str] = Field(default_factory=list)
 
@@ -105,3 +112,7 @@ class WebSettings(BaseSettings):
         from wb_unit_economics.web.report_kinds import enabled_report_kind_set
 
         return enabled_report_kind_set(self.enabled_report_kinds)
+
+    @property
+    def accounting_workflow_evidence_path(self) -> Path:
+        return Path(self.accounting_workflow_evidence_root).resolve()

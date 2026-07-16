@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
 import time
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
@@ -40,6 +42,7 @@ from wb_unit_economics.report_exports import (
     write_ozon_diagnostics_excel,
 )
 from wb_unit_economics.web import (
+    accounting_workflow,
     integrations,
     mapping_service,
     providers,
@@ -354,6 +357,61 @@ class MappingReasonRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class AccountingWorkflowMonthlyRunRequest(BaseModel):
+    tenantId: str = Field(min_length=1, max_length=120)
+    periodMonth: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    responsibleUserId: str | None = Field(default=None, max_length=160)
+    supervisorUserId: str | None = Field(default=None, max_length=160)
+
+
+class AccountingWorkflowCorrectionRequest(BaseModel):
+    supersedesCardId: str = Field(min_length=1, max_length=160)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AccountingWorkflowTransitionRequest(BaseModel):
+    targetStage: str = Field(min_length=1, max_length=80)
+    reason: str = Field(default="", max_length=2000)
+    responsibleUserId: str | None = Field(default=None, max_length=160)
+    supervisorUserId: str | None = Field(default=None, max_length=160)
+
+
+class AccountingWorkflowTaskActionRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=80)
+    reportId: str | None = Field(default=None, max_length=160)
+    payloadSha256: str | None = Field(default=None, max_length=128)
+    reason: str = Field(default="", max_length=2000)
+
+
+class AccountingWorkflowDeliveryRequest(BaseModel):
+    sentAt: datetime
+    channel: str = Field(min_length=1, max_length=80)
+    channelDetail: str = Field(default="", max_length=500)
+    maskedRecipient: str = Field(min_length=3, max_length=240)
+    attachmentId: str = Field(min_length=1, max_length=160)
+    contactResult: str = Field(default="", max_length=2000)
+    preliminary: bool = False
+
+
+class AccountingWorkflowCommentRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class AccountingWorkflowSupervisorRequest(BaseModel):
+    tenantId: str = Field(min_length=1, max_length=120)
+    userId: str = Field(min_length=1, max_length=160)
+    active: bool = True
+
+
+class AccountingWorkflowFollowupActionRequest(BaseModel):
+    action: str = Field(pattern="^(repeat|complete)$")
+    result: str = Field(min_length=1, max_length=2000)
+
+
+class AccountingWorkflowDueRunRequest(BaseModel):
+    tenantId: str = Field(min_length=1, max_length=120)
+
+
 def create_app(
     settings: WebSettings | None = None,
     session_factory: sessionmaker[Session] | None = None,
@@ -401,6 +459,14 @@ def create_app(
     @app.get("/integrations")
     def integrations_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/accounting-workflows")
+    def accounting_workflows_page(current: CurrentUser) -> FileResponse:
+        if not runtime_settings.accounting_workflow_enabled:
+            raise HTTPException(status_code=404, detail="page not found")
+        if not repository.has_role(current, repository.STAFF_ROLES):
+            raise HTTPException(status_code=404, detail="page not found")
+        return FileResponse(STATIC_DIR / "accounting-workflows.html")
 
     @app.get("/api/health")
     def health(db: DbSession) -> dict[str, Any]:
@@ -599,9 +665,8 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         if not security.verify_password(payload.password, user.password_hash):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-        if (
-            not runtime_settings.client_login_enabled
-            and not repository.has_role(user, repository.STAFF_ROLES)
+        if not runtime_settings.client_login_enabled and not repository.has_role(
+            user, repository.STAFF_ROLES
         ):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         ttl_hours = (
@@ -630,7 +695,15 @@ def create_app(
             samesite="lax",
             path="/",
         )
-        return me_payload(user, clients)
+        return me_payload(
+            user,
+            clients,
+            accounting_workflow_enabled=runtime_settings.accounting_workflow_enabled,
+            logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
+            logistics_analysis_client_enabled=(
+                runtime_settings.logistics_analysis_client_enabled
+            ),
+        )
 
     @app.post("/api/auth/logout")
     def logout(request: Request, response: Response, db: DbSession) -> dict[str, str]:
@@ -653,7 +726,394 @@ def create_app(
     def me(current: CurrentUser, db: DbSession) -> dict[str, Any]:
         clients = repository.list_clients_for_user(db, current)
         db.commit()
-        return me_payload(current, clients)
+        return me_payload(
+            current,
+            clients,
+            accounting_workflow_enabled=runtime_settings.accounting_workflow_enabled,
+            logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
+            logistics_analysis_client_enabled=(
+                runtime_settings.logistics_analysis_client_enabled
+            ),
+        )
+
+    @app.get("/api/accounting-workflows/config")
+    def accounting_workflow_config(
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+        tenantId: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            tenant_id = _workflow_tenant_id(current, tenantId)
+            accounting_workflow.require_staff(current, tenant_id)
+            return {
+                "enabled": True,
+                "tenantId": tenant_id,
+                "isSupervisor": accounting_workflow.is_supervisor(
+                    db, current, tenant_id
+                ),
+                "csrfToken": _workflow_csrf_token(request, runtime_settings),
+                "stages": sorted(accounting_workflow.CARD_STAGES),
+                "deliveryChannels": sorted(accounting_workflow.DELIVERY_CHANNELS),
+                "evidenceContentTypes": sorted(
+                    accounting_workflow.ALLOWED_EVIDENCE_TYPES
+                ),
+                "evidenceMaxBytes": (
+                    runtime_settings.accounting_workflow_evidence_max_bytes
+                ),
+                "staffUsers": accounting_workflow.list_staff_users(
+                    db, current, tenant_id
+                ),
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows/supervisors")
+    def accounting_workflow_supervisors(
+        current: CurrentUser,
+        db: DbSession,
+        tenantId: str,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            return {
+                "items": accounting_workflow.list_supervisors(db, current, tenantId)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows")
+    def accounting_workflow_cards(
+        current: CurrentUser,
+        db: DbSession,
+        tenantId: str | None = None,
+        clientId: str | None = None,
+        organizationId: str | None = None,
+        periodMonth: str | None = None,
+        stage: str | None = None,
+        responsibleUserId: str | None = None,
+        supervisorUserId: str | None = None,
+        overdue: bool | None = None,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            items = accounting_workflow.list_cards(
+                db,
+                user=current,
+                tenant_id=tenantId,
+                client_id=clientId,
+                organization_id=organizationId,
+                report_period=(_workflow_period(periodMonth) if periodMonth else None),
+                stage=stage,
+                responsible_user_id=responsibleUserId,
+                supervisor_user_id=supervisorUserId,
+                overdue=overdue,
+            )
+            return {"items": items}
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows/{card_id}")
+    def accounting_workflow_card(
+        card_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/monthly-runs")
+    def accounting_workflow_monthly_run(
+        payload: AccountingWorkflowMonthlyRunRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            result = accounting_workflow.create_month_cards(
+                db,
+                settings=runtime_settings,
+                tenant_id=payload.tenantId,
+                report_period=_workflow_period(payload.periodMonth),
+                user=current,
+                creation_kind="manual_catch_up",
+                responsible_user_id=payload.responsibleUserId,
+                supervisor_user_id=payload.supervisorUserId,
+            )
+            db.commit()
+            return result
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/corrections")
+    def accounting_workflow_correction(
+        payload: AccountingWorkflowCorrectionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            card = accounting_workflow.create_correction_card(
+                db,
+                settings=runtime_settings,
+                user=current,
+                supersedes_card_id=payload.supersedesCardId,
+                reason=payload.reason,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card.id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/transitions")
+    def accounting_workflow_transition(
+        card_id: str,
+        payload: AccountingWorkflowTransitionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            card = accounting_workflow.transition_card(
+                db,
+                user=current,
+                card_id=card_id,
+                target_stage=payload.targetStage,
+                reason=payload.reason,
+                responsible_user_id=payload.responsibleUserId,
+                supervisor_user_id=payload.supervisorUserId,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card.id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/tasks/{task_id}/actions")
+    def accounting_workflow_task_action(
+        card_id: str,
+        task_id: str,
+        payload: AccountingWorkflowTaskActionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.task_action(
+                db,
+                user=current,
+                card_id=card_id,
+                task_id=task_id,
+                action=payload.action,
+                report_id=payload.reportId,
+                payload_sha256=payload.payloadSha256,
+                reason=payload.reason,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/evidence")
+    async def accounting_workflow_evidence_upload(
+        card_id: str,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+        evidence: Annotated[UploadFile, File()],
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            content = await evidence.read(
+                runtime_settings.accounting_workflow_evidence_max_bytes + 1
+            )
+            item = accounting_workflow.save_attachment(
+                db,
+                settings=runtime_settings,
+                user=current,
+                card_id=card_id,
+                filename=evidence.filename or "evidence",
+                content_type=evidence.content_type or "",
+                content=content,
+            )
+            db.commit()
+            return {
+                "attachment": {
+                    "id": item.id,
+                    "name": item.original_name,
+                    "contentType": item.content_type,
+                    "byteSize": item.byte_size,
+                    "sha256": item.sha256,
+                }
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.get("/api/accounting-workflows/evidence/{attachment_id}")
+    def accounting_workflow_evidence_download(
+        attachment_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> FileResponse:
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            item = accounting_workflow.require_attachment(db, current, attachment_id)
+            path = accounting_workflow.attachment_path(runtime_settings, item)
+            return FileResponse(
+                path,
+                media_type=item.content_type,
+                filename=item.original_name,
+                headers={"Cache-Control": "no-store"},
+            )
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/deliveries")
+    def accounting_workflow_delivery(
+        card_id: str,
+        payload: AccountingWorkflowDeliveryRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            accounting_workflow.record_delivery(
+                db,
+                settings=runtime_settings,
+                user=current,
+                card_id=card_id,
+                sent_at=payload.sentAt,
+                delivery_channel=payload.channel,
+                channel_detail=payload.channelDetail,
+                masked_recipient=payload.maskedRecipient,
+                attachment_id=payload.attachmentId,
+                contact_result=payload.contactResult,
+                preliminary=payload.preliminary,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/comments")
+    def accounting_workflow_comment(
+        card_id: str,
+        payload: AccountingWorkflowCommentRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            accounting_workflow.add_comment(
+                db, user=current, card_id=card_id, body=payload.body
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/{card_id}/followups/{followup_id}/actions")
+    def accounting_workflow_followup_action(
+        card_id: str,
+        followup_id: str,
+        payload: AccountingWorkflowFollowupActionRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            accounting_workflow.followup_action(
+                db,
+                settings=runtime_settings,
+                user=current,
+                card_id=card_id,
+                followup_id=followup_id,
+                action=payload.action,
+                result=payload.result,
+            )
+            db.commit()
+            return {
+                "item": accounting_workflow.card_detail_payload(db, current, card_id)
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/followups/run-due")
+    def accounting_workflow_followups_run_due(
+        payload: AccountingWorkflowDueRunRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, int]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            result = accounting_workflow.process_due_followups(
+                db,
+                settings=runtime_settings,
+                user=current,
+                tenant_id=payload.tenantId,
+            )
+            db.commit()
+            return result
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
+
+    @app.post("/api/accounting-workflows/supervisors")
+    def accounting_workflow_supervisor_save(
+        payload: AccountingWorkflowSupervisorRequest,
+        request: Request,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        _require_workflow_csrf(request, runtime_settings)
+        try:
+            accounting_workflow.require_enabled(runtime_settings)
+            item = accounting_workflow.grant_supervisor(
+                db,
+                admin=current,
+                tenant_id=payload.tenantId,
+                user_id=payload.userId,
+                active=payload.active,
+            )
+            db.commit()
+            return {
+                "item": {
+                    "userId": item.user_id,
+                    "active": item.is_active,
+                    "grantedAt": item.granted_at.isoformat(),
+                    "revokedAt": item.revoked_at.isoformat()
+                    if item.revoked_at
+                    else None,
+                }
+            }
+        except accounting_workflow.WorkflowError as exc:
+            _raise_workflow_http_error(db, exc)
 
     @app.get("/api/clients")
     def list_clients(current: CurrentUser, db: DbSession) -> dict[str, Any]:
@@ -1448,9 +1908,7 @@ def create_app(
         db.commit()
         return {"overrideId": override.id, "status": "confirmed"}
 
-    @app.get(
-        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies"
-    )
+    @app.get("/api/clients/{client_id}/companies/{company_id}/input-vat-policies")
     def list_client_company_input_vat_policies(
         client_id: str,
         company_id: str,
@@ -1470,9 +1928,7 @@ def create_app(
             raise HTTPException(status_code=403, detail="staff role required") from exc
         return {"items": [repository.input_vat_policy_payload(item) for item in items]}
 
-    @app.post(
-        "/api/clients/{client_id}/companies/{company_id}/input-vat-policies"
-    )
+    @app.post("/api/clients/{client_id}/companies/{company_id}/input-vat-policies")
     def create_client_company_input_vat_policy(
         client_id: str,
         company_id: str,
@@ -2173,6 +2629,112 @@ def create_app(
         )
         return payload
 
+    @app.get("/api/reports/{report_id}/logistics/summary")
+    def report_logistics_summary(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+        return repository.report_logistics_summary_payload(
+            db,
+            report,
+            period_start=periodStart,
+            period_end=periodEnd,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+        )
+
+    @app.get("/api/reports/{report_id}/logistics/products")
+    def report_logistics_products(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+        sortBy: str = "logisticsTotal",
+        sortOrder: str = "desc",
+        offset: int = 0,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+        return repository.report_logistics_products_payload(
+            db,
+            report,
+            period_start=periodStart,
+            period_end=periodEnd,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+            offset=max(offset, 0),
+            limit=min(max(limit, 1), 1000),
+        )
+
+    @app.get("/api/reports/{report_id}/logistics/orders")
+    def report_logistics_orders(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+        productKey: str = "",
+        sortBy: str = "operationDateEnd",
+        sortOrder: str = "desc",
+        offset: int = 0,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+            staff_only=True,
+        )
+        return repository.report_logistics_orders_payload(
+            db,
+            report,
+            period_start=periodStart,
+            period_end=periodEnd,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+            product_key=productKey,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+            offset=max(offset, 0),
+            limit=min(max(limit, 1), 1000),
+        )
+
     @app.get("/api/reports/{report_id}/scenario")
     def report_scenario(
         report_id: str,
@@ -2469,8 +3031,8 @@ def create_app(
                     raise ValueError(
                         "Для последней закрытой недели даты определяются автоматически."
                     )
-                period_start, period_end, summary = (
-                    report_summary_for_last_closed_week(db, report)
+                period_start, period_end, summary = report_summary_for_last_closed_week(
+                    db, report
                 )
             else:
                 period_start, period_end = _analytical_report_period(report, payload)
@@ -3184,8 +3746,7 @@ def create_app(
             sent_ids: set[int] = set()
             try:
                 sent_ids.update(
-                    item["id"]
-                    for item in repository.thread_events(db, current, thread)
+                    item["id"] for item in repository.thread_events(db, current, thread)
                 )
                 repository.add_ai_message(
                     db, thread=thread, role="user", content=payload.content
@@ -3311,6 +3872,10 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 def me_payload(
     user: User,
     clients: list[dict[str, Any]] | None = None,
+    *,
+    accounting_workflow_enabled: bool = False,
+    logistics_analysis_enabled: bool = False,
+    logistics_analysis_client_enabled: bool = False,
 ) -> dict[str, Any]:
     tenants = [
         {
@@ -3326,7 +3891,66 @@ def me_payload(
         "name": user.name,
         "tenants": tenants,
         "clients": clients or [],
+        "accountingWorkflowEnabled": accounting_workflow_enabled
+        and any(item.role in repository.STAFF_ROLES for item in user.access),
+        "logisticsAnalysisEnabled": logistics_analysis_enabled
+        and (
+            logistics_analysis_client_enabled
+            or any(item.role in repository.STAFF_ROLES for item in user.access)
+        ),
+        "logisticsAnalysisClientEnabled": (
+            logistics_analysis_enabled and logistics_analysis_client_enabled
+        ),
+        "logisticsOrdersEnabled": logistics_analysis_enabled
+        and any(item.role in repository.STAFF_ROLES for item in user.access),
     }
+
+
+def _workflow_period(value: str) -> date:
+    try:
+        year, month = (int(item) for item in value.split("-", 1))
+        return date(year, month, 1)
+    except (TypeError, ValueError) as exc:
+        raise accounting_workflow.WorkflowError("invalid periodMonth") from exc
+
+
+def _workflow_tenant_id(user: User, requested: str | None) -> str:
+    if requested:
+        return requested
+    for item in user.access:
+        if item.role in repository.STAFF_ROLES:
+            return item.tenant_id
+    raise accounting_workflow.WorkflowPermissionError("staff role required")
+
+
+def _workflow_csrf_token(request: Request, settings: WebSettings) -> str:
+    session_token = request.cookies.get(settings.session_cookie_name, "")
+    if not session_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    return hmac.new(
+        settings.session_secret.encode("utf-8"),
+        session_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _require_workflow_csrf(request: Request, settings: WebSettings) -> None:
+    if not settings.accounting_workflow_enabled:
+        raise HTTPException(status_code=404, detail="accounting workflow is disabled")
+    expected = _workflow_csrf_token(request, settings)
+    actual = request.headers.get("X-CSRF-Token", "")
+    if not actual or not security.constant_time_equal(actual, expected):
+        raise HTTPException(status_code=403, detail="invalid CSRF token")
+
+
+def _raise_workflow_http_error(
+    db: Session, exc: accounting_workflow.WorkflowError
+) -> None:
+    if getattr(exc, "persist_changes", False):
+        db.commit()
+    else:
+        db.rollback()
+    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def user_payload(user: User, viewer: User) -> dict[str, Any]:
@@ -3550,6 +4174,21 @@ def _require_staff_or_403(user: User, tenant_id: str) -> None:
         repository.require_staff(user, tenant_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="staff role required") from exc
+
+
+def _require_logistics_access_or_404(
+    user: User,
+    tenant_id: str,
+    settings: WebSettings,
+    *,
+    staff_only: bool = False,
+) -> None:
+    is_staff = repository.has_role(user, repository.STAFF_ROLES, tenant_id)
+    allowed = settings.logistics_analysis_enabled and (
+        is_staff or (settings.logistics_analysis_client_enabled and not staff_only)
+    )
+    if not allowed:
+        raise HTTPException(status_code=404, detail="logistics analysis not found")
 
 
 def _reject_client_financial_recommendations(db: Session, user: User, thread) -> None:
@@ -3852,8 +4491,7 @@ def _live_check(
             check_type=check_type,
             lookup_key=lookup,
             enabled=(
-                settings.external_integrations_enabled
-                and settings.live_checks_enabled
+                settings.external_integrations_enabled and settings.live_checks_enabled
             ),
             cache_ttl_minutes=settings.live_check_cache_ttl_minutes,
         )

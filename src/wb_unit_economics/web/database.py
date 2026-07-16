@@ -27,7 +27,7 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_07_14_accounting_evidence_v2"
+DB_FIRST_SCHEMA_VERSION = "2026_07_16_accounting_workflow_v1"
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -215,8 +215,7 @@ def _ensure_ai_thread_scope_columns(engine: Engine) -> None:
     if "ai_threads" not in inspector.get_table_names(schema=schema):
         return
     existing = {
-        column["name"]
-        for column in inspector.get_columns("ai_threads", schema=schema)
+        column["name"] for column in inspector.get_columns("ai_threads", schema=schema)
     }
     json_default = "'{}'" if schema is None else "'{}'::json"
     timestamp_type = "DATETIME" if schema is None else "TIMESTAMP WITH TIME ZONE"

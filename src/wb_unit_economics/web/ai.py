@@ -446,6 +446,14 @@ class AiAnalyst:
                 user, repository.STAFF_ROLES, report.tenant_id
             ),
         )
+        if self.settings.logistics_analysis_enabled and repository.has_role(
+            user,
+            repository.STAFF_ROLES,
+            report.tenant_id,
+        ):
+            summary["logisticsAnalysis"] = (
+                repository.report_logistics_summary_payload(db, report)
+            )
         if tool_name == "get_report_summary":
             output = self._summary_digest(summary, question)
         elif tool_name == "search_sku":
@@ -551,7 +559,73 @@ class AiAnalyst:
             "loss_rows": int(kpis.get("lossRows") or 0),
             "quality": summary.get("quality") or {},
             "readiness": summary.get("readiness") or {},
+            "logistics_analysis": self._logistics_digest(
+                summary.get("logisticsAnalysis")
+            ),
             "limitations": self._limitations(summary),
+        }
+
+    def _logistics_digest(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        rankings = value.get("rankings") or {}
+        recommendations = []
+        for item in (value.get("recommendations") or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            evidence = item.get("evidence") or {}
+            recommendations.append(
+                {
+                    "code": item.get("code"),
+                    "title": item.get("title"),
+                    "message": item.get("message"),
+                    "value_type": item.get("valueType"),
+                    "evidence": {
+                        key: evidence.get(key)
+                        for key in (
+                            "product",
+                            "reverseLogistics",
+                            "returnQuantity",
+                            "logisticsSharePct",
+                            "lowSample",
+                            "classificationCoveragePct",
+                            "keyCoveragePct",
+                            "productCoveragePct",
+                            "crossCabinetCollisions",
+                            "dataStatus",
+                        )
+                        if key in evidence
+                    },
+                }
+            )
+        top_products = []
+        for item in (rankings.get("byTotal") or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            top_products.append(
+                {
+                    "product": item.get("product"),
+                    "logistics_total": item.get("logisticsTotal"),
+                    "logistics_reverse": item.get("logisticsReverse"),
+                    "logistics_share_pct": item.get("logisticsSharePct"),
+                    "profit_effect_amount": item.get("profitEffectAmount"),
+                    "order_count": item.get("orderCount"),
+                    "return_quantity": item.get("returnQuantity"),
+                    "low_sample": item.get("lowSample"),
+                }
+            )
+        return {
+            "data_status": value.get("dataStatus"),
+            "methodology_version": value.get("methodologyVersion"),
+            "coverage": value.get("coverage") or {},
+            "kpis": value.get("kpis") or {},
+            "components": value.get("components") or {},
+            "top_products": top_products,
+            "recommendations": recommendations,
+            "boundary": (
+                "Only calculated aggregates and evidence. Return causes are "
+                "not established by this data."
+            ),
         }
 
     def _search_sku(self, db: Session, report: ReportRun, query: str) -> dict[str, Any]:
