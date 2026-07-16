@@ -16,8 +16,18 @@ from wb_unit_economics.document_exports import (
     render_markdown_docx,
 )
 
-CLIENT_REPORT_CONTRACT_VERSION = "client-analytical-report.v1"
+CLIENT_REPORT_CONTRACT_VERSION = "client-analytical-report.v3"
 DEFAULT_LOGO = Path("reports/assets/shumeiko-logo.png")
+
+CABINET_EXPENSE_FIELDS = (
+    ("Комиссия WB", "commission"),
+    ("Логистика WB", "logistics"),
+    ("Хранение WB", "storage"),
+    ("Приёмка WB", "acceptance"),
+    ("Продвижение WB", "promotion"),
+    ("Штрафы WB", "penalties"),
+    ("Эквайринг WB", "acquiring"),
+)
 
 READINESS_LABELS = {
     "ready": "Готов к передаче клиенту",
@@ -129,7 +139,11 @@ def build_client_analytical_markdown(
     )
     final_profit = _decimal_or_none(kpis.get("profit")) if tax_calculated else None
     result_value = final_profit if tax_calculated else management_profit
-    result_label = "Прибыль до НДФЛ" if tax_calculated else "Управленческая прибыль WB"
+    result_label = (
+        "Прибыль до налогов"
+        if tax_calculated
+        else "Управленческая прибыль WB"
+    )
     result_phrase = result_label[:1].lower() + result_label[1:]
     result_margin = _ratio(result_value, revenue)
     sales = _decimal_or_zero(kpis.get("sales"))
@@ -156,6 +170,10 @@ def build_client_analytical_markdown(
             f"{_percent(return_rate)}."
         ),
         _loss_summary_line(model, loss_rows=loss_rows),
+        _cabinet_comparison_summary_line(
+            model,
+            tax_calculated=tax_calculated,
+        ),
         (
             f"- **Готовность данных.** Статус — {readiness}. "
             f"Строк со статусом «ОК»: {_percent(ok_share)} из "
@@ -198,6 +216,11 @@ def build_client_analytical_markdown(
         tax_calculated=tax_calculated,
     )
     _append_cabinet_section(lines, model, tax_calculated=tax_calculated)
+    _append_cabinet_management_analysis(
+        lines,
+        model,
+        tax_calculated=tax_calculated,
+    )
     _append_driver_section(lines, model, tax_calculated=tax_calculated)
     _append_returns_and_lost_sales(lines, model)
     _append_quality_section(lines, model)
@@ -386,7 +409,7 @@ def _append_cabinet_section(
     rows = _cabinet_rows(model, tax_calculated=tax_calculated)
     if not rows:
         return
-    result_label = "Прибыль до НДФЛ" if tax_calculated else "Упр. прибыль WB"
+    result_label = "Прибыль до налогов" if tax_calculated else "Упр. прибыль WB"
     leading = max(rows, key=lambda row: row["revenue"])
     lines.extend(
         [
@@ -424,6 +447,222 @@ def _append_cabinet_section(
                 ],
             ),
         ]
+    )
+
+
+def _append_cabinet_management_analysis(
+    lines: list[str],
+    model: ClientReportModel,
+    *,
+    tax_calculated: bool,
+) -> None:
+    analyses = _cabinet_analysis_rows(model, tax_calculated=tax_calculated)
+    if not analyses:
+        return
+    result_label = "Прибыль до налогов" if tax_calculated else "Упр. прибыль WB"
+    logistics_shares = [
+        row["logistics_share"]
+        for row in analyses
+        if row["logistics_share"] is not None
+    ]
+    logistics_benchmark = min(logistics_shares) if len(logistics_shares) > 1 else None
+    losses_by_cabinet: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for loss in _loss_groups(model, tax_calculated=tax_calculated):
+        losses_by_cabinet[str(loss["cabinet"])].append(loss)
+
+    lines.extend(
+        [
+            "",
+            "## Аналитические выводы и действия по кабинетам",
+            "",
+            (
+                "Ниже факт отделён от управленческого вывода и сценария. "
+                "Причины расходов не считаются доказанными без отдельной "
+                "расшифровки, а ожидаемый эффект не является обещанием результата."
+            ),
+        ]
+    )
+    for analysis in analyses:
+        cabinet = str(analysis["cabinet"])
+        revenue = analysis["revenue"]
+        result = analysis["result"]
+        result_phrase = result_label[:1].lower() + result_label[1:]
+        margin = _ratio(result, revenue)
+        return_rate = _ratio(analysis["returns"], analysis["sales"])
+        reliable_share = _ratio(analysis["ok_rows"], analysis["row_count"])
+        confidence = _analysis_confidence(analysis)
+        lines.extend(
+            [
+                "",
+                f"### {cabinet}",
+                "",
+                (
+                    f"- **Факт.** Выручка — {_money(revenue)}, {result_phrase} "
+                    f"— {_money(result)}, маржинальность — {_percent(margin)}. "
+                    f"Продано {_quantity(analysis['sales'])} шт., возвращено "
+                    f"{_quantity(analysis['returns'])} шт. "
+                    f"({_percent(return_rate)} от продаж)."
+                ),
+                _cabinet_expense_signal(analysis),
+                (
+                    f"- **Надёжность финансового вывода: {confidence}.** "
+                    f"Строк со статусом «ОК» — {_quantity(analysis['ok_rows'])} "
+                    f"из {_quantity(analysis['row_count'])} "
+                    f"({_percent(reliable_share)}); требуют проверки "
+                    f"себестоимости — {_quantity(analysis['cost_issue_rows'])}, "
+                    f"сопоставления WB ↔ 1С — "
+                    f"{_quantity(analysis['mapping_rows'])}."
+                ),
+            ]
+        )
+        losses = losses_by_cabinet.get(cabinet, [])
+        if losses:
+            loss_total = sum((-row["result"] for row in losses), Decimal("0"))
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"Убыточных товарных групп — {len(losses)}; совокупный "
+                        f"отрицательный результат по ним — "
+                        f"{_money(loss_total)}."
+                    ),
+                    "",
+                    _markdown_table(
+                        ["Товар", "Убыток", "Фактор", "Статус данных"],
+                        [
+                            [
+                                row["product"],
+                                _money(-row["result"]),
+                                row["driver"],
+                                row["status"],
+                            ]
+                            for row in losses[:3]
+                        ],
+                    ),
+                ]
+            )
+        lines.extend(["", "**Приоритет действий:**", ""])
+        lines.extend(
+            f"- {action}" for action in _cabinet_actions(analysis, losses=losses)
+        )
+        scenario = _logistics_peer_scenario(
+            analysis,
+            benchmark=logistics_benchmark,
+        )
+        if scenario:
+            lines.extend(["", scenario])
+
+
+def _cabinet_expense_signal(analysis: Mapping[str, Any]) -> str:
+    top_expense = analysis.get("top_expense")
+    if not isinstance(top_expense, Mapping):
+        return (
+            "- **Ключевой сигнал.** Детализация расходов WB для кабинета "
+            "не заполнена; вывод по резерву требует отдельной расшифровки."
+        )
+    return (
+        f"- **Ключевой сигнал.** Крупнейшая учтённая статья расходов WB — "
+        f"{_text(top_expense.get('label'))}: "
+        f"{_money(top_expense.get('amount'))} "
+        f"({_percent(top_expense.get('share'))} от выручки). Это указывает, "
+        "какую статью разбирать первой, но само по себе не доказывает причину."
+    )
+
+
+def _cabinet_actions(
+    analysis: Mapping[str, Any],
+    *,
+    losses: list[dict[str, Any]],
+) -> list[str]:
+    actions: list[str] = []
+    cost_issues = _int(analysis.get("cost_issue_rows"))
+    mapping_issues = _int(analysis.get("mapping_rows"))
+    if cost_issues or mapping_issues:
+        actions.append(
+            "**Срочно — подтвердить данные.** Проверить строки себестоимости: "
+            f"{cost_issues}; строки сопоставления: {mapping_issues}. До этого "
+            "не использовать их прибыль как окончательный факт."
+        )
+
+    top_expense = analysis.get("top_expense")
+    expense_key = (
+        str(top_expense.get("key") or "")
+        if isinstance(top_expense, Mapping)
+        else ""
+    )
+    expense_actions = {
+        "logistics": (
+            "**На этой неделе — разобрать логистику.** Разложить сумму по "
+            "складам, габаритам, прямой и возвратной логистике; затем проверить "
+            "сценарии распределения запасов и упаковки."
+        ),
+        "storage": (
+            "**На этой неделе — разобрать хранение.** Выделить товары без "
+            "продаж и с избыточным остатком, затем выбрать распродажу, возврат "
+            "или перераспределение как отдельный сценарий."
+        ),
+        "commission": (
+            "**На этой неделе — разобрать комиссию.** Сверить категории и "
+            "ставки WB, затем посчитать сценарии цены и скидки по товарам с "
+            "отрицательным результатом."
+        ),
+        "promotion": (
+            "**На этой неделе — разобрать продвижение.** Сопоставить расходы "
+            "на продвижение с маржинальным результатом SKU и остановить только "
+            "те кампании, для которых отрицательный эффект подтверждён."
+        ),
+    }
+    if expense_key:
+        actions.append(
+            expense_actions.get(
+                expense_key,
+                "**На этой неделе — разобрать крупнейшую статью расходов.** "
+                "Проверить первичную расшифровку и посчитать отдельный сценарий "
+                "изменения до принятия решения.",
+            )
+        )
+
+    return_rate = _ratio(analysis.get("returns"), analysis.get("sales"))
+    if return_rate is not None and return_rate >= Decimal("0.10"):
+        actions.append(
+            "**На этой неделе — проверить возвраты.** Получить подтверждённые "
+            "причины возврата по топ товарам; без источника не приписывать их "
+            "качеству товара, логистике или цене."
+        )
+    if losses:
+        actions.append(
+            "**В течение месяца — вести список убыточных SKU.** Для трёх "
+            "крупнейших потерь отдельно посчитать цену, скидку, себестоимость "
+            "и расходы WB, затем проверить результат на следующей закрытой неделе."
+        )
+    if not actions:
+        actions.append(
+            "**На следующем обновлении — повторить контроль.** Сравнить "
+            "маржинальность, возвраты и структуру расходов с этой закрытой неделей."
+        )
+    return actions
+
+
+def _logistics_peer_scenario(
+    analysis: Mapping[str, Any],
+    *,
+    benchmark: Decimal | None,
+) -> str:
+    share = _decimal_or_none(analysis.get("logistics_share"))
+    revenue = _decimal_or_none(analysis.get("revenue"))
+    if benchmark is None or share is None or revenue in (None, 0):
+        return ""
+    gap = share - benchmark
+    if gap < Decimal("0.02"):
+        return ""
+    effect = gap * revenue
+    return (
+        "**Сценарный ориентир, не прогноз.** Если при той же выручке и прочих "
+        f"условиях снизить долю логистики с {_percent(share)} до "
+        f"{_percent(benchmark)} — уровня другого кабинета в этой же неделе — "
+        f"арифметический резерв результата составит около {_money(effect)}. "
+        "Перед решением нужно подтвердить, какие логистические компоненты реально "
+        "управляемы."
     )
 
 
@@ -477,7 +716,7 @@ def _append_driver_section(
     driver_counts = Counter(
         str(row["driver"] or "Причина не классифицирована") for row in losses
     )
-    result_label = "Прибыль до НДФЛ" if tax_calculated else "Упр. прибыль WB"
+    result_label = "Прибыль до налогов" if tax_calculated else "Упр. прибыль WB"
     lines.extend(
         [
             "",
@@ -720,11 +959,17 @@ def _append_tax_section(lines: list[str], model: ClientReportModel) -> None:
                     [
                         ["Источник", "Настройки организации 1С"],
                         ["Система налогообложения", _tax_value(tax.get("taxSystem"))],
-                        ["Ставка НДС", _percent(tax.get("vatRate"))],
-                        ["Налог с выручки", _percent(tax.get("revenueTaxRate"))],
+                        ["Ставка НДС", _percentage_points(tax.get("vatRate"))],
+                        [
+                            "Ставка налога с выручки",
+                            _percent(tax.get("revenueTaxRate")),
+                        ],
                         ["НДС к уплате", _money(model.kpis.get("vatPayable"))],
-                        ["Налог с выручки", _money(model.kpis.get("revenueTax"))],
-                        ["Прибыль до НДФЛ", _money(model.kpis.get("profit"))],
+                        [
+                            "Сумма налога с выручки",
+                            _money(model.kpis.get("revenueTax")),
+                        ],
+                        ["Прибыль до налогов", _money(model.kpis.get("profit"))],
                     ],
                 ),
             ]
@@ -866,6 +1111,147 @@ def _loss_summary_line(model: ClientReportModel, *, loss_rows: int) -> str:
     )
 
 
+def _cabinet_comparison_summary_line(
+    model: ClientReportModel,
+    *,
+    tax_calculated: bool,
+) -> str:
+    analyses = _cabinet_analysis_rows(model, tax_calculated=tax_calculated)
+    if len(analyses) < 2:
+        return (
+            "- **Сравнение кабинетов.** В выбранном периоде доступен один "
+            "кабинет; внешний ориентир для сравнения не применялся."
+        )
+    with_logistics = [
+        row for row in analyses if row.get("logistics_share") is not None
+    ]
+    if len(with_logistics) >= 2:
+        highest = max(with_logistics, key=lambda row: row["logistics_share"])
+        lowest = min(with_logistics, key=lambda row: row["logistics_share"])
+        gap = highest["logistics_share"] - lowest["logistics_share"]
+        if gap >= Decimal("0.02"):
+            gap_points = _format_decimal(gap * 100, 2)
+            return (
+                f"- **Главный управленческий сигнал.** Доля логистики у "
+                f"кабинета «{_text(highest['cabinet'])}» — "
+                f"{_percent(highest['logistics_share'])}, у кабинета "
+                f"«{_text(lowest['cabinet'])}» — "
+                f"{_percent(lowest['logistics_share'])}; разница — "
+                f"{gap_points} п.п. Логистику нужно разбирать первой, но эта "
+                "разница сама по себе не доказывает её причину."
+            )
+    weakest = min(
+        analyses,
+        key=lambda row: _ratio(row["result"], row["revenue"])
+        if row["revenue"]
+        else Decimal("0"),
+    )
+    strongest = max(
+        analyses,
+        key=lambda row: _ratio(row["result"], row["revenue"])
+        if row["revenue"]
+        else Decimal("0"),
+    )
+    return (
+        f"- **Сравнение кабинетов.** Минимальная маржинальность у кабинета "
+        f"«{_text(weakest['cabinet'])}» — "
+        f"{_percent(_ratio(weakest['result'], weakest['revenue']))}; "
+        f"максимальная у «{_text(strongest['cabinet'])}» — "
+        f"{_percent(_ratio(strongest['result'], strongest['revenue']))}."
+    )
+
+
+def _cabinet_analysis_rows(
+    model: ClientReportModel,
+    *,
+    tax_calculated: bool,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in model.unit_rows:
+        cabinet = str(row.get("cabinet") or "Не указан")
+        bucket = grouped.setdefault(
+            cabinet,
+            {
+                "cabinet": cabinet,
+                "revenue": Decimal("0"),
+                "result": Decimal("0"),
+                "sales": Decimal("0"),
+                "returns": Decimal("0"),
+                "row_count": 0,
+                "ok_rows": 0,
+                "cost_issue_rows": 0,
+                "mapping_rows": 0,
+                "expenses": {
+                    key: Decimal("0") for _label, key in CABINET_EXPENSE_FIELDS
+                },
+            },
+        )
+        bucket["revenue"] += _row_revenue(row)
+        bucket["result"] += _row_result(row, tax_calculated=tax_calculated)
+        bucket["sales"] += _decimal_or_zero(row.get("sales"))
+        bucket["returns"] += _decimal_or_zero(row.get("returns"))
+        bucket["row_count"] += 1
+        status = str(row.get("status") or "").strip().casefold()
+        if status in {"ок", "reliable"}:
+            bucket["ok_rows"] += 1
+        else:
+            quality_text = " ".join(
+                str(row.get(key) or "")
+                for key in ("status", "statusReason", "lossClass", "lossDriver")
+            ).casefold()
+            if "себестоим" in quality_text or "missing_cost" in quality_text:
+                bucket["cost_issue_rows"] += 1
+            mapping_text = " ".join(
+                str(row.get(key) or "") for key in ("status", "lossDriver")
+            ).casefold()
+            if any(
+                marker in mapping_text
+                for marker in ("сопостав", "mapping", "неоднознач")
+            ):
+                bucket["mapping_rows"] += 1
+        for _label, key in CABINET_EXPENSE_FIELDS:
+            bucket["expenses"][key] += _decimal_or_zero(row.get(key))
+
+    result: list[dict[str, Any]] = []
+    for bucket in grouped.values():
+        revenue = bucket["revenue"]
+        expense_rows = []
+        for label, key in CABINET_EXPENSE_FIELDS:
+            amount = bucket["expenses"][key]
+            if amount:
+                expense_rows.append(
+                    {
+                        "label": label,
+                        "key": key,
+                        "amount": amount,
+                        "share": _ratio(amount, revenue),
+                    }
+                )
+        bucket["top_expense"] = (
+            max(expense_rows, key=lambda row: abs(row["amount"]))
+            if expense_rows
+            else None
+        )
+        logistics = bucket["expenses"]["logistics"]
+        bucket["logistics_share"] = _ratio(logistics, revenue)
+        result.append(bucket)
+    return sorted(result, key=lambda row: row["revenue"], reverse=True)
+
+
+def _analysis_confidence(analysis: Mapping[str, Any]) -> str:
+    ok_share = _ratio(analysis.get("ok_rows"), analysis.get("row_count"))
+    if ok_share is None:
+        return "ограниченная"
+    issues = _int(analysis.get("cost_issue_rows")) + _int(
+        analysis.get("mapping_rows")
+    )
+    if ok_share >= Decimal("0.95") and not issues:
+        return "высокая"
+    if ok_share >= Decimal("0.75"):
+        return "средняя"
+    return "ограниченная"
+
+
 def _cabinet_rows(
     model: ClientReportModel,
     *,
@@ -965,7 +1351,21 @@ def _loss_groups(
         if status and status != "ОК":
             bucket["status"] = status
     result = [row for row in grouped.values() if row["result"] < 0]
+    for row in result:
+        row["driver"] = _normalized_loss_driver(
+            str(row["driver"]),
+            status=str(row["status"]),
+        )
     return sorted(result, key=lambda row: row["result"])
+
+
+def _normalized_loss_driver(driver: str, *, status: str) -> str:
+    normalized = driver.strip()
+    if normalized and "не отрицатель" not in normalized.casefold():
+        return normalized
+    if "себестоим" in status.casefold():
+        return "Себестоимость 1С требует сверки"
+    return "Причина требует отдельного расчёта"
 
 
 def _return_groups(model: ClientReportModel) -> list[dict[str, Any]]:
@@ -1011,7 +1411,7 @@ def _row_result(row: Mapping[str, Any], *, tax_calculated: bool) -> Decimal:
 def _readiness_label(readiness: Mapping[str, Any]) -> str:
     status = str(readiness.get("status") or "needs_review")
     label = str(readiness.get("label") or "").strip()
-    return label or READINESS_LABELS.get(status, status)
+    return READINESS_LABELS.get(status) or label or status
 
 
 def _coverage_period(coverage: Mapping[str, Any]) -> str:
@@ -1174,6 +1574,13 @@ def _percent(value: Any) -> str:
     if number is None:
         return "Не рассчитано"
     return f"{_format_decimal(number * 100, 2)}%"
+
+
+def _percentage_points(value: Any) -> str:
+    number = _decimal_or_none(value)
+    if number is None:
+        return "Не рассчитано"
+    return f"{_format_decimal(number, 2)}%"
 
 
 def _format_decimal(value: Decimal, precision: int) -> str:

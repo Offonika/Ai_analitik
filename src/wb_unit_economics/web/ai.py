@@ -704,7 +704,7 @@ class AiAnalyst:
                 )
         return (
             f"По расчету за {summary['period']} выручка после СПП составляет "
-            f"{revenue_text}, прибыль до НДФЛ "
+            f"{revenue_text}, прибыль до налогов "
             f"{profit_text}, маржа {margin_text}.\n\n"
             f"Убыточных строк: {summary['loss_rows']} из {summary['rows']}.\n"
             f"{loss_lines}{quality_line}{refresh_line}\n\n"
@@ -744,7 +744,7 @@ class AiAnalyst:
         return (
             "Ключевой вывод\n"
             f"За период {kpi['period']} расчет показывает выручку после СПП "
-            f"{self._money_or_na(kpi.get('revenue'))} и прибыль до НДФЛ "
+            f"{self._money_or_na(kpi.get('revenue'))} и прибыль до налогов "
             f"{self._money_or_na(kpi.get('profit'))}. Маржа по расчетной витрине: "
             f"{margin_text}.\n\n"
             "Факты\n"

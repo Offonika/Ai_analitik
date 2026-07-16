@@ -107,7 +107,7 @@ def _row_revenue_before_spp(row: dict[str, Any]) -> float:
 
 def _row_profit(row: dict[str, Any]) -> float:
     return _num(
-        row.get("Прибыль до НДФЛ")
+        row.get("Прибыль до налогов")
         or row.get("Управленческая прибыль WB")
         or row.get("Маржинальный доход WB после налогов")
         or row.get("Управленческая прибыль")
@@ -225,14 +225,14 @@ def _read_monthly_from_sheet(workbook: Any) -> list[dict[str, Any]]:
                 "logistics": _round(item.get("Логистика")),
                 "wb_expenses": _round(item.get("Расходы WB")),
                 "profit": _round(
-                    item.get("Прибыль до НДФЛ")
+                    item.get("Прибыль до налогов")
                     or item.get("Управленческая прибыль WB")
                     or item.get("Маржинальный доход WB после налогов")
                     or item.get("Управленческая прибыль")
                     or item.get("Прибыль после налогов")
                 ),
                 "margin": _round(
-                    item.get("Маржинальность до НДФЛ")
+                    item.get("Маржинальность до налогов")
                     or item.get("Маржа WB без НДС")
                     or item.get("Маржа WB после налогов")
                     or item.get("Маржа без НДС")
@@ -333,7 +333,7 @@ def _read_returns(workbook: Any) -> list[dict[str, Any]]:
                 "return_rate": _round(row.get("% возвратов"), 4),
                 "return_amount": _round(row.get("Сумма возвратов")),
                 "profit": _round(
-                    row.get("Прибыль до НДФЛ")
+                    row.get("Прибыль до налогов")
                     or row.get("Управленческая прибыль WB")
                     or row.get("Маржинальный доход WB после налогов")
                     or row.get("Управленческая прибыль")
@@ -678,7 +678,7 @@ def _aggregate_kpis(
         sales = dashboard_kpis.get("Продажи, шт", sales)
         returns = dashboard_kpis.get("Возвраты, шт", returns)
         profit = dashboard_kpis.get(
-            "Прибыль до НДФЛ",
+            "Прибыль до налогов",
             dashboard_kpis.get(
                 "Управленческая прибыль WB",
                 dashboard_kpis.get(

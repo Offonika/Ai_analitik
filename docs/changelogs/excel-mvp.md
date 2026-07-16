@@ -19,7 +19,7 @@ updated_at: "2026-07-15"
 
 - 2026-07-15 — aligned client-facing profit terminology with the accepted tax
   ADR: methodology and liquidity guidance now distinguish `Управленческая
-  прибыль WB` from `Прибыль до НДФЛ`, while legacy field names remain internal.
+  прибыль WB` from `Прибыль до налогов`, while legacy field names remain internal.
 - 2026-07-14 — kept WB unit-economics revenue as the main overview value and
   moved calendar 1C revenue with VAT into the same card as an explicitly
   labelled secondary comparison; detailed calendar reconciliation remains in

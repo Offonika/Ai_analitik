@@ -2621,8 +2621,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260716-report-download-flow-v1"
-    assert health.json()["staticBuildId"] == "20260716-report-download-flow-v1"
+    assert health.json()["backendBuildId"] == "20260716-weekly-client-report-v3"
+    assert health.json()["staticBuildId"] == "20260716-weekly-client-report-v3"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2980,8 +2980,10 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
 
     app_js = client.get("/static/app.js")
     styles = client.get("/static/styles.css")
+    cabinet = client.get("/cabinet")
     assert app_js.status_code == 200
     assert styles.status_code == 200
+    assert cabinet.status_code == 200
     assert "/api/reports" in app_js.text
     assert "/summary" in app_js.text
     assert "/freshness" in app_js.text
@@ -3012,6 +3014,11 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert ".client-report-actions" in styles.text
     assert "period_start: periodStart || null" in app_js.text
     assert "period_end: periodEnd || null" in app_js.text
+    assert (
+        'const scope = els.clientReportScope.value || "last_closed_week"'
+        in app_js.text
+    )
+    assert "Последняя закрытая неделя" in cabinet.text
     assert "Только проверить готовность" in app_js.text
     assert "Отчёт формируется" in app_js.text
     assert "Данные обновляются" in app_js.text
@@ -3630,8 +3637,8 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
         "Расходы WB",
         "Управленческая прибыль WB",
         "Маржинальность WB",
-        "Прибыль до НДФЛ",
-        "Маржинальность до НДФЛ",
+        "Прибыль до налогов",
+        "Маржинальность до налогов",
         "Итого к перечислению",
         "Продажи WB",
         "Возвратность",
@@ -3639,8 +3646,8 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
     positions = [render_kpis.index(f'"{label}"') for label in ordered_labels]
 
     assert positions == sorted(positions)
-    assert render_kpis.count('"Прибыль до НДФЛ"') == 1
-    assert render_kpis.count('"Маржинальность до НДФЛ"') == 1
+    assert render_kpis.count('"Прибыль до налогов"') == 1
+    assert render_kpis.count('"Маржинальность до налогов"') == 1
     assert '"Прибыль после налогов"' not in render_kpis
     assert '"Рентабельность после налогов"' not in render_kpis
     assert "marginAfterTax" in render_kpis
@@ -8986,9 +8993,21 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
     payload = generated.json()
     assert "workbook_path" not in received
     assert received["summary"]["meta"]["reportId"] == "report-1"
+    assert received["summary"]["meta"]["reportPeriod"] == (
+        "08.06.2026 - 14.06.2026"
+    )
     assert payload["files"]["docx"]["url"].endswith("/analytical-report.docx")
-    assert payload["contractVersion"] == "client-analytical-report.v1"
+    assert payload["contractVersion"] == "client-analytical-report.v3"
+    assert payload["scope"] == "last_closed_week"
+    assert payload["periodStart"] == "2026-06-08"
+    assert payload["periodEnd"] == "2026-06-14"
     assert payload["files"]["pdf"]["status"] == "unavailable"
+
+    invalid_custom = client.post(
+        "/api/reports/report-1/analytical-report",
+        json={"scope": "custom"},
+    )
+    assert invalid_custom.status_code == 400
 
     docx = client.get("/api/reports/report-1/analytical-report.docx")
     assert docx.status_code == 200

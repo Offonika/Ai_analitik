@@ -12,6 +12,7 @@ TRUTH_SCOPES = {
     "client-analytical-report",
     "development-workflow",
     "excel-methodology",
+    "logistics-cost-analysis",
     "mapping",
     "month-close-control",
     "multi-report-cabinet",

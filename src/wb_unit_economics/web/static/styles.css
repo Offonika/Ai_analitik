@@ -2879,6 +2879,41 @@ button.action-insight-card {
   line-height: 1.45;
 }
 
+.client-report-period-control,
+.client-report-period-control label,
+#client-report-period-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.client-report-period-control label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.client-report-period-control select,
+.client-report-period-control input[type="date"] {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-weight: 650;
+}
+
+#client-report-period-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.client-report-period-control small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .client-report-actions {
   display: flex;
   flex-wrap: wrap;
@@ -5040,7 +5075,8 @@ td {
   .report-wizard-steps,
   .report-wizard-form,
   .report-wizard-context,
-  .report-wizard-period-fields {
+  .report-wizard-period-fields,
+  #client-report-period-fields {
     grid-template-columns: 1fr;
   }
 

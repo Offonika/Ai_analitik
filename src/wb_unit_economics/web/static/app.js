@@ -14,6 +14,7 @@ const state = {
   reportId: null,
   clientReportPayload: null,
   clientReportReportId: "",
+  clientReportScopeKey: "",
   clientReportBusy: false,
   clientLoadToken: 0,
   rowsRequestKey: "",
@@ -288,6 +289,14 @@ const els = {
   ozonArticleEconomicsChart: document.querySelector("#ozon-article-economics-chart"),
   draftPanel: document.querySelector("#draft-panel"),
   draftStatus: document.querySelector("#draft-status"),
+  clientReportScope: document.querySelector("#client-report-scope"),
+  clientReportPeriodFields: document.querySelector(
+    "#client-report-period-fields",
+  ),
+  clientReportPeriodStart: document.querySelector(
+    "#client-report-period-start",
+  ),
+  clientReportPeriodEnd: document.querySelector("#client-report-period-end"),
   clientReportGenerateButton: document.querySelector("#client-report-generate-button"),
   clientReportExcelDownload: document.querySelector("#client-report-excel-download"),
   clientReportDocxDownload: document.querySelector("#client-report-docx-download"),
@@ -702,6 +711,15 @@ function init() {
   els.clientReportGenerateButton.addEventListener(
     "click",
     generateClientAnalyticalReport,
+  );
+  els.clientReportScope.addEventListener("change", onClientReportScopeChange);
+  els.clientReportPeriodStart.addEventListener(
+    "change",
+    onClientReportScopeChange,
+  );
+  els.clientReportPeriodEnd.addEventListener(
+    "change",
+    onClientReportScopeChange,
   );
   els.aiForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1349,6 +1367,7 @@ function closeAiWidget(options = {}) {
 function openClientOutputWidget() {
   openWidgetOverlay(els.clientOutputWidgetOverlay);
   els.draftPanel.hidden = false;
+  syncClientReportPeriodControls();
   syncClientReportControls();
   if (!state.reportId) {
     els.draftStatus.textContent = "Сначала выберите клиента и отчет.";
@@ -1382,9 +1401,71 @@ function clientReportCanGenerate() {
 }
 
 function currentClientReportPayload() {
-  return state.clientReportReportId === state.reportId
+  return state.clientReportReportId === state.reportId &&
+    state.clientReportScopeKey === clientReportScopeKey()
     ? state.clientReportPayload
     : null;
+}
+
+function clientReportScopeRequest() {
+  const scope = els.clientReportScope.value || "last_closed_week";
+  const request = { branded: true, scope };
+  if (scope !== "custom") {
+    return request;
+  }
+  const periodStart = els.clientReportPeriodStart.value;
+  const periodEnd = els.clientReportPeriodEnd.value;
+  if (!periodStart || !periodEnd) {
+    els.draftStatus.textContent = "Укажите дату начала и дату конца отчёта.";
+    return null;
+  }
+  if (periodStart > periodEnd) {
+    els.draftStatus.textContent = "Дата начала не может быть позже даты конца.";
+    return null;
+  }
+  return { ...request, periodStart, periodEnd };
+}
+
+function clientReportScopeKey(request = null) {
+  const value = request || {
+    scope: els.clientReportScope?.value || "last_closed_week",
+    periodStart: els.clientReportPeriodStart?.value || "",
+    periodEnd: els.clientReportPeriodEnd?.value || "",
+  };
+  return [value.scope, value.periodStart || "", value.periodEnd || ""].join(":");
+}
+
+function syncClientReportPeriodControls() {
+  const custom = els.clientReportScope.value === "custom";
+  els.clientReportPeriodFields.hidden = !custom;
+  const options = state.summary?.options || {};
+  setDateBounds(
+    els.clientReportPeriodStart,
+    options.periodStart,
+    options.periodEnd,
+  );
+  setDateBounds(
+    els.clientReportPeriodEnd,
+    options.periodStart,
+    options.periodEnd,
+  );
+  if (!els.clientReportPeriodStart.value) {
+    els.clientReportPeriodStart.value =
+      els.topbarPeriodStart.value || options.periodStart || "";
+  }
+  if (!els.clientReportPeriodEnd.value) {
+    els.clientReportPeriodEnd.value =
+      els.topbarPeriodEnd.value || options.periodEnd || "";
+  }
+}
+
+function onClientReportScopeChange() {
+  syncClientReportPeriodControls();
+  if (!currentClientReportPayload()) {
+    els.draftStatus.textContent =
+      "Для выбранного периода отчёт ещё не сформирован.";
+  }
+  syncClientReportControls();
 }
 
 function setClientReportDownloadLink(link, file) {
@@ -1422,9 +1503,10 @@ function syncClientReportControls() {
 
 function renderClientReportReadyState(payload) {
   const pdfReady = payload?.files?.pdf?.status === "ok";
+  const period = payload?.period ? ` за ${payload.period}` : "";
   els.draftStatus.textContent = pdfReady
-    ? "Отчёт клиенту готов. Выберите DOCX или PDF."
-    : "DOCX отчёта клиенту готов. PDF на сервере недоступен — скачайте DOCX.";
+    ? `Отчёт клиенту${period} готов. Выберите DOCX или PDF.`
+    : `DOCX отчёта клиенту${period} готов. PDF на сервере недоступен — скачайте DOCX.`;
   els.reportWizardResultCopy.textContent = pdfReady
     ? "Excel и отчёт клиенту готовы. Выберите нужный формат."
     : "Excel и DOCX отчёта клиенту готовы. PDF на сервере недоступен.";
@@ -1436,6 +1518,11 @@ async function generateClientAnalyticalReport() {
   if (!reportId || !clientReportCanGenerate() || state.clientReportBusy) {
     return;
   }
+  const request = clientReportScopeRequest();
+  if (!request) {
+    return;
+  }
+  const scopeKey = clientReportScopeKey(request);
   state.clientReportBusy = true;
   els.draftStatus.textContent = "Формируем отчёт клиенту в DOCX…";
   els.reportWizardResultCopy.textContent =
@@ -1446,7 +1533,7 @@ async function generateClientAnalyticalReport() {
       `/api/reports/${encodeURIComponent(reportId)}/analytical-report`,
       {
         method: "POST",
-        body: JSON.stringify({ branded: true }),
+        body: JSON.stringify(request),
       },
     );
     if (state.reportId !== reportId) {
@@ -1454,6 +1541,7 @@ async function generateClientAnalyticalReport() {
     }
     state.clientReportPayload = payload;
     state.clientReportReportId = reportId;
+    state.clientReportScopeKey = scopeKey;
     renderClientReportReadyState(payload);
   } catch (error) {
     if (state.reportId !== reportId) {
@@ -3016,6 +3104,7 @@ function clearReportSelection() {
   state.reportId = null;
   state.clientReportPayload = null;
   state.clientReportReportId = "";
+  state.clientReportScopeKey = "";
   state.clientReportBusy = false;
   state.summary = null;
   state.scenario = null;
@@ -3200,6 +3289,7 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   if (state.clientReportReportId !== reportId) {
     state.clientReportPayload = null;
     state.clientReportReportId = "";
+    state.clientReportScopeKey = "";
     state.clientReportBusy = false;
   }
   state.reportId = reportId;
@@ -8493,7 +8583,7 @@ function renderAiContext(summary = {}) {
   const quality = summary.quality || {};
   const kpis = summary.kpis || {};
   const revenue = Number(kpis.revenueWithoutVat ?? kpis.revenue ?? 0);
-  const profitValue = numberOrNull(kpis.profitBeforeTax ?? kpis.profit);
+  const profitValue = numberOrNull(kpis.profit ?? kpis.profitBeforeTax);
   const marginValue = numberOrNull(kpis.margin ?? kpis.profitMargin);
   const missingCost = Number(quality.missingCostRows || 0);
   els.aiContextReadiness.textContent = readiness.label || "Статус не рассчитан";
@@ -8835,7 +8925,7 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       marginFormula,
     ],
     [
-      "Прибыль до НДФЛ",
+      "Прибыль до налогов",
       profitAfterTaxReady ? money(profitAfterTax) : "Не рассчитано",
       afterTaxStatus,
       afterTaxTone(profitAfterTax, profitAfterTaxReady),
@@ -8844,15 +8934,15 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
         : "Управленческая прибыль WB − применимые профильные налоги на доход, кроме НДФЛ предпринимателя.",
     ],
     [
-      "Маржинальность до НДФЛ",
+      "Маржинальность до налогов",
       marginAfterTaxReady ? percent(marginAfterTax) : "Не рассчитано",
       profitAfterTaxReady && marginAfterTax === null
         ? "Нулевая выручка"
         : afterTaxStatus,
       afterTaxTone(marginAfterTax, marginAfterTaxReady),
       profitUsesRevenueWithoutVat
-        ? "Прибыль до НДФЛ ÷ выручка WB без НДС."
-        : "Прибыль до НДФЛ ÷ база выручки применённого налогового профиля.",
+        ? "Прибыль до налогов ÷ выручка WB без НДС."
+        : "Прибыль до налогов ÷ база выручки применённого налогового профиля.",
     ],
     [
       "Итого к перечислению",
@@ -9000,7 +9090,7 @@ function ozonMartMetricItems(mart = {}, reconciliation = {}) {
     afterTax ?? totals.profitBeforeIncomeTax ?? profitBeforeTax;
   const canonicalProfitLabel =
     afterTax != null
-      ? "Прибыль до НДФЛ"
+      ? "Прибыль до налогов"
       : osno
         ? "Управленческая прибыль WB"
         : "Прибыль до налогов";
@@ -13672,6 +13762,7 @@ function resetClientScopedState(options = {}) {
   state.reportId = null;
   state.clientReportPayload = null;
   state.clientReportReportId = "";
+  state.clientReportScopeKey = "";
   state.clientReportBusy = false;
   state.reportKinds = [];
   state.scenario = null;

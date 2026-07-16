@@ -145,6 +145,15 @@ documents:
     truth_scope: "report-publication"
     truth_priority: 100
     summary: "Accepted spec DB-first публикации: расчетные витрины БД как источник правды, Excel/web/DOCX/PDF/HTML/CSV как экспорты."
+  - path: "docs/specs/wb-logistics-cost-analysis-implementation.md"
+    title: "WB: анализ затрат на логистику"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "consultant", "client"]
+    source_of_truth: true
+    truth_scope: "logistics-cost-analysis"
+    truth_priority: 100
+    summary: "Accepted реализация блока фактических логистических затрат, проблемных товаров, факторов, детализации заказов и сценарных калькуляторов."
   - path: "docs/specs/client-analytical-report-implementation.md"
     title: "Клиентский аналитический отчёт WB/1С"
     doc_type: "spec"
@@ -374,14 +383,14 @@ documents:
     source_of_truth: false
     summary: "Историческое решение с legacy-формулой НДС 5/105 и УСН 1%, замененное профильной налоговой методикой."
   - path: "docs/decisions/2026-07-10-tax-profiles-osno-profit.md"
-    title: "Налоговые профили, ОСНО и прибыль до НДФЛ"
+    title: "Налоговые профили, ОСНО и прибыль до налогов"
     doc_type: "decision"
     status: "accepted"
     audience: ["engineering", "consultant", "client"]
     source_of_truth: true
     truth_scope: "tax-methodology"
     truth_priority: 100
-    summary: "Accepted ADR по налоговым профилям, ОСНО, НДС к уплате, Управленческой прибыли WB и прибыли до НДФЛ."
+    summary: "Accepted ADR по налоговым профилям, ОСНО, НДС к уплате, Управленческой прибыли WB и прибыли до налогов."
   - path: "docs/decisions/2026-07-14-accounting-reports-accountant-questions.md"
     title: "Вопросы бухгалтеру по закрытию месяца и налоговой нагрузке"
     doc_type: "decision"

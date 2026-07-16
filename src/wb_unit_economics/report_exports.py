@@ -501,11 +501,11 @@ COLUMN_LABELS = {
     "incomeTaxBase": "База НДФЛ",
     "incomeTax": "НДФЛ",
     "incomeTaxIncluded": "НДФЛ включен",
-    "profitBeforeTax": "Управленческая прибыль до НДФЛ",
+    "profitBeforeTax": "Управленческая прибыль WB",
     "marginBeforeTax": "Маржа до налогов",
     "profitBeforeIncomeTax": "Управленческая прибыль WB",
-    "profitAfterTax": "Прибыль до НДФЛ",
-    "marginAfterTax": "Маржинальность до НДФЛ",
+    "profitAfterTax": "Прибыль до налогов",
+    "marginAfterTax": "Маржинальность до налогов",
     "revenueTax": "Налог с выручки",
     "taxSystem": "Налоговый режим",
     "profit": "Управленческая прибыль WB",
@@ -843,8 +843,8 @@ def _aggregate_unit_rows(
             ("returns", "Возвраты, шт"),
             ("revenue", "Выручка с НДС"),
             ("revenueWithoutVat", "Выручка без НДС"),
-            ("profitBeforeTax", "Прибыль до налогов"),
-            ("profit", "Прибыль до НДФЛ"),
+            ("profitBeforeTax", "Управленческая прибыль WB"),
+            ("profit", "Прибыль до налогов"),
         ):
             target[label] = float(target.get(label) or 0) + float(row.get(source) or 0)
     return list(totals.values())
@@ -860,8 +860,8 @@ def _dashboard_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         ("Исходящий НДС", "vatOutput"),
         ("Налог УСН", "revenueTax"),
         ("Всего налогов", "totalTax"),
-        ("Прибыль до налогов", "profitBeforeTax"),
-        ("Прибыль до НДФЛ", "profitAfterTax"),
+        ("Управленческая прибыль WB", "profitBeforeTax"),
+        ("Прибыль до налогов", "profitAfterTax"),
     )
     rows = [
         {"Показатель": label, "Значение": kpis.get(key)} for label, key in labels
@@ -1159,7 +1159,7 @@ def _ozon_summary_rows(diagnostics: dict[str, Any]) -> list[dict[str, Any]]:
         ("income_tax", "НДФЛ / налог на доход", "incomeTax", "tax", "expense"),
         (
             "profit_after_tax",
-            "Прибыль до НДФЛ",
+            "Прибыль до налогов",
             "profitAfterTax",
             "result",
             "result",

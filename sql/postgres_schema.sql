@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     create_date date,
     date_from date,
     date_to date,
+    order_uid text,
+    order_id text,
+    shk_id text,
+    sticker_id text,
+    trbx_id text,
     nm_id bigint,
     vendor_code text NOT NULL DEFAULT '',
     title text NOT NULL DEFAULT '',
@@ -64,6 +69,14 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     doc_type_name text NOT NULL DEFAULT '',
     seller_oper_name text NOT NULL DEFAULT '',
     delivery_method text NOT NULL DEFAULT '',
+    office_name text,
+    ppvz_office_name text,
+    ppvz_office_id text,
+    country text,
+    gi_box_type_name text,
+    dlv_prc numeric,
+    fix_tariff_date_from date,
+    fix_tariff_date_to date,
     sales_model text NOT NULL,
     operation_type text NOT NULL DEFAULT '',
     quantity numeric NOT NULL DEFAULT 0,
@@ -73,6 +86,9 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     ppvz_sales_commission numeric NOT NULL DEFAULT 0,
     wb_commission numeric NOT NULL DEFAULT 0,
     delivery_service numeric NOT NULL DEFAULT 0,
+    delivery_amount numeric,
+    return_amount numeric,
+    rebill_logistic_cost numeric,
     logistics numeric NOT NULL DEFAULT 0,
     paid_storage numeric NOT NULL DEFAULT 0,
     storage numeric NOT NULL DEFAULT 0,
@@ -88,6 +104,24 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.wb_finance_detail_raw (
     srid text NOT NULL DEFAULT '',
     inserted_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE wb_unit_economics.wb_finance_detail_raw
+    ADD COLUMN IF NOT EXISTS order_uid text,
+    ADD COLUMN IF NOT EXISTS order_id text,
+    ADD COLUMN IF NOT EXISTS shk_id text,
+    ADD COLUMN IF NOT EXISTS sticker_id text,
+    ADD COLUMN IF NOT EXISTS trbx_id text,
+    ADD COLUMN IF NOT EXISTS office_name text,
+    ADD COLUMN IF NOT EXISTS ppvz_office_name text,
+    ADD COLUMN IF NOT EXISTS ppvz_office_id text,
+    ADD COLUMN IF NOT EXISTS country text,
+    ADD COLUMN IF NOT EXISTS gi_box_type_name text,
+    ADD COLUMN IF NOT EXISTS dlv_prc numeric,
+    ADD COLUMN IF NOT EXISTS fix_tariff_date_from date,
+    ADD COLUMN IF NOT EXISTS fix_tariff_date_to date,
+    ADD COLUMN IF NOT EXISTS delivery_amount numeric,
+    ADD COLUMN IF NOT EXISTS return_amount numeric,
+    ADD COLUMN IF NOT EXISTS rebill_logistic_cost numeric;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_wb_finance_detail_raw_snapshot_row
     ON wb_unit_economics.wb_finance_detail_raw (

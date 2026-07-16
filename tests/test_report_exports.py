@@ -348,7 +348,7 @@ def test_ozon_diagnostics_excel_keeps_unmatched_1c_only_in_reconciliation(
     assert "Тип атрибуции" in unit_headers
     assert "Остаток периода" in unit_headers
     assert "Управленческая прибыль WB" in unit_headers
-    assert "Прибыль до НДФЛ" in unit_headers
+    assert "Прибыль до налогов" in unit_headers
     assert "Налоговый режим" in unit_headers
     assert "Источник налогового профиля" in unit_headers
     assert "База расхода" in sku_headers

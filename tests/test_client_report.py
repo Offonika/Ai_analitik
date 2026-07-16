@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
+from scripts.build_client_analytical_report import _report_summary
 from wb_unit_economics.client_report import (
     CLIENT_REPORT_CONTRACT_VERSION,
     build_client_analytical_markdown,
@@ -65,7 +68,7 @@ def report_payload(*, tax_calculated: bool = True) -> dict:
             "calculated": tax_calculated,
             "status": "ready" if tax_calculated else "missing",
             "taxSystem": "УСН Доходы" if tax_calculated else None,
-            "vatRate": 0.05 if tax_calculated else None,
+            "vatRate": 5.0 if tax_calculated else None,
             "revenueTaxRate": 0.01 if tax_calculated else None,
             "source": "Catalog_Организации" if tax_calculated else "missing",
         },
@@ -95,6 +98,9 @@ def report_payload(*, tax_calculated: bool = True) -> dict:
                 "revenue": 100000,
                 "profitBeforeTax": 30000,
                 "profit": 25000,
+                "commission": 12000,
+                "logistics": 10000,
+                "storage": 2000,
                 "lossDriver": "",
                 "status": "ОК",
             },
@@ -108,6 +114,9 @@ def report_payload(*, tax_calculated: bool = True) -> dict:
                 "revenue": 50000,
                 "profitBeforeTax": -7000,
                 "profit": -7000,
+                "commission": 7000,
+                "logistics": 20000,
+                "storage": 3000,
                 "lossDriver": "Возвраты + логистика",
                 "status": "ОК",
             },
@@ -157,10 +166,19 @@ def test_client_report_is_answer_first_and_uses_onec_tax_settings() -> None:
         "## Параметры отчёта"
     )
     assert "## Налоги рассчитаны по настройкам 1С" in markdown
+    assert "Прибыль до налогов" in markdown
+    assert "| Ставка НДС | 5,00% |" in markdown
+    assert "| Ставка налога с выручки | 1,00% |" in markdown
+    assert "500,00%" not in markdown
     assert "Отдельное ручное подтверждение не требуется" in markdown
     assert "Подтвердить налоговый профиль" not in markdown
     assert "report-july-2026" in markdown
     assert "Товар / к проверке" in markdown
+    assert "## Аналитические выводы и действия по кабинетам" in markdown
+    assert "### Кабинет Султана" in markdown
+    assert "**Сценарный ориентир, не прогноз.**" in markdown
+    assert "**На этой неделе — разобрать логистику.**" in markdown
+    assert "прибыль вырастет" not in markdown
     assert CLIENT_REPORT_CONTRACT_VERSION in markdown
 
 
@@ -171,6 +189,33 @@ def test_client_report_does_not_replace_missing_tax_with_zero() -> None:
     assert "Управленческая прибыль WB" in markdown
     assert "налоговые показатели не подменяются нулями" in markdown
     assert "Подтвердить налоговый профиль" not in markdown
+
+
+def test_client_report_rejects_contradictory_negative_result_driver() -> None:
+    payload = report_payload()
+    payload["unitRows"][1]["lossDriver"] = "Маржинальный доход не отрицательный"
+
+    markdown = build_client_analytical_markdown(payload)
+
+    assert "Маржинальный доход не отрицательный" not in markdown
+    assert "Причина требует отдельного расчёта" in markdown
+
+
+def test_cost_reason_does_not_inflate_mapping_issue_count() -> None:
+    payload = report_payload()
+    payload["unitRows"][1].update(
+        {
+            "status": "Нет себестоимости 1С",
+            "statusReason": (
+                "Для сопоставленного товара нет действующей себестоимости 1С"
+            ),
+            "lossDriver": "Нет себестоимости 1С",
+        }
+    )
+
+    markdown = build_client_analytical_markdown(payload)
+
+    assert "строки сопоставления: 0" in markdown
 
 
 def test_client_report_docx_preserves_source_and_content(
@@ -205,3 +250,61 @@ def test_client_report_html_comes_from_same_markdown_and_escapes_values() -> Non
     assert "<strong>Результат периода.</strong>" in rendered
     assert "Товар / к проверке" in rendered
     assert "source-sha256" in rendered
+
+
+def test_scoped_report_summary_keeps_source_lineage_and_relabels_only_scope(
+    monkeypatch,
+) -> None:
+    report = SimpleNamespace(
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 7, 12),
+        return_reason_limitation="Причина возврата не передаётся",
+    )
+    base = report_payload()
+    base["meta"]["reportPeriod"] = "01.03.2026 - 12.07.2026"
+    base["meta"]["sourceCoverage"] = "23.02.2026 - 12.07.2026"
+    scoped_row = {
+        **base["unitRows"][0],
+        "id": "row-1",
+        "week": "2026-07-06",
+    }
+    analytics = {
+        "kpis": {**base["kpis"], "rowCount": 1},
+        "quality": {**base["quality"], "rowCount": 1},
+        "monthly": base["monthly"],
+        "expenses": base["expenses"],
+        "lostSales": [],
+        "lostSalesCoverage": {"calculated": False},
+        "taxContext": base["taxContext"],
+    }
+    monkeypatch.setattr(
+        "wb_unit_economics.web.report_scope.repository.report_summary_payload",
+        lambda _db, _report: base,
+    )
+    monkeypatch.setattr(
+        "wb_unit_economics.web.report_scope.repository.query_report_rows",
+        lambda *_args, **_kwargs: {
+            "items": [scoped_row],
+            "total": 1,
+            "analytics": analytics,
+        },
+    )
+    monkeypatch.setattr(
+        "wb_unit_economics.web.report_scope.repository.returns_payload",
+        lambda rows, _limitation: [{"id": rows[0]["id"]}],
+    )
+
+    summary = _report_summary(
+        object(),
+        report,
+        period_start=date(2026, 7, 6),
+        period_end=date(2026, 7, 12),
+    )
+
+    assert summary["meta"]["reportPeriod"] == "06.07.2026 - 12.07.2026"
+    assert summary["meta"]["periodStatus"] == "закрытая неделя"
+    assert summary["meta"]["sourceReportPeriod"] == "01.03.2026 - 12.07.2026"
+    assert summary["meta"]["sourceReportCoverage"] == "23.02.2026 - 12.07.2026"
+    assert summary["unitRows"] == [scoped_row]
+    assert summary["returns"] == [{"id": "row-1"}]
+    assert summary["reconciliationMonthly"] == []

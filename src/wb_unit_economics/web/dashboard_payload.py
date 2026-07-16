@@ -333,7 +333,7 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "margin": demo._round(
                     first_present(
                         row,
-                        "Маржинальность до НДФЛ",
+                        "Маржинальность до налогов",
                         "Маржа WB без НДС",
                         "Маржа WB после налогов",
                     ),
@@ -342,7 +342,7 @@ def unit_rows(workbook: Any) -> list[dict[str, Any]]:
                 "unitProfit": demo._round(
                     first_present(
                         row,
-                        "Прибыль до НДФЛ на шт",
+                        "Прибыль до налогов на шт",
                         "Управленческая прибыль WB на шт",
                         "Маржинальный доход WB после налогов на шт",
                     )

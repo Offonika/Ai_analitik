@@ -65,6 +65,27 @@ def test_default_finance_fields_keep_reconciliation_and_discount_fields() -> Non
     assert "salePricePromocodeDiscountPrc" in DEFAULT_FINANCE_FIELDS
 
 
+def test_default_finance_fields_include_logistics_chain_and_factor_fields() -> None:
+    assert {
+        "orderId",
+        "orderUid",
+        "srid",
+        "shkId",
+        "stickerId",
+        "officeName",
+        "ppvzOfficeName",
+        "ppvzOfficeId",
+        "country",
+        "deliveryAmount",
+        "returnAmount",
+        "rebillLogisticCost",
+        "dlvPrc",
+        "fixTariffDateFrom",
+        "fixTariffDateTo",
+        "giBoxTypeName",
+    }.issubset(DEFAULT_FINANCE_FIELDS)
+
+
 def test_sales_report_by_id_request_uses_report_id_endpoint_body() -> None:
     payload = build_sales_report_by_id_request(
         rrd_id=0,

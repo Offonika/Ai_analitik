@@ -71,6 +71,11 @@ from wb_unit_economics.web.report_kinds import (
     MARKETPLACE_UNIT_ECONOMICS,
     require_report_kind,
 )
+from wb_unit_economics.web.report_scope import (
+    last_closed_week_period,
+    report_summary_for_last_closed_week,
+    report_summary_for_period,
+)
 from wb_unit_economics.web.reports.excel import write_scenario_excel
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
@@ -88,7 +93,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260716-report-download-flow-v1"
+WEB_BUILD_ID = "20260716-weekly-client-report-v3"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -285,6 +290,12 @@ class OnecAutoRefreshRequest(BaseModel):
 
 class AnalyticalReportRequest(BaseModel):
     branded: bool = True
+    scope: str = Field(
+        default="last_closed_week",
+        pattern="^(last_closed_week|full|custom)$",
+    )
+    periodStart: date | None = None
+    periodEnd: date | None = None
 
 
 class PublishWithTasksRequest(BaseModel):
@@ -2452,12 +2463,35 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _reject_client_report_recommendations(db, current, report)
-        summary = repository.report_full_payload(db, report)
+        try:
+            if payload.scope == "last_closed_week":
+                if payload.periodStart is not None or payload.periodEnd is not None:
+                    raise ValueError(
+                        "Для последней закрытой недели даты определяются автоматически."
+                    )
+                period_start, period_end, summary = (
+                    report_summary_for_last_closed_week(db, report)
+                )
+            else:
+                period_start, period_end = _analytical_report_period(report, payload)
+                summary = report_summary_for_period(
+                    db,
+                    report,
+                    period_start=(None if payload.scope == "full" else period_start),
+                    period_end=(None if payload.scope == "full" else period_end),
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         output_dir = _analytical_report_dir(runtime_settings, report.id)
         artifacts = build_client_analytical_report(
             summary=summary,
             output_dir=output_dir,
-            basename=_analytical_report_basename(report, branded=payload.branded),
+            basename=_analytical_report_basename(
+                report,
+                branded=payload.branded,
+                period_start=period_start,
+                period_end=period_end,
+            ),
             branded=payload.branded,
         )
         artifact_paths = {
@@ -2484,9 +2518,20 @@ def create_app(
             tenant_id=report.tenant_id,
             entity_type="report_run",
             entity_id=report.id,
+            payload={
+                "scope": payload.scope,
+                "periodStart": period_start.isoformat(),
+                "periodEnd": period_end.isoformat(),
+            },
         )
         db.commit()
-        return _analytical_report_payload(report.id, artifacts)
+        return _analytical_report_payload(
+            report.id,
+            artifacts,
+            scope=payload.scope,
+            period_start=period_start,
+            period_end=period_end,
+        )
 
     @app.get("/api/reports/{report_id}/analytical-report.{extension}")
     def download_analytical_report(
@@ -3662,24 +3707,69 @@ def _safe_path_segment(value: str) -> str:
     return safe.strip("_") or "report"
 
 
-def _analytical_report_basename(report, *, branded: bool) -> str:
-    period = f"{report.period_start:%d.%m.%Y}-{report.period_end:%d.%m.%Y}"
+def _analytical_report_period(
+    report: ReportRun,
+    payload: AnalyticalReportRequest,
+) -> tuple[date, date]:
+    if payload.scope == "full":
+        if payload.periodStart is not None or payload.periodEnd is not None:
+            raise ValueError("Для полного периода отдельные даты не указываются.")
+        return report.period_start, report.period_end
+    if payload.scope == "last_closed_week":
+        if payload.periodStart is not None or payload.periodEnd is not None:
+            raise ValueError(
+                "Для последней закрытой недели даты определяются автоматически."
+            )
+        return last_closed_week_period(report)
+    if payload.periodStart is None or payload.periodEnd is None:
+        raise ValueError("Для произвольного периода укажите дату начала и конца.")
+    if payload.periodStart > payload.periodEnd:
+        raise ValueError("Дата начала не может быть позже даты конца.")
+    if (
+        payload.periodStart < report.period_start
+        or payload.periodEnd > report.period_end
+    ):
+        raise ValueError(
+            "Выбранный период должен находиться внутри периода report_id "
+            f"{report.period_start}..{report.period_end}."
+        )
+    return payload.periodStart, payload.periodEnd
+
+
+def _analytical_report_basename(
+    report: ReportRun,
+    *,
+    branded: bool,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> str:
+    start = period_start or report.period_start
+    end = period_end or report.period_end
+    period = f"{start:%d.%m.%Y}-{end:%d.%m.%Y}"
     if branded:
         return (
-            "Фирменный аналитический отчет Шумейко и Партнеры "
+            "Фирменный аналитический отчёт Шумейко и Партнеры "
             f"по юнит-экономике WB за период {period}"
         )
-    return f"Аналитический отчет по юнит-экономике WB за период {period}"
+    return f"Аналитический отчёт по юнит-экономике WB за период {period}"
 
 
 def _analytical_report_payload(
     report_id: str,
     artifacts: ClientAnalyticalReportArtifacts,
+    *,
+    scope: str,
+    period_start: date,
+    period_end: date,
 ) -> dict[str, Any]:
     return {
         "reportId": report_id,
         "status": "ready",
         "contractVersion": CLIENT_REPORT_CONTRACT_VERSION,
+        "scope": scope,
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "period": f"{period_start:%d.%m.%Y} - {period_end:%d.%m.%Y}",
         "sourceSha256": getattr(artifacts, "source_sha256", ""),
         "files": {
             "markdown": {

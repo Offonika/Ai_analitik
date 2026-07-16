@@ -1736,6 +1736,30 @@
             Сформируйте отчёт клиенту по открытым данным и скачайте нужный
             формат здесь же.
           </p>
+          <div class="client-report-period-control">
+            <label>
+              <span>Период отчёта клиенту</span>
+              <select id="client-report-scope">
+                <option value="last_closed_week">Последняя закрытая неделя</option>
+                <option value="full">Весь период отчёта</option>
+                <option value="custom">Указать даты</option>
+              </select>
+            </label>
+            <div id="client-report-period-fields" hidden>
+              <label>
+                <span>Дата начала</span>
+                <input id="client-report-period-start" type="date" />
+              </label>
+              <label>
+                <span>Дата конца</span>
+                <input id="client-report-period-end" type="date" />
+              </label>
+            </div>
+            <small>
+              По умолчанию формируется последняя завершённая неделя с
+              понедельника по воскресенье.
+            </small>
+          </div>
           <div
             id="draft-status"
             class="draft-status"

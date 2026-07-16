@@ -90,6 +90,11 @@ DETAIL_COLUMNS = (
     "create_date",
     "date_from",
     "date_to",
+    "order_uid",
+    "order_id",
+    "shk_id",
+    "sticker_id",
+    "trbx_id",
     "nm_id",
     "vendor_code",
     "title",
@@ -97,6 +102,14 @@ DETAIL_COLUMNS = (
     "doc_type_name",
     "seller_oper_name",
     "delivery_method",
+    "office_name",
+    "ppvz_office_name",
+    "ppvz_office_id",
+    "country",
+    "gi_box_type_name",
+    "dlv_prc",
+    "fix_tariff_date_from",
+    "fix_tariff_date_to",
     "sales_model",
     "operation_type",
     "quantity",
@@ -106,6 +119,9 @@ DETAIL_COLUMNS = (
     "ppvz_sales_commission",
     "wb_commission",
     "delivery_service",
+    "delivery_amount",
+    "return_amount",
+    "rebill_logistic_cost",
     "logistics",
     "paid_storage",
     "storage",
@@ -750,6 +766,11 @@ def iter_wb_finance_detail_records(
                 "create_date": _parse_date(_first(row, "createDate", "create_date")),
                 "date_from": _parse_date(_first(row, "dateFrom", "date_from")),
                 "date_to": _parse_date(_first(row, "dateTo", "date_to")),
+                "order_uid": _text(_first(row, "orderUid", "order_uid")),
+                "order_id": _text(_first(row, "orderId", "order_id")),
+                "shk_id": _text(_first(row, "shkId", "shk_id")),
+                "sticker_id": _text(_first(row, "stickerId", "sticker_id")),
+                "trbx_id": _text(_first(row, "trbxId", "trbx_id")),
                 "nm_id": normalized.nm_id,
                 "vendor_code": normalized.vendor_code,
                 "title": _text(_first(row, "title")),
@@ -760,6 +781,24 @@ def iter_wb_finance_detail_records(
                 ),
                 "delivery_method": _text(
                     _first(row, "deliveryMethod", "delivery_method")
+                ),
+                "office_name": _text(_first(row, "officeName", "office_name")),
+                "ppvz_office_name": _text(
+                    _first(row, "ppvzOfficeName", "ppvz_office_name")
+                ),
+                "ppvz_office_id": _text(
+                    _first(row, "ppvzOfficeId", "ppvz_office_id")
+                ),
+                "country": _text(_first(row, "country")),
+                "gi_box_type_name": _text(
+                    _first(row, "giBoxTypeName", "gi_box_type_name")
+                ),
+                "dlv_prc": _decimal(_first(row, "dlvPrc", "dlv_prc")),
+                "fix_tariff_date_from": _parse_date(
+                    _first(row, "fixTariffDateFrom", "fix_tariff_date_from")
+                ),
+                "fix_tariff_date_to": _parse_date(
+                    _first(row, "fixTariffDateTo", "fix_tariff_date_to")
                 ),
                 "sales_model": normalized.sales_model.value,
                 "operation_type": normalized.operation_type,
@@ -772,6 +811,11 @@ def iter_wb_finance_detail_records(
                 ),
                 "wb_commission": normalized.wb_commission,
                 "delivery_service": _decimal(_first(row, "deliveryService")),
+                "delivery_amount": _decimal(_first(row, "deliveryAmount")),
+                "return_amount": _decimal(_first(row, "returnAmount")),
+                "rebill_logistic_cost": _decimal(
+                    _first(row, "rebillLogisticCost", "rebill_logistic_cost")
+                ),
                 "logistics": normalized.logistics,
                 "paid_storage": _decimal(_first(row, "paidStorage")),
                 "storage": normalized.storage,
