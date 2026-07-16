@@ -215,6 +215,15 @@ documents:
     truth_scope: "tax-load-report"
     truth_priority: 100
     summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v2, профиль 1С, web и Excel."
+  - path: "docs/specs/accounting-reports-smart-process-onepage.md"
+    title: "ONEPAGE: смарт-процесс закрытия месяца и налоговой нагрузки"
+    doc_type: "spec"
+    status: "accepted"
+    audience: ["engineering", "consultant", "operations", "accountant"]
+    source_of_truth: true
+    truth_scope: "accounting-reports-smart-process"
+    truth_priority: 100
+    summary: "Accepted ONEPAGE Канбана: одна ежемесячная карточка клиента и организации, две связанные задачи, ручная отправка tax_load и проверяемое закрытие к зарплате."
   - path: "docs/specs/wb-unit-economics-ai-git-workflow.md"
     title: "AI development Git workflow"
     doc_type: "spec"
@@ -379,7 +388,7 @@ documents:
     status: "active"
     audience: ["engineering", "consultant", "operations", "accountant"]
     source_of_truth: false
-    summary: "Активный реестр: закрытая формула ФНС и вопросы, блокирующие подтверждения, enforced-режим и клиентскую публикацию после advisory v1."
+    summary: "Активный реестр: закрытая формула ФНС, принятая операционная модель смарт-процесса и вопросы, блокирующие технические подтверждения, enforced-режим и клиентскую публикацию."
   - path: "docs/decisions/2026-06-23-db-first-publication-baseline.md"
     title: "DB-first publication baseline"
     doc_type: "decision"

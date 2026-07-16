@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 TRUTH_SCOPES = {
+    "accounting-reports-smart-process",
     "configuration",
     "client-analytical-report",
     "development-workflow",
