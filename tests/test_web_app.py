@@ -2621,8 +2621,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260716-report-wizard-clarity-v1"
-    assert health.json()["staticBuildId"] == "20260716-report-wizard-clarity-v1"
+    assert health.json()["backendBuildId"] == "20260716-report-export-period-fix-v1"
+    assert health.json()["staticBuildId"] == "20260716-report-export-period-fix-v1"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2762,8 +2762,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260716-report-wizard-clarity-v1" in cabinet.text
-    assert "app.js?v=20260716-report-wizard-clarity-v1" in cabinet.text
+    assert "styles.css?v=20260716-report-export-period-fix-v1" in cabinet.text
+    assert "app.js?v=20260716-report-export-period-fix-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6683,7 +6683,7 @@ def test_osno_legacy_draft_pnl_fallback_uses_tax_method_without_vat(
     assert summary["monthly"][0]["profit"] == 400
 
 
-def test_report_export_uses_current_published_report_for_stale_link(
+def test_report_export_uses_exact_requested_report_for_draft_link(
     tmp_path: Path,
 ) -> None:
     client = make_client(tmp_path)
@@ -6712,7 +6712,21 @@ def test_report_export_uses_current_published_report_for_stale_link(
     export = client.get("/api/reports/report-1/export.xlsx")
 
     assert export.status_code == 200
-    assert export.content == b"current-xlsx"
+    assert export.content == b"xlsx"
+    assert export.content != b"current-xlsx"
+    assert (
+        "shumeyko_wb_excel_20260301_20260617.xlsx"
+        in export.headers["content-disposition"]
+    )
+    with client.app.state.session_factory() as db:
+        audit = db.scalar(
+            select(repository.AuditEvent)
+            .where(repository.AuditEvent.action == "report_exported")
+            .order_by(repository.AuditEvent.id.desc())
+        )
+        assert audit is not None
+        assert audit.entity_id == "report-1"
+        assert audit.payload == {}
 
 
 def test_report_rows_period_filter_uses_month_when_week_is_missing(

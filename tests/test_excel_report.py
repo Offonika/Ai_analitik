@@ -667,7 +667,10 @@ def test_excel_report_has_required_sheets_and_reconciled_summary(tmp_path) -> No
         == "Отчет комиссионера · 06.04.2026-12.04.2026 · закрытие 12.04.2026"
     )
     assert unit_rows[0][unit_idx["Номер отчета WB"]].value == "WB-REPORT-1"
-    assert unit_rows[0][unit_idx["Дата отчета WB"]].value == "2026-04-13"
+    assert unit_rows[0][unit_idx["Неделя"]].value == datetime(2026, 4, 6)
+    assert unit_rows[0][unit_idx["Неделя"]].number_format == "dd.mm.yyyy"
+    assert unit_rows[0][unit_idx["Дата отчета WB"]].value == datetime(2026, 4, 13)
+    assert unit_rows[0][unit_idx["Дата отчета WB"]].number_format == "dd.mm.yyyy"
     assert unit_rows[0][unit_idx["Организация 1С"]].value == "Организация Минзифа"
     assert unit_rows[0][unit_idx["Кабинет WB"]].value == "Организация Минзифа"
     assert unit_rows[0][unit_idx["Артикул WB"]].value == "A-1"
@@ -1047,7 +1050,8 @@ def test_onec_monthly_reconciliation_uses_actual_document_date(tmp_path) -> None
     unit_headers = [cell.value for cell in unit_sheet[1]]
     accounting_date_column = unit_headers.index("Учетная дата 1С") + 1
     accounting_source_column = unit_headers.index("Источник учетной даты") + 1
-    assert unit_sheet.cell(2, accounting_date_column).value == "2026-04-30"
+    assert unit_sheet.cell(2, accounting_date_column).value == datetime(2026, 4, 30)
+    assert unit_sheet.cell(2, accounting_date_column).number_format == "dd.mm.yyyy"
     assert unit_sheet.cell(2, accounting_source_column).value == (
         "onec_document_date"
     )

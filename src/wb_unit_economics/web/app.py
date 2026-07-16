@@ -88,7 +88,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260716-report-wizard-clarity-v1"
+WEB_BUILD_ID = "20260716-report-export-period-fix-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -2792,43 +2792,25 @@ def create_app(
                 filename=f"ozon_unit_economics_{report.period_start:%Y%m%d}_"
                 f"{report.period_end:%Y%m%d}.xlsx",
             )
-        export_report = report
-        path = _report_excel_export_path(db, export_report, runtime_settings)
-        if not report.is_current:
-            latest_report = repository.latest_report_for_client(
-                db,
-                current,
-                report.client_id,
-            )
-            if latest_report is not None and latest_report.id != report.id:
-                latest_path = _report_excel_export_path(
-                    db,
-                    latest_report,
-                    runtime_settings,
-                )
-                if latest_path is not None and latest_path.exists():
-                    export_report = latest_report
-                    path = latest_path
+        path = _report_excel_export_path(db, report, runtime_settings)
         if path is None or not path.exists():
             raise HTTPException(status_code=404, detail="export not found")
         repository.audit(
             db,
             action="report_exported",
             user=current,
-            tenant_id=export_report.tenant_id,
+            tenant_id=report.tenant_id,
             entity_type="report_run",
-            entity_id=export_report.id,
-            payload=(
-                {"requestedReportId": report.id}
-                if export_report.id != report.id
-                else None
-            ),
+            entity_id=report.id,
         )
         db.commit()
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=export_report.source_workbook or "shumeyko_wb_excel_mvp.xlsx",
+            filename=(
+                f"shumeyko_wb_excel_{report.period_start:%Y%m%d}_"
+                f"{report.period_end:%Y%m%d}.xlsx"
+            ),
         )
 
     @app.post("/api/admin/reports/import")
