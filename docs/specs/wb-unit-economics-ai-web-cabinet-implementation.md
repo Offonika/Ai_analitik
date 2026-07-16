@@ -700,10 +700,32 @@ UI readiness behavior:
 - в шапке staff-интерфейса действие называется `Сформировать отчет` и открывает
   отдельный мастер, а не сразу скачивает Excel. Мастер явно показывает клиента,
   контур `WB + 1С` или служебную диагностику `Ozon + 1С`, период по настройкам
-  клиента либо собственные даты, режим `только проверить` и текущий статус
-  сборки. На шаге `Готовый отчёт` уже опубликованный Excel скачивается прямой
-  кнопкой, а `Отчёт клиенту` можно сформировать и скачать в DOCX/PDF на том
-  же экране без поиска в меню `Дополнительные действия`;
+  клиента либо собственные даты и текущий статус запуска. Действия `Создать
+  Excel за …` и `Проверить источники без создания` являются отдельными
+  кнопками; readiness-only проверка передает `dry_run=true`, не создает Excel и
+  не использует чекбокс режима;
+- текущий опубликованный Excel показывается в мастере отдельной нейтральной
+  карточкой с точным периодом и прямой ссылкой по `report_id`. Он определяется
+  из списка отчетов только по одновременным признакам `isCurrent=true` и
+  `publicationStatus=published`, явно помечен как не относящийся к настройкам
+  нового отчета и никогда не считается результатом текущего запуска;
+- состояние мастер-сессии содержит идентификатор source-refresh запуска,
+  выбранные режим и период, статус и `newReportRunId`. Глобальный
+  `latestSourceRefresh`, включая фоновый daily refresh, не переводит новую
+  сессию на следующий шаг и не показывается как результат пользовательского
+  запуска. Настройки блокируются только на время запуска, а действие
+  `Сформировать другой период` очищает сессию;
+- результат мастера существует только при наличии `newReportRunId` и все его
+  скачивания используют этот точный `report_id`: `report_created` показывает
+  зеленую карточку `Excel за … готов`, а `needs_review` с новым отчетом —
+  желтую карточку `Excel создан с замечаниями и пока не опубликован как
+  текущий`. Ошибка или `needs_review` без нового отчета не показывают старый
+  Excel как результат. DOCX/PDF можно подготовить или обновить в той же
+  карточке; при их ошибке UI сообщает `Не удалось подготовить DOCX и PDF.
+  Сформированный Excel остаётся доступен` без HTTP-кода;
+- шаги мастера являются семантическим списком с `aria-current`, после
+  завершения фокус переносится на карточку результата. На мобильном обе кнопки
+  полноширинные, основное действие идет первым;
 - мастер передает выбранные `period_start`/`period_end` в staff-only source
   refresh API, не обещает фильтрацию по одному кабинету, если backend собирает
   все активные подключения клиента, и явно сообщает, что `ozon-only` не
@@ -1269,8 +1291,11 @@ Large-report loading:
   not grouped under `Источник не загрузился`; genuine transport, access,
   schema, configuration and partial-load failures retain the error wording.
 - Consultant/admin can open `Сформировать отчет`, choose the report contour and
-  period, run a readiness-only check or start generation, follow its status and
-  download the current protected Excel without leaving the wizard.
+  period, run a readiness-only check or start generation and follow the exact
+  wizard-session status. The current published Excel remains a separate neutral
+  download, while a green or warning result card and its direct download appear
+  only for that session's non-empty `newReportRunId`; background refreshes never
+  advance the wizard.
 - Public URLs for JSON/Excel return 404 or do not exist.
 - Existing Excel MVP tests and no-secrets checks still pass.
 

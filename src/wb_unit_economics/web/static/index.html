@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260716-report-download-flow-v1"
+      content="20260716-report-wizard-clarity-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260716-report-download-flow-v1"
+      href="/static/styles.css?v=20260716-report-wizard-clarity-v1"
     />
   </head>
   <body>
@@ -1802,11 +1802,11 @@
               </button>
             </div>
           </div>
-          <div class="report-wizard-steps" aria-label="Шаги формирования отчета">
-            <span class="active"><b>1</b> Настройки</span>
-            <span><b>2</b> Проверка данных</span>
-            <span><b>3</b> Готовый отчёт</span>
-          </div>
+          <ol class="report-wizard-steps" aria-label="Шаги формирования отчета">
+            <li class="active" aria-current="step"><b>1</b> Настройки</li>
+            <li><b>2</b> Проверка данных</li>
+            <li><b>3</b> Готовый отчёт</li>
+          </ol>
           <form id="report-wizard-form" class="report-wizard-form">
             <div class="report-wizard-context">
               <div>
@@ -1818,6 +1818,27 @@
                 <strong id="report-wizard-scope">Все активные кабинеты клиента</strong>
               </div>
             </div>
+            <section
+              id="report-wizard-current"
+              class="report-wizard-current"
+              aria-labelledby="report-wizard-current-title"
+              hidden
+            >
+              <div>
+                <strong id="report-wizard-current-title">
+                  Текущий опубликованный отчёт
+                </strong>
+                <span id="report-wizard-current-period"></span>
+                <small>Не относится к настройкам нового отчёта ниже.</small>
+              </div>
+              <a
+                id="report-wizard-current-download"
+                class="button-link secondary-button"
+                href="#"
+              >
+                Скачать текущий Excel
+              </a>
+            </section>
             <label>
               <span>Что сформировать</span>
               <select id="report-wizard-mode">
@@ -1832,7 +1853,7 @@
                 <option value="default">По настройкам клиента</option>
                 <option value="custom">Указать даты</option>
               </select>
-              <small class="muted">
+              <small id="report-wizard-period-hint" class="muted">
                 По умолчанию используется штатный период загрузки для клиента.
               </small>
             </label>
@@ -1846,20 +1867,39 @@
                 <input id="report-wizard-period-end" type="date" />
               </label>
             </div>
-            <label class="report-wizard-check-option">
-              <input id="report-wizard-dry-run" type="checkbox" />
-              <span>
-                <strong>Только проверить готовность</strong>
-                <small>Источники будут проверены, но новый отчёт не создастся.</small>
-              </span>
-            </label>
+            <div class="report-wizard-actions">
+              <button id="report-wizard-submit" type="submit">
+                Создать Excel по настройкам клиента
+              </button>
+              <button
+                id="report-wizard-check"
+                type="button"
+                class="secondary-button"
+              >
+                Проверить источники без создания
+              </button>
+              <button
+                id="report-wizard-reset"
+                type="button"
+                class="secondary-button"
+                hidden
+              >
+                Сформировать другой период
+              </button>
+            </div>
             <div
               id="report-wizard-status"
               class="report-wizard-status"
               role="status"
               aria-live="polite"
+              hidden
             ></div>
-            <section id="report-wizard-result" class="report-wizard-result" hidden>
+            <section
+              id="report-wizard-result"
+              class="report-wizard-result"
+              tabindex="-1"
+              hidden
+            >
               <div>
                 <strong id="report-wizard-result-title">Отчёт готов — выберите файл</strong>
                 <span id="report-wizard-result-copy">
@@ -1874,14 +1914,14 @@
                   href="#"
                   hidden
                 >
-                  Скачать Excel
+                  Скачать сформированный Excel
                 </a>
                 <button
                   id="report-wizard-client-report-generate"
                   type="button"
                   class="secondary-button"
                 >
-                  Сформировать отчёт клиенту
+                  Подготовить DOCX и PDF
                 </button>
                 <a
                   id="report-wizard-docx-download"
@@ -1901,11 +1941,6 @@
                 </a>
               </div>
             </section>
-            <div class="report-wizard-actions">
-              <button id="report-wizard-submit" type="submit">
-                Проверить и сформировать
-              </button>
-            </div>
           </form>
         </section>
       </div>
@@ -2275,9 +2310,9 @@
         </section>
       </div>
     </main>
-    <script src="/static/report-scenarios.js?v=20260716-report-download-flow-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260716-report-download-flow-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260716-report-download-flow-v1" defer></script>
-    <script src="/static/app.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260716-report-wizard-clarity-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260716-report-wizard-clarity-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260716-report-wizard-clarity-v1" defer></script>
+    <script src="/static/app.js?v=20260716-report-wizard-clarity-v1" defer></script>
   </body>
 </html>

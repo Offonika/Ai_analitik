@@ -2621,8 +2621,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260716-report-download-flow-v1"
-    assert health.json()["staticBuildId"] == "20260716-report-download-flow-v1"
+    assert health.json()["backendBuildId"] == "20260716-report-wizard-clarity-v1"
+    assert health.json()["staticBuildId"] == "20260716-report-wizard-clarity-v1"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2686,7 +2686,18 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="report-wizard-form"' in cabinet.text
     assert 'id="report-wizard-period-start"' in cabinet.text
     assert 'id="report-wizard-period-end"' in cabinet.text
-    assert 'id="report-wizard-dry-run"' in cabinet.text
+    assert 'id="report-wizard-period-hint"' in cabinet.text
+    assert 'id="report-wizard-dry-run"' not in cabinet.text
+    assert '<ol class="report-wizard-steps"' in cabinet.text
+    assert 'aria-current="step"' in cabinet.text
+    assert 'id="report-wizard-current"' in cabinet.text
+    assert 'id="report-wizard-current-period"' in cabinet.text
+    assert 'id="report-wizard-current-download"' in cabinet.text
+    assert 'id="report-wizard-check"' in cabinet.text
+    assert 'id="report-wizard-reset"' in cabinet.text
+    assert "Не относится к настройкам нового отчёта ниже" in cabinet.text
+    assert "Проверить источники без создания" in cabinet.text
+    assert "Сформировать другой период" in cabinet.text
     assert 'id="report-wizard-result"' in cabinet.text
     assert 'id="report-wizard-excel-download"' in cabinet.text
     assert 'id="report-wizard-client-report-generate"' in cabinet.text
@@ -2751,8 +2762,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260716-report-download-flow-v1" in cabinet.text
-    assert "app.js?v=20260716-report-download-flow-v1" in cabinet.text
+    assert "styles.css?v=20260716-report-wizard-clarity-v1" in cabinet.text
+    assert "app.js?v=20260716-report-wizard-clarity-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -2980,8 +2991,10 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
 
     app_js = client.get("/static/app.js")
     styles = client.get("/static/styles.css")
+    cabinet = client.get("/cabinet")
     assert app_js.status_code == 200
     assert styles.status_code == 200
+    assert cabinet.status_code == 200
     assert "/api/reports" in app_js.text
     assert "/summary" in app_js.text
     assert "/freshness" in app_js.text
@@ -3003,7 +3016,11 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "generatedAtIso" in app_js.text
     assert "openReportWizard" in app_js.text
     assert "onReportWizardSubmit" in app_js.text
+    assert "onReportWizardCheck" in app_js.text
     assert "renderReportWizardResult" in app_js.text
+    assert "reportWizardPublishedReport" in app_js.text
+    assert "reportWizardGeneratedReportId" in app_js.text
+    assert "syncReportWizardRefresh" in app_js.text
     assert "generateClientAnalyticalReport" in app_js.text
     assert "/analytical-report" in app_js.text
     assert "Отчёт клиенту ещё не сформирован" in app_js.text
@@ -3012,7 +3029,16 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert ".client-report-actions" in styles.text
     assert "period_start: periodStart || null" in app_js.text
     assert "period_end: periodEnd || null" in app_js.text
-    assert "Только проверить готовность" in app_js.text
+    assert "Проверить источники без создания" in cabinet.text
+    assert "Создать Excel за ${periodLabel}" in app_js.text
+    assert "els.reportWizardPeriodHint.hidden = customPeriod" in app_js.text
+    assert "dry_run: Boolean(dryRun)" in app_js.text
+    assert "Только проверить готовность" not in cabinet.text
+    assert "Только проверить готовность" not in app_js.text
+    assert "Не удалось подготовить DOCX и PDF." in app_js.text
+    assert "Сформированный Excel остаётся доступен." in app_js.text
+    assert "Обновить DOCX и PDF" in app_js.text
+    assert "Сформировать заново" not in app_js.text
     assert "Отчёт формируется" in app_js.text
     assert "Данные обновляются" in app_js.text
     assert "Нет подтверждённой активности" in app_js.text
@@ -3135,7 +3161,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "sourceRefreshBlockedAttemptMessage" in app_js.text
     assert 'mode: "ozon-only"' in app_js.text
     assert "Загружаем служебную витрину Ozon + 1C без обязательного WB" in app_js.text
-    assert "Проверить готовность" in app_js.text
+    assert "Проверить источники без создания" in cabinet.text
     assert "Запустите refresh" not in app_js.text
     assert "Отправляем файл и запускаем пересборку" in app_js.text
     assert "FormData" in app_js.text
@@ -3610,6 +3636,49 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "reason-columns" not in css.text
     assert ".file-picker" in css.text
     assert "overflow-wrap: anywhere" in css.text
+
+
+def test_report_wizard_keeps_published_report_and_new_run_separate(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert app_js.status_code == 200
+    assert styles.status_code == 200
+    assert cabinet.text.index('id="report-wizard-current"') < cabinet.text.index(
+        'id="report-wizard-mode"'
+    )
+    assert cabinet.text.index('id="report-wizard-submit"') < cabinet.text.index(
+        'id="report-wizard-check"'
+    )
+    assert (
+        'Boolean(item.isCurrent) && normalize(item.publicationStatus) === "published"'
+        in app_js.text
+    )
+    assert "state.reportWizardRefresh?.newReportRunId" in app_js.text
+    assert "refresh.id !== state.reportWizardRefresh.id" in app_js.text
+    assert "state.reportWizardRefresh = state.latestSourceRefresh" not in app_js.text
+    assert "renderReportWizardStatus(state.latestSourceRefresh" not in app_js.text
+    assert (
+        "/api/reports/${encodeURIComponent(report.id)}/export.xlsx"
+        in app_js.text
+    )
+    assert (
+        "/api/reports/${encodeURIComponent(generatedReportId)}/export.xlsx"
+        in app_js.text
+    )
+    assert 'normalize(refresh?.status) === "needs_review"' in app_js.text
+    assert "и пока не опубликован как текущий" in app_js.text
+    assert "Служебная диагностика готова для скачивания" in app_js.text
+    mobile_actions = styles.text.rsplit(".report-wizard-actions {", 1)[1].split(
+        "}", 1
+    )[0]
+    assert "flex-direction: column;" in mobile_actions
+    assert "column-reverse" not in mobile_actions
 
 
 def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
