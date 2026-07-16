@@ -9,8 +9,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -29,6 +30,7 @@ from wb_unit_economics.web.models import (  # noqa: E402
     SessionToken,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceSnapshotRow,
     TenantIntegration,
     User,
 )
@@ -104,6 +106,14 @@ def _copy_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _delete_raw_snapshot_rows(db: Session) -> int:
+    count = int(
+        db.scalar(select(func.count()).select_from(SourceSnapshotRow)) or 0
+    )
+    db.execute(delete(SourceSnapshotRow))
+    return count
+
+
 def main() -> int:
     args = parse_args()
     settings = WebSettings(_env_file=None)
@@ -147,6 +157,9 @@ def main() -> int:
             ),
             "integrations": len(integrations),
             "activeRuns": len(active_runs),
+            "rawSnapshotRows": int(
+                db.scalar(select(func.count()).select_from(SourceSnapshotRow)) or 0
+            ),
             "apply": bool(args.apply),
         }
         print(" ".join(f"{key}={value}" for key, value in summary.items()))
@@ -219,6 +232,7 @@ def main() -> int:
         db.execute(delete(LiveCheckCache))
         db.execute(delete(ReportGenerationRequest))
         db.execute(delete(DataRefreshJob))
+        deleted_snapshot_rows = _delete_raw_snapshot_rows(db)
 
         for user in users:
             if not repository.has_role(user, repository.STAFF_ROLES):
@@ -250,7 +264,8 @@ def main() -> int:
             f"copiedWorkbooks={copied_workbooks} "
             f"copiedArtifacts={copied_artifacts} "
             f"reusedWorkbooks={reused_workbooks} "
-            f"reusedArtifacts={reused_artifacts} status=prepared"
+            f"reusedArtifacts={reused_artifacts} "
+            f"deletedRawSnapshotRows={deleted_snapshot_rows} status=prepared"
         )
     return 0
 

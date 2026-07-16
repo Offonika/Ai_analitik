@@ -4,14 +4,27 @@ import os
 import runpy
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
+
+from sqlalchemy import func, select
 
 from scripts.build_runtime_release import (
     RELEASE_SITE_MODULE,
     RELEASE_SITE_PTH,
     _install_release_source_bootstrap,
 )
-from scripts.prepare_test_database import _safe_current_source
+from scripts.prepare_test_database import (
+    _delete_raw_snapshot_rows,
+    _safe_current_source,
+)
+from wb_unit_economics.web import repository, security
+from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
+from wb_unit_economics.web.models import (
+    SourceRefreshCollection,
+    SourceRefreshRun,
+    SourceSnapshotRow,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -167,3 +180,65 @@ def test_test_database_sanitizer_reuses_safe_test_artifact(
 
     assert source == test_artifact.resolve()
     assert already_in_test is True
+
+
+def test_test_database_sanitizer_deletes_raw_snapshot_rows(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'clone_test.sqlite3'}")
+    init_db(engine)
+    factory = make_session_factory(engine)
+    now = security.utcnow()
+    with factory() as db:
+        repository.ensure_tenant(db, "tenant", "Tenant")
+        refresh = SourceRefreshRun(
+            id="refresh-1",
+            tenant_id="tenant",
+            client_id="client",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            status="completed",
+            reason="fixture",
+            snapshot_set_id="snapshot-set",
+            period_start=date(2026, 5, 1),
+            period_end=date(2026, 5, 31),
+            root_dir="",
+            workbook_path="",
+            error_message="",
+            created_at=now,
+            updated_at=now,
+        )
+        collection = SourceRefreshCollection(
+            refresh_run=refresh,
+            tenant_id="tenant",
+            client_id="client",
+            source_type="raw_fixture",
+            source_label="raw_fixture",
+            required=True,
+            status="loaded",
+            row_count=1,
+            loaded_at=now,
+        )
+        db.add_all((refresh, collection))
+        db.flush()
+        db.add(
+            SourceSnapshotRow(
+                refresh_run_id=refresh.id,
+                collection_id=collection.id,
+                tenant_id="tenant",
+                client_id="client",
+                source_type="raw_fixture",
+                source_label="raw_fixture",
+                source_row_id="row-1",
+                row_number=1,
+                raw_payload_hash="hash",
+                row_payload={"raw": "must-not-survive-clone"},
+                loaded_at=now,
+            )
+        )
+        db.flush()
+
+        deleted = _delete_raw_snapshot_rows(db)
+        db.commit()
+
+        assert deleted == 1
+        assert db.scalar(select(func.count()).select_from(SourceSnapshotRow)) == 0
