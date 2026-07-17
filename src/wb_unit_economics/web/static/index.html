@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260717-wb-logistics-analytics-ui-v1"
+      content="20260717-wb-logistics-analytics-ui-v2"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260717-wb-logistics-analytics-ui-v1"
+      href="/static/styles.css?v=20260717-wb-logistics-analytics-ui-v2"
     />
   </head>
   <body>
@@ -332,6 +332,14 @@
             Выберите вопрос: какие товары формируют результат, где растут расходы
             логистики, что связано с возвратами или как расходы WB сверяются с 1С.
           </p>
+          <p id="table-scenario-summary-status" class="table-scenario-summary-status" role="status">
+            Загружаем показатели отчёта…
+          </p>
+          <div
+            id="table-scenario-kpi-grid"
+            class="metric-grid table-scenario-kpi-grid"
+            aria-label="Основные показатели отчёта"
+          ></div>
           <div class="table-scenario-cards">
             <button type="button" data-table-scenario-nav="products">
               <strong>Товары</strong><span>Юнит-экономика, ликвидность и недополученный доход.</span>
@@ -402,6 +410,14 @@
             <span><small>Полнота среза</small><strong id="logistics-trust-slice">—</strong></span>
             <span><small>Основание</small><strong>Сверенный снимок WB</strong></span>
           </div>
+
+          <section id="logistics-state-message" class="panel logistics-state-message" hidden>
+            <h3>Для текущего отчёта нет готовой логистической витрины</h3>
+            <p class="muted">
+              Числа не подменяются нулями. Нужна новая ревизия отчёта,
+              собранная на проверенном снимке WB по методике v4.
+            </p>
+          </section>
 
           <div class="logistics-grid-two">
             <section class="panel" aria-labelledby="logistics-recommendations-title">
@@ -2564,9 +2580,9 @@
         </section>
       </div>
     </main>
-    <script src="/static/report-scenarios.js?v=20260717-wb-logistics-analytics-ui-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260717-wb-logistics-analytics-ui-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260717-wb-logistics-analytics-ui-v1" defer></script>
-    <script src="/static/app.js?v=20260717-wb-logistics-analytics-ui-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260717-wb-logistics-analytics-ui-v2" defer></script>
+    <script src="/static/month-close-report.js?v=20260717-wb-logistics-analytics-ui-v2" defer></script>
+    <script src="/static/tax-load-report.js?v=20260717-wb-logistics-analytics-ui-v2" defer></script>
+    <script src="/static/app.js?v=20260717-wb-logistics-analytics-ui-v2" defer></script>
   </body>
 </html>

@@ -5903,6 +5903,24 @@ td {
   order: 10;
 }
 
+.table-scenario-summary-status {
+  margin: 16px 0 0;
+  padding: 11px 13px;
+  border-left: 4px solid #0a747c;
+  border-radius: 8px;
+  background: #eef8f8;
+  color: #36546f;
+  font-weight: 700;
+}
+
+.table-scenario-kpi-grid {
+  margin-top: 16px;
+}
+
+.table-scenario-kpi-grid .metric {
+  min-height: 150px;
+}
+
 .table-scenario-cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6059,6 +6077,19 @@ td {
 .logistics-trust-strip strong {
   color: #24445f;
   font-size: 13px;
+}
+
+.logistics-state-message {
+  border-left: 4px solid #b87300;
+  background: #fffaf0;
+}
+
+.logistics-state-message h3 {
+  margin: 0;
+}
+
+.logistics-state-message p {
+  margin: 8px 0 0;
 }
 
 .logistics-grid-two {

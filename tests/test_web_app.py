@@ -1544,12 +1544,17 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'data-table-scenario-panel="logistics"' in cabinet.text
     assert "Аналитика и таблицы" in cabinet.text
     assert "Логистика: расходы и зоны проверки" in cabinet.text
+    assert 'id="table-scenario-kpi-grid"' in cabinet.text
+    assert 'id="table-scenario-summary-status"' in cabinet.text
+    assert 'id="logistics-state-message"' in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
     assert "loadLogisticsAnalysis" in script.text
+    assert "function renderTableScenarioSummary" in script.text
+    assert "Текущий отчёт собран до появления витрины логистики v4" in script.text
     assert 'reportId: params.get("report_id") || ""' in script.text
     assert "item.id === requestedReportId" in script.text
     assert "state.logisticsProductsTotal = Number(products.total || 0)" in script.text
@@ -3660,10 +3665,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260717-wb-logistics-analytics-ui-v1"
+        "20260717-wb-logistics-analytics-ui-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260717-wb-logistics-analytics-ui-v1"
+        "20260717-wb-logistics-analytics-ui-v2"
     )
 
     page = client.get("/")
@@ -3807,11 +3812,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260717-wb-logistics-analytics-ui-v1"
+        "styles.css?v=20260717-wb-logistics-analytics-ui-v2"
         in cabinet.text
     )
     assert (
-        "app.js?v=20260717-wb-logistics-analytics-ui-v1"
+        "app.js?v=20260717-wb-logistics-analytics-ui-v2"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text

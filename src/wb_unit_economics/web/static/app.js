@@ -138,6 +138,10 @@ const els = {
   accountingScenarioOverview: document.querySelector("#accounting-scenario-overview"),
   accountingScenarioChecks: document.querySelector("#accounting-scenario-checks"),
   accountingScenarioTables: document.querySelector("#accounting-scenario-tables"),
+  tableScenarioSummaryStatus: document.querySelector(
+    "#table-scenario-summary-status",
+  ),
+  tableScenarioKpiGrid: document.querySelector("#table-scenario-kpi-grid"),
   logisticsWorkspace: document.querySelector("#logistics-workspace"),
   logisticsDataStatus: document.querySelector("#logistics-data-status"),
   logisticsFilterForm: document.querySelector("#logistics-filter-form"),
@@ -152,6 +156,7 @@ const els = {
     "#logistics-trust-classification",
   ),
   logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
+  logisticsStateMessage: document.querySelector("#logistics-state-message"),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
@@ -4402,6 +4407,7 @@ function renderReport() {
     summary.taxContext || {},
     summary.lostSalesCoverage || {},
   );
+  renderTableScenarioSummary(summary);
   renderAnalytics(summary);
   renderOzonPreview(latestRefresh, state.latestOzonDiagnostics);
   renderLiquidity(asArray(summary.liquidityRows));
@@ -4438,6 +4444,64 @@ function renderReport() {
     loadLogisticsAnalysis();
   }
   renderWorkspaceHeader();
+}
+
+function renderTableScenarioSummary(summary = {}) {
+  const kpis = summary.kpis || {};
+  const quality = summary.quality || {};
+  const readiness = summary.readiness || {};
+  const hasReport = Boolean(state.reportId && Object.keys(summary).length);
+  if (!hasReport) {
+    els.tableScenarioSummaryStatus.textContent =
+      "Выберите отчёт — показатели появятся после загрузки расчётной витрины.";
+    renderMetrics(els.tableScenarioKpiGrid, []);
+    return;
+  }
+  const revenue = numberOrNull(kpis.revenueWithoutVat ?? kpis.revenue);
+  const profit = numberOrNull(kpis.profitBeforeTax ?? kpis.profitManagement);
+  const expenses = numberOrNull(kpis.wbMarketplacePnlExpenses);
+  const rowCount = Number(quality.rowCount ?? kpis.rowCount ?? 0);
+  const sales = Number(kpis.sales || 0);
+  const returns = Number(kpis.returns || 0);
+  const returnRate = sales ? Math.round((returns / sales) * 1000) / 10 : null;
+  const readinessLabel = readiness.label || readiness.status || "Статус не рассчитан";
+  els.tableScenarioSummaryStatus.textContent =
+    `${readinessLabel} · ${number(rowCount)} строк в расчёте. ` +
+    "Все суммы относятся к выбранным клиенту, кабинету и периоду.";
+  renderMetrics(els.tableScenarioKpiGrid, [
+    [
+      "Выручка WB",
+      revenue === null ? "Не рассчитано" : money(revenue),
+      "База текущего отчёта",
+      revenue === null ? "warning" : "info",
+    ],
+    [
+      "Прибыль до налогов",
+      profit === null ? "Не рассчитано" : money(profit),
+      "Управленческий результат",
+      profit === null ? "warning" : profit < 0 ? "bad" : "ok",
+    ],
+    [
+      "Расходы WB",
+      expenses === null ? "Не рассчитано" : money(expenses),
+      "Комиссия, логистика и прочие услуги",
+      expenses === null ? "warning" : "info",
+      "Показатель рассчитан в базе применённого налогового профиля.",
+      () => selectTableScenario("wb-expenses", { updateLocation: true, focus: true }),
+      "Открыть сверку",
+    ],
+    [
+      "Строк в расчёте",
+      number(rowCount),
+      returnRate === null
+        ? `${number(sales)} продаж`
+        : `Возвраты ${number(returns)} · ${number(returnRate)}% от продаж`,
+      rowCount ? "info" : "warning",
+      "Количество нормализованных строк выбранного отчёта.",
+      () => selectTableScenario("products", { updateLocation: true, focus: true }),
+      "Открыть товары",
+    ],
+  ]);
 }
 
 function logisticsFilterParams(extra = {}) {
@@ -4540,6 +4604,7 @@ function resetLogisticsWorkspace() {
   els.logisticsTrustKeys.textContent = "—";
   els.logisticsTrustClassification.textContent = "—";
   els.logisticsTrustSlice.textContent = "Нет данных";
+  els.logisticsStateMessage.hidden = true;
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
@@ -4562,6 +4627,11 @@ function renderLogisticsLoadError() {
     "Не удалось загрузить блок. Повторите попытку или проверьте доступ.";
   els.logisticsDataStatus.dataset.status = "error";
   els.logisticsTrustSlice.textContent = "Ошибка загрузки";
+  els.logisticsStateMessage.hidden = false;
+  els.logisticsStateMessage.querySelector("h3").textContent =
+    "Не удалось загрузить логистическую витрину";
+  els.logisticsStateMessage.querySelector("p").textContent =
+    "Повторите попытку. Ранее показанные числа очищены и не используются как актуальные.";
   renderWorkspaceHeader();
 }
 
@@ -4591,6 +4661,17 @@ function renderLogisticsWorkspace() {
     blocked: "Сверка не пройдена",
     needs_rebuild: "Нужна пересборка",
   }[status] || "Недоступно";
+  els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
+  if (!els.logisticsStateMessage.hidden) {
+    els.logisticsStateMessage.querySelector("h3").textContent =
+      status === "needs_rebuild"
+        ? "Текущий отчёт собран до появления витрины логистики v4"
+        : "Логистическая витрина пока не готова";
+    els.logisticsStateMessage.querySelector("p").textContent =
+      status === "needs_rebuild"
+        ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
+        : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
+  }
   if (!new Set(["ready", "partial"]).has(status)) {
     renderMetrics(els.logisticsKpiGrid, []);
     renderLogisticsEmpty(
@@ -15073,6 +15154,7 @@ function setEmptyCabinet(title = "Нет доступных отчетов", sub
   renderMetrics(els.kpiGrid, []);
   renderMetrics(els.onecKpiGrid, []);
   renderMetrics(els.qualityGrid, []);
+  renderTableScenarioSummary({});
   renderAnalytics({});
   renderOzonPreview(state.latestSourceRefresh, state.latestOzonDiagnostics);
   renderCostReview({});
