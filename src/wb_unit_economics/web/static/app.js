@@ -72,6 +72,7 @@ const state = {
   logisticsBusy: false,
   workspace: "overview",
   checkView: "summary",
+  tableScenario: "summary",
 };
 
 const LOGISTICS_PAGE_SIZE = 250;
@@ -115,7 +116,10 @@ const els = {
   reportSubtitle: document.querySelector("#report-subtitle"),
   reportLoadRetryButton: document.querySelector("#report-load-retry-button"),
   workspaceNavButtons: document.querySelectorAll("[data-workspace-nav]"),
-  logisticsWorkspaceNav: document.querySelector("#logistics-workspace-nav"),
+  tableScenarioNavButtons: document.querySelectorAll("[data-table-scenario-nav]"),
+  logisticsEntryPoints: document.querySelectorAll(
+    "#logistics-scenario-nav, [data-logistics-entry]",
+  ),
   accountingWorkflowOpen: document.querySelector("#accounting-workflow-open"),
   guideStartList: document.querySelector("#guide-start-list"),
   guideSectionsList: document.querySelector("#guide-sections-list"),
@@ -143,6 +147,11 @@ const els = {
   logisticsSchemeFilter: document.querySelector("#logistics-scheme-filter"),
   logisticsProductFilter: document.querySelector("#logistics-product-filter"),
   logisticsKpiGrid: document.querySelector("#logistics-kpi-grid"),
+  logisticsTrustKeys: document.querySelector("#logistics-trust-keys"),
+  logisticsTrustClassification: document.querySelector(
+    "#logistics-trust-classification",
+  ),
+  logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
@@ -164,6 +173,8 @@ const els = {
   logisticsOrdersPrev: document.querySelector("#logistics-orders-prev"),
   logisticsOrdersPage: document.querySelector("#logistics-orders-page"),
   logisticsOrdersNext: document.querySelector("#logistics-orders-next"),
+  detailsTitle: document.querySelector("#details-title"),
+  rowsTitle: document.querySelector("#rows-title"),
   topbarCabinetSelect: document.querySelector("#topbar-cabinet-select"),
   topbarPeriodStart: document.querySelector("#topbar-period-start"),
   topbarPeriodEnd: document.querySelector("#topbar-period-end"),
@@ -535,6 +546,14 @@ function init() {
       });
     });
   });
+  els.tableScenarioNavButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      selectTableScenario(button.dataset.tableScenarioNav || "summary", {
+        updateLocation: true,
+        focus: true,
+      });
+    });
+  });
   window.addEventListener("hashchange", () => configureWorkspaceFromLocation());
   window.addEventListener("popstate", () => {
     configureWorkspaceFromLocation();
@@ -776,9 +795,13 @@ function init() {
   els.reconciliationOpenButton?.addEventListener("click", () =>
     openReconciliationHub("documents"),
   );
-  els.reconciliationHubBack?.addEventListener("click", () =>
-    selectWorkspace("checks", { checkView: "summary", updateLocation: true }),
-  );
+  els.reconciliationHubBack?.addEventListener("click", () => {
+    if (state.workspace === "tables") {
+      selectTableScenario("summary", { updateLocation: true, focus: true });
+      return;
+    }
+    selectWorkspace("checks", { checkView: "summary", updateLocation: true });
+  });
   els.reconciliationHubTabs.forEach((button) => {
     button.addEventListener("click", () =>
       selectReconciliationHubTab(button.dataset.reconciliationTab || "documents"),
@@ -1137,7 +1160,7 @@ function configurePageMode() {
 function workspaceFromLocation() {
   const value = window.location.hash.replace(/^#/, "").replace(/\/+$/, "");
   if (!value || value === "overview") {
-    return { workspace: "overview", checkView: "summary", valid: true };
+    return { workspace: "overview", checkView: "summary", tableScenario: "summary", valid: true };
   }
   if (value === "checks") {
     return { workspace: "checks", checkView: "summary", valid: true };
@@ -1149,10 +1172,27 @@ function workspaceFromLocation() {
     return { workspace: "checks", checkView: "reconciliation", valid: true };
   }
   if (value === "tables") {
-    return { workspace: "tables", checkView: "summary", valid: true };
+    return { workspace: "tables", checkView: "summary", tableScenario: "summary", valid: true };
+  }
+  const tableScenario = value.match(
+    /^tables\/(summary|products|logistics|returns|wb-expenses|source)$/,
+  );
+  if (tableScenario) {
+    return {
+      workspace: "tables",
+      checkView: "summary",
+      tableScenario: tableScenario[1],
+      valid: true,
+    };
   }
   if (value === "logistics") {
-    return { workspace: "logistics", checkView: "summary", valid: true };
+    return {
+      workspace: "tables",
+      checkView: "summary",
+      tableScenario: "logistics",
+      valid: true,
+      canonicalize: true,
+    };
   }
   if (value === "guide") {
     return { workspace: "guide", checkView: "summary", valid: true };
@@ -1164,21 +1204,43 @@ function configureWorkspaceFromLocation(options = {}) {
   const route = workspaceFromLocation();
   selectWorkspace(route.workspace, {
     checkView: route.checkView,
+    tableScenario: route.tableScenario,
     updateLocation: false,
   });
-  if (!route.valid && options.replaceInvalid !== false) {
-    replaceWorkspaceLocation("overview", "summary");
+  if ((!route.valid || route.canonicalize) && options.replaceInvalid !== false) {
+    replaceWorkspaceLocation(
+      route.valid ? route.workspace : "overview",
+      route.valid ? route.checkView : "summary",
+      route.valid ? route.tableScenario : "summary",
+    );
   }
 }
 
 function selectWorkspace(workspace = "overview", options = {}) {
-  const allowed = new Set(["overview", "checks", "tables", "logistics", "guide"]);
+  const allowed = new Set(["overview", "checks", "tables", "guide"]);
   const allowedCheckViews = new Set(["cost", "reconciliation"]);
+  const allowedTableScenarios = new Set([
+    "summary",
+    "products",
+    "logistics",
+    "returns",
+    "wb-expenses",
+    "source",
+  ]);
   state.workspace = allowed.has(workspace) ? workspace : "overview";
   state.checkView =
     state.workspace === "checks" && allowedCheckViews.has(options.checkView)
       ? options.checkView
       : "summary";
+  state.tableScenario =
+    state.workspace === "tables" && allowedTableScenarios.has(options.tableScenario)
+      ? options.tableScenario
+      : state.workspace === "tables"
+        ? state.tableScenario
+        : "summary";
+  if (!allowedTableScenarios.has(state.tableScenario)) {
+    state.tableScenario = "summary";
+  }
   // The cost-review workflow only understands WB's weekly missing-cost model;
   // Ozon clients fall back to the "summary" check view (and its own
   // missing-cost drilldown, see onNextAction) until an Ozon-specific cost
@@ -1192,6 +1254,7 @@ function selectWorkspace(workspace = "overview", options = {}) {
   }
   els.cabinetView.dataset.activeWorkspace = state.workspace;
   els.cabinetView.dataset.checkView = state.checkView;
+  els.cabinetView.dataset.tableScenario = state.tableScenario;
   els.workspaceNavButtons.forEach((button) => {
     const selected = button.dataset.workspaceNav === state.workspace;
     if (selected) {
@@ -1200,25 +1263,35 @@ function selectWorkspace(workspace = "overview", options = {}) {
       button.removeAttribute("aria-current");
     }
   });
+  syncTableScenarioNavigation();
+  syncReconciliationHubContext();
   if (options.updateLocation) {
-    updateWorkspaceLocation(state.workspace, state.checkView, options.replaceLocation);
+    updateWorkspaceLocation(
+      state.workspace,
+      state.checkView,
+      options.replaceLocation,
+      state.tableScenario,
+    );
   }
   renderWorkspaceHeader();
   if (state.workspace === "checks" && state.checkView === "cost") {
     renderCostReview(state.summary || {});
   }
-  if (state.workspace === "logistics") {
-    loadLogisticsAnalysis();
+  if (state.workspace === "tables") {
+    applyTableScenario({ load: options.load !== false, focus: options.focus });
   }
   window.scrollTo({ top: 0, behavior: options.instant ? "auto" : "smooth" });
 }
 
-function workspaceHash(workspace, checkView) {
+function workspaceHash(workspace, checkView, tableScenario = "summary") {
   if (workspace === "checks" && checkView === "cost") {
     return "#checks/cost";
   }
   if (workspace === "checks" && checkView === "reconciliation") {
     return "#checks/reconciliation";
+  }
+  if (workspace === "tables") {
+    return tableScenario === "summary" ? "#tables" : `#tables/${tableScenario}`;
   }
   return `#${workspace || "overview"}`;
 }
@@ -1228,14 +1301,74 @@ function workspaceBasePath() {
   return ["/ai", "/integrations"].includes(path) ? "/cabinet" : path;
 }
 
-function updateWorkspaceLocation(workspace, checkView, replace = false) {
-  const url = `${workspaceBasePath()}${window.location.search}${workspaceHash(workspace, checkView)}`;
+function updateWorkspaceLocation(workspace, checkView, replace = false, tableScenario = "summary") {
+  const url = `${workspaceBasePath()}${window.location.search}${workspaceHash(workspace, checkView, tableScenario)}`;
   const method = replace ? "replaceState" : "pushState";
   window.history[method]({}, "", url);
 }
 
-function replaceWorkspaceLocation(workspace, checkView) {
-  updateWorkspaceLocation(workspace, checkView, true);
+function replaceWorkspaceLocation(workspace, checkView, tableScenario = "summary") {
+  updateWorkspaceLocation(workspace, checkView, true, tableScenario);
+}
+
+function selectTableScenario(tableScenario = "summary", options = {}) {
+  selectWorkspace("tables", {
+    ...options,
+    tableScenario,
+  });
+}
+
+function syncTableScenarioNavigation() {
+  els.tableScenarioNavButtons.forEach((button) => {
+    const selected = button.dataset.tableScenarioNav === state.tableScenario;
+    button.classList.toggle("active", selected);
+    if (selected) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
+  });
+}
+
+function applyTableScenario(options = {}) {
+  if (state.tableScenario === "logistics") {
+    if (options.load !== false) {
+      loadLogisticsAnalysis();
+    }
+  } else if (state.tableScenario === "returns") {
+    els.detailsTitle.textContent = "Возвраты по товарным строкам";
+    els.rowsTitle.textContent = "Товары с возвратами";
+    selectDetailTab("products");
+    selectRowsPreset("returns", { load: options.load !== false });
+  } else if (state.tableScenario === "products" || state.tableScenario === "source") {
+    els.detailsTitle.textContent = state.tableScenario === "source"
+      ? "Исходные строки расчёта"
+      : "Товары и юнит-экономика";
+    els.rowsTitle.textContent = state.tableScenario === "source"
+      ? "Нормализованные строки отчёта"
+      : "Юнит-экономика";
+    selectDetailTab("products");
+    selectRowsPreset("", { load: options.load !== false });
+  } else if (state.tableScenario === "wb-expenses") {
+    selectReconciliationHubTab("expenses");
+  }
+  if (options.focus) {
+    const target = document.querySelector(
+      `[data-table-scenario-panel~="${state.tableScenario}"] h2[tabindex="-1"], [data-table-scenario-panel~="${state.tableScenario}"] h2`,
+    );
+    target?.focus({ preventScroll: true });
+  }
+}
+
+function syncReconciliationHubContext() {
+  const expensesScenario =
+    state.workspace === "tables" && state.tableScenario === "wb-expenses";
+  els.reconciliationHubBack.textContent = expensesScenario
+    ? "Назад к сводке"
+    : "Назад к проверкам";
+  els.reconciliationHubTabs.forEach((button) => {
+    button.hidden = expensesScenario && button.dataset.reconciliationTab !== "expenses";
+  });
 }
 
 function closeWorkspaceActionsMenu() {
@@ -1368,11 +1501,11 @@ function renderWorkspaceHeader() {
     );
     return;
   }
-  if (state.workspace === "logistics") {
+  if (state.workspace === "tables" && state.tableScenario === "logistics") {
     const logistics = state.logisticsSummary || {};
     const status = normalize(logistics.sliceStatus || logistics.dataStatus);
     setTopbarNotice(
-      "Анализ затрат на логистику",
+      "Логистика: расходы и зоны проверки",
       status === "ready"
         ? "Снимок WB сверен с расчётной витриной отчёта."
         : status === "partial"
@@ -1383,8 +1516,15 @@ function renderWorkspaceHeader() {
     return;
   }
   if (state.workspace === "tables") {
+    const scenarioTitles = {
+      summary: "Аналитика и таблицы",
+      products: "Товары и юнит-экономика",
+      returns: "Возвраты по товарным строкам",
+      "wb-expenses": "Расходы WB и сверка с 1С",
+      source: "Исходные строки расчёта",
+    };
     setTopbarNotice(
-      "Рабочие таблицы отчёта",
+      scenarioTitles[state.tableScenario] || "Аналитика и таблицы",
       freshnessCopy || "Фильтры клиента, кабинета и периода применяются ко всем строкам.",
       "is-info",
     );
@@ -4294,7 +4434,7 @@ function renderReport() {
   renderAiContext(summary);
   renderChecksNavigation(readiness);
   syncLogisticsEntryPoint();
-  if (state.workspace === "logistics") {
+  if (state.workspace === "tables" && state.tableScenario === "logistics") {
     loadLogisticsAnalysis();
   }
   renderWorkspaceHeader();
@@ -4321,11 +4461,10 @@ function logisticsFilterParams(extra = {}) {
 
 async function loadLogisticsAnalysis(options = {}) {
   if (
-    state.workspace !== "logistics" ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
     !state.reportId ||
-    !state.user?.logisticsAnalysisEnabled ||
-    isAccountingReportKind() ||
-    normalize(state.summary?.marketplace) === "ozon"
+    !logisticsScenarioAvailable()
   ) {
     return;
   }
@@ -4397,6 +4536,10 @@ function resetLogisticsWorkspace() {
     return;
   }
   els.logisticsDataStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsDataStatus.dataset.status = "empty";
+  els.logisticsTrustKeys.textContent = "—";
+  els.logisticsTrustClassification.textContent = "—";
+  els.logisticsTrustSlice.textContent = "Нет данных";
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
@@ -4417,6 +4560,8 @@ function renderLogisticsLoadError() {
   resetLogisticsWorkspace();
   els.logisticsDataStatus.textContent =
     "Не удалось загрузить блок. Повторите попытку или проверьте доступ.";
+  els.logisticsDataStatus.dataset.status = "error";
+  els.logisticsTrustSlice.textContent = "Ошибка загрузки";
   renderWorkspaceHeader();
 }
 
@@ -4436,6 +4581,16 @@ function renderLogisticsWorkspace() {
   }[status];
   els.logisticsDataStatus.textContent = statusCopy || "Витрина пока недоступна.";
   els.logisticsDataStatus.dataset.status = status || "unknown";
+  els.logisticsTrustKeys.textContent = logisticsPercent(coverage.keyPct);
+  els.logisticsTrustClassification.textContent = logisticsPercent(
+    coverage.classificationPct,
+  );
+  els.logisticsTrustSlice.textContent = {
+    ready: "Полный проверенный срез",
+    partial: "Часть операций требует проверки",
+    blocked: "Сверка не пройдена",
+    needs_rebuild: "Нужна пересборка",
+  }[status] || "Недоступно";
   if (!new Set(["ready", "partial"]).has(status)) {
     renderMetrics(els.logisticsKpiGrid, []);
     renderLogisticsEmpty(
@@ -4585,14 +4740,37 @@ function renderLogisticsRecommendations(items) {
       item.className = "logistics-recommendation";
       const title = document.createElement("strong");
       title.textContent = recommendation.title || "Проверить данные";
+      const priority = document.createElement("span");
+      priority.className = "logistics-priority-badge";
+      priority.textContent = Number(recommendation.priority || 0) === 1
+        ? "Высокий приоритет"
+        : "Проверить";
       const message = document.createElement("p");
       message.textContent = recommendation.message || "";
       const evidence = document.createElement("small");
       const facts = recommendation.evidence || {};
-      evidence.textContent = facts.product
-        ? `${facts.product}${facts.logisticsSharePct != null ? ` · ${logisticsPercent(facts.logisticsSharePct)}` : ""}`
+      const evidenceParts = [];
+      if (facts.product) {
+        evidenceParts.push(facts.product);
+      }
+      if (facts.logisticsSharePct != null) {
+        evidenceParts.push(`доля ${logisticsPercent(facts.logisticsSharePct)}`);
+      }
+      if (facts.reverseLogistics != null) {
+        evidenceParts.push(`обратная логистика ${signedMoney(facts.reverseLogistics)}`);
+      }
+      if (facts.classificationCoveragePct != null) {
+        evidenceParts.push(
+          `классификация ${logisticsPercent(facts.classificationCoveragePct)}`,
+        );
+      }
+      if (facts.affectedOrderRows != null) {
+        evidenceParts.push(`${number(facts.affectedOrderRows)} цепочек затронуто`);
+      }
+      evidence.textContent = evidenceParts.length
+        ? `Факт: ${evidenceParts.join(" · ")}`
         : "Основание: рассчитанная витрина отчёта.";
-      item.append(title, message, evidence);
+      item.append(priority, title, message, evidence);
       return item;
     }),
   );
@@ -4981,7 +5159,7 @@ function applyTopbarFilter(kind) {
     }
   }
   loadReviewRows();
-  if (state.workspace === "logistics") {
+  if (state.workspace === "tables" && state.tableScenario === "logistics") {
     state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   }
@@ -9882,7 +10060,12 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       "Комиссия, логистика и прочие услуги",
       wbMarketplacePnlExpenses === null ? "warning" : "info",
       "Расходы WB в базе применённого налогового профиля. Для документной сверки с 1С используется отдельная сумма с НДС.",
-      openMarketplaceExpenseReconciliationWidget,
+      logisticsScenarioAvailable()
+        ? openLogisticsScenario
+        : openMarketplaceExpenseReconciliationWidget,
+      logisticsScenarioAvailable()
+        ? "Разобрать логистику"
+        : "Открыть сверку",
     ],
     [
       "Управленческая прибыль WB",
@@ -12847,7 +13030,15 @@ function liquidityMainDriver(rows) {
 
 function renderMetrics(target, items) {
   target.replaceChildren(
-    ...items.map(([label, value, caption = "", tone = "", formula = "", action = null]) => {
+    ...items.map(([
+      label,
+      value,
+      caption = "",
+      tone = "",
+      formula = "",
+      action = null,
+      actionLabel = "",
+    ]) => {
       const item = document.createElement("div");
       item.className = `metric ${tone ? `metric-${tone}` : ""} ${
         typeof action === "function" ? "metric-action" : ""
@@ -12858,7 +13049,10 @@ function renderMetrics(target, items) {
       if (typeof action === "function") {
         item.tabIndex = 0;
         item.setAttribute("role", "button");
-        item.setAttribute("aria-label", `${label}. Открыть расшифровку.`);
+        item.setAttribute(
+          "aria-label",
+          `${label}. ${actionLabel || "Открыть расшифровку"}.`,
+        );
         item.addEventListener("click", action);
         item.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -12880,6 +13074,12 @@ function renderMetrics(target, items) {
         const captionNode = document.createElement("small");
         captionNode.textContent = String(caption);
         item.append(captionNode);
+      }
+      if (actionLabel) {
+        const actionNode = document.createElement("small");
+        actionNode.className = "metric-action-label";
+        actionNode.textContent = String(actionLabel);
+        item.append(actionNode);
       }
       return item;
     }),
@@ -14828,25 +15028,44 @@ function syncIntegrationsEntryPoint() {
 }
 
 function syncLogisticsEntryPoint() {
-  if (!els.logisticsWorkspaceNav) {
-    return;
-  }
-  const supportedReport =
-    Boolean(state.reportId) &&
-    !isAccountingReportKind() &&
-    normalize(state.summary?.marketplace) !== "ozon";
-  const visible = Boolean(state.user?.logisticsAnalysisEnabled && supportedReport);
-  const roleAllowed = Boolean(
-    isStaffUser() || state.user?.logisticsAnalysisClientEnabled,
-  );
-  els.logisticsWorkspaceNav.hidden = !(visible && roleAllowed);
-  if (!(visible && roleAllowed) && state.workspace === "logistics") {
-    selectWorkspace("overview", {
+  const available = logisticsScenarioAvailable();
+  els.logisticsEntryPoints.forEach((entryPoint) => {
+    entryPoint.hidden = !available;
+  });
+  if (
+    !available &&
+    state.workspace === "tables" &&
+    state.tableScenario === "logistics" &&
+    (Boolean(state.reportId) || Boolean(state.clientId && state.reports.length === 0))
+  ) {
+    selectWorkspace("tables", {
+      tableScenario: "summary",
       updateLocation: true,
       replaceLocation: true,
       instant: true,
     });
   }
+}
+
+function logisticsScenarioAvailable() {
+  const supportedReport =
+    Boolean(state.reportId) &&
+    !isAccountingReportKind() &&
+    normalize(state.summary?.marketplace) !== "ozon";
+  const roleAllowed = Boolean(
+    isStaffUser() || state.user?.logisticsAnalysisClientEnabled,
+  );
+  return Boolean(
+    state.user?.logisticsAnalysisEnabled && supportedReport && roleAllowed,
+  );
+}
+
+function openLogisticsScenario() {
+  if (!logisticsScenarioAvailable()) {
+    openMarketplaceExpenseReconciliationWidget();
+    return;
+  }
+  selectTableScenario("logistics", { updateLocation: true, focus: true });
 }
 
 function setEmptyCabinet(title = "Нет доступных отчетов", subtitle = "После импорта отчета здесь появится расчетная витрина.") {

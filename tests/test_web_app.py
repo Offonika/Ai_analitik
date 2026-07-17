@@ -1537,7 +1537,13 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
 
     cabinet = client.get("/cabinet")
     script = client.get("/static/app.js")
-    assert 'data-workspace-nav="logistics"' in cabinet.text
+    assert 'data-workspace-nav="logistics"' not in cabinet.text
+    assert 'data-workspace-nav="tables"' in cabinet.text
+    assert 'id="logistics-scenario-nav"' in cabinet.text
+    assert 'data-table-scenario-nav="logistics"' in cabinet.text
+    assert 'data-table-scenario-panel="logistics"' in cabinet.text
+    assert "Аналитика и таблицы" in cabinet.text
+    assert "Логистика: расходы и зоны проверки" in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
@@ -3654,10 +3660,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
+        "20260717-wb-logistics-analytics-ui-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
+        "20260717-wb-logistics-analytics-ui-v1"
     )
 
     page = client.get("/")
@@ -3801,11 +3807,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
+        "styles.css?v=20260717-wb-logistics-analytics-ui-v1"
         in cabinet.text
     )
     assert (
-        "app.js?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
+        "app.js?v=20260717-wb-logistics-analytics-ui-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -3991,7 +3997,9 @@ def test_user_guide_is_generated_from_current_interface_metadata(
 
     assert app_js.status_code == 200
     assert 'if (value === "guide")' in app_js.text
-    assert '["overview", "checks", "tables", "logistics", "guide"]' in app_js.text
+    assert '["overview", "checks", "tables", "guide"]' in app_js.text
+    assert "#tables/${tableScenario}" in app_js.text
+    assert 'tableScenario: "logistics"' in app_js.text
     assert "function renderUserGuide()" in app_js.text
     assert "document.querySelectorAll(`[data-guide-entry=" in app_js.text
     assert "guideEntryVisibleForRole" in app_js.text
