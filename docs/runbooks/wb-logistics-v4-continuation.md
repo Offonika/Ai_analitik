@@ -41,9 +41,16 @@ test-миграция, новый read-only снимок WB и staff-rollout н�
 - Контексты v1-v3 и несовместимая версия ключа возвращают `needs_rebuild`.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
-- Код не развернут, миграция не применена к test/production, новый снимок WB
-  не получен, ручная сверка и включение consultant/admin не выполнялись.
-- Коммит, staging, push и pull request не создавались.
+- Базовый v4-код и migration развернуты на test в release
+  `runtime-7d84509-wb-logistics-v4-nginx-hotfix-20260717`; оба logistics-флага
+  пока выключены. Production не затронут.
+- На существующем полном test-снимке `full-20260716-171834` выполнен read-only
+  preview после адаптации реальных схем и границ периода. Gate получил
+  `ready`: source/order/SKU/control равны `16 085 743,59 руб.`, обязательных
+  ошибок, конфликтов цепочек и dimension-расхождений нет; preview завершен
+  rollback и не создал report run.
+- Исправление реального снимка еще требуется закоммитить, отправить и
+  развернуть новой test-ревизией. Клиентский и production rollout не выполнен.
 
 # Реализованные правила v4
 
@@ -267,12 +274,12 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Итоговый ownership/diff-аудит выполнен; состав отдельного логистического
-   commit/PR зафиксирован выше.
-2. После явного разрешения развернуть код и migration v4 на test с обоими
-   feature flags в `false`.
-3. Получить новый read-only снимок WB и построить новый draft `report_run`.
-4. Вручную сверить обезличенные source -> order -> SKU -> ReportUnitRow по
+1. Сформировать изолированный commit исправления gate, не включая retention и
+   другие пользовательские изменения, затем push текущей ветки.
+2. Развернуть новую ревизию на test с клиентским флагом `false`.
+3. Построить новый draft `report_run` из сохраненного неизменяемого test-снимка
+   `full-20260716-171834`; внешний WB/1С refresh не требуется и не выполняется.
+4. Вручную сверить обезличенные source -> order -> SKU -> control по
    неделе, кабинету, организации, схеме и товару.
 5. Проверить counters, canonical hashes, отсутствие scope/revision conflicts и
    денежное расхождение не более `0,01 руб.`.

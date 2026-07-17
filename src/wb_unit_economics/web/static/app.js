@@ -75,6 +75,14 @@ const state = {
 };
 
 const LOGISTICS_PAGE_SIZE = 250;
+const LOGISTICS_SCHEME_OPTIONS = [
+  { value: "fbo", label: "Склад WB (FBO / FBW)" },
+  { value: "fbs", label: "Склад продавца (FBS / DBS)" },
+  {
+    value: "not_applicable",
+    label: "Корректировка — схема не применяется",
+  },
+];
 
 const FOCUSABLE_WIDGET_SELECTOR = [
   "a[href]",
@@ -4884,7 +4892,11 @@ function renderFilters(options) {
     organizationOptions,
     "Все организации",
   );
-  setOptions(els.logisticsSchemeFilter, options.schemes || [], "Все схемы");
+  setOptions(
+    els.logisticsSchemeFilter,
+    LOGISTICS_SCHEME_OPTIONS,
+    "Все схемы",
+  );
   if (
     [...els.logisticsOrganizationFilter.options].some(
       (option) => option.value === logisticsOrganization,

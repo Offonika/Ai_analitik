@@ -1547,6 +1547,7 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "state.logisticsProductsTotal = Number(products.total || 0)" in script.text
     assert "state.logisticsOrdersTotal = Number(payload.total || 0)" in script.text
     assert "logisticsProfitEffectText(item.profitEffectAmount)" in script.text
+    assert "Корректировка — схема не применяется" in script.text
     assert 'dataStatus === "partial" && sliceStatus === "ready"' in script.text
     assert 'qualityNeedsReview\n        ? "Проверить данные"' in script.text
 
@@ -1609,6 +1610,40 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     ).json()
     assert partial_products["financialMetricStatus"] == "not_available_partial_week"
     assert partial_products["items"][0]["profitEffectAmount"] is None
+
+
+def test_logistics_correction_segment_does_not_count_as_order(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        order_row.countable_order = False
+        order_row.scheme = "not_applicable"
+        sku_row = db.query(ReportLogisticsSkuRow).one()
+        sku_row.scheme = "not_applicable"
+        db.commit()
+    login(client)
+
+    filters = {
+        "periodStart": "2026-04-06",
+        "periodEnd": "2026-04-12",
+        "scheme": "not_applicable",
+    }
+    summary = client.get(
+        "/api/reports/report-1/logistics/summary", params=filters
+    ).json()
+    products = client.get(
+        "/api/reports/report-1/logistics/products", params=filters
+    ).json()
+
+    assert summary["kpis"]["logisticsTotal"] == 10
+    assert summary["kpis"]["orderCount"] == 0
+    assert summary["kpis"]["logisticsPerOrder"] is None
+    assert products["items"][0]["orderCount"] == 0
+    assert products["items"][0]["logisticsPerOrder"] is None
 
 
 def test_logistics_product_filter_uses_one_canonical_product_reference(
@@ -3617,10 +3652,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260717-tax-load-ux-v2-logistics-v4"
+        "20260717-tax-load-ux-v2-logistics-v4-gate-fix"
     )
     assert health.json()["staticBuildId"] == (
-        "20260717-tax-load-ux-v2-logistics-v4"
+        "20260717-tax-load-ux-v2-logistics-v4-gate-fix"
     )
 
     page = client.get("/")
@@ -3763,8 +3798,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260717-tax-load-ux-v2-logistics-v4" in cabinet.text
-    assert "app.js?v=20260717-tax-load-ux-v2-logistics-v4" in cabinet.text
+    assert (
+        "styles.css?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix"
+        in cabinet.text
+    )
+    assert "app.js?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text

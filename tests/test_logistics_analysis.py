@@ -596,3 +596,202 @@ def test_product_reference_scopes_sku_fallback_but_unifies_nm_id() -> None:
 
     assert nm_first.product_ref == nm_second.product_ref
     assert sku_first.product_ref != sku_second.product_ref
+
+
+def test_scheme_variants_and_report_labels_are_normalized() -> None:
+    fbw = source_row_from_payload(
+        {
+            "rrDate": "2026-07-13",
+            "orderUid": "order-1",
+            "nmId": "101",
+            "deliveryMethod": "FBW, (МГТ, короба)",
+            "deliveryService": "10",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        },
+        tenant_id="tenant-1",
+        client_id="client-1",
+        wb_cabinet_id="cabinet-1",
+        client_company_id="company-1",
+        fallback_date=date(2026, 7, 1),
+    )
+    fbs = source_row_from_payload(
+        {
+            "rrDate": "2026-07-13",
+            "orderUid": "order-2",
+            "nmId": "202",
+            "deliveryMethod": "FBS, (МГТ)",
+            "deliveryService": "20",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        },
+        tenant_id="tenant-1",
+        client_id="client-1",
+        wb_cabinet_id="cabinet-1",
+        client_company_id="company-1",
+        fallback_date=date(2026, 7, 1),
+    )
+
+    assert fbw.scheme == "fbo"
+    assert fbs.scheme == "fbs"
+    result = build_logistics_analysis(
+        [fbw],
+        [_unit_row(scheme="Склад WB")],
+    )
+    assert result.context.data_status == "ready"
+
+
+def test_correction_without_delivery_method_uses_neutral_non_order_scheme() -> None:
+    normal = _source_row(delivery_service=Decimal("10"))
+    correction = source_row_from_payload(
+        {
+            "rrDate": "2026-07-13",
+            "orderUid": "order-1",
+            "nmId": "101",
+            "sellerOperName": "Коррекция логистики",
+            "deliveryService": "5",
+            "deliveryAmount": "0",
+            "returnAmount": "0",
+        },
+        tenant_id="tenant-1",
+        client_id="client-1",
+        wb_cabinet_id="cabinet-1",
+        client_company_id="company-1",
+        source_row_id="correction-1",
+        fallback_date=date(2026, 7, 1),
+    )
+
+    assert correction.scheme == "not_applicable"
+    assert "scheme_missing" not in correction.validation_errors
+    result = build_logistics_analysis(
+        [normal, correction],
+        [_unit_row(logistics=Decimal("15"), scheme="Склад WB")],
+    )
+
+    assert result.context.data_status == "ready"
+    assert result.context.chain_dimension_conflict_count == 0
+    assert result.context.report_logistics_total == Decimal("15")
+    assert len(result.order_rows) == 2
+    correction_order = next(
+        row for row in result.order_rows if row.scheme == "not_applicable"
+    )
+    assert correction_order.countable_order is False
+    assert correction_order.logistics_adjustment == Decimal("5")
+    correction_sku = next(
+        row for row in result.sku_rows if row.scheme == "not_applicable"
+    )
+    assert correction_sku.chain_count == 0
+    assert correction_sku.logistics_per_order is None
+
+
+def test_zero_logistics_without_order_uid_is_financial_only() -> None:
+    financial_only = source_row_from_payload(
+        {
+            "rrDate": "2026-07-13",
+            "deliveryService": "0",
+        },
+        tenant_id="tenant-1",
+        client_id="client-1",
+        wb_cabinet_id="cabinet-1",
+        client_company_id="company-1",
+        source_row_id="financial-only-1",
+        fallback_date=date(2026, 7, 1),
+    )
+
+    assert "order_uid_missing" in financial_only.validation_errors
+    result = build_logistics_analysis(
+        [_source_row(), financial_only],
+        [_unit_row()],
+    )
+
+    assert result.context.data_status == "ready"
+    assert result.context.invalid_source_row_count == 0
+    assert result.context.required_field_error_count == 0
+    assert len(result.order_rows) == 1
+
+
+def test_zero_logistics_with_order_can_enrich_chain_without_own_scheme() -> None:
+    sale = source_row_from_payload(
+        {
+            "rrDate": "2026-07-13",
+            "orderUid": "order-1",
+            "nmId": "101",
+            "docTypeName": "Продажа",
+            "quantity": "1",
+            "retailAmount": "100",
+            "deliveryService": "0",
+        },
+        tenant_id="tenant-1",
+        client_id="client-1",
+        wb_cabinet_id="cabinet-1",
+        client_company_id="company-1",
+        source_row_id="sale-without-scheme",
+        fallback_date=date(2026, 7, 1),
+    )
+    assert "scheme_missing" in sale.validation_errors
+
+    result = build_logistics_analysis([sale, _source_row()], [_unit_row()])
+
+    assert result.context.data_status == "ready"
+    assert result.context.invalid_source_row_count == 0
+    assert result.context.chain_dimension_conflict_count == 0
+    assert len(result.order_rows) == 1
+    assert result.order_rows[0].scheme == "fbo"
+    assert result.order_rows[0].sales_quantity == Decimal("1")
+
+    zero_only = build_logistics_analysis([sale], [])
+    assert zero_only.context.data_status == "ready"
+    assert zero_only.order_rows == ()
+    assert zero_only.sku_rows == ()
+
+
+def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report() -> None:
+    boundary = _source_row(
+        financial_date=date(2026, 4, 1),
+        source_row_id="boundary",
+        source_hash="boundary-hash",
+        delivery_service=Decimal("10"),
+    )
+    full = _source_row(
+        financial_date=date(2026, 4, 6),
+        source_row_id="full",
+        source_hash="full-hash",
+        order_uid="order-2",
+        delivery_service=Decimal("20"),
+    )
+    unit_rows = [
+        _unit_row(
+            financial_week_start=date(2026, 3, 30),
+            logistics=Decimal("999"),
+        ),
+        _unit_row(
+            financial_week_start=date(2026, 4, 6),
+            logistics=Decimal("20"),
+        ),
+    ]
+
+    result = build_logistics_analysis(
+        [boundary, full],
+        unit_rows,
+        report_period_start=date(2026, 4, 1),
+        report_period_end=date(2026, 4, 12),
+    )
+
+    assert result.context.data_status == "ready"
+    assert result.context.raw_logistics_total == Decimal("30")
+    assert result.context.report_logistics_total == Decimal("30")
+    boundary_sku = next(
+        row
+        for row in result.sku_rows
+        if row.financial_week_start == date(2026, 3, 30)
+    )
+    assert boundary_sku.profit_before_tax is None
+
+    mismatch = build_logistics_analysis(
+        [boundary, full],
+        [unit_rows[0], replace(unit_rows[1], logistics=Decimal("21"))],
+        report_period_start=date(2026, 4, 1),
+        report_period_end=date(2026, 4, 12),
+    )
+    assert mismatch.context.data_status == "blocked"
+    assert "dimension_logistics_mismatch" in mismatch.context.blocking_reasons

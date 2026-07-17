@@ -20,6 +20,7 @@ LogisticsClass = Literal["forward", "reverse", "adjustment", "unclassified"]
 _ADJUSTMENT_OPERATION_MARKERS = (
     "перерасчет",
     "перерасчёт",
+    "коррекц",
     "корректиров",
     "возмещени",
 )
@@ -304,8 +305,14 @@ def source_row_from_payload(
     )
     if order_date_status == "invalid":
         errors.append("order_date_invalid")
-    scheme, scheme_status = _parse_scheme(
-        _raw_first(payload, "deliveryMethod", "delivery_method")
+    operation_name = _text(
+        _raw_first(
+            payload, "sellerOperName", "supplierOperName", "operation_type"
+        )
+    )
+    scheme, scheme_status = normalize_logistics_scheme(
+        _raw_first(payload, "deliveryMethod", "delivery_method"),
+        operation_name=operation_name,
     )
     if scheme_status != "ready":
         errors.append(f"scheme_{scheme_status}")
@@ -379,11 +386,7 @@ def source_row_from_payload(
             _raw_first(payload, "country", "ppvzOfficeName", "ppvz_office_name")
         ),
         document_type=_text(_raw_first(payload, "docTypeName", "doc_type_name")),
-        operation_name=_text(
-            _raw_first(
-                payload, "sellerOperName", "supplierOperName", "operation_type"
-            )
-        ),
+        operation_name=operation_name,
         quantity=quantity,
         retail_amount=retail_amount,
         delivery_service=delivery_service,
@@ -471,14 +474,25 @@ def build_logistics_analysis(
     input_diagnostics: LogisticsInputDiagnostics | None = None,
 ) -> LogisticsAnalysisResult:
     diagnostics = input_diagnostics or LogisticsInputDiagnostics()
+    normalized_unit_rows = [_normalize_unit_slice(row) for row in unit_rows]
     effective_period_start, effective_period_end = _report_period(
-        unit_rows,
+        normalized_unit_rows,
         report_period_start=report_period_start,
         report_period_end=report_period_end,
     )
+    financial_unit_rows = [
+        row
+        for row in normalized_unit_rows
+        if not isinstance(row.financial_week_start, date)
+        or _week_fully_contained(
+            row.financial_week_start,
+            effective_period_start,
+            effective_period_end,
+        )
+    ]
     input_hash = _input_hash(
         source_rows,
-        unit_rows,
+        normalized_unit_rows,
         report_period_start=effective_period_start,
         report_period_end=effective_period_end,
         input_diagnostics=diagnostics,
@@ -493,18 +507,14 @@ def build_logistics_analysis(
     raw_total = sum(
         (row.delivery_service for row in valid_logistics_rows), Decimal("0")
     )
-    report_total = sum(
-        (
-            row.logistics
-            for row in unit_rows
-            if _is_finite_decimal(row.logistics)
-        ),
-        Decimal("0"),
-    )
     required_errors = _required_source_errors(source_rows)
-    report_required_errors = _required_report_errors(unit_rows)
+    report_required_errors = _required_report_errors(financial_unit_rows)
     invalid_rows = sum(
-        bool(set(row.validation_errors) | required_errors.get(index, set()))
+        not _is_financial_only_non_logistics_row(row)
+        and bool(
+            _effective_logistics_validation_errors(row)
+            | required_errors.get(index, set())
+        )
         for index, row in enumerate(source_rows)
     )
     required_error_count = sum(len(errors) for errors in required_errors.values())
@@ -518,7 +528,12 @@ def build_logistics_analysis(
         for error in errors
     }
     optional_error_count = sum(
-        len(set(row.validation_errors) - required_errors.get(index, set()))
+        0
+        if _is_financial_only_non_logistics_row(row)
+        else len(
+            _effective_logistics_validation_errors(row)
+            - required_errors.get(index, set())
+        )
         for index, row in enumerate(source_rows)
     )
     keyed_count = sum(bool(row.chain_key) for row in valid_logistics_rows)
@@ -528,7 +543,7 @@ def build_logistics_analysis(
     chain_dimension_conflicts = _chain_dimension_conflict_count(source_rows)
     scope_mismatches = diagnostics.scope_mismatch_count + _scope_mismatch_count(
         source_rows,
-        unit_rows,
+        normalized_unit_rows,
         expected_tenant_id=expected_tenant_id,
         expected_client_id=expected_client_id,
     )
@@ -540,12 +555,30 @@ def build_logistics_analysis(
     ]
     valid_unit_rows = [
         row
-        for index, row in enumerate(unit_rows)
+        for index, row in enumerate(financial_unit_rows)
         if index not in report_required_errors
     ]
+    report_dimension_totals = _logistics_control_dimension_totals(
+        dimension_source_rows,
+        valid_unit_rows,
+        report_period_start=effective_period_start,
+        report_period_end=effective_period_end,
+    )
+    invalid_report_control_total = sum(
+        (
+            row.logistics
+            for index, row in enumerate(financial_unit_rows)
+            if index in report_required_errors and _is_finite_decimal(row.logistics)
+        ),
+        Decimal("0"),
+    )
+    report_total = (
+        sum(report_dimension_totals.values(), Decimal("0"))
+        + invalid_report_control_total
+    )
     reconciliation = _reconcile_dimension_totals(
         _source_dimension_totals(dimension_source_rows),
-        _report_dimension_totals(valid_unit_rows),
+        report_dimension_totals,
     )
 
     blocking: list[str] = list(diagnostics.blocking_reasons)
@@ -655,7 +688,7 @@ def build_logistics_analysis(
         ),
         "sku_report_dimension_logistics_mismatch": _reconcile_dimension_totals(
             _sku_dimension_totals(sku_rows),
-            _report_dimension_totals(valid_unit_rows),
+            report_dimension_totals,
         ),
     }
     for reason, comparison in post_build_reconciliations.items():
@@ -714,11 +747,14 @@ def build_order_rows(
     *,
     report_period_start: date | None = None,
 ) -> list[LogisticsOrderRow]:
-    groups: dict[tuple[str, date], dict[str, Any]] = {}
+    groups: dict[tuple[str, date, str], dict[str, Any]] = {}
     for row in source_rows:
         if row.financial_date is None or not row.chain_key:
             continue
-        group_key = (row.chain_key, row.financial_date)
+        scheme_segment = (
+            "not_applicable" if row.scheme == "not_applicable" else "fulfillment"
+        )
+        group_key = (row.chain_key, row.financial_date, scheme_segment)
         bucket = groups.setdefault(
             group_key,
             {
@@ -756,8 +792,11 @@ def build_order_rows(
             if value:
                 bucket[field].add(value)
         bucket["hashes"].append(row.source_hash)
-        bucket["quality_errors"].update(row.validation_errors)
+        bucket["quality_errors"].update(
+            _effective_logistics_validation_errors(row)
+        )
         if row.delivery_service not in (None, Decimal("0")):
+            bucket["row"] = row
             category = classify_logistics_row(row)
             bucket["total"] += row.delivery_service
             bucket[category] += row.delivery_service
@@ -767,11 +806,16 @@ def build_order_rows(
         _add_sales_measures(bucket, row)
 
     result: list[LogisticsOrderRow] = []
-    for (chain_key, financial_date), bucket in sorted(groups.items()):
+    for (chain_key, financial_date, scheme_segment), bucket in sorted(groups.items()):
+        if not bucket["logistics_count"]:
+            continue
         row = bucket["row"]
         week_start = financial_date - timedelta(days=financial_date.weekday())
         segment_key = hashlib.sha256(
-            f"{chain_key}\x1f{financial_date.isoformat()}".encode()
+            (
+                f"{chain_key}\x1f{financial_date.isoformat()}"
+                f"\x1f{scheme_segment}"
+            ).encode()
         ).hexdigest()
         order_date = min(bucket["order_dates"]) if bucket["order_dates"] else None
         order_period_status = (
@@ -802,7 +846,7 @@ def build_order_rows(
             LogisticsOrderRow(
                 chain_key=chain_key,
                 chain_segment_key=segment_key,
-                countable_order=True,
+                countable_order=scheme_segment != "not_applicable",
                 tenant_id=row.tenant_id,
                 client_id=row.client_id,
                 wb_cabinet_id=row.wb_cabinet_id,
@@ -874,7 +918,8 @@ def build_sku_rows(
         bucket["logistics_count"] += row.logistics_row_count
         bucket["classified_count"] += row.classified_row_count
         bucket["hashes"].append(row.source_hash_digest)
-        bucket["chains"].add(row.chain_key)
+        if row.countable_order:
+            bucket["chains"].add(row.chain_key)
 
     unit_buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in unit_rows:
@@ -1064,6 +1109,53 @@ def _report_dimension_totals(
     return _dimension_totals(rows, "logistics")
 
 
+def _logistics_control_dimension_totals(
+    source_rows: Sequence[LogisticsSourceRow],
+    unit_rows: Sequence[UnitEconomicsSlice],
+    *,
+    report_period_start: date | None,
+    report_period_end: date | None,
+) -> dict[tuple[Any, ...], Decimal]:
+    """Build the exact-period logistics control without changing weekly P&L."""
+    result: dict[tuple[Any, ...], Decimal] = defaultdict(lambda: Decimal("0"))
+    result.update(_report_dimension_totals(unit_rows))
+    source_totals = _source_dimension_totals(source_rows)
+    for key, amount in source_totals.items():
+        week_start = key[2]
+        if week_start is None or not _week_fully_contained(
+            week_start, report_period_start, report_period_end
+        ):
+            result[key] += amount
+            continue
+        if key[5] != "not_applicable":
+            continue
+        # The accepted financial report historically assigns a missing
+        # deliveryMethod to FBO. The logistics mart keeps the same grand total
+        # but moves an explicit logistics correction to its own neutral scheme.
+        fbo_key = (*key[:5], "fbo", *key[6:])
+        result[fbo_key] -= amount
+        result[key] += amount
+    return dict(result)
+
+
+def _normalize_unit_slice(row: UnitEconomicsSlice) -> UnitEconomicsSlice:
+    scheme, _status = normalize_logistics_scheme(row.scheme)
+    return replace(row, scheme=scheme)
+
+
+def _week_fully_contained(
+    week_start: date,
+    report_period_start: date | None,
+    report_period_end: date | None,
+) -> bool:
+    if report_period_start is None or report_period_end is None:
+        return True
+    return (
+        report_period_start <= week_start
+        and week_start + timedelta(days=6) <= report_period_end
+    )
+
+
 def _dimension_totals(
     rows: Sequence[UnitEconomicsSlice | LogisticsOrderRow | LogisticsSkuRow],
     field: str,
@@ -1130,7 +1222,9 @@ def _required_source_errors(
 
 
 def _source_row_required_errors(row: LogisticsSourceRow) -> set[str]:
-    errors = set(row.validation_errors) & _BLOCKING_SOURCE_ERRORS
+    if _is_financial_only_non_logistics_row(row):
+        return set()
+    errors = _effective_logistics_validation_errors(row) & _BLOCKING_SOURCE_ERRORS
     if not row.tenant_id.strip():
         errors.add("tenant_id_missing")
     if not row.client_id.strip():
@@ -1141,7 +1235,10 @@ def _source_row_required_errors(row: LogisticsSourceRow) -> set[str]:
         errors.add("client_company_id_missing")
     if row.financial_date is None:
         errors.add("financial_date_missing")
-    if row.scheme not in {"fbo", "fbs"}:
+    if (
+        row.delivery_service != Decimal("0")
+        and row.scheme not in {"fbo", "fbs", "not_applicable"}
+    ):
         errors.add("scheme_invalid" if row.scheme.strip() else "scheme_missing")
     if row.delivery_service is None:
         errors.add("delivery_service_missing")
@@ -1179,7 +1276,7 @@ def _report_row_required_errors(row: UnitEconomicsSlice) -> set[str]:
         errors.add("report_wb_cabinet_id_missing")
     if not row.client_company_id.strip():
         errors.add("report_client_company_id_missing")
-    if row.scheme.strip().casefold() not in {"fbo", "fbs"}:
+    if row.scheme.strip().casefold() not in {"fbo", "fbs", "not_applicable"}:
         errors.add(
             "report_scheme_invalid" if row.scheme.strip() else "report_scheme_missing"
         )
@@ -1193,13 +1290,36 @@ def _report_row_required_errors(row: UnitEconomicsSlice) -> set[str]:
 
 
 def _chain_dimension_conflict_count(rows: Sequence[LogisticsSourceRow]) -> int:
-    dimensions: dict[tuple[str, date], set[tuple[str, str]]] = defaultdict(set)
+    companies: dict[tuple[str, date], set[str]] = defaultdict(set)
+    schemes: dict[tuple[str, date], set[str]] = defaultdict(set)
     for row in rows:
         if row.chain_key and row.financial_date is not None:
-            dimensions[(row.chain_key, row.financial_date)].add(
-                (row.client_company_id.strip(), row.scheme.strip().casefold())
-            )
-    return sum(len(values) > 1 for values in dimensions.values())
+            key = (row.chain_key, row.financial_date)
+            companies[key].add(row.client_company_id.strip())
+            scheme = row.scheme.strip().casefold()
+            if (
+                row.delivery_service not in (None, Decimal("0"))
+                and scheme != "not_applicable"
+            ):
+                schemes[key].add(scheme)
+    return sum(
+        len(companies[key]) > 1 or len(schemes[key]) > 1
+        for key in set(companies) | set(schemes)
+    )
+
+
+def _is_financial_only_non_logistics_row(row: LogisticsSourceRow) -> bool:
+    return row.delivery_service == Decimal("0") and not row.order_uid.strip()
+
+
+def _effective_logistics_validation_errors(row: LogisticsSourceRow) -> set[str]:
+    if _is_financial_only_non_logistics_row(row):
+        return set()
+    errors = set(row.validation_errors)
+    if row.delivery_service == Decimal("0"):
+        errors.discard("scheme_missing")
+        errors.discard("scheme_invalid")
+    return errors
 
 
 def _composite_key_collisions(rows: Iterable[LogisticsSourceRow]) -> int:
@@ -1443,15 +1563,27 @@ def _parse_date(value: Any, *, required: bool = True) -> tuple[date | None, str]
         return None, "invalid"
 
 
-def _parse_scheme(value: Any) -> tuple[str, str]:
+def normalize_logistics_scheme(
+    value: Any,
+    *,
+    operation_name: str = "",
+) -> tuple[str, str]:
     text = _text(value).casefold()
     if not text:
+        if operation_name.strip().casefold() == "коррекция логистики":
+            return "not_applicable", "ready"
         return "", "missing"
-    if text in {"fbo", "склад wb", "склад вб"}:
+    if text == "not_applicable":
+        return "not_applicable", "ready"
+    if text in {"склад wb", "склад вб"} or re.match(r"^(?:fbo|fbw)\b", text):
         return "fbo", "ready"
-    if text in {"fbs", "склад продавца"}:
+    if text == "склад продавца" or re.match(r"^(?:fbs|dbs)\b", text):
         return "fbs", "ready"
     return "", "invalid"
+
+
+def _parse_scheme(value: Any) -> tuple[str, str]:
+    return normalize_logistics_scheme(value)
 
 
 def _digest_strings(values: Iterable[str]) -> str:

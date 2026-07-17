@@ -13164,7 +13164,17 @@ def report_logistics_summary_payload(
             func.coalesce(func.sum(ReportLogisticsOrderRow.logistics_unclassified), 0),
             func.coalesce(func.sum(ReportLogisticsOrderRow.sales_quantity), 0),
             func.coalesce(func.sum(ReportLogisticsOrderRow.return_quantity), 0),
-            func.count(func.distinct(ReportLogisticsOrderRow.chain_key)),
+            func.count(
+                func.distinct(
+                    case(
+                        (
+                            ReportLogisticsOrderRow.countable_order.is_(True),
+                            ReportLogisticsOrderRow.chain_key,
+                        ),
+                        else_=None,
+                    )
+                )
+            ),
         ).where(*order_conditions)
     ).one()
     logistics_total = decimal_value(totals[0])
@@ -13820,9 +13830,17 @@ def _query_logistics_products(
             ),
             func.sum(ReportLogisticsOrderRow.sales_quantity).label("sales_quantity"),
             func.sum(ReportLogisticsOrderRow.return_quantity).label("return_quantity"),
-            func.count(func.distinct(ReportLogisticsOrderRow.chain_key)).label(
-                "order_count"
-            ),
+            func.count(
+                func.distinct(
+                    case(
+                        (
+                            ReportLogisticsOrderRow.countable_order.is_(True),
+                            ReportLogisticsOrderRow.chain_key,
+                        ),
+                        else_=None,
+                    )
+                )
+            ).label("order_count"),
             func.sum(ReportLogisticsOrderRow.logistics_row_count).label(
                 "logistics_row_count"
             ),
