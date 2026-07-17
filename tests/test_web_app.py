@@ -3617,10 +3617,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260716-report-wizard-clarity-v1-logistics-v4"
+        "20260717-tax-load-ux-v2-logistics-v4"
     )
     assert health.json()["staticBuildId"] == (
-        "20260716-report-wizard-clarity-v1-logistics-v4"
+        "20260717-tax-load-ux-v2-logistics-v4"
     )
 
     page = client.get("/")
@@ -3643,6 +3643,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="ai-widget-close"' in ai_page.text
     assert 'id="client-output-widget-overlay"' in cabinet.text
     assert 'id="client-output-widget-close"' in cabinet.text
+    assert 'id="accounting-scenario-checks"' in cabinet.text
+    assert 'data-check-panel="summary"' in cabinet.text
     assert 'id="integrations-widget-overlay"' in integrations.text
     assert 'id="integrations-widget-close"' in integrations.text
     assert 'id="mapping-widget-overlay"' in cabinet.text
@@ -3761,8 +3763,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260716-report-wizard-clarity-v1-logistics-v4" in cabinet.text
-    assert "app.js?v=20260716-report-wizard-clarity-v1-logistics-v4" in cabinet.text
+    assert "styles.css?v=20260717-tax-load-ux-v2-logistics-v4" in cabinet.text
+    assert "app.js?v=20260717-tax-load-ux-v2-logistics-v4" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -3981,6 +3983,36 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
     assert "@media (max-height: 700px)" in styles.text
     assert "overscroll-behavior: contain;" in styles.text
     assert "word-break: break-word;" in styles.text
+
+
+def test_tax_load_v2_renderer_localizes_contract_and_keeps_tables_accessible(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+    scenarios = client.get("/static/report-scenarios.js")
+    tax_load = client.get("/static/tax-load-report.js")
+    styles = client.get("/static/styles.css")
+
+    assert app_js.status_code == 200
+    assert scenarios.status_code == 200
+    assert tax_load.status_code == 200
+    assert styles.status_code == 200
+    assert 'header.scope = "col"' in scenarios.text
+    assert "wrapper.tabIndex = 0" in scenarios.text
+    assert 'wrapper.setAttribute("aria-label", options.label)' in scenarios.text
+    assert "Нужна проверка бухгалтера" in tax_load.text
+    assert "Открытых дозапросов нет" in tax_load.text
+    assert "В нагрузке ФНС" in tax_load.text
+    assert "formatMoney" in tax_load.text
+    assert "formatDate" in tax_load.text
+    assert "accountingScenarioStatusLabel" in app_js.text
+    assert "Внутренний предварительный отчёт" in app_js.text
+    assert "status ${status}" not in app_js.text
+    assert ".scenario-table-wrap:focus-visible" in styles.text
+    assert ".scenario-table-hint" in styles.text
+    assert ".scenario-heading .status-pill" in styles.text
 
 
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(

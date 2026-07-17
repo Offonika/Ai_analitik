@@ -3702,6 +3702,16 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   configurePageMode();
 }
 
+function accountingScenarioStatusLabel(status) {
+  const labels = {
+    accountant_review_required: "Нужна проверка бухгалтера",
+    preliminary: "Предварительный",
+    can_confirm: "Можно подтвердить",
+    cannot_confirm: "Нельзя подтвердить",
+  };
+  return labels[normalize(status)] || "Требует проверки";
+}
+
 function renderAccountingScenario(payload) {
   syncReportKindSurface();
   window.MultiReportScenarios?.render(state.reportKind, payload, {
@@ -3714,7 +3724,7 @@ function renderAccountingScenario(payload) {
   const status = payload.businessRecommendation || payload.businessStatus || "preliminary";
   setTopbarNotice(
     title,
-    `Предварительный staff-only отчёт · ${state.periodMonth} · статус ${status}`,
+    `Внутренний предварительный отчёт · ${state.periodMonth} · ${accountingScenarioStatusLabel(status)}`,
     status === "cannot_confirm" ? "is-warning" : "is-info",
   );
   updateReportBuildButton();

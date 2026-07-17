@@ -6857,8 +6857,67 @@ td {
   font-size: 1.15rem;
 }
 
+.scenario-callout,
+.scenario-empty-state {
+  border: 1px solid #dbe3ec;
+  border-radius: 0.75rem;
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+}
+
+.scenario-callout {
+  border-left: 4px solid #0b7f88;
+  background: #eef9fa;
+}
+
+.scenario-empty-state {
+  background: #f7f9fc;
+}
+
+.scenario-callout p,
+.scenario-empty-state p {
+  color: #5f6b7a;
+  margin: 0.35rem 0 0;
+}
+
+.scenario-table-wrap {
+  scrollbar-gutter: stable;
+}
+
+.scenario-table-wrap:focus-visible {
+  outline: 3px solid #0b7f88;
+  outline-offset: 3px;
+}
+
+.scenario-table th {
+  white-space: nowrap;
+}
+
+.scenario-table-hint {
+  color: #5f6b7a;
+  display: none;
+  font-size: 0.85rem;
+  margin: -0.35rem 0 0.75rem;
+}
+
 .scenario-table-wrap + .scenario-heading {
   margin-top: 1.5rem;
+}
+
+@media (max-width: 720px) {
+  .scenario-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scenario-heading .status-pill {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .scenario-table-hint {
+    display: block;
+  }
 }
 
 body.accounting-report-mode [data-workspace-panel="overview"]:not(.accounting-scenario-panel),
