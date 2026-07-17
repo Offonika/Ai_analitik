@@ -1482,6 +1482,7 @@ def _marketplace_finance_daily_facts(
     grouped: dict[tuple[object, ...], dict[str, object]],
     *,
     methodology_version: str,
+    report_grouped: dict[tuple[object, ...], dict[str, object]] | None = None,
 ) -> list[MarketplaceFinanceDailyFact]:
     facts: list[MarketplaceFinanceDailyFact] = []
     cogs_by_report_grain: dict[
@@ -1554,18 +1555,20 @@ def _marketplace_finance_daily_facts(
         )
         facts.append(fact)
         week_start, week_end = week_bounds(fact_date)
-        report_grain = (
-            str(client_id),
-            str(seller_account_id),
-            str(organization_id),
-            week_start,
-            week_end,
-            str(document_kind),
-            nm_id,
-            str(vendor_code),
-            str(barcode),
-            str(onec_item_id),
-            str(sales_model),
+        report_grain = _daily_fact_report_grain(
+            (
+                client_id,
+                seller_account_id,
+                organization_id,
+                week_start,
+                week_end,
+                document_kind,
+                nm_id,
+                vendor_code,
+                barcode,
+                onec_item_id,
+                sales_model,
+            )
         )
         cogs_by_report_grain[report_grain].append(
             (
@@ -1582,15 +1585,71 @@ def _marketplace_finance_daily_facts(
             )
         )
 
+    cogs_targets = (
+        _daily_fact_report_money_targets(report_grouped, field_name="cogs")
+        if report_grouped is not None
+        else None
+    )
+    gross_profit_targets = (
+        _daily_fact_report_money_targets(report_grouped, field_name="gross_profit")
+        if report_grouped is not None
+        else None
+    )
     _reconcile_daily_money_to_report_grain(
         cogs_by_report_grain,
         field_name="cogs",
+        targets=cogs_targets,
     )
     _reconcile_daily_money_to_report_grain(
         gross_profit_by_report_grain,
         field_name="gross_profit",
+        targets=gross_profit_targets,
     )
     return facts
+
+
+def _daily_fact_report_grain(
+    key: tuple[object, ...],
+) -> tuple[object, ...]:
+    (
+        client_id,
+        seller_account_id,
+        organization_id,
+        week_start,
+        week_end,
+        document_kind,
+        nm_id,
+        vendor_code,
+        barcode,
+        onec_item_id,
+        sales_model,
+    ) = key
+    return (
+        str(client_id),
+        str(seller_account_id),
+        str(organization_id),
+        week_start,
+        week_end,
+        str(document_kind),
+        nm_id,
+        str(vendor_code),
+        str(barcode),
+        str(onec_item_id or ""),
+        str(sales_model),
+    )
+
+
+def _daily_fact_report_money_targets(
+    grouped: dict[tuple[object, ...], dict[str, object]],
+    *,
+    field_name: str,
+) -> dict[tuple[object, ...], Decimal]:
+    """Return the exact cent controls emitted by final weekly report rows."""
+    targets: dict[tuple[object, ...], Decimal] = defaultdict(lambda: Decimal("0"))
+    for key, bucket in grouped.items():
+        report_grain = _daily_fact_report_grain(key)
+        targets[report_grain] += money(Decimal(bucket[field_name]))
+    return dict(targets)
 
 
 def _reconcile_daily_money_to_report_grain(
@@ -1600,15 +1659,22 @@ def _reconcile_daily_money_to_report_grain(
     ],
     *,
     field_name: str,
+    targets: dict[tuple[object, ...], Decimal] | None = None,
 ) -> None:
     """Keep daily monetary cents equal to the final report grain."""
+    if targets is not None and set(grouped) != set(targets):
+        raise ValueError("daily fact grains do not match final report controls")
     cent = Decimal("0.01")
     for report_grain in sorted(
         grouped,
         key=lambda item: tuple(str(value) for value in item),
     ):
         entries = grouped[report_grain]
-        target = money(sum((raw_value for _, raw_value, _ in entries), Decimal("0")))
+        target = (
+            targets[report_grain]
+            if targets is not None
+            else money(sum((raw_value for _, raw_value, _ in entries), Decimal("0")))
+        )
         current = sum(
             (getattr(fact, field_name) for fact, _, _ in entries),
             Decimal("0"),
@@ -2233,6 +2299,7 @@ def build_unit_economics_report(
             _marketplace_finance_daily_facts(
                 daily_grouped,
                 methodology_version=methodology_version,
+                report_grouped=grouped,
             )
         )
 

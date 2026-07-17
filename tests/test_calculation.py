@@ -2047,3 +2047,51 @@ def test_daily_fact_money_cents_reconcile_to_weekly_report_grain() -> None:
         Decimal("2.01"),
     ]
     assert sum((fact.gross_profit for fact in facts), Decimal("0")) == Decimal("4.01")
+
+
+def test_daily_fact_cogs_uses_final_report_control_when_decimal_order_differs() -> None:
+    base = wb_snapshots()[0]
+    first_day = date(2026, 3, 2)
+    second_day = date(2026, 3, 3)
+    large = Decimal("10000000000000000000000000")
+    values = (
+        (large, first_day),
+        (Decimal("0.005"), second_day),
+        (-large, first_day),
+    )
+    snapshots = [
+        base.model_copy(
+            update={
+                "period_start": fact_date,
+                "period_end": fact_date,
+                "preallocated_finance": True,
+                "precomputed_cogs": cogs,
+                "precomputed_gross_profit": Decimal("0"),
+                "precomputed_vat_input_from_1c": Decimal("0"),
+                "precomputed_accounting_service_input_vat": Decimal("0"),
+                "precomputed_spp_discount": Decimal("0"),
+                "raw_payload_hash": f"decimal-order-{index}",
+            }
+        )
+        for index, (cogs, fact_date) in enumerate(values)
+    ]
+    daily_facts = []
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=snapshots,
+        cost_snapshots=cost_snapshots(),
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 3, 9, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 3, 9),
+        daily_facts_sink=daily_facts,
+    )
+
+    report_cogs = sum(
+        (row.cogs_from_1c_with_extra_costs for row in report.rows),
+        Decimal("0"),
+    )
+    daily_cogs = sum((fact.cogs for fact in daily_facts), Decimal("0"))
+    assert report_cogs == Decimal("0.00")
+    assert daily_cogs == report_cogs
