@@ -746,14 +746,14 @@ def minimal_payload() -> dict:
 def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
     tmp_path: Path,
 ) -> None:
-    _settings, session_factory, user, report, _mapping_dir = (
-        _source_refresh_context(tmp_path)
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
     )
     with session_factory() as db:
         user, report = _session_user_report(db, user, report)
-        unit_row = db.query(repository.ReportUnitRow).filter_by(
-            report_run_id=report.id
-        ).one()
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
         refresh_run = repository.create_source_refresh_run(
             db,
             tenant_id=report.tenant_id,
@@ -777,28 +777,29 @@ def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
             status="loaded",
             row_count=1,
         )
+        logistics_payload = {
+            "rrDate": "2026-04-06",
+            "orderDt": "2026-04-05",
+            "orderUid": "order-1",
+            "nmId": "1001",
+            "sku": "BAR-1",
+            "vendorCode": "WB-1",
+            "title": "Товар",
+            "deliveryMethod": "FBO",
+            "docTypeName": "Логистика",
+            "sellerOperName": "Логистика",
+            "deliveryService": "50",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        }
         repository.add_source_snapshot_row(
             db,
             collection,
             row_number=1,
-            raw_payload_hash="logistics-row-hash",
+            raw_payload_hash=source_refresh._hash_payload(logistics_payload),
             source_row_id="rrd-1",
             wb_cabinet_id=unit_row.wb_cabinet_id,
-            row_payload={
-                "rrDate": "2026-04-06",
-                "orderDt": "2026-04-05",
-                "orderUid": "order-1",
-                "nmId": "1001",
-                "sku": "BAR-1",
-                "vendorCode": "WB-1",
-                "title": "Товар",
-                "deliveryMethod": "FBO",
-                "docTypeName": "Логистика",
-                "sellerOperName": "Логистика",
-                "deliveryService": "50",
-                "deliveryAmount": "1",
-                "returnAmount": "0",
-            },
+            row_payload=logistics_payload,
         )
 
         source_refresh._build_and_persist_logistics_analysis(
@@ -820,6 +821,366 @@ def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
     assert len(order_rows) == 1
     assert len(sku_rows) == 1
     assert sku_rows[0].logistics_total == Decimal("50")
+
+
+def test_logistics_analysis_blocks_undated_report_row_without_losing_total(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
+        unit_row.week = None
+        unit_row.accounting_period_date = None
+        unit_row.logistics = Decimal("50")
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            refresh_runs=[],
+        )
+        db.commit()
+
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        order_count = db.query(ReportLogisticsOrderRow).count()
+        sku_count = db.query(ReportLogisticsSkuRow).count()
+
+    assert context is not None
+    assert context.data_status == "blocked"
+    assert context.report_logistics_total == Decimal("50")
+    assert context.invalid_report_row_count == 1
+    assert context.report_required_field_error_count == 1
+    assert "invalid_required_report_fields" in context.blocking_reasons
+    assert order_count == 0
+    assert sku_count == 0
+
+
+def test_logistics_analysis_blocks_non_object_snapshot_payload(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
+        unit_row.logistics = Decimal("0")
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="invalid-logistics-payload",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="invalid logistics payload",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        invalid_payload = ["not", "an", "object"]
+        repository.add_source_snapshot_row(
+            db,
+            collection,
+            row_number=1,
+            raw_payload_hash=source_refresh._hash_payload(invalid_payload),
+            source_row_id="rrd-invalid",
+            wb_cabinet_id=unit_row.wb_cabinet_id,
+            row_payload=invalid_payload,
+        )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=refresh_run,
+        )
+        db.commit()
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+
+    assert context is not None
+    assert context.data_status == "blocked"
+    assert context.source_row_count == 1
+    assert context.invalid_source_payload_shape_count == 1
+    assert context.invalid_source_row_count == 1
+    assert "invalid_source_payload_shape" in context.blocking_reasons
+
+
+def test_logistics_snapshot_owner_replaces_base_revision(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="logistics-base",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="base",
+            enforce_active_check=False,
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="logistics-current",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=date(2026, 4, 6),
+            source_window_end=date(2026, 4, 6),
+            user=user,
+            source_report=report,
+            base_source_refresh_run=base,
+            reason="current",
+            enforce_active_check=False,
+        )
+        for run, amount in ((base, "40"), (current, "50")):
+            collection = repository.add_source_refresh_collection(
+                db,
+                run,
+                source_type="wb_finance_detail",
+                source_label="WB finance",
+                required=True,
+                status="loaded",
+                row_count=1,
+            )
+            payload = {
+                "rrdId": 1,
+                "rrDate": "2026-04-06",
+                "orderUid": "order-1",
+                "nmId": "1001",
+                "sku": "BAR-1",
+                "deliveryMethod": "FBO",
+                "deliveryService": amount,
+                "deliveryAmount": "1",
+                "returnAmount": "0",
+            }
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=1,
+                raw_payload_hash=source_refresh._hash_payload(payload),
+                source_row_id="1",
+                wb_cabinet_id=unit_row.wb_cabinet_id,
+                row_payload=payload,
+            )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=current,
+            base_refresh_run=base,
+        )
+        db.commit()
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+
+    assert context is not None
+    assert context.data_status == "ready"
+    assert context.raw_logistics_total == Decimal("50")
+    assert context.source_revision_discarded_count == 1
+    assert context.source_revision_conflict_count == 0
+
+
+def test_logistics_provider_identity_mismatch_blocks_gate(tmp_path: Path) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
+        base = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="identity-base",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="identity base",
+            enforce_active_check=False,
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="identity-current",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            source_window_start=date(2026, 4, 6),
+            source_window_end=date(2026, 4, 6),
+            user=user,
+            source_report=report,
+            base_source_refresh_run=base,
+            reason="identity current",
+            enforce_active_check=False,
+        )
+        for run, amount, snapshot_row_id in (
+            (base, "40", "alias-a"),
+            (current, "60", "alias-b"),
+        ):
+            collection = repository.add_source_refresh_collection(
+                db,
+                run,
+                source_type="wb_finance_detail",
+                source_label="WB finance",
+                required=True,
+                status="loaded",
+                row_count=1,
+            )
+            payload = {
+                "rrdId": 1,
+                "rrDate": "2026-04-06",
+                "orderUid": "order-1",
+                "nmId": "1001",
+                "sku": "BAR-1",
+                "deliveryMethod": "FBO",
+                "deliveryService": amount,
+                "deliveryAmount": "1",
+                "returnAmount": "0",
+            }
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=1,
+                raw_payload_hash=source_refresh._hash_payload(payload),
+                source_row_id=snapshot_row_id,
+                wb_cabinet_id=unit_row.wb_cabinet_id,
+                row_payload=payload,
+            )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=current,
+            base_refresh_run=base,
+        )
+        db.commit()
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        order_count = db.query(ReportLogisticsOrderRow).count()
+        sku_count = db.query(ReportLogisticsSkuRow).count()
+
+    assert context is not None
+    assert context.data_status == "blocked"
+    assert context.source_identity_error_count == 2
+    assert "source_identity_mismatch" in context.blocking_reasons
+    assert order_count == 0
+    assert sku_count == 0
+
+
+def test_logistics_conflicting_revisions_in_owner_layer_block_gate(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="conflicting-logistics-revisions",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="conflicting revisions",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=2,
+        )
+        payloads = [
+            {
+                "rrdId": 1,
+                "rrDate": "2026-04-06",
+                "orderUid": "order-1",
+                "nmId": "1001",
+                "sku": "BAR-1",
+                "deliveryMethod": "FBO",
+                "deliveryService": amount,
+                "deliveryAmount": "1",
+                "returnAmount": "0",
+            }
+            for amount in ("40", "50")
+        ]
+        stale_hash = source_refresh._hash_payload(payloads[0])
+        for row_number, payload in enumerate(payloads, 1):
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=row_number,
+                raw_payload_hash=stale_hash,
+                source_row_id="1",
+                wb_cabinet_id=unit_row.wb_cabinet_id,
+                row_payload=payload,
+            )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=refresh_run,
+        )
+        db.commit()
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+
+    assert context is not None
+    assert context.data_status == "blocked"
+    assert context.source_revision_conflict_count == 1
+    assert context.source_revision_discarded_count == 1
+    assert "source_revision_conflict" in context.blocking_reasons
+    assert "source_payload_hash_mismatch" in context.blocking_reasons
 
 
 def test_page_limit_exhaustion_detects_full_last_page_per_source_group() -> None:
@@ -1711,6 +2072,39 @@ def test_incremental_refresh_requires_db_first_reports(tmp_path: Path) -> None:
                 resume_mode="never",
                 resume_from_run_id=None,
             )
+
+
+def test_logistics_master_flag_requires_db_first_before_refresh(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.logistics_analysis_enabled = True
+    settings.db_first_reports_enabled = False
+    service = SourceRefreshService(settings)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        payload = service.run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            user=user,
+            source_report=report,
+            reason="logistics config gate",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            resume_mode="never",
+            resume_from_run_id=None,
+        )
+
+    assert payload["status"] == "needs_configuration"
+    assert payload["failureCode"] == "logistics_requires_db_first"
+    assert payload["collections"] == []
 
 
 def test_incremental_refresh_reuses_valid_full_daily_facts_base(

@@ -59,13 +59,22 @@ const state = {
   taxInputPage: 0,
   logisticsSummary: null,
   logisticsProducts: [],
+  logisticsProductsTotal: 0,
+  logisticsProductsOffset: 0,
   logisticsOrders: [],
+  logisticsOrdersTotal: 0,
+  logisticsOrdersOffset: 0,
   logisticsRequestKey: "",
-  logisticsSelectedProductKey: "",
+  logisticsRequestId: 0,
+  logisticsOrdersRequestId: 0,
+  logisticsSelectedProductRef: "",
+  logisticsSelectedProductLabel: "",
   logisticsBusy: false,
   workspace: "overview",
   checkView: "summary",
 };
+
+const LOGISTICS_PAGE_SIZE = 250;
 
 const FOCUSABLE_WIDGET_SELECTOR = [
   "a[href]",
@@ -131,10 +140,22 @@ const els = {
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
   logisticsProductsCount: document.querySelector("#logistics-products-count"),
   logisticsProductsRows: document.querySelector("#logistics-products-rows"),
+  logisticsProductsPagination: document.querySelector(
+    "#logistics-products-pagination",
+  ),
+  logisticsProductsPrev: document.querySelector("#logistics-products-prev"),
+  logisticsProductsPage: document.querySelector("#logistics-products-page"),
+  logisticsProductsNext: document.querySelector("#logistics-products-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
   logisticsOrdersRows: document.querySelector("#logistics-orders-rows"),
   logisticsOrdersClose: document.querySelector("#logistics-orders-close"),
+  logisticsOrdersPagination: document.querySelector(
+    "#logistics-orders-pagination",
+  ),
+  logisticsOrdersPrev: document.querySelector("#logistics-orders-prev"),
+  logisticsOrdersPage: document.querySelector("#logistics-orders-page"),
+  logisticsOrdersNext: document.querySelector("#logistics-orders-next"),
   topbarCabinetSelect: document.querySelector("#topbar-cabinet-select"),
   topbarPeriodStart: document.querySelector("#topbar-period-start"),
   topbarPeriodEnd: document.querySelector("#topbar-period-end"),
@@ -535,9 +556,36 @@ function init() {
   });
   els.logisticsFilterForm?.addEventListener("submit", (event) => {
     event.preventDefault();
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsProductsPrev?.addEventListener("click", () => {
+    if (state.logisticsProductsOffset <= 0) {
+      return;
+    }
+    state.logisticsProductsOffset = Math.max(
+      0,
+      state.logisticsProductsOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsProductsNext?.addEventListener("click", () => {
+    if (
+      state.logisticsProductsOffset + state.logisticsProducts.length >=
+      state.logisticsProductsTotal
+    ) {
+      return;
+    }
+    state.logisticsProductsOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsOrdersClose?.addEventListener("click", closeLogisticsOrders);
+  els.logisticsOrdersPrev?.addEventListener("click", () => {
+    changeLogisticsOrdersPage(-1);
+  });
+  els.logisticsOrdersNext?.addEventListener("click", () => {
+    changeLogisticsOrdersPage(1);
+  });
   els.clientSelect.addEventListener("change", () => selectClient(els.clientSelect.value));
   els.reportKindSelect.addEventListener("change", () =>
     selectReportKind(els.reportKindSelect.value),
@@ -1314,7 +1362,7 @@ function renderWorkspaceHeader() {
   }
   if (state.workspace === "logistics") {
     const logistics = state.logisticsSummary || {};
-    const status = normalize(logistics.dataStatus);
+    const status = normalize(logistics.sliceStatus || logistics.dataStatus);
     setTopbarNotice(
       "Анализ затрат на логистику",
       status === "ready"
@@ -4262,8 +4310,12 @@ async function loadLogisticsAnalysis(options = {}) {
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({ limit: 250 });
-  const requestKey = `${reportId}?${params}`;
+  const summaryParams = logisticsFilterParams();
+  const productParams = logisticsFilterParams({
+    offset: state.logisticsProductsOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${productParams}`;
   if (!options.force && requestKey === state.logisticsRequestKey) {
     if (!state.logisticsBusy) {
       renderLogisticsWorkspace();
@@ -4271,31 +4323,50 @@ async function loadLogisticsAnalysis(options = {}) {
     return;
   }
   state.logisticsRequestKey = requestKey;
+  const requestId = ++state.logisticsRequestId;
   state.logisticsBusy = true;
-  state.logisticsSelectedProductKey = "";
+  state.logisticsSelectedProductRef = "";
   closeLogisticsOrders();
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
     const [summary, products] = await Promise.all([
-      api(`/api/reports/${encodeURIComponent(reportId)}/logistics/summary?${params}`),
-      api(`/api/reports/${encodeURIComponent(reportId)}/logistics/products?${params}`),
+      api(
+        `/api/reports/${encodeURIComponent(reportId)}/logistics/summary?${summaryParams}`,
+      ),
+      api(
+        `/api/reports/${encodeURIComponent(reportId)}/logistics/products?${productParams}`,
+      ),
     ]);
-    if (state.reportId !== reportId || state.logisticsRequestKey !== requestKey) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRequestKey !== requestKey ||
+      state.logisticsRequestId !== requestId
+    ) {
       return;
     }
     state.logisticsSummary = summary;
     state.logisticsProducts = asArray(products.items);
+    state.logisticsProductsTotal = Number(products.total || 0);
     renderLogisticsWorkspace();
   } catch (error) {
-    if (state.reportId !== reportId || state.logisticsRequestKey !== requestKey) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRequestKey !== requestKey ||
+      state.logisticsRequestId !== requestId
+    ) {
       return;
     }
     state.logisticsSummary = null;
     state.logisticsProducts = [];
+    state.logisticsProductsTotal = 0;
     state.logisticsRequestKey = "";
     renderLogisticsLoadError();
   } finally {
-    if (state.reportId === reportId) {
+    if (
+      state.reportId === reportId &&
+      state.logisticsRequestKey === requestKey &&
+      state.logisticsRequestId === requestId
+    ) {
       state.logisticsBusy = false;
     }
   }
@@ -4312,6 +4383,13 @@ function resetLogisticsWorkspace() {
   els.logisticsRecommendations.replaceChildren();
   els.logisticsProductsRows.replaceChildren();
   els.logisticsProductsCount.textContent = "";
+  renderLogisticsPagination(
+    els.logisticsProductsPagination,
+    els.logisticsProductsPrev,
+    els.logisticsProductsPage,
+    els.logisticsProductsNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
   closeLogisticsOrders();
 }
 
@@ -4324,7 +4402,11 @@ function renderLogisticsLoadError() {
 
 function renderLogisticsWorkspace() {
   const summary = state.logisticsSummary || {};
-  const status = normalize(summary.dataStatus);
+  const dataStatus = normalize(summary.dataStatus);
+  const sliceStatus = normalize(summary.sliceStatus || dataStatus);
+  const status = dataStatus === "partial" && sliceStatus === "ready"
+    ? "partial"
+    : sliceStatus;
   const coverage = summary.coverage || {};
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
@@ -4350,6 +4432,8 @@ function renderLogisticsWorkspace() {
   }
   const kpis = summary.kpis || {};
   const profitEffect = Number(kpis.profitEffectAmount || 0);
+  const financialMetricsReady = summary.financialMetricStatus === "ready";
+  const profitEffectReady = financialMetricsReady && kpis.profitEffectAmount !== null;
   renderMetrics(els.logisticsKpiGrid, [
     [
       "Общая логистика",
@@ -4361,18 +4445,28 @@ function renderLogisticsWorkspace() {
     [
       "Доля в выручке",
       logisticsPercent(kpis.logisticsSharePct),
-      kpis.revenue > 0 ? `Выручка ${money(kpis.revenue)}` : "Нет положительной выручки",
+      !financialMetricsReady
+        ? "Недоступно для выбранной части недели"
+        : kpis.revenue > 0
+          ? `Выручка ${money(kpis.revenue)}`
+          : "Нет положительной выручки",
       Number(kpis.logisticsSharePct || 0) >= 15 ? "warning" : "",
       "Логистика / положительная выручка × 100%.",
     ],
     [
-      profitEffect < 0 ? "Логистика уменьшила прибыль" : "Влияние на прибыль",
-      money(Math.abs(profitEffect)),
-      kpis.profitBeforeTax === null
-        ? "Прибыль не связана с витриной"
-        : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
-      profitEffect < 0 ? "warning" : "",
-      "Отрицательное значение показывает уменьшение прибыли из-за логистики.",
+      profitEffectReady && profitEffect < 0
+        ? "Логистика уменьшила прибыль"
+        : profitEffectReady && profitEffect > 0
+          ? "Корректировки увеличили прибыль"
+          : "Влияние на прибыль",
+      profitEffectReady ? money(Math.abs(profitEffect)) : "—",
+      !financialMetricsReady
+        ? "Финансовые KPI недоступны для части недели"
+        : kpis.profitBeforeTax === null
+          ? "Прибыль не связана с витриной"
+          : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
+      profitEffectReady && profitEffect < 0 ? "warning" : "",
+      "Показывается абсолютная сумма и направление влияния на прибыль.",
     ],
   ]);
   renderLogisticsComponents(summary.components || {});
@@ -4485,9 +4579,23 @@ function renderLogisticsRecommendations(items) {
 }
 
 function renderLogisticsProducts(items) {
+  const total = state.logisticsProductsTotal;
+  const start = items.length ? state.logisticsProductsOffset + 1 : 0;
+  const end = items.length ? state.logisticsProductsOffset + items.length : 0;
   els.logisticsProductsCount.textContent = items.length
-    ? `${number(items.length)} товаров`
+    ? `${number(start)}–${number(end)} из ${number(total)}`
     : "";
+  renderLogisticsPagination(
+    els.logisticsProductsPagination,
+    els.logisticsProductsPrev,
+    els.logisticsProductsPage,
+    els.logisticsProductsNext,
+    {
+      offset: state.logisticsProductsOffset,
+      itemCount: items.length,
+      total,
+    },
+  );
   if (!items.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -4511,18 +4619,24 @@ function renderLogisticsProducts(items) {
         logisticsTableCell(logisticsPercent(item.logisticsSharePct), "numeric"),
         logisticsTableCell(number(item.orderCount), "numeric"),
         logisticsTableCell(number(item.returnQuantity), "numeric"),
-        logisticsTableCell(signedMoney(item.profitEffectAmount), "numeric"),
+        logisticsTableCell(logisticsProfitEffectText(item.profitEffectAmount), "numeric"),
       );
       const quality = logisticsTableCell("");
       const badge = document.createElement("span");
-      badge.className = item.lowSample
+      const qualityNeedsReview = normalize(item.dataQualityStatus) !== "ready"
+        || normalize(item.classificationStatus) !== "ready";
+      badge.className = qualityNeedsReview || item.lowSample
         ? "logistics-quality-badge is-warning"
         : "logistics-quality-badge";
-      badge.textContent = item.lowSample ? "Малая выборка" : "Достаточно данных";
+      badge.textContent = qualityNeedsReview
+        ? "Проверить данные"
+        : item.lowSample
+          ? "Малая выборка"
+          : "Достаточно данных";
       quality.append(badge);
       row.append(quality);
       const action = logisticsTableCell("");
-      if (state.user?.logisticsOrdersEnabled) {
+      if (isStaffUser()) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "secondary-button logistics-orders-open";
@@ -4544,43 +4658,89 @@ function logisticsTableCell(value, className = "") {
 }
 
 async function openLogisticsOrders(product) {
-  if (!state.user?.logisticsOrdersEnabled || !state.reportId) {
+  if (!isStaffUser() || !state.reportId) {
+    return;
+  }
+  const productRef = String(product.productRef || "");
+  if (!productRef) {
+    return;
+  }
+  state.logisticsSelectedProductRef = productRef;
+  state.logisticsSelectedProductLabel = product.product || product.vendorCode || "Товар";
+  state.logisticsOrdersOffset = 0;
+  state.logisticsOrdersTotal = 0;
+  els.logisticsOrdersSection.hidden = false;
+  els.logisticsOrdersSubtitle.textContent = state.logisticsSelectedProductLabel;
+  await loadLogisticsOrdersPage({ scroll: true });
+}
+
+async function loadLogisticsOrdersPage(options = {}) {
+  if (!isStaffUser() || !state.reportId || !state.logisticsSelectedProductRef) {
     return;
   }
   const reportId = state.reportId;
-  const productKey = String(product.productKey || "");
-  state.logisticsSelectedProductKey = productKey;
-  els.logisticsOrdersSection.hidden = false;
-  els.logisticsOrdersSubtitle.textContent = product.product || product.vendorCode || "Товар";
+  const productRef = state.logisticsSelectedProductRef;
+  const requestId = ++state.logisticsOrdersRequestId;
   const loadingRow = document.createElement("tr");
   const loadingCell = document.createElement("td");
   loadingCell.colSpan = 8;
   loadingCell.textContent = "Загружаем обезличенные цепочки…";
   loadingRow.append(loadingCell);
   els.logisticsOrdersRows.replaceChildren(loadingRow);
+  renderLogisticsPagination(
+    els.logisticsOrdersPagination,
+    els.logisticsOrdersPrev,
+    els.logisticsOrdersPage,
+    els.logisticsOrdersNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
   try {
-    const params = logisticsFilterParams({ productKey, limit: 250 });
+    const params = logisticsFilterParams({
+      productRef,
+      offset: state.logisticsOrdersOffset,
+      limit: LOGISTICS_PAGE_SIZE,
+    });
     const payload = await api(
       `/api/reports/${encodeURIComponent(reportId)}/logistics/orders?${params}`,
     );
     if (
       state.reportId !== reportId ||
-      state.logisticsSelectedProductKey !== productKey
+      state.logisticsSelectedProductRef !== productRef ||
+      state.logisticsOrdersRequestId !== requestId
     ) {
       return;
     }
     state.logisticsOrders = asArray(payload.items);
+    state.logisticsOrdersTotal = Number(payload.total || 0);
     renderLogisticsOrders(state.logisticsOrders);
-    els.logisticsOrdersSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (options.scroll) {
+      els.logisticsOrdersSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   } catch (error) {
-    if (state.logisticsSelectedProductKey !== productKey) {
+    if (
+      state.logisticsSelectedProductRef !== productRef ||
+      state.logisticsOrdersRequestId !== requestId
+    ) {
       return;
     }
+    state.logisticsOrders = [];
+    state.logisticsOrdersTotal = 0;
     renderLogisticsOrders([], "Не удалось загрузить цепочки.");
   }
 }
 
 function renderLogisticsOrders(items, emptyText = "Для товара нет цепочек в выбранном срезе.") {
+  renderLogisticsPagination(
+    els.logisticsOrdersPagination,
+    els.logisticsOrdersPrev,
+    els.logisticsOrdersPage,
+    els.logisticsOrdersNext,
+    {
+      offset: state.logisticsOrdersOffset,
+      itemCount: items.length,
+      total: state.logisticsOrdersTotal,
+    },
+  );
   if (!items.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -4597,7 +4757,11 @@ function renderLogisticsOrders(items, emptyText = "Для товара нет ц
       row.append(
         logisticsTableCell(item.chainRef || "—"),
         logisticsTableCell(
-          `${formatCompactDate(item.operationDateStart)} — ${formatCompactDate(item.operationDateEnd)}`,
+          item.orderPeriodStatus === "previous_report_period"
+            ? `${formatCompactDate(item.financialDate)} · возврат из прошлого периода`
+            : item.orderPeriodStatus === "order_before_report_period"
+              ? `${formatCompactDate(item.financialDate)} · заказ оформлен до периода`
+            : formatCompactDate(item.financialDate),
         ),
         logisticsTableCell(signedMoney(item.logisticsForward), "numeric"),
         logisticsTableCell(signedMoney(item.logisticsReverse), "numeric"),
@@ -4613,13 +4777,71 @@ function renderLogisticsOrders(items, emptyText = "Для товара нет ц
   );
 }
 
+function changeLogisticsOrdersPage(direction) {
+  const nextOffset = Math.max(
+    0,
+    state.logisticsOrdersOffset + direction * LOGISTICS_PAGE_SIZE,
+  );
+  if (
+    nextOffset === state.logisticsOrdersOffset
+    || nextOffset >= state.logisticsOrdersTotal
+  ) {
+    return;
+  }
+  state.logisticsOrdersOffset = nextOffset;
+  loadLogisticsOrdersPage();
+}
+
+function renderLogisticsPagination(
+  container,
+  previousButton,
+  pageLabel,
+  nextButton,
+  { offset, itemCount, total },
+) {
+  if (!container || !previousButton || !pageLabel || !nextButton) {
+    return;
+  }
+  const pageCount = total ? Math.ceil(total / LOGISTICS_PAGE_SIZE) : 0;
+  const page = total ? Math.floor(offset / LOGISTICS_PAGE_SIZE) + 1 : 0;
+  pageLabel.textContent = total ? `Страница ${number(page)} из ${number(pageCount)}` : "";
+  previousButton.disabled = offset <= 0;
+  nextButton.disabled = offset + itemCount >= total;
+  container.hidden = total <= LOGISTICS_PAGE_SIZE && offset === 0;
+}
+
+function logisticsProfitEffectText(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const amount = Number(value);
+  if (amount < 0) {
+    return `Снижение на ${money(Math.abs(amount))}`;
+  }
+  if (amount > 0) {
+    return `Рост на ${money(Math.abs(amount))}`;
+  }
+  return money(0);
+}
+
 function closeLogisticsOrders() {
-  state.logisticsSelectedProductKey = "";
+  state.logisticsSelectedProductRef = "";
+  state.logisticsSelectedProductLabel = "";
+  state.logisticsOrdersRequestId += 1;
   state.logisticsOrders = [];
+  state.logisticsOrdersTotal = 0;
+  state.logisticsOrdersOffset = 0;
   if (els.logisticsOrdersSection) {
     els.logisticsOrdersSection.hidden = true;
   }
   els.logisticsOrdersRows?.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsOrdersPagination,
+    els.logisticsOrdersPrev,
+    els.logisticsOrdersPage,
+    els.logisticsOrdersNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
 }
 
 function logisticsPercent(value) {
@@ -4736,6 +4958,7 @@ function applyTopbarFilter(kind) {
   }
   loadReviewRows();
   if (state.workspace === "logistics") {
+    state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   }
 }
@@ -14535,9 +14758,14 @@ function resetClientScopedState(options = {}) {
   state.rowPreset = "";
   state.logisticsSummary = null;
   state.logisticsProducts = [];
+  state.logisticsProductsTotal = 0;
+  state.logisticsProductsOffset = 0;
   state.logisticsOrders = [];
+  state.logisticsOrdersTotal = 0;
+  state.logisticsOrdersOffset = 0;
   state.logisticsRequestKey = "";
-  state.logisticsSelectedProductKey = "";
+  state.logisticsSelectedProductRef = "";
+  state.logisticsSelectedProductLabel = "";
   state.logisticsBusy = false;
   els.topbarCabinetSelect.replaceChildren();
   els.reportLoadRetryButton.hidden = true;

@@ -33,6 +33,8 @@ from wb_unit_economics.contracts import (
     WbSalesReportSummaryRow,
 )
 from wb_unit_economics.logistics_analysis import (
+    LogisticsInputDiagnostics,
+    LogisticsSourceRow,
     UnitEconomicsSlice,
     build_logistics_analysis,
     source_row_from_payload,
@@ -108,9 +110,7 @@ from wb_unit_economics.wb_stocks import (
 from wb_unit_economics.web import integrations, mapping_service, repository, security
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
 from wb_unit_economics.web.models import (
-    MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactModel,
-)
-from wb_unit_economics.web.models import (
+    ClientCompany,
     MarketplaceOperationFact,
     ReportLogisticsAnalysisContext,
     ReportRun,
@@ -122,6 +122,9 @@ from wb_unit_economics.web.models import (
     TenantIntegration,
     User,
     WbCabinet,
+)
+from wb_unit_economics.web.models import (
+    MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactModel,
 )
 from wb_unit_economics.web.report_kinds import (
     ACCOUNTING_REPORT_KINDS,
@@ -1311,6 +1314,24 @@ class SourceRefreshService:
                 root_dir=str(root_dir),
             )
             _commit_source_refresh_progress(db)
+            if (
+                self.settings.logistics_analysis_enabled
+                and not self.settings.db_first_reports_enabled
+            ):
+                repository.update_source_refresh_run(
+                    db,
+                    refresh_run,
+                    failure_code="logistics_requires_db_first",
+                )
+                return self._finish_without_report(
+                    db,
+                    refresh_run,
+                    status="needs_configuration",
+                    error_message=(
+                        "Logistics analysis requires "
+                        "SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true."
+                    ),
+                )
             if not dry_run:
                 disk_issue = self._low_disk_issue()
                 if disk_issue is not None:
@@ -5725,68 +5746,68 @@ def _persist_wb_finance_rows(
         _mark_raw_row_persistence_failure(db, collection, exc)
 
 
+@dataclass(frozen=True)
+class _LogisticsSnapshotCandidate:
+    snapshot: SourceSnapshotRow
+    refresh_run: SourceRefreshRun
+    role: str
+    source_row: LogisticsSourceRow
+    source_hash: str
+    stable_identity: bool
+
+
 def _build_and_persist_logistics_analysis(
     db: Session,
     report: ReportRun,
     *,
-    refresh_runs: Iterable[SourceRefreshRun],
+    primary_refresh_run: SourceRefreshRun | None = None,
+    base_refresh_run: SourceRefreshRun | None = None,
+    contributing_runs: Iterable[SourceRefreshRun] = (),
+    refresh_runs: Iterable[SourceRefreshRun] = (),
 ) -> None:
-    source_rows = []
-    seen_rows: set[tuple[str, str]] = set()
-    refresh_run_ids = sorted({item.id for item in refresh_runs if item is not None})
-    snapshot_rows = db.scalars(
-        select(SourceSnapshotRow)
-        .where(
-            SourceSnapshotRow.refresh_run_id.in_(refresh_run_ids),
-            SourceSnapshotRow.tenant_id == report.tenant_id,
-            SourceSnapshotRow.client_id == report.client_id,
-            SourceSnapshotRow.source_type == "wb_finance_detail",
-        )
-        .order_by(
-            SourceSnapshotRow.loaded_at,
-            SourceSnapshotRow.refresh_run_id,
-            SourceSnapshotRow.row_number,
-        )
+    # `refresh_runs` remains as a compatibility bridge for existing internal
+    # callers. Production passes explicit lineage roles so revision ownership
+    # is deterministic.
+    legacy_runs = [item for item in refresh_runs if item is not None]
+    if primary_refresh_run is None and legacy_runs:
+        primary_refresh_run = legacy_runs[0]
+        contributing_runs = (*legacy_runs[1:], *contributing_runs)
+    roles: dict[str, tuple[SourceRefreshRun, str]] = {}
+
+    def add_run(run: SourceRefreshRun | None, role: str) -> None:
+        if run is not None and run.id not in roles:
+            roles[run.id] = (run, role)
+
+    add_run(primary_refresh_run, "current")
+    add_run(base_refresh_run, "base")
+    for run in contributing_runs:
+        add_run(run, "contributor")
+
+    source_rows, diagnostics = _select_logistics_source_rows(
+        db,
+        report,
+        roles=roles,
+        primary_refresh_run=primary_refresh_run,
+        base_refresh_run=base_refresh_run,
     )
-    for snapshot_row in snapshot_rows:
-        payload = snapshot_row.row_payload
-        if not isinstance(payload, Mapping):
-            continue
-        wb_cabinet_id = str(snapshot_row.wb_cabinet_id or "").strip()
-        if not wb_cabinet_id:
-            continue
-        cabinet = db.get(WbCabinet, wb_cabinet_id)
-        client_company_id = (
-            str(cabinet.client_company_id or "")
-            if cabinet is not None and cabinet.client_id == report.client_id
-            else ""
-        )
-        source_hash = str(snapshot_row.raw_payload_hash or _hash_payload(payload))
-        dedupe_key = (wb_cabinet_id, source_hash)
-        if dedupe_key in seen_rows:
-            continue
-        seen_rows.add(dedupe_key)
-        row = source_row_from_payload(
-            payload,
-            tenant_id=report.tenant_id,
-            client_id=report.client_id,
-            wb_cabinet_id=wb_cabinet_id,
-            client_company_id=client_company_id,
-            source_row_id=snapshot_row.source_row_id,
-            source_hash=source_hash,
-            fallback_date=report.period_start,
-        )
-        if report.period_start <= row.financial_date <= report.period_end:
-            source_rows.append(row)
 
     unit_rows = []
+    database_scope_mismatches = 0
     for row in db.scalars(
         select(ReportUnitRow).where(ReportUnitRow.report_run_id == report.id)
     ):
-        financial_date = row.week or row.accounting_period_date or report.period_start
-        week_start = financial_date - timedelta(days=financial_date.weekday())
+        if not _report_unit_row_scope_matches(db, report, row):
+            database_scope_mismatches += 1
+        financial_date = row.week or row.accounting_period_date
+        week_start = (
+            financial_date - timedelta(days=financial_date.weekday())
+            if financial_date is not None
+            else None
+        )
         unit_rows.append(
             UnitEconomicsSlice(
+                tenant_id=report.tenant_id,
+                client_id=row.client_id,
                 financial_week_start=week_start,
                 wb_cabinet_id=row.wb_cabinet_id,
                 client_company_id=row.client_company_id,
@@ -5797,11 +5818,354 @@ def _build_and_persist_logistics_analysis(
                 product=row.product,
                 revenue=Decimal(row.revenue),
                 profit_before_tax=Decimal(row.profit_before_tax),
-                logistics=Decimal(row.logistics),
+                logistics=_report_logistics_decimal(row.logistics),
+                source_row_id=row.row_uid,
             )
         )
-    result = build_logistics_analysis(source_rows, unit_rows)
+    result = build_logistics_analysis(
+        source_rows,
+        unit_rows,
+        report_period_start=report.period_start,
+        report_period_end=report.period_end,
+        expected_tenant_id=report.tenant_id,
+        expected_client_id=report.client_id,
+        input_diagnostics=LogisticsInputDiagnostics(
+            invalid_source_payload_shape_count=(
+                diagnostics.invalid_source_payload_shape_count
+            ),
+            source_identity_error_count=diagnostics.source_identity_error_count,
+            source_revision_conflict_count=(diagnostics.source_revision_conflict_count),
+            source_revision_discarded_count=(
+                diagnostics.source_revision_discarded_count
+            ),
+            scope_mismatch_count=(
+                diagnostics.scope_mismatch_count + database_scope_mismatches
+            ),
+            blocking_reasons=tuple(
+                dict.fromkeys(
+                    (
+                        *diagnostics.blocking_reasons,
+                        *(
+                            ("tenant_scope_mismatch",)
+                            if database_scope_mismatches
+                            else ()
+                        ),
+                    )
+                )
+            ),
+            lineage_records=diagnostics.lineage_records,
+        ),
+    )
     repository.replace_report_logistics_analysis(db, report, result)
+
+
+def _select_logistics_source_rows(
+    db: Session,
+    report: ReportRun,
+    *,
+    roles: Mapping[str, tuple[SourceRefreshRun, str]],
+    primary_refresh_run: SourceRefreshRun | None,
+    base_refresh_run: SourceRefreshRun | None,
+) -> tuple[list[LogisticsSourceRow], LogisticsInputDiagnostics]:
+    if not roles:
+        return [], LogisticsInputDiagnostics()
+    run_ids = sorted(roles)
+    candidates: list[_LogisticsSnapshotCandidate] = []
+    lineage: list[dict[str, Any]] = []
+    invalid_payload_shapes = 0
+    source_identity_errors = 0
+    source_revision_conflicts = 0
+    source_revision_discarded = 0
+    scope_mismatches = 0
+    blocking: list[str] = []
+    multiple_runs = len(run_ids) > 1
+    snapshot_rows = db.scalars(
+        select(SourceSnapshotRow)
+        .where(
+            SourceSnapshotRow.refresh_run_id.in_(run_ids),
+            SourceSnapshotRow.source_type == "wb_finance_detail",
+        )
+        .order_by(
+            SourceSnapshotRow.loaded_at,
+            SourceSnapshotRow.refresh_run_id,
+            SourceSnapshotRow.collection_id,
+            SourceSnapshotRow.row_number,
+        )
+    )
+    for snapshot in snapshot_rows:
+        refresh_run, role = roles[snapshot.refresh_run_id]
+        payload = snapshot.row_payload
+        stored_source_hash = str(snapshot.raw_payload_hash or "")
+        canonical_source_hash = _hash_payload(payload)
+        source_hash_matches = stored_source_hash == canonical_source_hash
+        if not source_hash_matches:
+            blocking.append("source_payload_hash_mismatch")
+        base_record = {
+            "runId": snapshot.refresh_run_id,
+            "role": role,
+            "sourceRowId": str(snapshot.source_row_id or ""),
+            "sourceHash": canonical_source_hash,
+            "storedSourceHash": stored_source_hash,
+            "sourceHashStatus": "ready" if source_hash_matches else "invalid",
+            "cabinetId": str(snapshot.wb_cabinet_id or ""),
+            "rowNumber": int(snapshot.row_number),
+        }
+        if not isinstance(payload, Mapping):
+            invalid_payload_shapes += 1
+            blocking.append("invalid_source_payload_shape")
+            lineage.append(
+                {
+                    **base_record,
+                    "selection": "invalid",
+                    "reason": "invalid_source_payload_shape",
+                    "payloadType": type(payload).__name__,
+                }
+            )
+            continue
+        wb_cabinet_id = str(snapshot.wb_cabinet_id or "").strip()
+        cabinet = db.get(WbCabinet, wb_cabinet_id)
+        company = (
+            db.get(ClientCompany, cabinet.client_company_id)
+            if cabinet is not None and cabinet.client_company_id
+            else None
+        )
+        cabinet_scope_ready = bool(
+            cabinet is not None
+            and cabinet.tenant_id == report.tenant_id
+            and cabinet.client_id == report.client_id
+        )
+        company_scope_ready = bool(
+            company is not None
+            and company.tenant_id == report.tenant_id
+            and company.client_id == report.client_id
+        )
+        if not cabinet_scope_ready or not company_scope_ready:
+            scope_mismatches += 1
+            blocking.append("tenant_scope_mismatch")
+        client_company_id = (
+            str(cabinet.client_company_id or "") if cabinet_scope_ready else ""
+        )
+        source_hash = canonical_source_hash
+        source_row = source_row_from_payload(
+            payload,
+            tenant_id=str(snapshot.tenant_id or ""),
+            client_id=str(snapshot.client_id or ""),
+            wb_cabinet_id=wb_cabinet_id,
+            client_company_id=client_company_id,
+            source_row_id=snapshot.source_row_id,
+            source_hash=source_hash,
+            fallback_date=report.period_start,
+        )
+        provider_row_id = _first_row_id(payload, "rrdId", "rrd_id")
+        snapshot_row_id = str(snapshot.source_row_id or "").strip()
+        stable_identity = bool(
+            provider_row_id
+            and snapshot_row_id
+            and provider_row_id == snapshot_row_id
+        )
+        if not snapshot_row_id or (multiple_runs and not provider_row_id):
+            source_identity_errors += 1
+            blocking.append("source_identity_missing")
+        elif provider_row_id and provider_row_id != snapshot_row_id:
+            source_identity_errors += 1
+            blocking.append("source_identity_mismatch")
+        candidates.append(
+            _LogisticsSnapshotCandidate(
+                snapshot=snapshot,
+                refresh_run=refresh_run,
+                role=role,
+                source_row=source_row,
+                source_hash=source_hash,
+                stable_identity=stable_identity,
+            )
+        )
+
+    daily_owners: dict[date, set[str]] = {}
+    for fact_date, run_id in db.execute(
+        select(
+            MarketplaceFinanceDailyFactModel.fact_date,
+            MarketplaceFinanceDailyFactModel.source_refresh_run_id,
+        ).where(
+            MarketplaceFinanceDailyFactModel.tenant_id == report.tenant_id,
+            MarketplaceFinanceDailyFactModel.client_id == report.client_id,
+            MarketplaceFinanceDailyFactModel.marketplace == "wb",
+            MarketplaceFinanceDailyFactModel.fact_date >= report.period_start,
+            MarketplaceFinanceDailyFactModel.fact_date <= report.period_end,
+            MarketplaceFinanceDailyFactModel.source_refresh_run_id.in_(run_ids),
+        )
+    ):
+        daily_owners.setdefault(fact_date, set()).add(str(run_id))
+
+    candidates_by_date: dict[date, set[str]] = {}
+    for candidate in candidates:
+        financial_date = candidate.source_row.financial_date
+        if financial_date is not None:
+            candidates_by_date.setdefault(financial_date, set()).add(
+                candidate.refresh_run.id
+            )
+
+    selected_candidates: list[_LogisticsSnapshotCandidate] = []
+    owner_conflict_dates: set[date] = set()
+    for candidate in candidates:
+        financial_date = candidate.source_row.financial_date
+        record = {
+            "runId": candidate.refresh_run.id,
+            "role": candidate.role,
+            "sourceRowId": str(candidate.snapshot.source_row_id or ""),
+            "sourceHash": candidate.source_hash,
+            "cabinetId": str(candidate.snapshot.wb_cabinet_id or ""),
+            "financialDate": (
+                financial_date.isoformat() if financial_date is not None else None
+            ),
+        }
+        if financial_date is not None and not (
+            report.period_start <= financial_date <= report.period_end
+        ):
+            lineage.append({**record, "selection": "outside_report"})
+            continue
+        owner_id, owner_conflict = _logistics_owner_for_date(
+            financial_date,
+            candidate_run_ids=candidates_by_date.get(financial_date, set()),
+            daily_owner_ids=daily_owners.get(financial_date, set()),
+            primary_refresh_run=primary_refresh_run,
+            base_refresh_run=base_refresh_run,
+            roles=roles,
+        )
+        if owner_conflict and financial_date is not None:
+            owner_conflict_dates.add(financial_date)
+        if candidate.refresh_run.id != owner_id:
+            source_revision_discarded += 1
+            lineage.append(
+                {
+                    **record,
+                    "selection": "discarded",
+                    "reason": "lower_precedence_revision",
+                    "ownerRunId": owner_id,
+                }
+            )
+            continue
+        selected_candidates.append(candidate)
+        lineage.append({**record, "selection": "candidate"})
+    if owner_conflict_dates:
+        source_revision_conflicts += len(owner_conflict_dates)
+        blocking.append("source_window_overlap_conflict")
+
+    selected: list[LogisticsSourceRow] = []
+    by_identity: dict[tuple[str, ...], list[_LogisticsSnapshotCandidate]] = {}
+    for candidate in selected_candidates:
+        snapshot = candidate.snapshot
+        identity = (
+            str(snapshot.tenant_id or ""),
+            str(snapshot.client_id or ""),
+            str(snapshot.wb_cabinet_id or ""),
+            str(snapshot.source_type or ""),
+            str(snapshot.source_row_id or ""),
+        )
+        if not candidate.stable_identity:
+            identity = (*identity, snapshot.refresh_run_id, str(snapshot.id))
+        by_identity.setdefault(identity, []).append(candidate)
+    for identity in sorted(by_identity):
+        revisions = sorted(
+            by_identity[identity],
+            key=lambda item: (
+                item.snapshot.loaded_at,
+                item.snapshot.refresh_run_id,
+                item.snapshot.collection_id,
+                item.snapshot.row_number,
+            ),
+        )
+        hashes = {item.source_hash for item in revisions}
+        if len(hashes) > 1:
+            source_revision_conflicts += 1
+            blocking.append("source_revision_conflict")
+        source_revision_discarded += max(0, len(revisions) - 1)
+        selected.append(revisions[-1].source_row)
+
+    diagnostics = LogisticsInputDiagnostics(
+        invalid_source_payload_shape_count=invalid_payload_shapes,
+        source_identity_error_count=source_identity_errors,
+        source_revision_conflict_count=source_revision_conflicts,
+        source_revision_discarded_count=source_revision_discarded,
+        scope_mismatch_count=scope_mismatches,
+        blocking_reasons=tuple(dict.fromkeys(blocking)),
+        lineage_records=tuple(lineage),
+    )
+    return sorted(
+        selected,
+        key=lambda row: (
+            row.financial_date or date.min,
+            row.wb_cabinet_id,
+            row.source_row_id,
+            row.source_hash,
+        ),
+    ), diagnostics
+
+
+def _logistics_owner_for_date(
+    financial_date: date | None,
+    *,
+    candidate_run_ids: set[str],
+    daily_owner_ids: set[str],
+    primary_refresh_run: SourceRefreshRun | None,
+    base_refresh_run: SourceRefreshRun | None,
+    roles: Mapping[str, tuple[SourceRefreshRun, str]],
+) -> tuple[str, bool]:
+    if financial_date is not None and primary_refresh_run is not None:
+        start = (
+            primary_refresh_run.source_window_start or primary_refresh_run.period_start
+        )
+        end = primary_refresh_run.source_window_end or primary_refresh_run.period_end
+        if start <= financial_date <= end:
+            return primary_refresh_run.id, False
+    if daily_owner_ids:
+        owners = sorted(daily_owner_ids)
+        return owners[-1], len(owners) > 1
+    if financial_date is not None and base_refresh_run is not None:
+        start = base_refresh_run.source_window_start or base_refresh_run.period_start
+        end = base_refresh_run.source_window_end or base_refresh_run.period_end
+        if start <= financial_date <= end:
+            return base_refresh_run.id, False
+    covering = []
+    if financial_date is not None:
+        for run_id, (run, _role) in roles.items():
+            start = run.source_window_start or run.period_start
+            end = run.source_window_end or run.period_end
+            if start <= financial_date <= end and run_id in candidate_run_ids:
+                covering.append(run_id)
+    if covering:
+        owners = sorted(set(covering))
+        return owners[-1], len(owners) > 1
+    if candidate_run_ids:
+        owners = sorted(candidate_run_ids)
+        return owners[-1], len(owners) > 1
+    if primary_refresh_run is not None:
+        return primary_refresh_run.id, False
+    return sorted(roles)[-1], len(roles) > 1
+
+
+def _report_unit_row_scope_matches(
+    db: Session,
+    report: ReportRun,
+    row: ReportUnitRow,
+) -> bool:
+    cabinet = db.get(WbCabinet, row.wb_cabinet_id)
+    company = db.get(ClientCompany, row.client_company_id)
+    return bool(
+        cabinet is not None
+        and cabinet.tenant_id == report.tenant_id
+        and cabinet.client_id == report.client_id
+        and cabinet.client_company_id == row.client_company_id
+        and company is not None
+        and company.tenant_id == report.tenant_id
+        and company.client_id == report.client_id
+    )
+
+
+def _report_logistics_decimal(value: Any) -> Decimal | None:
+    try:
+        return Decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _persist_wb_report_list_rows(

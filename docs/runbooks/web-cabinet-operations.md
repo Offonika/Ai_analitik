@@ -697,22 +697,38 @@ SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
 
 Порядок test-rollout:
 
-1. Применить additive schema через штатный `init_db` и включить только
-   `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=true` на test.
-2. Запустить новый `full` source refresh с read-only WB-доступом. Витрина
+1. Применить additive schema migration
+   `2026_07_16_logistics_hardening_v4` через штатный `init_db`. Убедиться, что
+   `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`; master-флаг без DB-first является
+   ошибкой конфигурации и source refresh не запускается.
+2. Включить только `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=true` на test.
+3. Запустить новый `full` source refresh с read-only WB-доступом. Витрина
    строится из сохраненных `source_snapshot_rows`, а не из ответа API на лету.
-3. Открыть draft-отчет под consultant/admin. В разделе `Логистика` статус должен
-   быть `ready` или явно `partial`; `blocked` нельзя обходить fallback-ключом.
-4. Сверить общую сумму с текущим отчетом, покрытие ключа и товара, компоненты и
-   несколько обезличенных цепочек. Старый отчет должен показывать
-   `needs_rebuild`.
-5. Клиентский флаг оставить `false` до отдельного согласования.
+4. Открыть новый draft-отчет под consultant/admin. Контекст должен иметь
+   `methodologyVersion=wb-logistics-v4` и
+   `chainKeyVersion=wb-order-product-v1`. `blocked`, отсутствующий, v1–v3 или
+   несовместимый по ключу контекст нельзя обходить fallback-ключом или ручной
+   публикацией.
+5. Проверить `reportCoverage`: source/report invalid-строки,
+   `chainDimensionConflicts`, `invalidSourcePayloadShapes`,
+   `sourceIdentityErrors`, `sourceRevisionConflicts`, `scopeMismatches`,
+   unmatched dimensions и `maxDimensionDelta`;
+   затем сверить точные календарные срезы, компоненты и несколько обезличенных
+   цепочек по `productRef`. На части недели логистика должна оставаться точной,
+   а финансовые KPI — `null`.
+   Отдельно проверить HTTP 400 `invalid_logistics_period` для инвертированного
+   диапазона и дат вне периода report run.
+6. Старый необязательный отчет должен показывать `needs_rebuild`, но не получать
+   новый publication blocker. Клиентский флаг оставить `false` до отдельного
+   согласования.
 
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
 маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
-витрины. Raw payload, внешние order-id и source hashes не должны появляться в
-API, UI, AI-контексте или логах.
+витрины. Rollback не снимает publication blocker с нового report run, который
+обязан был пройти gate, но не прошел его. Для исправления создается новый report
+run; повторный импорт того же `report_id` запрещен. Raw payload, внешние
+order-id и source hashes не должны появляться в API, UI, AI-контексте или логах.
 
 # Backup
 

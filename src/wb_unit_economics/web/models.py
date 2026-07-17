@@ -485,6 +485,9 @@ class ReportRun(Base):
     return_reason_limitation: Mapped[str] = mapped_column(
         String, nullable=False, default=""
     )
+    logistics_analysis_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -751,6 +754,9 @@ class ReportLogisticsAnalysisContext(Base):
         String, nullable=False, default=""
     )
     data_status: Mapped[str] = mapped_column(String, nullable=False)
+    source_quality_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="ready"
+    )
     methodology_version: Mapped[str] = mapped_column(String, nullable=False)
     chain_key_version: Mapped[str] = mapped_column(String, nullable=False)
     source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -761,6 +767,36 @@ class ReportLogisticsAnalysisContext(Base):
     product_logistics_row_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
     )
+    invalid_source_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    required_field_error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    invalid_report_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    report_required_field_error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    chain_dimension_conflict_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    invalid_source_payload_shape_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    source_identity_error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    source_revision_conflict_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    source_revision_discarded_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    scope_mismatch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     key_coverage_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     product_coverage_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     classification_row_coverage_pct: Mapped[Decimal | None] = mapped_column(
@@ -768,6 +804,21 @@ class ReportLogisticsAnalysisContext(Base):
     )
     cross_cabinet_collision_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
+    )
+    raw_order_uid_cross_cabinet_reuse_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    unmatched_source_dimension_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    unmatched_report_dimension_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    dimension_delta_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    max_dimension_delta: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
     )
     raw_logistics_total: Mapped[Decimal] = mapped_column(
         Numeric(20, 6), nullable=False, default=0
@@ -820,9 +871,19 @@ class ReportLogisticsOrderRow(Base):
         Index(
             "ix_report_logistics_orders_product",
             "report_run_id",
+            "product_ref",
             "product_key",
             "nm_id",
             "sku",
+        ),
+        Index(
+            "ix_report_logistics_orders_calendar_filter",
+            "report_run_id",
+            "financial_date",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+            "product_ref",
         ),
         {"schema": "wb_unit_economics"},
     )
@@ -842,10 +903,15 @@ class ReportLogisticsOrderRow(Base):
     chain_key: Mapped[str] = mapped_column(String, nullable=False)
     chain_segment_key: Mapped[str] = mapped_column(String, nullable=False)
     countable_order: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    financial_date: Mapped[date | None] = mapped_column(Date)
     financial_week_start: Mapped[date] = mapped_column(Date, nullable=False)
     operation_date_start: Mapped[date] = mapped_column(Date, nullable=False)
     operation_date_end: Mapped[date] = mapped_column(Date, nullable=False)
     order_date: Mapped[date | None] = mapped_column(Date)
+    order_period_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="unknown"
+    )
+    product_ref: Mapped[str] = mapped_column(String, nullable=False, default="")
     product_key: Mapped[str] = mapped_column(String, nullable=False, default="")
     nm_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     sku: Mapped[str] = mapped_column(String, nullable=False, default="")
@@ -853,7 +919,13 @@ class ReportLogisticsOrderRow(Base):
     product: Mapped[str] = mapped_column(String, nullable=False, default="")
     scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
     warehouse: Mapped[str] = mapped_column(String, nullable=False, default="")
+    warehouse_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="missing"
+    )
     destination: Mapped[str] = mapped_column(String, nullable=False, default="")
+    destination_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="missing"
+    )
     logistics_total: Mapped[Decimal] = mapped_column(
         Numeric(20, 6), nullable=False, default=0
     )
@@ -913,6 +985,7 @@ class ReportLogisticsSkuRow(Base):
         Index(
             "ix_report_logistics_sku_product",
             "report_run_id",
+            "product_ref",
             "product_key",
             "nm_id",
             "sku",
@@ -924,11 +997,19 @@ class ReportLogisticsSkuRow(Base):
     report_run_id: Mapped[str] = mapped_column(
         ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
     )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False, default=""
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False, default=""
+    )
     row_uid: Mapped[str] = mapped_column(String, nullable=False)
     financial_week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    financial_week_end: Mapped[date | None] = mapped_column(Date)
     wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product_ref: Mapped[str] = mapped_column(String, nullable=False, default="")
     product_key: Mapped[str] = mapped_column(String, nullable=False, default="")
     nm_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     sku: Mapped[str] = mapped_column(String, nullable=False, default="")
