@@ -3336,6 +3336,7 @@ function reportContextFromLocation() {
   const params = new URLSearchParams(window.location.search);
   return {
     clientId: params.get("client_id") || "",
+    reportId: params.get("report_id") || "",
     reportKind: params.get("report_kind") || "",
     organizationId: params.get("organization_id") || "",
     periodMonth: params.get("period_month") || "",
@@ -3614,9 +3615,10 @@ async function loadReports(context = currentClientLoadContext()) {
     }
     return;
   }
+  const requestedReportId = reportContextFromLocation().reportId;
   const selectedReport = isAccountingReportKind()
     ? state.reports.find((item) => String(item.periodStart || "").startsWith(state.periodMonth))
-    : state.reports[0];
+    : state.reports.find((item) => item.id === requestedReportId) || state.reports[0];
   if (!selectedReport) {
     clearReportSelection();
     setEmptyCabinet(

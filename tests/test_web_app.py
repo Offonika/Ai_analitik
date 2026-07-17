@@ -1544,6 +1544,8 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
     assert "loadLogisticsAnalysis" in script.text
+    assert 'reportId: params.get("report_id") || ""' in script.text
+    assert "item.id === requestedReportId" in script.text
     assert "state.logisticsProductsTotal = Number(products.total || 0)" in script.text
     assert "state.logisticsOrdersTotal = Number(payload.total || 0)" in script.text
     assert "logisticsProfitEffectText(item.profitEffectAmount)" in script.text
@@ -3652,10 +3654,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260717-tax-load-ux-v2-logistics-v4-gate-fix"
+        "20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260717-tax-load-ux-v2-logistics-v4-gate-fix"
+        "20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
     )
 
     page = client.get("/")
@@ -3799,10 +3801,13 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix"
+        "styles.css?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
         in cabinet.text
     )
-    assert "app.js?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix" in cabinet.text
+    assert (
+        "app.js?v=20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2"
+        in cabinet.text
+    )
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
