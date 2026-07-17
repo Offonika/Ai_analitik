@@ -1696,7 +1696,17 @@
                 <p class="eyebrow">Расчетная таблица</p>
                 <h3 id="rows-title">Юнит-экономика</h3>
               </div>
-              <span id="rows-count" class="muted"></span>
+              <div class="rows-table-status">
+                <span id="rows-count" class="muted"></span>
+                <div id="rows-pagination" class="rows-pagination" hidden>
+                  <button id="rows-page-prev" type="button" class="secondary-button">
+                    Назад
+                  </button>
+                  <button id="rows-page-next" type="button" class="secondary-button">
+                    Вперед
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="row-preset-bar" aria-label="Быстрые фильтры юнит-экономики">
               <button type="button" class="active" data-row-preset="" aria-pressed="true">
@@ -1770,27 +1780,62 @@
                 </button>
               </div>
             </form>
+            <p class="rows-table-help muted">
+              Горизонтальная прокрутка показывает полный расчет по статьям.
+              Итог после включенных налогов не является полной чистой прибылью бизнеса.
+            </p>
             <div class="table-wrap">
               <table class="products-table data-table report-rows-table">
                 <thead id="review-rows-head">
                   <tr>
-                    <th>Месяц 1С</th>
-                    <th>Документ-отчет</th>
-                    <th>Отчет WB</th>
-                    <th>Дата отчета</th>
-                    <th>Кабинет</th>
                     <th>Товар</th>
                     <th>Артикул WB</th>
                     <th>Артикул 1С</th>
                     <th>Баркод</th>
+                    <th>nmId</th>
+                    <th>Кабинет</th>
+                    <th>Организация</th>
                     <th>Схема</th>
                     <th>Статус</th>
+                    <th>Месяц 1С</th>
                     <th>Продажи</th>
                     <th>Возвраты</th>
-                    <th>Выручка</th>
-                    <th>Прибыль</th>
+                    <th>Чистое кол-во</th>
+                    <th>Выручка до СПП</th>
+                    <th>СПП</th>
+                    <th>Выручка после СПП</th>
+                    <th>Выручка для прибыли</th>
+                    <th>Себестоимость</th>
+                    <th>Остаток после себестоимости</th>
+                    <th>Комиссия WB</th>
+                    <th>Остаток после комиссии</th>
+                    <th>Логистика</th>
+                    <th>Остаток после логистики</th>
+                    <th>Хранение</th>
+                    <th>Остаток после хранения</th>
+                    <th>Приемка</th>
+                    <th>Остаток после приемки</th>
+                    <th>Продвижение</th>
+                    <th>Остаток после продвижения</th>
+                    <th>Штрафы/доплаты</th>
+                    <th>Остаток после штрафов</th>
+                    <th>Эквайринг</th>
+                    <th>Остаток до НДС-корректировки</th>
+                    <th>НДС-корректировка P&amp;L</th>
+                    <th>Прибыль до включ. налогов</th>
+                    <th>Исходящий НДС</th>
+                    <th>Входящий НДС</th>
+                    <th>НДС к уплате</th>
+                    <th>База НДФЛ</th>
+                    <th>НДФЛ</th>
+                    <th>Налоги, включенные в итог</th>
+                    <th>Итог после включ. налогов</th>
                     <th>Маржа</th>
                     <th>На шт</th>
+                    <th>Учетная дата 1С</th>
+                    <th>Документ-отчет</th>
+                    <th>Отчет WB</th>
+                    <th>Дата отчета</th>
                   </tr>
                 </thead>
                 <tbody id="review-rows"></tbody>
