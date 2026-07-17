@@ -112,6 +112,7 @@ Nginx должен проксировать в FastAPI:
 - `/cabinet`;
 - `/ai`;
 - `/integrations`;
+- `/accounting-workflows`;
 - `/static/*`;
 - `/api/*`.
 
@@ -120,6 +121,10 @@ Nginx должен проксировать в FastAPI:
 обращаться к `unitRows` из public summary. Актуальный nginx-шаблон лежит в
 `deploy/nginx/analitika.offonika.ru.conf` и
 `deploy/nginx/shumeiko.offonika.ru.conf`.
+
+Маршрут `/accounting-workflows` должен проксироваться в FastAPI даже при
+выключенном feature-флаге. В этом случае backend вернёт штатный `404`; nginx не
+должен подменять его старым статическим shell.
 
 # Безопасный запуск backend
 

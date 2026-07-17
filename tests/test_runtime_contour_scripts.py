@@ -29,6 +29,26 @@ from wb_unit_economics.web.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_nginx_templates_proxy_accounting_workflow_route() -> None:
+    test_config = (ROOT / "deploy/nginx/shumeiko.offonika.ru.conf").read_text(
+        encoding="utf-8"
+    )
+    production_config = (
+        ROOT / "deploy/nginx/analitika.offonika.ru.conf"
+    ).read_text(encoding="utf-8")
+
+    workflow_location = test_config.index(
+        "location ^~ /accounting-workflows"
+    )
+    static_fallback = test_config.rindex("location / {")
+    assert workflow_location < static_fallback
+    assert "proxy_pass http://127.0.0.1:8098;" in test_config[
+        workflow_location:static_fallback
+    ]
+    assert "accounting-workflows" in production_config
+    assert "proxy_pass http://127.0.0.1:8097;" in production_config
+
+
 def test_runtime_release_bootstrap_prefers_its_own_source(tmp_path: Path) -> None:
     release = tmp_path / "runtime-release"
     site_packages = release / ".venv/lib/python3.12/site-packages"
