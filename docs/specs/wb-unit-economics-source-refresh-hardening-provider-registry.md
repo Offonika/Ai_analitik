@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-17"
 ---
 
 # Implementation Status
@@ -442,8 +442,12 @@ Aggregate parity дневной витрины требует точного с�
 денежных показателей, включая себестоимость. Перед сохранением дневных фактов
 копеечный residual себестоимости детерминированно распределяется внутри того же
 report grain, поэтому сумма дневной витрины должна совпадать с отчетом без
-допуска. Поле `roundingTolerance.cogs` сохраняется для совместимости со значением
-`0.00`; любая ненулевая дельта блокирует promotion.
+допуска. Контрольная сумма каждого grain берется из той же уже округленной до
+копеек недельной строки отчета, а не вычисляется повторным сложением дневных
+неокругленных подгрупп: порядок сложения длинных `Decimal` не может изменить
+результат на границе половины копейки. Поле `roundingTolerance.cogs` сохраняется
+для совместимости со значением `0.00`; любая ненулевая дельта блокирует
+promotion.
 
 При composite rebuild, который обновляет только 1С, общий raw-integrity verifier
 проверяет WB finance и WB report-list в базовом refresh run. Отсутствие collection
@@ -556,6 +560,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-17: tied daily-fact COGS residual reconciliation to the exact rounded
+  controls of final weekly report rows, eliminating order-sensitive Decimal
+  re-aggregation while retaining zero tolerance.
 - 2026-07-13: persisted the allocated SPP discount and marked daily-fact COGS,
   controlled expenses and input VAT as precomputed during DB-first rebuild, so
   incremental output does not repeat cent-sensitive allocations.
