@@ -2949,12 +2949,15 @@ button.action-insight-card {
 }
 
 .report-wizard-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-.report-wizard-steps span {
+.report-wizard-steps li {
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2980,24 +2983,24 @@ button.action-insight-card {
   justify-content: center;
 }
 
-.report-wizard-steps span.active {
+.report-wizard-steps li.active {
   border-color: var(--brand);
   background: var(--brand-bg);
   color: var(--brand-dark);
 }
 
-.report-wizard-steps span.active b {
+.report-wizard-steps li.active b {
   background: var(--brand);
   color: #fff;
 }
 
-.report-wizard-steps span.done {
+.report-wizard-steps li.done {
   border-color: #b9dec6;
   background: var(--ready-bg);
   color: var(--ready);
 }
 
-.report-wizard-steps span.done b {
+.report-wizard-steps li.done b {
   background: var(--ready);
   color: #fff;
 }
@@ -3073,34 +3076,32 @@ button.action-insight-card {
   gap: 12px;
 }
 
-.report-wizard-check-option {
+.report-wizard-current {
   grid-column: 1 / -1;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
-  display: flex !important;
-  grid-template-columns: none;
-  align-items: flex-start;
-  gap: 10px !important;
+  background: var(--surface-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   padding: 10px 12px;
-  color: var(--text) !important;
-  cursor: pointer;
 }
 
-.report-wizard-check-option input {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  margin: 1px 0 0;
-}
-
-.report-wizard-check-option > span {
+.report-wizard-current > div {
+  min-width: 0;
   display: grid;
   gap: 3px;
 }
 
-.report-wizard-check-option small {
+.report-wizard-current strong {
+  color: var(--text);
+}
+
+.report-wizard-current span,
+.report-wizard-current small {
   color: var(--muted);
+  line-height: 1.35;
 }
 
 .report-wizard-status {
@@ -3150,6 +3151,15 @@ button.action-insight-card {
   justify-content: space-between;
   gap: 14px;
   padding: 12px;
+}
+
+.report-wizard-result.is-warning {
+  border-color: color-mix(in srgb, var(--review), white 52%);
+  background: var(--review-bg);
+}
+
+.report-wizard-result.is-warning strong {
+  color: var(--review);
 }
 
 .report-wizard-result > div:first-child {
@@ -5086,10 +5096,11 @@ td {
 
   .report-wizard-actions {
     align-items: stretch;
-    flex-direction: column-reverse;
+    flex-direction: column;
   }
 
   .report-wizard-result,
+  .report-wizard-current,
   .client-report-actions,
   .report-wizard-downloads {
     align-items: stretch;
@@ -5098,6 +5109,7 @@ td {
 
   .report-wizard-actions .button-link,
   .report-wizard-actions button,
+  .report-wizard-current .button-link,
   .client-report-actions .button-link,
   .client-report-actions button,
   .report-wizard-downloads .button-link,
@@ -5440,6 +5452,78 @@ td {
   .widget-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .report-wizard {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .report-wizard .widget-header {
+    align-items: flex-start;
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .report-wizard .widget-header > div:first-child {
+    min-width: 0;
+  }
+
+  .report-wizard .widget-actions {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .report-wizard .widget-actions button {
+    width: auto;
+    padding-inline: 10px;
+  }
+
+  .report-wizard-steps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .report-wizard-steps li {
+    min-height: 48px;
+    justify-content: center;
+    gap: 4px;
+    padding: 5px;
+    font-size: 10px;
+    line-height: 1.15;
+    text-align: center;
+  }
+
+  .report-wizard-steps b {
+    width: 22px;
+    height: 22px;
+    flex-basis: 22px;
+  }
+
+  .report-wizard-form {
+    gap: 9px;
+  }
+
+  .report-wizard-context,
+  .report-wizard-period-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-wizard-context {
+    gap: 6px;
+  }
+
+  .report-wizard-context > div,
+  .report-wizard-current {
+    padding: 8px;
+  }
+
+  .report-wizard-current {
+    gap: 8px;
+  }
+
+  .report-wizard-period-fields {
+    gap: 8px;
   }
 
   .ai-messages {
