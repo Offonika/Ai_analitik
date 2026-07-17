@@ -17,7 +17,7 @@ related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cab
 changelog_path: docs/changelogs/web-cabinet.md
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-17"
 ---
 
 # Implementation Status
@@ -26,6 +26,9 @@ updated_at: "2026-07-16"
 существуют, changelog фиксирует production-изменения, но это не заменяет полную
 проверку всех acceptance criteria, browser scenarios и live deployment smoke.
 До отдельной доказательной матрицы spec не переводится в `implemented`.
+Information architecture `Аналитика и таблицы` принята как следующий UI-
+контракт, но текущий runtime еще использует отдельный staff-only fragment
+`#logistics`; принятие spec не означает, что новый маршрут уже развернут.
 
 # Goal
 
@@ -358,14 +361,44 @@ UI readiness behavior:
   controls, а contract regression блокирует новое действие блока
   `source-refresh-actions` без `data-guide-*` пояснения;
 - the authenticated cabinet uses one analyst workspace shell with a persistent
-  navigation rail and four page entries: `Обзор`, `Проверки`, `Таблицы` and
-  `Инструкция`; `Отчёт клиенту` remains a report action, while `Настройки`
-  is shown only to `consultant/admin` and opens the existing integrations
-  widget rather than a new page;
+  navigation rail and four page entries: `Обзор`, `Проверки`,
+  `Аналитика и таблицы` and `Инструкция`; a separate top-level `Логистика`
+  entry is forbidden. `Отчёт клиенту` remains a report action, while
+  `Настройки` is shown only to `consultant/admin` and opens the existing
+  integrations widget rather than a new page;
+- `Аналитика и таблицы` contains one nested scenario navigation with the stable
+  order `Сводка`, `Товары`, `Логистика`, `Возвраты`, `Расходы WB`,
+  `Исходные данные`. A role or feature flag may hide an unavailable scenario,
+  but must not create another sidebar entry or change the order of the
+  remaining scenarios;
 - the browser URL may expose UI-only fragments `#overview`, `#checks`,
-  `#checks/cost`, `#tables` and `#guide`; they do not add server routes or API
-  contracts, invalid fragments fall back to `#overview`, and browser
-  Back/Forward restores the visible workspace without reloading report facts;
+  `#checks/cost`, `#tables`, `#tables/summary`, `#tables/products`,
+  `#tables/logistics`, `#tables/returns`, `#tables/wb-expenses`,
+  `#tables/source` and `#guide`; `#tables` is an alias of
+  `#tables/summary`. These fragments do not add server routes or API contracts,
+  invalid fragments fall back to `#overview`, and browser Back/Forward restores
+  the visible workspace without reloading report facts. A deep-link to a
+  scenario unavailable to the current role or disabled by its feature flag
+  falls back to the first permitted `Аналитика и таблицы` scenario and does not
+  start its API request;
+- the overview WB-expense card exposes the action `Разобрать логистику` only
+  when the logistics scenario is permitted; it opens `#tables/logistics` and
+  preserves the selected client, server-authorized `report_id`, cabinet,
+  company, scheme and period filters. A query-string `report_id` is selected
+  only from the reports already returned for the current role and tenant;
+- the logistics first screen follows the answer-first and state contracts of
+  `docs/specs/wb-logistics-cost-analysis-implementation.md`: total logistics is
+  an accounting cost and profit effect, not an automatically avoidable loss or
+  savings reserve; overlapping action rows cannot be presented as additive;
+- `ready`, `partial`, `needs_rebuild`/`blocked`, an empty permitted slice and a
+  request failure have distinct logistics surfaces. Unavailable values remain
+  null, and stale figures are either cleared or explicitly marked unavailable
+  for the current filter context;
+- at 390 px the complete selected global context remains available: cabinet,
+  company, period and scheme cannot be hidden with responsive CSS. Nested
+  scenario controls are scrollable or reflow safely without page-level
+  horizontal overflow, and focus moves to the scenario heading after a route
+  change;
 - after login, UI shows a client switcher when the user has more than one
   available client;
 - `consultant/admin` can create a new client workspace from the topbar; after
@@ -1258,6 +1291,21 @@ Large-report loading:
 - `#guide` открывает встроенную инструкцию; ее названия разделов и действий
   совпадают с текущими UI controls, а клиентская роль не видит staff-only
   карточки `Настройки` и `Добавить клиента`.
+- Боковая навигация содержит `Аналитика и таблицы`, не содержит отдельный пункт
+  `Логистика`, а вложенная навигация сохраняет порядок `Сводка / Товары /
+  Логистика / Возвраты / Расходы WB / Исходные данные` среди доступных роли
+  сценариев.
+- `#tables/logistics`, browser Back/Forward и действие `Разобрать логистику`
+  открывают один и тот же разрешенный срез без потери фильтров. Недоступный роли
+  или выключенный feature flag сценарий не загружает logistics API и безопасно
+  возвращает пользователя к первому разрешенному сценарию.
+- Логистический first screen не называет всю сумму логистики устранимой потерей
+  или резервом экономии, различает пересекающиеся зоны проверки и имеет разные
+  состояния для `ready`, `partial`, `needs_rebuild`/`blocked`, пустого среза и
+  ошибки запроса без zero/stale fallback.
+- На ширине 390 px все значения глобального среза остаются доступными, вложенная
+  навигация не создает page-level overflow, а после перехода фокус установлен на
+  заголовке выбранного сценария.
 - Для `consultant/admin` инструкция по `Проверкам` различает обычное обновление
   последних данных, Ozon-only витрину и редкую полную пересборку, объясняет
   значения сводки/этапов/карточек источников и заканчивается разбором
@@ -1359,6 +1407,16 @@ Large-report loading:
   `data-guide-*` покрытие верхней навигации, фильтров, action menu и всех кнопок
   `source-refresh-actions`; отдельный negative test отклоняет новую кнопку
   `Данные и расчёт` без пользовательского пояснения.
+- Frontend information-architecture contract: единственный sidebar entry
+  `Аналитика и таблицы`, фиксированный порядок вложенных сценариев, alias
+  `#tables -> #tables/summary`, прямой `#tables/logistics`, Back/Forward,
+  сохранение разрешенного draft и глобального среза, а также отсутствие
+  logistics API-вызова для client role при выключенном client flag.
+- Frontend logistics-state contract: semantic guard против трактовки всей
+  логистики как устранимой потери, явная неаддитивность пересекающихся зон,
+  отдельные `ready`/`partial`/`needs_rebuild`/`blocked`/empty/error состояния,
+  отсутствие stale/zero fallback и видимость полного глобального среза на
+  ширине 390 px.
 - Deployment smoke: HTTPS 200, `/api/health`, secure headers, no public data
   artifacts.
 

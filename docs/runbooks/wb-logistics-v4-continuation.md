@@ -19,16 +19,27 @@ accepted-спецификацию. При расхождении следова�
 # Текст для нового чата
 
 ```text
-Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по staff-ready
-блоку анализа логистики WB. Сначала прочитай AGENTS.md, docs/manifest.yml,
-docs/specs/wb-logistics-cost-analysis-implementation.md и этот handoff.
-Методика — wb-logistics-v4, ключ — wb-order-product-v1. Кодовая часть и
-hardening реализованы, 720 тестов прошли. Feature flags выключены, deployment,
-test-миграция, новый read-only снимок WB и staff-rollout не выполнялись.
-Рабочее дерево уже было грязным: не откатывай и не включай в логистический
-коммит несвязанные retention/systemd и другие пользовательские изменения.
-Ближайший безопасный шаг — проверить diff и подготовить изолированный handoff
-к test-rollout либо выполнить test-rollout только после явного разрешения.
+Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v4.
+Сначала прочитай AGENTS.md, docs/manifest.yml,
+docs/specs/wb-logistics-cost-analysis-implementation.md и
+docs/runbooks/wb-logistics-v4-continuation.md. Код, gate-fix и безопасная
+staff-ссылка уже закоммичены и запушены в ветку
+codex/incremental-source-refresh-rollout; HEAD/origin — 73b9894. На test
+развернут runtime-73b9894-wb-logistics-v4-staff-link-20260717, production не
+изменялся, клиентский feature flag выключен. Разрешенный immutable test-draft
+имеет logistics gate ready и не опубликован как текущий; его локальный
+идентификатор не хранится в Markdown. Accepted web/logistics specs уже
+закрепляют отсутствие отдельного пункта «Логистика», сценарии «Сводка / Товары
+/ Логистика / Возвраты / Расходы WB / Исходные данные», deep-link
+#tables/logistics, answer-first состояния и mobile/accessibility criteria.
+Синтетический target находится в
+docs/design/wb-logistics-v4-analytics-target.html. Следующий шаг — визуально
+принять target в реальном браузере до frontend-реализации. Также учти:
+WB Finance не содержит причины покупательского возврата, но у WB есть отдельные
+read-only источники goods-return и claims с разной семантикой и покрытием;
+их подключение требует отдельного spec/probe и не должно придумывать причины.
+Рабочее дерево грязное несвязанными retention/systemd и UI-изменениями — не
+откатывай их и не включай в новый commit без ownership-аудита.
 ```
 
 # Текущее состояние
@@ -45,20 +56,96 @@ test-миграция, новый read-only снимок WB и staff-rollout н�
   `origin/codex/incremental-source-refresh-rollout` и развернуто только на test
   в release `runtime-8855752-wb-logistics-v4-gate-fix-20260717`. Production не
   затронут.
-- На существующем полном test-снимке `full-20260716-171834` выполнен read-only
-  preview после адаптации реальных схем и границ периода. Gate получил
-  `ready`: source/order/SKU/control равны `16 085 743,59 руб.`, обязательных
-  ошибок, конфликтов цепочек и dimension-расхождений нет; preview завершен
-  rollback и не создал report run.
-- Создан новый immutable draft
-  `shumeyko_logistics_v4_20260717_1340`: logistics-context имеет `ready`, все
-  четыре контрольные суммы равны `16 085 743,59 руб.`, построено 85 225
-  order-сегментов и 5 632 недельных SKU-строки. Report остается `draft` и не
-  заменяет текущую публикацию.
+- Безопасная staff-навигация к конкретному разрешенному draft закоммичена как
+  `73b9894`, запушена в ту же ветку и развернута на test в release
+  `runtime-73b9894-wb-logistics-v4-staff-link-20260717`. Параметр `report_id`
+  выбирается только из серверного списка отчетов, доступных текущей роли и
+  tenant; произвольный draft не обходит authorization.
+- На существующем полном test-снимке выполнен read-only preview после адаптации
+  реальных схем и границ периода. Gate получил `ready`: source/order/SKU/report
+  согласованы с допуском accepted spec, обязательных ошибок, конфликтов цепочек
+  и dimension-расхождений нет; preview завершен rollback и не создал report
+  run. Идентификатор снимка и клиентские агрегаты остаются в локальном
+  операционном evidence, а не в Markdown.
+- Создан новый immutable test-draft: logistics-context имеет `ready`, все
+  контрольные суммы согласованы, report остается `draft` и не заменяет текущую
+  публикацию. Идентификатор draft и клиентские объемы не фиксируются в Git или
+  Markdown.
 - Master-флаг включен на test только для consultant/admin, клиентский флаг
-  остается `false`. Repository/API smoke вернул `ready`, 714 товарных позиций,
-  76 200 учитываемых заказов и отсутствие raw/order identifiers в payload.
-  Production и клиентский rollout не выполнены.
+  остается `false`. Repository/API smoke вернул `ready` и подтвердил отсутствие
+  raw/order identifiers в payload. Production и клиентский rollout не
+  выполнены.
+- Public health test-контура отдает build
+  `20260717-tax-load-ux-v2-logistics-v4-gate-fix-v2`, schema v4 и
+  `runtimeEnvironment=test`. Статус `degraded` связан с прежним безопасным
+  source-refresh run `needs_configuration`, а не с логистическим расчетом.
+
+# Последнее UX-решение
+
+Пользователь подтвердил, что текущая структура интерфейса непонятна: она
+показывает много технически верных данных, но не отвечает в первом экране на
+вопросы «сколько потеряли, почему и что делать». При этом отдельный
+верхнеуровневый пункт «Логистика» признан избыточным.
+
+Целевое направление для следующего spec-first этапа:
+
+1. Переименовать раздел `Таблицы` в `Аналитика и таблицы` или `Аналитика`.
+2. Внутри использовать явные вложенные сценарии: `Сводка`, `Товары`,
+   `Логистика`, `Возвраты`, `Расходы WB`, `Исходные данные`.
+3. На главной карточке расходов дать действие `Разобрать логистику`, ведущее
+   напрямую в `#tables/logistics`.
+4. В логистическом сценарии сначала показывать итог, влияние в рублях и список
+   `проблема -> сумма -> причина/ограничение -> действие`; детальные цепочки и
+   технические поля убирать во второй уровень.
+5. Не смешивать подтвержденные причины возвратов с гипотезами. Показывать
+   отдельное покрытие: `причина получена` / `причина недоступна`.
+6. Сохранить текущий визуальный язык и компоненты; это перестройка information
+   architecture, а не полный редизайн.
+
+Перед frontend-изменениями нужен визуальный target и проверяемые acceptance
+criteria. Текущий production/test URL пока использует рабочий deep-link
+`#logistics`; `#tables/logistics` — согласованное направление, а не уже
+реализованный маршрут.
+
+# Результат spec-first этапа
+
+- Accepted logistics spec закрепляет вложенный сценарий, answer-first summary,
+  state matrix `ready`/`partial`/`needs_rebuild`/`blocked`/empty/error и
+  desktop/mobile acceptance criteria без изменения `wb-logistics-v4`.
+- Accepted web spec закрепляет единый sidebar entry, stable nested order,
+  безопасный fallback при выключенном role/feature flag, сохранение
+  разрешенного draft и глобального среза, Back/Forward и focus transfer.
+- Синтетический visual target подготовлен в
+  `docs/design/wb-logistics-v4-analytics-target.html` на реальных цветовых
+  токенах и локальных иконках кабинета.
+- Статический аудит уточнил семантику: общий расход логистики не называется
+  целиком устранимой потерей; пересекающиеся зоны проверки не складываются;
+  строки различают `Факт`, `Ограничение` и `Качество данных`; mobile не скрывает
+  кабинет, организацию, период или схему.
+- В текущем Codex-сеансе нет доступного in-app browser, поэтому screenshot-
+  приемка desktop/mobile не выполнена и не считается пройденной. Runtime
+  frontend, feature flags, test deployment и production этим этапом не
+  изменялись.
+
+# Причины возвратов: что установлено
+
+- Текущий реальный расчет использует WB Finance. В его загруженном контракте
+  есть финансовый факт возврата и связанные суммы/операции, но нет объяснения
+  покупателя; интерфейс правильно не придумывает причину.
+- Отдельный read-only метод WB
+  `GET seller-analytics-api.wildberries.ru/api/v1/analytics/goods-return`
+  содержит поле `reason`, но описывает возвраты и перемещения товара продавцу,
+  а не универсальную причину каждого финансового возврата; один запрос
+  ограничен периодом до 31 дня.
+- Отдельный read-only метод
+  `GET returns-api.wildberries.ru/api/v1/claims` содержит `user_comment`,
+  статусы, media и `srid`, но возвращает заявки покупателей только за
+  ограниченное актуальное окно (в проверенной документации — 14 дней), а не
+  полный исторический квартал.
+- До реализации перепроверить актуальные официальные WB OpenAPI Reports и
+  User Communication, выполнить безопасный probe доступов/coverage и
+  зафиксировать join/reconciliation. Не считать `goods-return.reason` и
+  `claims.user_comment` взаимозаменяемыми.
 
 # Реализованные правила v4
 
@@ -114,10 +201,10 @@ payload и повторную запись context.
 
 # Проверки
 
-Последний полный прогон после исправлений:
+Последний полный прогон ядра после gate-fix:
 
 ```text
-720 passed, 5 warnings in 535.59s
+731 passed, 5 warnings in 860.11s
 ```
 
 Пять warnings — сторонние deprecation warnings FastAPI/TestClient и ChatKit;
@@ -136,11 +223,16 @@ node --check src/wb_unit_economics/web/static/app.js
 git diff --check
 ```
 
+После staff-link изменения отдельно прошли два точечных API/UI-теста, Ruff,
+`node --check`, spec validation, docs manifest, LLM links и
+`git diff --cached --check`.
+
 # Рабочее дерево
 
-Рабочее дерево содержит большой незакоммиченный пакет логистики v1-v4 и
-существовавшие ранее несвязанные изменения. В частности, не считать частью
-этого handoff и не откатывать без отдельного запроса:
+Основной пакет логистики v4, real-snapshot gate-fix и staff-link уже
+закоммичены. Рабочее дерево по-прежнему содержит существовавшие ранее
+несвязанные изменения. Не считать их частью нового UX/returns этапа и не
+откатывать без отдельного запроса:
 
 - изменения retention/source-refresh документации;
 - `deploy/systemd/shumeiko-web-backup.service`;
@@ -282,20 +374,30 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Consultant/admin открыть draft `shumeyko_logistics_v4_20260717_1340` в
-   разделе `Анализ логистики` по staff-ссылке
-   `/cabinet?client_id=shumeyko&report_id=shumeyko_logistics_v4_20260717_1340#logistics`
-   и выполнить визуальную приемку нескольких обезличенных цепочек, рейтингов и
-   пояснений.
-2. Для финансовых KPI выбрать границы полных недель, например
-   `06.04.2026–28.06.2026`; для полного квартала `01.04.2026–30.06.2026`
-   логистика точная, а недельные выручка/прибыль намеренно `null` из-за двух
-   неполных граничных недель.
-3. Устранить только оставшиеся финансовые publication blockers основного
-   отчета; логистический gate их не маскирует и уже имеет `ready`.
-4. Клиентский флаг оставить выключенным до отдельного согласования.
-8. Rollback скрывает раздел флагом, но не снимает publication blocker с
-   report run, провалившего обязательный gate.
+1. Открыть `docs/design/wb-logistics-v4-analytics-target.html` в реальном
+   браузере и принять или скорректировать структуру на desktop 1440×900 и mobile
+   390×844. Проверить первый приоритетный action, полный глобальный срез,
+   горизонтальную nested navigation, focus outline и отсутствие overflow.
+2. После визуальной приемки реализовать изолированно: единый sidebar entry,
+   nested scenarios, `#tables/logistics`, overview-action, focus/Back/Forward и
+   state matrix. Не смешивать эту работу с retention/report-wizard hunks.
+3. Проверить desktop/mobile, keyboard/focus, deep-link к разрешенному draft,
+   отсутствие logistics API-вызова и косвенного раскрытия draft для client role
+   при выключенном client flag.
+4. Выполнить visual regression относительно принятого target, точечные UI/API
+   тесты, `node --check`, Ruff, spec/docs/no-secrets проверки и только затем
+   готовить отдельный commit/dependent PR.
+5. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
+   доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
+   статусы. Не смешивать этот источник с уже готовым Finance gate.
+6. До завершения UX-приемки использовать текущую staff-ссылку вида
+   `/cabinet?client_id=<authorized_client>&report_id=<authorized_draft>#logistics`;
+   конкретные идентификаторы брать из локального разрешенного операционного
+   контекста. Для финансовых KPI выбирать границы полных недель внутри периода
+   отчета; на неполных границах логистика точная, а недельные финансовые KPI
+   намеренно `null`.
+7. Клиентский флаг оставить выключенным; production и текущую публикацию не
+   менять без отдельного согласования.
 
 # Что не входит в текущий этап
 
