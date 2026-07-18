@@ -23,36 +23,31 @@ accepted-спецификацию. При расхождении следова�
 `false/false` описывают только поведение без конфигурации и не подтверждают
 фактическое состояние test или production.
 
-Исправление чтения больших file-authoritative WB Finance snapshot включено в
-`main` merge-коммитом `3773ed5` и развернуто только на test в immutable release
-`runtime-3773ed5-logistics-file-reader-20260718`. Свежий full refresh с
-разрешенными клиентом read-only интеграциями выполнен; исходный raw snapshot не
-изменялся и повторно использован для нового immutable recovery-draft без новых
-внешних API-вызовов. Draft не опубликован и проверен через live staff и
-client-role API. На test клиентский флаг включен после отдельного разрешения;
-production и текущая публикация не менялись.
+Проверенный immutable recovery-draft из свежего full read-only refresh
+опубликован как текущий test-report после отдельного разрешения. Публикация
+выполнена штатным audited-механизмом; общий blocker
+`monthly_reconciliation_unresolved` сохранен как контрольная задача и не скрыт.
+На test master- и клиентский флаги включены, развернут immutable release
+`runtime-fa020db-logistics-client-ui-20260718`. Production остается на
+`runtime-6368dcf-global-table-sorting-20260718`, клиентский флаг там выключен.
 
 # Текст для нового чата
 
 ```text
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v5.
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
-операционное состояние в этом runbook. Исправление file-authoritative snapshot
-включено в main merge-коммитом 3773ed5. На test развернут immutable release
-runtime-3773ed5-logistics-file-reader-20260718, master- и клиентский флаги
-включены только на test. Свежий full read-only refresh выполнен с
-клиентскими интеграциями. Из его неизмененного raw snapshot создан отдельный
-immutable recovery-draft без повторных внешних запросов и без публикации.
-Logistics gate ready; summary корректно возвращает partial и
+операционное состояние в этом runbook. На test развернут immutable release
+runtime-fa020db-logistics-client-ui-20260718, master- и клиентский флаги
+включены. Проверенный recovery-draft свежего full read-only refresh опубликован
+как current через audited publish-with-tasks; blocker
+monthly_reconciliation_unresolved сохранен. Client-role summary/products
+возвращают HTTP 200, dataStatus ready, sliceStatus partial и
 not_available_missing_profit_link: финансовые KPI/rankings null/empty, точная
-логистика и обезличенные order/product данные доступны. Live staff API smoke
-прошел; инвертированный период отклонен HTTP 400. Идентификаторы и клиентские
-агрегаты не хранятся в Markdown. После включения client flag live client-role
-smoke вернул HTTP 200 для summary/products текущего опубликованного отчета и
-явный `needs_rebuild`; staff orders и неопубликованный v5 draft остались скрыты
-с HTTP 404. Временный пользователь и сессия удалены. Production и текущую
-публикацию не менять. Для показа фактической v5-логистики клиенту нужно отдельное
-разрешение на публикацию проверенного recovery-draft.
+логистика и product rows доступны. Staff-only orders и оставшийся старый draft
+возвращают HTTP 404. Desktop/mobile deep-link #tables/logistics прошел без
+дополнительного клика, application console/page/network errors и overflow.
+Временные пользователи и сессии удалены. Production не менять без отдельного
+разрешения; его runtime и client flag остались прежними.
 ```
 
 # Текущее состояние
@@ -66,8 +61,9 @@ smoke вернул HTTP 200 для summary/products текущего опубл�
 - `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
 - Исправление file-authoritative snapshot включено в `main` merge-коммитом
-  `3773ed5`; test указывает на immutable release
-  `runtime-3773ed5-logistics-file-reader-20260718`. Production остался на
+  `3773ed5`; клиентский deep-link hardening включен merge-коммитом `fa020db`.
+  Test указывает на immutable release
+  `runtime-fa020db-logistics-client-ui-20260718`. Production остался на
   отдельно проверенном release
   `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
   production symlink или service.
@@ -91,26 +87,30 @@ smoke вернул HTTP 200 для summary/products текущего опубл�
   file-строки блокируются как неоднозначность.
 - Из того же неизмененного свежего snapshot создан новый immutable recovery-
   draft без внешних API-вызовов и перезаписи старого report run. Context имеет
-  `ready`, методику `wb-logistics-v5`, report остается `draft` и не заменяет
-  текущую публикацию. Идентификаторы и клиентские объемы не фиксируются в Git
-  или Markdown.
+  `ready`, методику `wb-logistics-v5`. После отдельного разрешения report
+  опубликован как current через audited publish-with-tasks; blocker
+  `monthly_reconciliation_unresolved` сохранен как контрольная задача.
+  Идентификаторы и клиентские объемы не фиксируются в Git или Markdown.
 - Live staff API вернул `partial` и
   `not_available_missing_profit_link`: точная логистика, products и staff-only
   orders доступны, финансовые KPI равны `null`, финансовые рейтинги пусты.
   Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
   smoke удалена. После rollout `/api/me` подтверждает master flag `true` и
   client flag `true`.
-- Live client-role smoke после включения флага вернул HTTP 200 для `/api/me`,
-  logistics summary и products текущего опубликованного отчета. Его явный
-  статус — `needs_rebuild`, product rows отсутствуют: старый report не
-  достраивается скрытым fallback. Staff-only orders и неопубликованный v5 draft
-  возвращают HTTP 404. Временный client-user и smoke-сессия удалены.
+- Live client-role smoke после публикации вернул HTTP 200 для `/api/me`,
+  logistics summary и products текущего v5-report: `dataStatus=ready`,
+  `sliceStatus=partial`, финансовый статус
+  `not_available_missing_profit_link`, финансовые KPI `null`, рейтинги пусты,
+  product rows доступны. Staff-only orders и оставшийся старый draft возвращают
+  HTTP 404. Временный client-user и smoke-сессия удалены.
 - Временный Playwright/Chromium browser runtime использован только вне
-  репозитория для desktop 1440×900 и mobile 390×844 приемки. Deep-link
-  `#tables/logistics`, focus transfer, отсутствие global overflow, именованные
+  репозитория для desktop 1440×900 и mobile 390×844 приемки. После исправления
+  гонки начальной загрузки deep-link `#tables/logistics` стабилен без
+  дополнительного клика; staff-only `client-draft` из client-role не
+  запрашивается. Focus transfer, отсутствие global overflow, именованные
   controls, `null -> —`, видимая причина недоступности финансов и product rows
-  подтверждены; console/page/network errors отсутствуют. На первом mobile
-  viewport warning находится ниже global filters/navigation, но доступен
+  подтверждены; application console/page/network errors отсутствуют. На первом
+  mobile viewport warning находится ниже global filters/navigation, но доступен
   обычной прокруткой без отдельного раскрытия. Снимки остаются локальным
   operational evidence и не добавляются в Git или Markdown.
 - Public health test-контура отдает build
@@ -416,16 +416,14 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Решить отдельно, публиковать ли проверенный immutable v5 recovery-draft как
-   текущий test-report для клиента. До публикации клиент видит корректный
-   `needs_rebuild`, а не фактическую новую логистику. При разрешенной публикации
-   повторить client-role summary/products/browser smoke; staff orders должны
-   остаться недоступными. Production не менять.
+1. Разобрать сохраненную контрольную задачу
+   `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
+   пересобирать текущий immutable report на месте.
 2. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
-3. До завершения клиентской приемки использовать текущую staff-ссылку вида
-   `/cabinet?client_id=<authorized_client>&report_id=<authorized_draft>#logistics`;
+3. Для повторной клиентской приемки использовать текущую ссылку вида
+   `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода
    отчета; на неполных границах логистика точная, а недельные финансовые KPI
