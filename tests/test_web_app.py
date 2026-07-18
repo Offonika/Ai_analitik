@@ -7464,6 +7464,46 @@ def test_informational_payout_status_does_not_fail_document_reconciliation(
     }
 
 
+@pytest.mark.parametrize(
+    "adjustment_type",
+    ["Корректировка 1С", "Корректировка себестоимости 1С"],
+)
+def test_onec_adjustment_is_informational_for_document_readiness(
+    tmp_path: Path,
+    adjustment_type: str,
+) -> None:
+    payload = deepcopy(sample_payload())
+    payload["documentReconciliation"].append(
+        {
+            **payload["documentReconciliation"][0],
+            "id": f"doc-recon-{adjustment_type}",
+            "status": adjustment_type,
+            "documentType": adjustment_type,
+            "documentReport": adjustment_type,
+            "periodStatus": "период 1С",
+            "wbReportIds": "",
+            "onecDocuments": "Документ корректировки 1С",
+            "quantityDelta": None,
+            "amountDelta": None,
+            "settlementDelta": None,
+        }
+    )
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+
+    summary = client.get("/api/reports/report-1/summary").json()
+    delta_only = client.get(
+        "/api/reports/report-1/document-reconciliation",
+        params={"delta_only": "true"},
+    ).json()
+
+    assert summary["quality"]["documentReconciliationIssues"] == 0
+    assert "onec_reconciliation_review" not in {
+        reason["code"] for reason in summary["readiness"]["reviewReasons"]
+    }
+    assert delta_only["total"] == 0
+
+
 def test_buyout_amount_and_return_deltas_are_informational(tmp_path: Path) -> None:
     payload = deepcopy(sample_payload())
     payload["documentReconciliation"] = [
