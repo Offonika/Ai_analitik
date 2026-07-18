@@ -157,6 +157,9 @@ const els = {
   ),
   logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
   logisticsStateMessage: document.querySelector("#logistics-state-message"),
+  logisticsOpenReadyReport: document.querySelector(
+    "#logistics-open-ready-report",
+  ),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
@@ -591,6 +594,10 @@ function init() {
     state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
+  els.logisticsOpenReadyReport?.addEventListener(
+    "click",
+    openReadyLogisticsReport,
+  );
   els.logisticsProductsPrev?.addEventListener("click", () => {
     if (state.logisticsProductsOffset <= 0) {
       return;
@@ -3507,6 +3514,16 @@ function updateReportContextLocation({ replace = false } = {}) {
   window.history[replace ? "replaceState" : "pushState"]({}, "", url);
 }
 
+function updateSelectedReportLocation(reportId, { replace = false } = {}) {
+  const url = new URL(window.location.href);
+  if (reportId) {
+    url.searchParams.set("report_id", reportId);
+  } else {
+    url.searchParams.delete("report_id");
+  }
+  window.history[replace ? "replaceState" : "pushState"]({}, "", url);
+}
+
 function accountingOrganizations() {
   return activeClientCompanies().filter((item) => item.onecOrganizationId);
 }
@@ -4605,6 +4622,8 @@ function resetLogisticsWorkspace() {
   els.logisticsTrustClassification.textContent = "—";
   els.logisticsTrustSlice.textContent = "Нет данных";
   els.logisticsStateMessage.hidden = true;
+  els.logisticsOpenReadyReport.hidden = true;
+  els.logisticsOpenReadyReport.disabled = false;
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
@@ -4643,6 +4662,7 @@ function renderLogisticsWorkspace() {
     ? "partial"
     : sliceStatus;
   const coverage = summary.coverage || {};
+  const readyReport = newReadyLogisticsReport();
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
     partial: `Требует проверки · классификация ${logisticsPercent(coverage.classificationPct)}`,
@@ -4662,13 +4682,21 @@ function renderLogisticsWorkspace() {
     needs_rebuild: "Нужна пересборка",
   }[status] || "Недоступно";
   els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
+  els.logisticsOpenReadyReport.hidden = !(
+    readyReport && new Set(["needs_rebuild", "blocked"]).has(status)
+  );
+  els.logisticsOpenReadyReport.disabled = false;
   if (!els.logisticsStateMessage.hidden) {
     els.logisticsStateMessage.querySelector("h3").textContent =
-      status === "needs_rebuild"
+      readyReport
+        ? "Новая проверенная ревизия уже готова"
+        : status === "needs_rebuild"
         ? "Текущий отчёт собран до появления витрины логистики v4"
         : "Логистическая витрина пока не готова";
     els.logisticsStateMessage.querySelector("p").textContent =
-      status === "needs_rebuild"
+      readyReport
+        ? "Откройте готовую ревизию с реальными данными WB. Текущий опубликованный отчёт останется неизменным."
+        : status === "needs_rebuild"
         ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
         : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
   }
@@ -4730,6 +4758,36 @@ function renderLogisticsWorkspace() {
   renderLogisticsRecommendations(asArray(summary.recommendations));
   renderLogisticsProducts(state.logisticsProducts);
   renderWorkspaceHeader();
+}
+
+function newReadyLogisticsReport() {
+  if (!isStaffUser()) return null;
+  const selected = state.reports.find((item) => item.id === state.reportId);
+  const selectedAt = Date.parse(selected?.generatedAt || "") || 0;
+  return state.reports.find((item) => {
+    const generatedAt = Date.parse(item.generatedAt || "") || 0;
+    return item.id !== state.reportId
+      && normalize(item.logisticsDataStatus) === "ready"
+      && generatedAt > selectedAt;
+  }) || null;
+}
+
+async function openReadyLogisticsReport() {
+  const report = newReadyLogisticsReport();
+  if (!report || !state.clientId) return;
+  const context = currentClientLoadContext();
+  els.logisticsOpenReadyReport.disabled = true;
+  updateSelectedReportLocation(report.id);
+  try {
+    await loadReport(report.id, context);
+    if (state.reportId === report.id) {
+      selectTableScenario("logistics", { load: false, focus: true });
+    }
+  } catch (error) {
+    if (state.reportId === report.id) {
+      els.logisticsOpenReadyReport.disabled = false;
+    }
+  }
 }
 
 function renderLogisticsEmpty(target, text) {

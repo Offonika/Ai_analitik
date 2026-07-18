@@ -96,7 +96,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260718-wb-logistics-real-data-v4"
+WEB_BUILD_ID = "20260718-wb-logistics-ready-revision-v5"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -2412,7 +2412,18 @@ def create_app(
             report_kind=report_kind,
             organization_id=organization_id,
         )
-        return {"items": [_report_list_item(report) for report in reports]}
+        return {
+            "items": [
+                _report_list_item(
+                    db,
+                    report,
+                    include_logistics_status=_include_logistics_list_status(
+                        current, report.tenant_id, runtime_settings
+                    ),
+                )
+                for report in reports
+            ]
+        }
 
     @app.get("/api/clients/{client_id}/report-kinds")
     def list_client_report_kinds(
@@ -2474,7 +2485,18 @@ def create_app(
             },
         )
         db.commit()
-        return {"items": [_report_list_item(report) for report in reports]}
+        return {
+            "items": [
+                _report_list_item(
+                    db,
+                    report,
+                    include_logistics_status=_include_logistics_list_status(
+                        current, report.tenant_id, runtime_settings
+                    ),
+                )
+                for report in reports
+            ]
+        }
 
     @app.get("/api/reports/latest/summary")
     def latest_summary(
@@ -4178,8 +4200,13 @@ def _resolve_latest_client_id_or_400(
     raise HTTPException(status_code=400, detail="client is required")
 
 
-def _report_list_item(report: ReportRun) -> dict[str, Any]:
-    return {
+def _report_list_item(
+    db: Session,
+    report: ReportRun,
+    *,
+    include_logistics_status: bool = False,
+) -> dict[str, Any]:
+    payload = {
         "id": report.id,
         "tenantId": report.tenant_id,
         "clientId": report.client_id,
@@ -4198,6 +4225,24 @@ def _report_list_item(report: ReportRun) -> dict[str, Any]:
         "isCurrent": report.is_current,
         "lineageType": report.lineage_type,
     }
+    if include_logistics_status and report.report_kind == MARKETPLACE_UNIT_ECONOMICS:
+        payload["logisticsDataStatus"] = repository.report_logistics_data_status(
+            db, report
+        )
+    return payload
+
+
+def _include_logistics_list_status(
+    user: User,
+    tenant_id: str,
+    settings: WebSettings,
+) -> bool:
+    if not settings.logistics_analysis_enabled:
+        return False
+    return (
+        repository.has_role(user, repository.STAFF_ROLES, tenant_id)
+        or settings.logistics_analysis_client_enabled
+    )
 
 
 def _report_excel_export_path(

@@ -1525,6 +1525,60 @@ def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
     assert payload["kpis"]["logisticsTotal"] is None
     assert payload["dynamics"] == []
     assert enabled.get("/api/me").json()["logisticsAnalysisEnabled"] is True
+    report_list = enabled.get("/api/clients/shumeyko/reports").json()["items"]
+    assert report_list[0]["logisticsDataStatus"] == "needs_rebuild"
+
+
+def test_report_list_offers_only_authorized_ready_logistics_revision(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        current = db.get(repository.ReportRun, "report-1")
+        assert current is not None
+        ready_draft = repository.import_dashboard_payload(
+            db,
+            sample_payload(),
+            tenant_id=current.tenant_id,
+            tenant_name=current.client_name,
+            report_id="report-ready-logistics-draft",
+            source_workbook_path=current.source_workbook_path,
+            publication_status="draft",
+            publish=False,
+        )
+        ready_draft.generated_at = current.generated_at + timedelta(seconds=1)
+        _ensure_logistics_dimensions(db, ready_draft)
+        repository.replace_report_logistics_analysis(
+            db,
+            ready_draft,
+            _logistics_fixture_result(ready_draft),
+        )
+        upsert_user(
+            db,
+            email="client@example.com",
+            password="secret",
+            tenant_id=current.tenant_id,
+            role="client",
+        )
+        db.commit()
+
+    login(client)
+    staff_items = client.get("/api/clients/shumeyko/reports").json()["items"]
+    assert [item["id"] for item in staff_items[:2]] == [
+        "report-1",
+        "report-ready-logistics-draft",
+    ]
+    assert staff_items[0]["logisticsDataStatus"] == "needs_rebuild"
+    assert staff_items[1]["logisticsDataStatus"] == "ready"
+
+    client.post("/api/auth/logout")
+    login_as(client, "client@example.com", "secret")
+    client_items = client.get("/api/clients/shumeyko/reports").json()["items"]
+    assert [item["id"] for item in client_items] == ["report-1"]
+    assert "logisticsDataStatus" not in client_items[0]
 
 
 def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> None:
@@ -1547,12 +1601,16 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="table-scenario-kpi-grid"' in cabinet.text
     assert 'id="table-scenario-summary-status"' in cabinet.text
     assert 'id="logistics-state-message"' in cabinet.text
+    assert 'id="logistics-open-ready-report"' in cabinet.text
+    assert "Открыть готовую ревизию" in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
     assert "loadLogisticsAnalysis" in script.text
+    assert "function newReadyLogisticsReport" in script.text
+    assert "updateSelectedReportLocation(report.id)" in script.text
     assert "function renderTableScenarioSummary" in script.text
     assert "Текущий отчёт собран до появления витрины логистики v4" in script.text
     assert 'reportId: params.get("report_id") || ""' in script.text
@@ -1592,6 +1650,8 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
         "adjustment": 0,
         "unclassified": 0,
     }
+    report_list = client.get("/api/clients/shumeyko/reports").json()["items"]
+    assert report_list[0]["logisticsDataStatus"] == "ready"
     assert products.status_code == 200
     assert products.json()["limit"] == 1000
     assert products.json()["items"][0]["lowSample"] is True
@@ -3665,11 +3725,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-wb-logistics-real-data-v4"
+        "20260718-wb-logistics-ready-revision-v5"
     )
-    assert health.json()["staticBuildId"] == (
-        "20260718-wb-logistics-real-data-v4"
-    )
+    assert health.json()["staticBuildId"] == ("20260718-wb-logistics-ready-revision-v5")
 
     page = client.get("/")
     assert page.status_code == 200
@@ -3811,14 +3869,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert (
-        "styles.css?v=20260718-wb-logistics-real-data-v4"
-        in cabinet.text
-    )
-    assert (
-        "app.js?v=20260718-wb-logistics-real-data-v4"
-        in cabinet.text
-    )
+    assert "styles.css?v=20260718-wb-logistics-ready-revision-v5" in cabinet.text
+    assert "app.js?v=20260718-wb-logistics-ready-revision-v5" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text

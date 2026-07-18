@@ -13315,6 +13315,12 @@ def report_logistics_summary_payload(
     )
 
 
+def report_logistics_data_status(db: Session, report: ReportRun) -> str:
+    """Return the safe top-level logistics state for an authorized report list."""
+    context = db.get(ReportLogisticsAnalysisContext, report.id)
+    return _public_logistics_context_state(report, context)
+
+
 def report_logistics_products_payload(
     db: Session,
     report: ReportRun,
@@ -13456,14 +13462,8 @@ def _report_logistics_meta(
     report: ReportRun,
     context: ReportLogisticsAnalysisContext | None,
 ) -> dict[str, Any]:
-    context_state = _logistics_context_state(report, context)
-    if context_state in {
-        "missing",
-        "outdated_methodology",
-        "outdated_chain_key",
-        "invalid_status",
-        "scope_mismatch",
-    }:
+    context_state = _public_logistics_context_state(report, context)
+    if context_state == "needs_rebuild":
         return {
             "reportId": report.id,
             "dataStatus": "needs_rebuild",
@@ -13510,6 +13510,22 @@ def _logistics_context_usable(
     context: ReportLogisticsAnalysisContext | None,
 ) -> bool:
     return _logistics_context_state(report, context) in {"ready", "partial"}
+
+
+def _public_logistics_context_state(
+    report: ReportRun,
+    context: ReportLogisticsAnalysisContext | None,
+) -> str:
+    context_state = _logistics_context_state(report, context)
+    if context_state in {
+        "missing",
+        "outdated_methodology",
+        "outdated_chain_key",
+        "invalid_status",
+        "scope_mismatch",
+    }:
+        return "needs_rebuild"
+    return context_state
 
 
 def _logistics_context_state(

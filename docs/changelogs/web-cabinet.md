@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-17"
+updated_at: "2026-07-18"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,11 @@ updated_at: "2026-07-17"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-07-18: v2.56 добавил безопасное staff-переключение со старого
+  `needs_rebuild`/`blocked` отчёта на более новую `ready`-ревизию из уже
+  авторизованного списка отчётов. Список аддитивно отдаёт только безопасный
+  logistics status при разрешённом сценарии, кнопка фиксирует точный
+  `report_id`, а client-role не получает видимость скрытого draft.
 - 2026-07-17: v2.55 закрепил `Аналитика и таблицы` как единственную точку входа
   в сценарии `Сводка / Товары / Логистика / Возвраты / Расходы WB / Исходные
   данные`, запретил отдельный sidebar-пункт `Логистика`, добавил target fragment
