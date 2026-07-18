@@ -96,7 +96,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260718-daily-facts-replacement-index-v7"
+WEB_BUILD_ID = "20260718-daily-facts-v7-global-sorting-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -2763,9 +2763,11 @@ def create_app(
             report.tenant_id,
             runtime_settings,
         )
-        period_start, period_end = _logistics_period(
-            report, periodStart, periodEnd
-        )
+        period_start, period_end = _logistics_period(report, periodStart, periodEnd)
+        if sortBy not in repository.LOGISTICS_PRODUCT_SORT_KEYS:
+            raise HTTPException(status_code=400, detail="unsupported sortBy")
+        if sortOrder not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="unsupported sortOrder")
         return repository.report_logistics_products_payload(
             db,
             report,
@@ -2808,9 +2810,11 @@ def create_app(
             runtime_settings,
             staff_only=True,
         )
-        period_start, period_end = _logistics_period(
-            report, periodStart, periodEnd
-        )
+        period_start, period_end = _logistics_period(report, periodStart, periodEnd)
+        if sortBy not in repository.LOGISTICS_ORDER_SORT_KEYS:
+            raise HTTPException(status_code=400, detail="unsupported sortBy")
+        if sortOrder not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="unsupported sortOrder")
         return repository.report_logistics_orders_payload(
             db,
             report,
@@ -3236,10 +3240,16 @@ def create_app(
         loss_class: str = "",
         document_report: str = "",
         preset: str = "",
+        sort_by: str = "",
+        sort_direction: str = "",
         limit: int = 250,
         offset: int = 0,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
+        if sort_by and sort_by not in repository.REPORT_ROW_SORT_KEYS:
+            raise HTTPException(status_code=400, detail="unsupported sort_by")
+        if sort_direction and sort_direction not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="unsupported sort_direction")
         return repository.query_report_rows(
             db,
             report,
@@ -3256,6 +3266,8 @@ def create_app(
             loss_class=loss_class,
             document_report=document_report,
             preset=preset,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
             limit=min(max(limit, 1), 1000),
             offset=max(offset, 0),
         )
