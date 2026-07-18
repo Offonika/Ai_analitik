@@ -29,7 +29,8 @@ accepted-спецификацию. При расхождении следова�
 разрешенными клиентом read-only интеграциями выполнен; исходный raw snapshot не
 изменялся и повторно использован для нового immutable recovery-draft без новых
 внешних API-вызовов. Draft не опубликован и проверен через live staff и
-client-role API. Production, текущая публикация и клиентский флаг не менялись.
+client-role API. На test клиентский флаг включен после отдельного разрешения;
+production и текущая публикация не менялись.
 
 # Текст для нового чата
 
@@ -38,18 +39,20 @@ client-role API. Production, текущая публикация и клиент
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
 операционное состояние в этом runbook. Исправление file-authoritative snapshot
 включено в main merge-коммитом 3773ed5. На test развернут immutable release
-runtime-3773ed5-logistics-file-reader-20260718, master-флаг включен только для
-staff, клиентский флаг выключен. Свежий full read-only refresh выполнен с
+runtime-3773ed5-logistics-file-reader-20260718, master- и клиентский флаги
+включены только на test. Свежий full read-only refresh выполнен с
 клиентскими интеграциями. Из его неизмененного raw snapshot создан отдельный
 immutable recovery-draft без повторных внешних запросов и без публикации.
 Logistics gate ready; summary корректно возвращает partial и
 not_available_missing_profit_link: финансовые KPI/rankings null/empty, точная
 логистика и обезличенные order/product данные доступны. Live staff API smoke
 прошел; инвертированный период отклонен HTTP 400. Идентификаторы и клиентские
-агрегаты не хранятся в Markdown. Live client-role smoke подтвердил client flag
-false и HTTP 404 для logistics summary и staff orders; временный пользователь и
-сессии удалены. Production и текущую публикацию не менять. Следующий шаг —
-отдельное явное разрешение на client flag и client-role приемку после включения.
+агрегаты не хранятся в Markdown. После включения client flag live client-role
+smoke вернул HTTP 200 для summary/products текущего опубликованного отчета и
+явный `needs_rebuild`; staff orders и неопубликованный v5 draft остались скрыты
+с HTTP 404. Временный пользователь и сессия удалены. Production и текущую
+публикацию не менять. Для показа фактической v5-логистики клиенту нужно отдельное
+разрешение на публикацию проверенного recovery-draft.
 ```
 
 # Текущее состояние
@@ -69,8 +72,9 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
   production symlink или service.
 - На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true` и master-флаг логистики
-  применены через отдельный systemd override; клиентский флаг остается
-  `false`. Code defaults по-прежнему `false/false` и не считаются environment
+  применены через отдельный systemd override; после визуальной приемки и
+  отдельного разрешения клиентский флаг переключен в `true`. Code defaults
+  по-прежнему `false/false` и не считаются environment
   evidence.
 - С разрешенными клиентом read-only интеграциями выполнен новый full refresh в
   test. Обязательные внешние чтения завершились; raw snapshot и его manifest
@@ -94,12 +98,13 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   `not_available_missing_profit_link`: точная логистика, products и staff-only
   orders доступны, финансовые KPI равны `null`, финансовые рейтинги пусты.
   Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
-  smoke удалена; `/api/me` подтверждает master flag `true` и client flag
-  `false`, а regression tests покрывают client-role 404.
-- Live client-role smoke на merge-release вернул HTTP 200 для `/api/me` и HTTP
-  404 для logistics summary и staff-only orders. Frontend содержит явное
-  сообщение `Финансовая связь с отчётом отсутствует`; временный client-user и
-  обе smoke-сессии после проверки удалены.
+  smoke удалена. После rollout `/api/me` подтверждает master flag `true` и
+  client flag `true`.
+- Live client-role smoke после включения флага вернул HTTP 200 для `/api/me`,
+  logistics summary и products текущего опубликованного отчета. Его явный
+  статус — `needs_rebuild`, product rows отсутствуют: старый report не
+  достраивается скрытым fallback. Staff-only orders и неопубликованный v5 draft
+  возвращают HTTP 404. Временный client-user и smoke-сессия удалены.
 - Временный Playwright/Chromium browser runtime использован только вне
   репозитория для desktop 1440×900 и mobile 390×844 приемки. Deep-link
   `#tables/logistics`, focus transfer, отсутствие global overflow, именованные
@@ -112,9 +117,9 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   `20260718-logistics-v5-global-table-sorting-v1`, schema
   `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
   timer завершился `success`.
-- Production, текущий опубликованный report и client flag не менялись. Любой
-  последующий rollout требует повторной проверки environment evidence и
-  отдельного разрешения.
+- Production и текущий опубликованный report не менялись; production client
+  flag остается выключенным. Публикация v5 draft или production rollout требуют
+  повторной проверки environment evidence и отдельного разрешения.
 
 # Последнее UX-решение
 
@@ -411,9 +416,11 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Только по отдельному явному разрешению включать client flag на test.
-   Повторить client-role summary/products и browser smoke; staff orders должны
-   остаться недоступными. Production и текущую публикацию не менять.
+1. Решить отдельно, публиковать ли проверенный immutable v5 recovery-draft как
+   текущий test-report для клиента. До публикации клиент видит корректный
+   `needs_rebuild`, а не фактическую новую логистику. При разрешенной публикации
+   повторить client-role summary/products/browser smoke; staff orders должны
+   остаться недоступными. Production не менять.
 2. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
@@ -431,5 +438,5 @@ deployment и без write-операций во внешние системы:
 - маршруты и локализация складов;
 - тарифный калькулятор;
 - калькулятор маржинального дохода;
-- клиентский rollout;
+- production client rollout;
 - любые write-операции во внешние системы.
