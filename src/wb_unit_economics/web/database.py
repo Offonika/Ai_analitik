@@ -29,7 +29,8 @@ from wb_unit_economics.web.models import (
 
 ACCOUNTING_WORKFLOW_SCHEMA_VERSION = "2026_07_16_accounting_workflow_v1"
 LOGISTICS_HARDENING_V3_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v3"
-LOGISTICS_HARDENING_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v4"
+LOGISTICS_HARDENING_V4_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v4"
+LOGISTICS_HARDENING_SCHEMA_VERSION = "2026_07_18_logistics_profit_link_v5"
 DB_FIRST_SCHEMA_VERSION = LOGISTICS_HARDENING_SCHEMA_VERSION
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
@@ -115,6 +116,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
             _backfill_multi_client_hierarchy(engine)
         _record_schema_migration(engine, ACCOUNTING_WORKFLOW_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_HARDENING_V3_SCHEMA_VERSION)
+        _record_schema_migration(engine, LOGISTICS_HARDENING_V4_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_HARDENING_SCHEMA_VERSION)
 
 
@@ -218,7 +220,7 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
 
 
 def _ensure_logistics_hardening_columns_and_indexes(engine: Engine) -> None:
-    """Apply additive v4 logistics schema without rewriting old rows."""
+    """Apply additive logistics schema without rewriting old rows."""
 
     schema = _schema(engine)
     inspector = inspect(engine)
@@ -257,6 +259,7 @@ def _ensure_logistics_hardening_columns_and_indexes(engine: Engine) -> None:
             "client_id": "VARCHAR NOT NULL DEFAULT ''",
             "financial_week_end": "DATE",
             "product_ref": "VARCHAR NOT NULL DEFAULT ''",
+            "financial_revenue": "NUMERIC",
         },
     }
     table_names = set(inspector.get_table_names(schema=schema))

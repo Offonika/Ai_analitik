@@ -31,6 +31,12 @@ class Anchor:
 
 
 @dataclass(frozen=True)
+class OperationalDoc:
+    path: str
+    summary: str
+
+
+@dataclass(frozen=True)
 class RouteRecord:
     path: str
     title: str
@@ -49,6 +55,7 @@ class RouteRecord:
     ai_sections: tuple[tuple[str, str], ...]
     code_anchors: tuple[Anchor, ...]
     test_anchors: tuple[Anchor, ...]
+    operational_docs: tuple[OperationalDoc, ...]
     canonical: bool
 
     def searchable_text(self) -> str:
@@ -66,6 +73,7 @@ class RouteRecord:
             *self.contracts,
             *(key for key, _heading in self.ai_sections),
             *(heading for _key, heading in self.ai_sections),
+            *(item.path for item in self.operational_docs),
         ]
         for anchor in (*self.code_anchors, *self.test_anchors):
             values.append(anchor.path)
@@ -84,6 +92,10 @@ class RouteRecord:
             "contracts": list(self.contracts),
             "docType": self.doc_type,
             "path": self.path,
+            "operationalDocs": [
+                {"path": item.path, "summary": item.summary}
+                for item in self.operational_docs
+            ],
             "readWhen": self.read_when,
             "relatedCode": list(self.related_code),
             "relatedTests": list(self.related_tests),
@@ -148,6 +160,7 @@ def load_route_records(root: Path = ROOT) -> list[RouteRecord]:
         raise ValueError("docs/manifest.yml documents must be a list")
     records = [record for record in raw_records if isinstance(record, dict)]
     canonical_paths = _canonical_paths(records)
+    records_by_path = {str(record.get("path", "")): record for record in records}
     result: list[RouteRecord] = []
 
     for record in records:
@@ -184,6 +197,14 @@ def load_route_records(root: Path = ROOT) -> list[RouteRecord]:
                 ai_sections=_string_mapping(metadata.get("ai_sections")),
                 code_anchors=_anchors(metadata.get("code_anchors")),
                 test_anchors=_anchors(metadata.get("test_anchors")),
+                operational_docs=tuple(
+                    OperationalDoc(
+                        path=item,
+                        summary=str(records_by_path[item].get("summary", "")),
+                    )
+                    for item in string_list(record.get("operational_docs"))
+                    if item in records_by_path
+                ),
                 canonical=rel_path in canonical_paths,
             )
         )
@@ -270,6 +291,7 @@ def find_routes(
                 *record.related_tests,
                 *(item.path for item in record.code_anchors),
                 *(item.path for item in record.test_anchors),
+                *(item.path for item in record.operational_docs),
             }
             if normalized_path not in paths:
                 continue
@@ -316,6 +338,12 @@ def render_route(score: int, record: RouteRecord, *, verbose: bool = False) -> s
     ]
     if record.read_when:
         lines.append(f"read_when: {record.read_when}")
+    if record.operational_docs:
+        lines.append("operational_docs (verify current state):")
+        lines.extend(
+            f"  - {item.path} :: {item.summary}"
+            for item in record.operational_docs
+        )
     if record.ai_sections:
         sections = ", ".join(
             f"{key} -> {heading}" for key, heading in record.ai_sections

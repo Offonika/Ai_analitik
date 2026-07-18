@@ -32,7 +32,7 @@ def test_ai_logistics_digest_excludes_external_ids_and_raw_lineage() -> None:
             "dataStatus": "ready",
             "sliceStatus": "partial",
             "financialMetricStatus": "not_available_partial_week",
-            "methodologyVersion": "wb-logistics-v4",
+            "methodologyVersion": "wb-logistics-v5",
             "coverage": {"keyPct": 100},
             "kpis": {"logisticsTotal": 100},
             "components": {"reverse": 40},

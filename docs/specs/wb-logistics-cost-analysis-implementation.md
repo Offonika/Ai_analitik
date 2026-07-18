@@ -29,6 +29,19 @@ ai_sections:
 code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
     symbols: ["def build_logistics_analysis", "def build_order_rows", "def build_sku_rows"]
+  - path: src/wb_unit_economics/web/repository.py
+    symbols: ["def replace_report_logistics_analysis", "def report_logistics_summary_payload", "def _logistics_context_state", "def _logistics_recommendations"]
+  - path: src/wb_unit_economics/web/source_refresh.py
+    symbols: ["def _build_and_persist_logistics_analysis"]
+  - path: src/wb_unit_economics/web/settings.py
+    symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool"]
+test_anchors:
+  - path: tests/test_logistics_analysis.py
+    symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions"]
+  - path: tests/test_source_refresh.py
+    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot"]
+  - path: tests/test_web_app.py
+    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
 updated_at: "2026-07-18"
@@ -49,21 +62,24 @@ rollout. Staff-ready код первой очереди реализован з�
 
 # Текущее состояние реализации
 
-Реализована исправленная hardening-версия методики `wb-logistics-v4`, ключ
+Реализована исправленная hardening-версия методики `wb-logistics-v5`, ключ
 `wb-order-product-v1`, четыре категории классификатора, неизменяемые витрины
 order/SKU, многомерный reconciliation до действующего `ReportUnitRow`, три
 read-only API, действующий staff-only экран, детерминированные рекомендации и
 безопасный агрегатный контекст для AI. Текущий runtime пока использует отдельный
 fragment `#logistics`; перенос внутрь `#tables/logistics` зафиксирован ниже как
 следующий UI-контракт, но еще не реализован. Контексты
-`wb-logistics-v1`–`wb-logistics-v3`, несовместимая версия ключа и старый отчет
+`wb-logistics-v1`–`wb-logistics-v4`, несовместимая версия ключа и старый отчет
 без контекста возвращают `needs_rebuild`.
 
-Флаги `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
-`SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED` выключены по умолчанию. Ближайший
-rollout допускается только на test; клиентский флаг остается выключенным до
-отдельного согласования. Габариты, маршруты, тарифы, Excel и калькуляторы в эту
-реализацию не входят.
+Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
+`SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED` — `false/false`; это не описание
+фактического состояния сред. Последнее записанное operational evidence и
+обязательные команды повторной проверки находятся в
+[`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
+Ближайший rollout допускается только на test; клиентский флаг остается
+выключенным до отдельного согласования. Габариты, маршруты, тарифы, Excel и
+калькуляторы в эту реализацию не входят.
 
 # Цель
 
@@ -187,7 +203,7 @@ Excel-экспорт этого блока не входит в первую о�
 3. Сохраненный raw snapshot — доказательная база и возможность повторного
    расчета после изменения классификатора.
 
-Текущая реализация `wb-logistics-v4` выбирает финансовую детализацию из
+Текущая реализация `wb-logistics-v5` выбирает финансовую детализацию из
 `source_snapshot_rows`. Production-режим
 `SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=files_only` не создает эти строки, поэтому
 scheduled logistics build нельзя включать одновременно с `files_only`, пока не
@@ -233,7 +249,12 @@ raw данных подтвердить:
 Если источник не передает нужное поле, оно получает статус `missing` и не
 заменяется нулем, догадкой или текущим тарифом.
 
-## Результат этапа 0 на 16 июля 2026 года
+## Исторический результат этапа 0 на 16 июля 2026 года
+
+> Исторический диагностический артефакт. Он не определяет текущий gate или
+> rollout. Последнее записанное состояние сред находится в operational runbook
+> [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md)
+> и должно быть повторно проверено командами из него перед operational-выводом.
 
 Проверка выполнена read-only профилировщиком на репрезентативном локальном
 снимке. Профиль содержит только агрегаты покрытия и качества, без raw-строк,
@@ -257,7 +278,7 @@ raw данных подтвердить:
 | Габариты и замеры | `phase_2_gap` | Габариты есть в raw-карточках, но пока не сохраняются в плоском слое; отдельные источники контрольных замеров и штрафов не подключены. |
 
 Исторический профиль выше объясняет исходные ограничения и не является
-разрешением на rollout. В `wb-logistics-v4` технический gate перед созданием
+разрешением на rollout. В `wb-logistics-v5` технический gate перед созданием
 order/SKU-витрин выполняется автоматически:
 
 1. получить новый read-only снимок с расширенным набором полей;
@@ -341,6 +362,17 @@ profit_effect_amount = -logistics_total
 Правила знаменателя:
 
 - `revenue` берется из того же опубликованного отчета и с теми же фильтрами;
+- если SKU не связан с `ReportUnitRow`, его `revenue`,
+  `logistics_share_pct`, `profit_before_tax`, `profit_without_logistics` и
+  `profit_effect_amount` возвращаются как `null`; точная логистика сохраняется,
+  а строка получает `missing_profit_link` и `restore_profit_link`;
+- если хотя бы один SKU выбранного среза имеет `missing_profit_link`, весь срез
+  получает `financialMetricStatus=not_available_missing_profit_link` и
+  `sliceStatus=partial`: финансовые KPI, финансовая динамика и рейтинги по доле
+  и влиянию на прибыль недоступны, но фактическая логистика, компоненты,
+  количества и рейтинг по логистике остаются видимыми;
+- финансовая выручка v5 хранится отдельно как nullable `financial_revenue`;
+  legacy `revenue` не используется в KPI v5 и не является fallback;
 - при `revenue <= 0` доля не рассчитывается и возвращается как `null` со
   статусом `not_applicable`;
 - при нулевом числе заказов или продаж соответствующий показатель возвращается
@@ -731,7 +763,7 @@ AI не может:
     запрещен; исправление выполняется новым report run.
 14. строки `ReportUnitRow` без обязательных dimensions входят в контрольную
     сумму, получают счетчики качества и блокируют витрины.
-15. контексты v1–v3 и несовместимая версия ключа возвращают `needs_rebuild`.
+15. контексты v1–v4 и несовместимая версия ключа возвращают `needs_rebuild`.
 16. поврежденный JSON payload, смешанный tenant/client scope, неоднозначная
     ревизия или неизвестный context status не могут дать `ready` или публикацию.
 17. все logistics endpoint отклоняют инвертированный и внешний период кодом
@@ -780,6 +812,14 @@ AI не может:
 32. на ширине 390 px остаются доступны все значения глобального среза, а каждая
     свернутая в карточку строка сохраняет видимые подписи суммы, основания и
     действия.
+33. SKU без связи с `ReportUnitRow` сохраняет фактическую логистику, но
+    возвращает `null` для всех финансовых полей, статус `missing_profit_link` и
+    рекомендацию `restore_profit_link`; наличие такой строки переводит
+    финансовые KPI всего выбранного среза в fail-closed состояние без частичного
+    `SUM` или fallback на Finance-выручку.
+34. tenant, client, cabinet, company и product dimensions нормализуются единым
+    `strip`, а схема дополнительно `casefold`; различия только в пробелах не
+    разрывают связь с `ReportUnitRow`.
 
 # Test Plan
 
@@ -798,6 +838,11 @@ AI не может:
 - варианты схем WB `FBW, (...)`, `FBS, (...)` и русские подписи витрины;
 - точные суммы на обеих неполных граничных неделях без подстановки недельных
   финансовых KPI;
+- SKU без profit link: nullable financial fields, сохраненная логистика,
+  `missing_profit_link`, отсутствие `check_margin` и запрет source-revenue
+  fallback;
+- одинаковая связь order/SKU/report при пробелах вокруг любой строковой
+  dimension;
 - расчет каждого KPI без раннего округления.
 
 ## Contract And Repository
@@ -842,6 +887,8 @@ AI не может:
   второй уровень;
 - state matrix для `ready`, `partial`, `needs_rebuild`/`blocked`, пустого среза
   и ошибки запроса без stale/zero fallback;
+- mixed ready/missing-profit-link срез: fail-closed summary/dynamics,
+  отсутствующие финансовые рейтинги и доступная точная логистика;
 - семантический regression: итоговая логистика не называется целиком
   устранимой потерей, а пересекающиеся зоны проверки нельзя ошибочно сложить;
 - mobile regression: глобальные фильтры не скрываются, карточки зон проверки
@@ -871,7 +918,7 @@ Staff-only приемка draft выполняется по прямой ссы�
 Rollback отключает новый раздел и новые API-маршруты, не изменяя существующие
 отчеты. Отключение флага не снимает publication blocker с report run, который
 обязан был пройти gate, но не прошел его. Новые витрины являются добавочными и
-остаются неизменяемыми; v1–v3-строки не переписываются. Внешние источники при
+остаются неизменяемыми; v1–v4-строки не переписываются. Внешние источники при
 rollout и rollback не изменяются.
 
 # Согласованные решения
@@ -899,6 +946,11 @@ rollout и rollback не изменяются.
 
 # Changelog
 
+- 2026-07-18 — методика повышена до `wb-logistics-v5`: удален fallback
+  `source_revenue` при отсутствии связи с `ReportUnitRow`, введены nullable
+  `financial_revenue`, fail-closed финансовые KPI среза и единая нормализация
+  dimensions; v1–v4 требуют нового immutable report run. Operational state
+  отделен от code defaults, а историческая матрица этапа 0 явно помечена.
 - 2026-07-18 — закреплена граница с source-refresh `files_only`: текущий v4
   требует проверяемых `source_snapshot_rows`, разовый staff-rebuild использует
   идемпотентное восстановление уже сохраненного immutable snapshot и новый

@@ -1603,15 +1603,18 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-orders-pagination"' in cabinet.text
     assert "loadLogisticsAnalysis" in script.text
     assert "function renderTableScenarioSummary" in script.text
-    assert "Текущий отчёт собран до появления витрины логистики v4" in script.text
+    assert "Текущий отчёт собран до появления витрины логистики v5" in script.text
     assert 'reportId: params.get("report_id") || ""' in script.text
     assert "item.id === requestedReportId" in script.text
     assert "state.logisticsProductsTotal = Number(products.total || 0)" in script.text
     assert "state.logisticsOrdersTotal = Number(payload.total || 0)" in script.text
     assert "logisticsProfitEffectText(item.profitEffectAmount)" in script.text
+    assert "Финансовая связь с отчётом отсутствует" in script.text
+    assert "Финансовая связь отсутствует" in script.text
     assert "Корректировка — схема не применяется" in script.text
     assert 'dataStatus === "partial" && sliceStatus === "ready"' in script.text
-    assert 'qualityNeedsReview\n        ? "Проверить данные"' in script.text
+    assert 'normalize(item.dataQualityStatus) === "missing_profit_link"' in script.text
+    assert '? "Проверить данные"' in script.text
 
     full_week = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
     summary = client.get("/api/reports/report-1/logistics/summary", params=full_week)
@@ -1802,6 +1805,112 @@ def test_logistics_quality_status_is_visible_in_slice_and_product(
         "review_data_quality"
     ) < [item["code"] for item in recommendations].index("check_margin")
     assert products["items"][0]["dataQualityStatus"] == "partial"
+
+
+def test_logistics_missing_profit_link_fails_financial_slice_closed(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        sku_row = db.query(ReportLogisticsSkuRow).one()
+        order_values = {
+            column.name: getattr(order_row, column.name)
+            for column in ReportLogisticsOrderRow.__table__.columns
+            if column.name != "id"
+        }
+        order_values.update(
+            {
+                "chain_key": "a" * 64,
+                "chain_segment_key": "b" * 64,
+                "product_ref": "product:missing-profit-link",
+                "product_key": "nm:202",
+                "nm_id": "202",
+                "sku": "sku-202",
+                "vendor_code": "A-202",
+                "product": "Товар без финансовой связи",
+                "source_revenue": Decimal("999"),
+                "source_hash_digest": "c" * 64,
+            }
+        )
+        db.add(ReportLogisticsOrderRow(**order_values))
+        sku_values = {
+            column.name: getattr(sku_row, column.name)
+            for column in ReportLogisticsSkuRow.__table__.columns
+            if column.name != "id"
+        }
+        sku_values.update(
+            {
+                "row_uid": "d" * 64,
+                "product_ref": "product:missing-profit-link",
+                "product_key": "nm:202",
+                "nm_id": "202",
+                "sku": "sku-202",
+                "vendor_code": "A-202",
+                "product": "Товар без финансовой связи",
+                "revenue": Decimal("999"),
+                "financial_revenue": None,
+                "profit_before_tax": None,
+                "profit_without_logistics": None,
+                "profit_effect_amount": Decimal("0"),
+                "logistics_share_pct": None,
+                "data_quality_status": "missing_profit_link",
+                "recommendation_flags": ["restore_profit_link"],
+                "source_hash_digest": "e" * 64,
+            }
+        )
+        db.add(ReportLogisticsSkuRow(**sku_values))
+        db.commit()
+    login(client)
+
+    filters = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
+    summary = client.get(
+        "/api/reports/report-1/logistics/summary", params=filters
+    ).json()
+    products = client.get(
+        "/api/reports/report-1/logistics/products", params=filters
+    ).json()
+
+    assert summary["dataStatus"] == "ready"
+    assert summary["sliceStatus"] == "partial"
+    assert (
+        summary["financialMetricStatus"]
+        == "not_available_missing_profit_link"
+    )
+    assert summary["coverage"]["missingProfitLinks"] == 1
+    assert summary["kpis"]["logisticsTotal"] == 20
+    for key in (
+        "revenue",
+        "logisticsSharePct",
+        "profitBeforeTax",
+        "profitWithoutLogistics",
+        "profitEffectAmount",
+    ):
+        assert summary["kpis"][key] is None
+    assert summary["dynamics"][0]["revenue"] is None
+    assert summary["dynamics"][0]["logisticsSharePct"] is None
+    assert len(summary["rankings"]["byTotal"]) == 2
+    assert summary["rankings"]["byRevenueShare"] == []
+    assert summary["rankings"]["byProfitEffect"] == []
+    assert "restore_profit_link" in {
+        item["code"] for item in summary["recommendations"]
+    }
+
+    assert products["financialMetricStatus"] == (
+        "not_available_missing_profit_link"
+    )
+    assert all(item["revenue"] is None for item in products["items"])
+    assert all(item["profitEffectAmount"] is None for item in products["items"])
+    missing = next(
+        item for item in products["items"] if item["productKey"] == "nm:202"
+    )
+    assert missing["logisticsTotal"] == 10
+    assert missing["dataQualityStatus"] == "missing_profit_link"
+    assert missing["recommendationFlags"] == ["restore_profit_link"]
 
 
 def test_logistics_api_rejects_inverted_and_outside_periods(tmp_path: Path) -> None:
@@ -2391,7 +2500,7 @@ def test_required_logistics_context_missing_or_outdated_blocks_publication(
         assert report is not None
         context = db.get(ReportLogisticsAnalysisContext, report.id)
         assert context is not None
-        context.methodology_version = "wb-logistics-v2"
+        context.methodology_version = "wb-logistics-v4"
         db.commit()
         outdated = repository.report_publication_blockers(db, report)
         blocker = next(

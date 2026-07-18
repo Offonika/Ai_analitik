@@ -34,6 +34,21 @@ def test_scope_returns_one_canonical_development_route() -> None:
     )
 
 
+def test_logistics_route_exposes_operational_runbook_without_body() -> None:
+    score, record = find_routes(
+        load_route_records(),
+        scope="logistics-cost-analysis",
+        limit=1,
+    )[0]
+
+    rendered = render_route(score, record)
+
+    assert "operational_docs (verify current state):" in rendered
+    assert "docs/runbooks/wb-logistics-v4-continuation.md ::" in rendered
+    assert "# Текущее состояние" not in rendered
+    assert len(record.operational_docs) == 1
+
+
 def test_query_routes_report_draft_retention() -> None:
     matches = find_routes(
         load_route_records(),
@@ -130,6 +145,18 @@ def test_generated_jsonl_has_one_safe_record_per_manifest_entry() -> None:
     payload = [json.loads(line) for line in lines]
     assert all("path" in item and "summary" in item for item in payload)
     assert all("body" not in item for item in payload)
+    logistics = next(
+        item for item in payload if item["truthScope"] == "logistics-cost-analysis"
+    )
+    assert logistics["operationalDocs"] == [
+        {
+            "path": "docs/runbooks/wb-logistics-v4-continuation.md",
+            "summary": (
+                "Последнее записанное состояние WB-логистики по средам, evidence "
+                "и безопасный путь к test-rollout v5."
+            ),
+        }
+    ]
 
 
 def test_generated_artifacts_are_current() -> None:

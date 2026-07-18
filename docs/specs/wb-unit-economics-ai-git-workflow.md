@@ -125,13 +125,30 @@ Generated-файл `docs/generated/ai-routing.jsonl` содержит одну J
 Каждый `code_anchors`/`test_anchors` элемент содержит зарегистрированный путь и
 непустые текстовые symbols, которые реально присутствуют в целевом файле.
 
+Канонический manifest-record может объявить `operational_docs` как уникальный
+список путей. Каждая ссылка обязана указывать на зарегистрированный `active`
+runbook с `source_of_truth: false`. Compact route показывает только путь и
+summary с пометкой `verify current state`, не загружает body и не повышает
+runbook до источника правды. Generated JSONL сохраняет те же безопасные ссылки
+в `operationalDocs`.
+
+Review evidence contract:
+
+- утверждение о фактическом состоянии среды требует operational evidence и
+  повторной проверки указанной в runbook командой;
+- точное число в verdict требует воспроизводимой команды с текущим SHA;
+- вывод субагента является гипотезой, пока основной агент не проверил
+  первоисточник.
+
 Retrieval protocol агента:
 
 1. Получить маршрут через `docs_route.py`, не читать весь manifest/index.
 2. Прочитать frontmatter выбранного документа и список headings.
-3. Прочитать только названные `ai_sections`.
-4. Искать код и тесты сначала по symbols из anchors.
-5. Расширять чтение до полного spec или supporting-документов только при
+3. Если задача касается rollout или среды, проверить возвращенные
+   `operational_docs` до фактического вывода.
+4. Прочитать только названные `ai_sections`.
+5. Искать код и тесты сначала по symbols из anchors.
+6. Расширять чтение до полного spec или supporting-документов только при
    межконтурном конфликте или задаче, затрагивающей весь scope.
 
 # User Roles And Decisions
@@ -215,6 +232,11 @@ production database URL.
   path и отсутствующий symbol.
 - Manifest validation требует `read_when` и `search_terms` для каждого
   однозначного лидера truth scope.
+- Manifest validation отклоняет duplicate/unknown/non-runbook/inactive/canonical
+  ссылки в `operational_docs`.
+- `docs_route.py --scope logistics-cost-analysis` показывает compact-ссылку на
+  operational runbook без его body, а generated JSONL содержит только путь и
+  summary.
 - `docs_route.py --check-generated` подтверждает parity JSONL и generated-блока
   в `docs/index.md`; этот check входит в CI и AI publish workflow.
 - Компактный результат не печатает содержимое документов, кода, `.env`, raw
@@ -243,6 +265,8 @@ Rollback:
 
 # Changelog
 
+- 2026-07-18: added body-free operational runbook discovery for compact routes
+  and evidence rules for environment claims, exact counts and subagent output.
 - 2026-07-18: accepted compact AI documentation routing contract with
   query/scope/path/contract lookup, generated JSONL, section/code anchors and
   stale-index checks.

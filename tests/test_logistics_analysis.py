@@ -12,6 +12,8 @@ from wb_unit_economics.logistics_analysis import (
     LogisticsSourceRow,
     UnitEconomicsSlice,
     build_logistics_analysis,
+    build_order_rows,
+    build_sku_rows,
     classify_logistics_row,
     logistics_chain_key,
     source_row_from_payload,
@@ -100,7 +102,7 @@ def test_chain_key_is_scoped_by_cabinet_and_product() -> None:
     )
 
     assert CHAIN_KEY_VERSION == "wb-order-product-v1"
-    assert LOGISTICS_METHODOLOGY_VERSION == "wb-logistics-v4"
+    assert LOGISTICS_METHODOLOGY_VERSION == "wb-logistics-v5"
     assert first == same
     assert first != other_product
     assert first != other_cabinet
@@ -204,6 +206,48 @@ def test_builds_reconciled_order_and_sku_marts_with_low_sample() -> None:
     assert sku.profit_effect_amount == Decimal("-10")
     assert sku.profit_without_logistics == Decimal("30")
     assert sku.recommendation_flags == ("check_margin",)
+
+
+def test_missing_profit_link_keeps_financial_kpis_null() -> None:
+    order_row = replace(
+        build_order_rows([_source_row()])[0],
+        source_revenue=Decimal("125"),
+    )
+
+    sku = build_sku_rows([order_row], [])[0]
+
+    assert sku.logistics_total == Decimal("10")
+    assert sku.revenue is None
+    assert sku.profit_before_tax is None
+    assert sku.profit_without_logistics is None
+    assert sku.profit_effect_amount is None
+    assert sku.logistics_share_pct is None
+    assert sku.data_quality_status == "missing_profit_link"
+    assert sku.recommendation_flags == ("restore_profit_link",)
+
+
+def test_sku_link_normalizes_all_string_dimensions() -> None:
+    source = _source_row(
+        tenant_id=" tenant-1 ",
+        client_id=" client-1 ",
+        wb_cabinet_id=" cabinet-1 ",
+        client_company_id=" company-1 ",
+        nm_id=" 101 ",
+    )
+    unit = _unit_row(scheme=" FBO ", nm_id=" 101 ")
+
+    result = build_logistics_analysis([source], [unit])
+
+    assert result.context.data_status == "ready"
+    sku = result.sku_rows[0]
+    assert sku.tenant_id == "tenant-1"
+    assert sku.client_id == "client-1"
+    assert sku.wb_cabinet_id == "cabinet-1"
+    assert sku.client_company_id == "company-1"
+    assert sku.scheme == "fbo"
+    assert sku.product_key == "nm:101"
+    assert sku.revenue == Decimal("100")
+    assert sku.data_quality_status == "ready"
 
 
 def test_result_hash_is_repeatable_and_return_can_reference_previous_order() -> None:

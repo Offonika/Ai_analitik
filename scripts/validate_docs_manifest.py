@@ -270,6 +270,75 @@ def validate_routing_metadata(records: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
+def validate_operational_docs(records: list[dict[str, Any]]) -> list[str]:
+    """Keep body-free operational navigation explicit and unambiguous."""
+
+    failures: list[str] = []
+    records_by_path = {str(record.get("path", "")): record for record in records}
+    canonical_paths: set[str] = set()
+    truth_by_scope: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        scope = record.get("truth_scope")
+        priority = record.get("truth_priority")
+        if (
+            record.get("source_of_truth") is True
+            and isinstance(scope, str)
+            and isinstance(priority, int)
+            and not isinstance(priority, bool)
+        ):
+            truth_by_scope.setdefault(scope, []).append(record)
+    for scoped_records in truth_by_scope.values():
+        highest = max(int(record["truth_priority"]) for record in scoped_records)
+        leaders = [
+            record for record in scoped_records if record["truth_priority"] == highest
+        ]
+        if len(leaders) == 1:
+            canonical_paths.add(str(leaders[0]["path"]))
+
+    referenced_by: dict[str, str] = {}
+    for record in records:
+        raw_links = record.get("operational_docs")
+        if raw_links is None:
+            continue
+        source_path = str(record.get("path", "<missing>"))
+        if source_path not in canonical_paths:
+            failures.append(
+                f"{source_path}: operational_docs is allowed only on a canonical route"
+            )
+        links = string_list(raw_links)
+        if (
+            not isinstance(raw_links, list)
+            or len(links) != len(raw_links)
+            or any(not link.strip() for link in links)
+        ):
+            failures.append(
+                f"{source_path}: operational_docs must be a list of non-empty paths"
+            )
+            continue
+        if len(links) != len(set(links)):
+            failures.append(f"{source_path}: operational_docs contains duplicates")
+        for link in dict.fromkeys(links):
+            previous = referenced_by.setdefault(link, source_path)
+            if previous != source_path:
+                failures.append(
+                    f"{link}: operational doc is linked by both {previous} and "
+                    f"{source_path}"
+                )
+            target = records_by_path.get(link)
+            if target is None:
+                failures.append(
+                    f"{source_path}: operational_docs path is not registered: {link}"
+                )
+                continue
+            if target.get("status") != "active":
+                failures.append(f"{link}: operational doc must have status active")
+            if target.get("source_of_truth") is not False:
+                failures.append(f"{link}: operational doc must not be source_of_truth")
+            if target.get("doc_type") != "runbook":
+                failures.append(f"{link}: operational doc must have doc_type runbook")
+    return failures
+
+
 def validate_changelog_registration(
     records: list[dict[str, Any]],
     required_specs: set[str] | None = None,
@@ -457,6 +526,7 @@ def main() -> int:
 
     failures.extend(validate_truth_precedence(records))
     failures.extend(validate_routing_metadata(records))
+    failures.extend(validate_operational_docs(records))
     failures.extend(validate_changelog_registration(records))
     if DOCS_INDEX.exists():
         failures.extend(

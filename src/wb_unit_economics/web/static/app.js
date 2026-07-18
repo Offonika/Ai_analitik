@@ -4667,29 +4667,35 @@ function renderLogisticsWorkspace() {
     ? "partial"
     : sliceStatus;
   const coverage = summary.coverage || {};
+  const financialLinkMissing = summary.financialMetricStatus
+    === "not_available_missing_profit_link";
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
     partial: `Требует проверки · классификация ${logisticsPercent(coverage.classificationPct)}`,
     blocked: "Расчёт остановлен: обязательная сверка данных не пройдена.",
     needs_rebuild: "Нужна пересборка отчёта на новом проверенном снимке WB.",
   }[status];
-  els.logisticsDataStatus.textContent = statusCopy || "Витрина пока недоступна.";
+  els.logisticsDataStatus.textContent = financialLinkMissing
+    ? "Логистика доступна · Финансовая связь с отчётом отсутствует"
+    : statusCopy || "Витрина пока недоступна.";
   els.logisticsDataStatus.dataset.status = status || "unknown";
   els.logisticsTrustKeys.textContent = logisticsPercent(coverage.keyPct);
   els.logisticsTrustClassification.textContent = logisticsPercent(
     coverage.classificationPct,
   );
-  els.logisticsTrustSlice.textContent = {
+  els.logisticsTrustSlice.textContent = financialLinkMissing
+    ? "Финансовые KPI скрыты до восстановления связи"
+    : ({
     ready: "Полный проверенный срез",
     partial: "Часть операций требует проверки",
     blocked: "Сверка не пройдена",
     needs_rebuild: "Нужна пересборка",
-  }[status] || "Недоступно";
+  }[status] || "Недоступно");
   els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
   if (!els.logisticsStateMessage.hidden) {
     els.logisticsStateMessage.querySelector("h3").textContent =
       status === "needs_rebuild"
-        ? "Текущий отчёт собран до появления витрины логистики v4"
+        ? "Текущий отчёт собран до появления витрины логистики v5"
         : "Логистическая витрина пока не готова";
     els.logisticsStateMessage.querySelector("p").textContent =
       status === "needs_rebuild"
@@ -4726,7 +4732,7 @@ function renderLogisticsWorkspace() {
       "Доля в выручке",
       logisticsPercent(kpis.logisticsSharePct),
       !financialMetricsReady
-        ? "Недоступно для выбранной части недели"
+        ? logisticsFinancialUnavailableText(summary.financialMetricStatus)
         : kpis.revenue > 0
           ? `Выручка ${money(kpis.revenue)}`
           : "Нет положительной выручки",
@@ -4741,7 +4747,7 @@ function renderLogisticsWorkspace() {
           : "Влияние на прибыль",
       profitEffectReady ? money(Math.abs(profitEffect)) : "—",
       !financialMetricsReady
-        ? "Финансовые KPI недоступны для части недели"
+        ? logisticsFinancialUnavailableText(summary.financialMetricStatus)
         : kpis.profitBeforeTax === null
           ? "Прибыль не связана с витриной"
           : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
@@ -4931,8 +4937,10 @@ function renderLogisticsProducts(items) {
       badge.className = qualityNeedsReview || item.lowSample
         ? "logistics-quality-badge is-warning"
         : "logistics-quality-badge";
-      badge.textContent = qualityNeedsReview
-        ? "Проверить данные"
+      badge.textContent = normalize(item.dataQualityStatus) === "missing_profit_link"
+        ? "Финансовая связь отсутствует"
+        : qualityNeedsReview
+          ? "Проверить данные"
         : item.lowSample
           ? "Малая выборка"
           : "Достаточно данных";
@@ -5125,6 +5133,16 @@ function logisticsProfitEffectText(value) {
     return `Рост на ${money(Math.abs(amount))}`;
   }
   return money(0);
+}
+
+function logisticsFinancialUnavailableText(status) {
+  if (status === "not_available_missing_profit_link") {
+    return "Финансовая связь с отчётом отсутствует";
+  }
+  if (status === "not_available_partial_week") {
+    return "Финансовые KPI недоступны для выбранной части недели";
+  }
+  return "Финансовые KPI недоступны";
 }
 
 function closeLogisticsOrders() {

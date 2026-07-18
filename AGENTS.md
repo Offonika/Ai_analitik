@@ -31,7 +31,9 @@ For each task, use this token-efficient retrieval protocol:
    `--scope`, `--path` or `--contract` when the key is known.
 2. Read only the returned document frontmatter and its heading list.
 3. Read the relevant `ai_sections`, then search code/tests by returned symbols.
-4. Expand to the full spec or supporting/history documents only for a
+4. When the route lists `operational_docs` and the task concerns rollout or an
+   environment claim, verify the current state in the referenced runbook.
+5. Expand to the full spec or supporting/history documents only for a
    cross-scope conflict or a task spanning the whole scope.
 
 Do not read all of `docs/manifest.yml`, `docs/index.md`, a large spec or a large
@@ -43,6 +45,11 @@ If two scopes genuinely conflict, do not choose silently: update the affected
 specs or record an explicit cross-scope decision first. Chat messages, generated
 reports and ad hoc spreadsheets are not sources of truth unless the user asks
 to update a spec from them.
+
+Environment and rollout claims require dated operational evidence; code
+defaults are not evidence of deployed state. Report an exact count only with
+the command and revision that reproduce it. Treat subagent summaries as leads
+until their primary files, commands or external evidence have been checked.
 
 ## Security And External Boundaries
 

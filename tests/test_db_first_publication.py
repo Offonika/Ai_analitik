@@ -122,10 +122,12 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
             connection.execute(text("SELECT version FROM schema_migrations")).scalars()
         )
     assert LOGISTICS_HARDENING_SCHEMA_VERSION in versions
-    assert {"tenant_id", "client_id"} <= {
-        column["name"]
+    sku_columns = {
+        column["name"]: column
         for column in inspector.get_columns("report_logistics_sku_rows")
     }
+    assert {"tenant_id", "client_id", "financial_revenue"} <= set(sku_columns)
+    assert sku_columns["financial_revenue"]["nullable"] is True
     assert "ix_report_logistics_orders_calendar_filter" in {
         index["name"]
         for index in inspector.get_indexes("report_logistics_order_rows")
@@ -138,6 +140,7 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
         "invalid_source_payload_shape_count",
         "source_revision_conflict_count",
         "scope_mismatch_count",
+        "financial_revenue",
     ):
         assert f"ADD COLUMN IF NOT EXISTS {column}" in postgres_schema
     init_db(engine)
@@ -200,3 +203,29 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
     assert new.source_coverage_end is not None
     assert new.source_coverage_end.isoformat() == "2026-06-17"
     assert artifact_path == artifact.resolve()
+
+
+def test_logistics_financial_revenue_migration_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'legacy.sqlite3'}")
+    init_db(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE report_logistics_sku_rows "
+                "DROP COLUMN financial_revenue"
+            )
+        )
+
+    init_db(engine)
+    init_db(engine)
+
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("report_logistics_sku_rows")
+    }
+    assert columns["revenue"]["nullable"] is False
+    assert columns["financial_revenue"]["nullable"] is True
+    postgres_schema = Path("sql/postgres_schema.sql").read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS financial_revenue numeric" in postgres_schema

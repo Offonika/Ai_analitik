@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v4"
+LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
 CHAIN_KEY_VERSION = "wb-order-product-v1"
 RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
@@ -202,10 +202,10 @@ class LogisticsSkuRow:
     logistics_reverse: Decimal
     logistics_adjustment: Decimal
     logistics_unclassified: Decimal
-    revenue: Decimal
+    revenue: Decimal | None
     profit_before_tax: Decimal | None
     profit_without_logistics: Decimal | None
-    profit_effect_amount: Decimal
+    profit_effect_amount: Decimal | None
     logistics_share_pct: Decimal | None
     logistics_per_order: Decimal | None
     logistics_per_sale: Decimal | None
@@ -956,7 +956,7 @@ def build_sku_rows(
         order = order_buckets[key]
         unit = unit_buckets.get(key)
         source = order["row"]
-        revenue = unit["revenue"] if unit is not None else order["source_revenue"]
+        revenue = unit["revenue"] if unit is not None else None
         profit = unit["profit"] if unit is not None else None
         chain_count = len(order["chains"])
         sales = order["sales"]
@@ -966,7 +966,7 @@ def build_sku_rows(
             flags.append("restore_classification")
         if order["reverse"] != 0:
             flags.append("check_returns")
-        if total != 0 and revenue > 0:
+        if total != 0 and revenue is not None and revenue > 0:
             flags.append("check_margin")
         if unit is None:
             flags.append("restore_profit_link")
@@ -995,8 +995,12 @@ def build_sku_rows(
                 profit_without_logistics=(
                     profit + total if profit is not None else None
                 ),
-                profit_effect_amount=-total,
-                logistics_share_pct=(total / revenue * 100 if revenue > 0 else None),
+                profit_effect_amount=(-total if unit is not None else None),
+                logistics_share_pct=(
+                    total / revenue * 100
+                    if revenue is not None and revenue > 0
+                    else None
+                ),
                 logistics_per_order=(total / chain_count if chain_count else None),
                 logistics_per_sale=(total / sales if sales > 0 else None),
                 sales_quantity=sales,
@@ -1052,10 +1056,10 @@ def _sku_key(
         tenant_id.strip(),
         client_id.strip(),
         financial_week_start,
-        wb_cabinet_id,
-        client_company_id,
+        wb_cabinet_id.strip(),
+        client_company_id.strip(),
         scheme.strip().casefold(),
-        product_key,
+        product_key.strip(),
     )
 
 
@@ -1077,7 +1081,7 @@ def _dimension_key(
         row.wb_cabinet_id.strip(),
         row.client_company_id.strip(),
         row.scheme.strip().casefold(),
-        row.product_key,
+        row.product_key.strip(),
     )
 
 

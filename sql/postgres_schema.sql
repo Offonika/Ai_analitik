@@ -482,6 +482,11 @@ ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_sku_rows
     ADD COLUMN IF NOT EXISTS tenant_id text NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS client_id text NOT NULL DEFAULT '';
 
+-- Logistics v5 keeps old immutable contexts untouched and uses a nullable
+-- financial value for new rows so a missing ReportUnitRow link cannot become 0.
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_sku_rows
+    ADD COLUMN IF NOT EXISTS financial_revenue numeric;
+
 DO $$
 BEGIN
     IF to_regclass('wb_unit_economics.report_logistics_order_rows') IS NOT NULL THEN

@@ -390,7 +390,7 @@ WB Finance и Ozon всегда сначала сохраняют immutable raw-
 получает `rowPersistence.status=file_authoritative`.
 
 Downstream-расчет, который еще читает `source_snapshot_rows` (в частности,
-текущий `wb-logistics-v4`), несовместим с автоматическим build в `files_only`.
+текущий `wb-logistics-v5`), несовместим с автоматическим build в `files_only`.
 Его scheduled worker flag остается выключенным до миграции на проверяемый
 file-authoritative reader. Разовый recovery из уже записанного immutable
 snapshot допускается штатным идемпотентным restore-скриптом в `legacy`-режиме;
@@ -582,6 +582,8 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-18: downstream logistics reader повышен до `wb-logistics-v5`; граница
+  `files_only` и требование verified restore не изменились.
 - 2026-07-18: зафиксирована несовместимость downstream logistics-v4 reader с
   автоматическим build в `files_only`, безопасный verified restore для разовой
   staff-приемки и запрет включать scheduled worker до file-authoritative reader
