@@ -178,7 +178,8 @@ documents:
     source_of_truth: true
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
-    summary: "Accepted staff-ready реализация WB-логистики v4: строгий data gate, фактические затраты, проблемные товары, рекомендации и обезличенные цепочки заказов; калькуляторы вне текущего этапа."
+    operational_docs: ["docs/runbooks/wb-logistics-v4-continuation.md"]
+    summary: "Accepted staff-ready реализация WB-логистики v5: строгий data gate, fail-closed финансовые KPI, фактические затраты, рекомендации и обезличенные цепочки заказов."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
     search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
   - path: "docs/specs/client-analytical-report-implementation.md"
@@ -428,12 +429,12 @@ documents:
     source_of_truth: false
     summary: "Компактная AI-навигация, локальные проверки, read-only GitHub CI, commit, push и pre-commit hook."
   - path: "docs/runbooks/wb-logistics-v4-continuation.md"
-    title: "Продолжение работ по WB-логистике v4"
+    title: "Operational state WB-логистики"
     doc_type: "runbook"
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Handoff текущего состояния wb-logistics-v4, проверок, dirty-worktree ограничений и безопасного пути к test-rollout."
+    summary: "Последнее записанное состояние WB-логистики по средам, evidence и безопасный путь к test-rollout v5."
   - path: "docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md"
     title: "Ключевые решения Excel MVP"
     doc_type: "decision"

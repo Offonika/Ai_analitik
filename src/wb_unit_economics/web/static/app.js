@@ -58,14 +58,22 @@ const state = {
   rowPreset: "",
   rowsOffset: 0,
   rowsTotal: 0,
+  rowsSortBy: "",
+  rowsSortDirection: "",
   taxInputPage: 0,
+  taxInputSortBy: "",
+  taxInputSortDirection: "",
   logisticsSummary: null,
   logisticsProducts: [],
   logisticsProductsTotal: 0,
   logisticsProductsOffset: 0,
+  logisticsProductsSortBy: "logisticsTotal",
+  logisticsProductsSortDirection: "desc",
   logisticsOrders: [],
   logisticsOrdersTotal: 0,
   logisticsOrdersOffset: 0,
+  logisticsOrdersSortBy: "financialDate",
+  logisticsOrdersSortDirection: "desc",
   logisticsRequestKey: "",
   logisticsRequestId: 0,
   logisticsOrdersRequestId: 0,
@@ -159,11 +167,15 @@ const els = {
     "#logistics-trust-classification",
   ),
   logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
+  logisticsTrustFreshness: document.querySelector("#logistics-trust-freshness"),
+  logisticsTrustLowSample: document.querySelector("#logistics-trust-low-sample"),
   logisticsStateMessage: document.querySelector("#logistics-state-message"),
+  logisticsStateAction: document.querySelector("#logistics-state-action"),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
   logisticsProductsCount: document.querySelector("#logistics-products-count"),
+  logisticsProductsTable: document.querySelector("#logistics-products-table"),
   logisticsProductsRows: document.querySelector("#logistics-products-rows"),
   logisticsProductsPagination: document.querySelector(
     "#logistics-products-pagination",
@@ -172,6 +184,7 @@ const els = {
   logisticsProductsPage: document.querySelector("#logistics-products-page"),
   logisticsProductsNext: document.querySelector("#logistics-products-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
+  logisticsOrdersTable: document.querySelector("#logistics-orders-table"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
   logisticsOrdersRows: document.querySelector("#logistics-orders-rows"),
   logisticsOrdersClose: document.querySelector("#logistics-orders-close"),
@@ -501,6 +514,7 @@ const els = {
   filterScheme: document.querySelector("#filter-scheme"),
   filterLossClass: document.querySelector("#filter-loss-class"),
   rowsTitle: document.querySelector("#rows-title"),
+  reportRowsTable: document.querySelector("#report-rows-table"),
   reviewRowsHead: document.querySelector("#review-rows-head"),
   reviewRows: document.querySelector("#review-rows"),
   rowsCount: document.querySelector("#rows-count"),
@@ -547,6 +561,8 @@ const FILTER_STATE_STORAGE_KEY = "wb-unit-economics:cabinet-filters:v1";
 document.addEventListener("DOMContentLoaded", init);
 
 function init() {
+  document.addEventListener("sortable-table-sort", onRemoteTableSort);
+  syncRemoteTableSortState();
   configureWorkspaceFromLocation({ replaceInvalid: true });
   configurePageMode();
   els.workspaceNavButtons.forEach((button) => {
@@ -597,6 +613,7 @@ function init() {
     state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
+  els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
   els.logisticsProductsPrev?.addEventListener("click", () => {
     if (state.logisticsProductsOffset <= 0) {
       return;
@@ -900,6 +917,64 @@ function init() {
     applyOnecReconciliationFilters();
   });
   boot();
+}
+
+function setRemoteTableSortState(table, sortKey, direction) {
+  if (!table || !window.SortableTables) {
+    return;
+  }
+  if (sortKey) {
+    window.SortableTables.setSortState(table, sortKey, direction);
+  } else {
+    window.SortableTables.clearSortState(table);
+  }
+}
+
+function syncRemoteTableSortState() {
+  setRemoteTableSortState(
+    els.logisticsProductsTable,
+    state.logisticsProductsSortBy,
+    state.logisticsProductsSortDirection,
+  );
+  setRemoteTableSortState(
+    els.logisticsOrdersTable,
+    state.logisticsOrdersSortBy,
+    state.logisticsOrdersSortDirection,
+  );
+  setRemoteTableSortState(
+    els.reportRowsTable,
+    state.rowsSortBy,
+    state.rowsSortDirection,
+  );
+}
+
+function onRemoteTableSort(event) {
+  const table = event.target;
+  const sortKey = String(event.detail?.sortKey || "");
+  const direction = event.detail?.direction === "desc" ? "desc" : "asc";
+  if (!(table instanceof HTMLTableElement) || !sortKey) {
+    return;
+  }
+  if (table === els.reportRowsTable) {
+    state.rowsSortBy = sortKey;
+    state.rowsSortDirection = direction;
+    state.rowsOffset = 0;
+    loadReviewRows();
+    return;
+  }
+  if (table === els.logisticsProductsTable) {
+    state.logisticsProductsSortBy = sortKey;
+    state.logisticsProductsSortDirection = direction;
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+    return;
+  }
+  if (table === els.logisticsOrdersTable) {
+    state.logisticsOrdersSortBy = sortKey;
+    state.logisticsOrdersSortDirection = direction;
+    state.logisticsOrdersOffset = 0;
+    loadLogisticsOrdersPage();
+  }
 }
 
 function bindAutoApplyingFilters() {
@@ -4560,6 +4635,8 @@ async function loadLogisticsAnalysis(options = {}) {
   const reportId = logisticsAnalysisReportId();
   const summaryParams = logisticsFilterParams();
   const productParams = logisticsFilterParams({
+    sortBy: state.logisticsProductsSortBy,
+    sortOrder: state.logisticsProductsSortDirection,
     offset: state.logisticsProductsOffset,
     limit: LOGISTICS_PAGE_SIZE,
   });
@@ -4632,7 +4709,11 @@ function resetLogisticsWorkspace() {
   els.logisticsTrustKeys.textContent = "—";
   els.logisticsTrustClassification.textContent = "—";
   els.logisticsTrustSlice.textContent = "Нет данных";
+  els.logisticsTrustFreshness.textContent = "—";
+  els.logisticsTrustLowSample.textContent = "—";
   els.logisticsStateMessage.hidden = true;
+  els.logisticsStateAction.hidden = true;
+  els.logisticsStateAction.dataset.action = "";
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
@@ -4660,7 +4741,20 @@ function renderLogisticsLoadError() {
     "Не удалось загрузить логистическую витрину";
   els.logisticsStateMessage.querySelector("p").textContent =
     "Повторите попытку. Ранее показанные числа очищены и не используются как актуальные.";
+  els.logisticsStateAction.hidden = false;
+  els.logisticsStateAction.dataset.action = "retry";
+  els.logisticsStateAction.textContent = "Повторить загрузку";
   renderWorkspaceHeader();
+}
+
+function onLogisticsStateAction() {
+  if (els.logisticsStateAction.dataset.action === "reset-filters") {
+    els.logisticsOrganizationFilter.value = "";
+    els.logisticsSchemeFilter.value = "";
+    els.logisticsProductFilter.value = "";
+    state.logisticsProductsOffset = 0;
+  }
+  loadLogisticsAnalysis({ force: true });
 }
 
 function renderLogisticsWorkspace() {
@@ -4671,34 +4765,61 @@ function renderLogisticsWorkspace() {
     ? "partial"
     : sliceStatus;
   const coverage = summary.coverage || {};
+  const financialLinkMissing = summary.financialMetricStatus
+    === "not_available_missing_profit_link";
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
     partial: `Требует проверки · классификация ${logisticsPercent(coverage.classificationPct)}`,
+    empty: "В выбранном срезе нет логистических операций.",
     blocked: "Расчёт остановлен: обязательная сверка данных не пройдена.",
     needs_rebuild: "Нужна пересборка отчёта на новом проверенном снимке WB.",
   }[status];
-  els.logisticsDataStatus.textContent = statusCopy || "Витрина пока недоступна.";
+  els.logisticsDataStatus.textContent = financialLinkMissing
+    ? "Логистика доступна · Финансовая связь с отчётом отсутствует"
+    : statusCopy || "Витрина пока недоступна.";
   els.logisticsDataStatus.dataset.status = status || "unknown";
   els.logisticsTrustKeys.textContent = logisticsPercent(coverage.keyPct);
   els.logisticsTrustClassification.textContent = logisticsPercent(
     coverage.classificationPct,
   );
-  els.logisticsTrustSlice.textContent = {
+  els.logisticsTrustFreshness.textContent = summary.sourceCoverageEnd
+    ? `по ${formatCompactDate(summary.sourceCoverageEnd)}`
+    : "Дата не указана";
+  els.logisticsTrustLowSample.textContent = coverage.lowSampleProductCount == null
+    ? "Недоступно"
+    : Number(coverage.lowSampleProductCount) === 0
+      ? "Нет"
+      : `${number(coverage.lowSampleProductCount)} товаров (< 10 заказов)`;
+  els.logisticsTrustSlice.textContent = financialLinkMissing
+    ? "Финансовые KPI скрыты до восстановления связи"
+    : ({
     ready: "Полный проверенный срез",
     partial: "Часть операций требует проверки",
+    empty: "Нет операций по фильтрам",
     blocked: "Сверка не пройдена",
     needs_rebuild: "Нужна пересборка",
-  }[status] || "Недоступно";
+  }[status] || "Недоступно");
   els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
+  els.logisticsStateAction.hidden = true;
+  els.logisticsStateAction.dataset.action = "";
   if (!els.logisticsStateMessage.hidden) {
     els.logisticsStateMessage.querySelector("h3").textContent =
-      status === "needs_rebuild"
-        ? "Текущий отчёт собран до появления витрины логистики v4"
+      status === "empty"
+        ? "В выбранном срезе нет логистических операций"
+        : status === "needs_rebuild"
+        ? "Текущий отчёт собран до появления витрины логистики v5"
         : "Логистическая витрина пока не готова";
     els.logisticsStateMessage.querySelector("p").textContent =
-      status === "needs_rebuild"
+      status === "empty"
+        ? "Измените или сбросьте фильтры. Пустой срез не подменяется нулевыми KPI."
+        : status === "needs_rebuild"
         ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
         : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
+    if (status === "empty") {
+      els.logisticsStateAction.hidden = false;
+      els.logisticsStateAction.dataset.action = "reset-filters";
+      els.logisticsStateAction.textContent = "Сбросить фильтры";
+    }
   }
   if (!new Set(["ready", "partial"]).has(status)) {
     renderMetrics(els.logisticsKpiGrid, []);
@@ -4736,7 +4857,7 @@ function renderLogisticsWorkspace() {
       "Доля в выручке",
       logisticsPercent(financialKpis.logisticsSharePct),
       !financialMetricsReady
-        ? "Нет полной недели внутри выбранного периода"
+        ? logisticsFinancialPeriodLabel(financialComparison)
         : financialKpis.revenue > 0
           ? `${financialPeriod} · выручка ${money(financialKpis.revenue)}`
           : "Нет положительной выручки",
@@ -4751,7 +4872,7 @@ function renderLogisticsWorkspace() {
           : "Влияние на прибыль",
       profitEffectReady ? money(Math.abs(profitEffect)) : "—",
       !financialMetricsReady
-        ? "Нет полной недели внутри выбранного периода"
+        ? logisticsFinancialPeriodLabel(financialComparison)
         : financialKpis.profitBeforeTax === null
           ? "Прибыль не связана с витриной"
           : `${financialPeriod} · без логистики ${signedMoney(financialKpis.profitWithoutLogistics)}`,
@@ -4790,9 +4911,14 @@ function logisticsAnalysisReportId() {
 }
 
 function logisticsFinancialPeriodLabel(comparison) {
+  if (normalize(comparison?.status) === "not_available_no_complete_week") {
+    return "Нет полной недели внутри выбранного периода";
+  }
   const start = formatCompactDate(comparison?.periodStart);
   const end = formatCompactDate(comparison?.periodEnd);
-  return start && end ? `За ${start}–${end}` : "Финансовый период недоступен";
+  return start && end
+    ? `За ${start}–${end}`
+    : logisticsFinancialUnavailableText(state.logisticsSummary?.financialMetricStatus);
 }
 
 function renderLogisticsEmpty(target, text) {
@@ -4882,42 +5008,91 @@ function renderLogisticsRecommendations(items) {
     ...items.map((recommendation) => {
       const item = document.createElement("li");
       item.className = "logistics-recommendation";
-      const title = document.createElement("strong");
-      title.textContent = recommendation.title || "Проверить данные";
       const priority = document.createElement("span");
       priority.className = "logistics-priority-badge";
       priority.textContent = Number(recommendation.priority || 0) === 1
         ? "Высокий приоритет"
         : "Проверить";
-      const message = document.createElement("p");
-      message.textContent = recommendation.message || "";
-      const evidence = document.createElement("small");
       const facts = recommendation.evidence || {};
-      const evidenceParts = [];
-      if (facts.product) {
-        evidenceParts.push(facts.product);
-      }
-      if (facts.logisticsSharePct != null) {
-        evidenceParts.push(`доля ${logisticsPercent(facts.logisticsSharePct)}`);
-      }
-      if (facts.reverseLogistics != null) {
-        evidenceParts.push(`обратная логистика ${signedMoney(facts.reverseLogistics)}`);
-      }
-      if (facts.classificationCoveragePct != null) {
-        evidenceParts.push(
-          `классификация ${logisticsPercent(facts.classificationCoveragePct)}`,
+      const grid = document.createElement("div");
+      grid.className = "logistics-recommendation-grid";
+      const zone = logisticsRecommendationField(
+        "Зона",
+        recommendation.title || "Проверить данные",
+        "is-zone",
+      );
+      const amount = logisticsRecommendationField(
+        "Сумма",
+        recommendation.impactAmount == null
+          ? "—"
+          : signedMoney(recommendation.impactAmount),
+        "is-amount",
+      );
+      const evidenceLabels = {
+        fact: "Факт",
+        limitation: "Ограничение",
+        data_quality: "Качество данных",
+      };
+      const evidenceType = evidenceLabels[recommendation.evidenceType]
+        || "Основание";
+      const basisText = facts.product
+        ? `${evidenceType}: ${facts.product}. ${recommendation.message || ""}`
+        : `${evidenceType}: ${recommendation.message || "Рассчитанная витрина отчёта."}`;
+      const basis = logisticsRecommendationField(
+        "Основание / ограничение",
+        basisText,
+        `is-basis is-${recommendation.evidenceType || "fact"}`,
+      );
+      const action = document.createElement("div");
+      action.className = "logistics-recommendation-field is-action";
+      const actionLabel = document.createElement("small");
+      actionLabel.textContent = "Что сделать";
+      action.append(actionLabel);
+      if (recommendation.actionTarget && recommendation.actionLabel) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary-button";
+        button.textContent = recommendation.actionLabel;
+        button.addEventListener("click", () =>
+          runLogisticsRecommendationAction(recommendation),
         );
+        action.append(button);
+      } else {
+        const noAction = document.createElement("span");
+        noAction.textContent = "Нужна новая ревизия отчёта";
+        action.append(noAction);
       }
-      if (facts.affectedOrderRows != null) {
-        evidenceParts.push(`${number(facts.affectedOrderRows)} цепочек затронуто`);
-      }
-      evidence.textContent = evidenceParts.length
-        ? `Факт: ${evidenceParts.join(" · ")}`
-        : "Основание: рассчитанная витрина отчёта.";
-      item.append(priority, title, message, evidence);
+      grid.append(zone, amount, basis, action);
+      item.append(priority, grid);
       return item;
     }),
   );
+}
+
+function logisticsRecommendationField(labelText, valueText, className = "") {
+  const field = document.createElement("div");
+  field.className = `logistics-recommendation-field ${className}`.trim();
+  const label = document.createElement("small");
+  label.textContent = labelText;
+  const value = document.createElement("span");
+  value.textContent = valueText;
+  field.append(label, value);
+  return field;
+}
+
+function runLogisticsRecommendationAction(recommendation) {
+  if (recommendation.actionTarget === "source") {
+    selectTableScenario("wb-expenses", { updateLocation: true, focus: true });
+    return;
+  }
+  const product = recommendation.evidence?.product || "";
+  if (product) {
+    els.logisticsProductFilter.value = product;
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+  }
+  document.querySelector("[aria-labelledby='logistics-products-title']")
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderLogisticsProducts(items) {
@@ -4970,8 +5145,10 @@ function renderLogisticsProducts(items) {
       badge.className = qualityNeedsReview || item.lowSample
         ? "logistics-quality-badge is-warning"
         : "logistics-quality-badge";
-      badge.textContent = qualityNeedsReview
-        ? "Проверить данные"
+      badge.textContent = normalize(item.dataQualityStatus) === "missing_profit_link"
+        ? "Финансовая связь отсутствует"
+        : qualityNeedsReview
+          ? "Проверить данные"
         : item.lowSample
           ? "Малая выборка"
           : "Достаточно данных";
@@ -5040,6 +5217,8 @@ async function loadLogisticsOrdersPage(options = {}) {
   try {
     const params = logisticsFilterParams({
       productRef,
+      sortBy: state.logisticsOrdersSortBy,
+      sortOrder: state.logisticsOrdersSortDirection,
       offset: state.logisticsOrdersOffset,
       limit: LOGISTICS_PAGE_SIZE,
     });
@@ -5166,6 +5345,16 @@ function logisticsProfitEffectText(value) {
     return `Рост на ${money(Math.abs(amount))}`;
   }
   return money(0);
+}
+
+function logisticsFinancialUnavailableText(status) {
+  if (status === "not_available_missing_profit_link") {
+    return "Финансовая связь с отчётом отсутствует";
+  }
+  if (status === "not_available_partial_week") {
+    return "Финансовые KPI недоступны для выбранной части недели";
+  }
+  return "Финансовые KPI недоступны";
 }
 
 function closeLogisticsOrders() {
@@ -12452,7 +12641,7 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
     renderAnalyticsEmpty(target, "Нет выделенного входящего НДС для сверки.");
     return;
   }
-  const sourceRows = allRows;
+  const sourceRows = sortTaxInputRows(allRows);
   const totalCharges = sourceRows.reduce(
     (total, row) => total + Number(row.vatInputFromWbCharges || 0),
     0,
@@ -12502,21 +12691,24 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
   wrap.className = "table-wrap tax-input-table-wrap";
   const table = document.createElement("table");
   table.className = "products-table data-table tax-input-semantic-table";
+  table.dataset.sortMode = "remote";
+  table.dataset.sortScope = "tax-input";
   const thead = table.createTHead();
   const header = thead.insertRow();
   [
-    "Неделя / статус",
-    "Кабинет",
-    "Организация",
-    "Начислено WB",
-    "Сторно WB",
-    "Нетто WB",
-    "Документы 1С",
-    "Разница / вычет",
-  ].forEach((label) => {
+    ["Неделя / статус", "week"],
+    ["Кабинет", "cabinet"],
+    ["Организация", "organization"],
+    ["Начислено WB", "vatInputFromWbCharges"],
+    ["Сторно WB", "vatInputFromWbReversals"],
+    ["Нетто WB", "vatInputFromWb"],
+    ["Документы 1С", "vatInputFrom1c"],
+    ["Разница / вычет", "vatInputDifference"],
+  ].forEach(([label, sortKey]) => {
     const cell = document.createElement("th");
     cell.scope = "col";
     cell.textContent = label;
+    cell.dataset.sortKey = sortKey;
     header.append(cell);
   });
   const tbody = table.createTBody();
@@ -12549,6 +12741,17 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
       cell.textContent = value;
     });
   });
+  table.addEventListener("sortable-table-sort", (event) => {
+    state.taxInputSortBy = String(event.detail?.sortKey || "");
+    state.taxInputSortDirection = event.detail?.direction === "desc" ? "desc" : "asc";
+    state.taxInputPage = 0;
+    renderTaxInputReconciliation(target, allRows, taxContext);
+  });
+  setRemoteTableSortState(
+    table,
+    state.taxInputSortBy,
+    state.taxInputSortDirection,
+  );
   wrap.append(table);
 
   const pagination = document.createElement("div");
@@ -12573,6 +12776,28 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
   });
   pagination.append(previous, pageLabel, next);
   target.replaceChildren(toolbar, summary, wrap, pagination);
+}
+
+function sortTaxInputRows(rows) {
+  if (!state.taxInputSortBy || !window.SortableTables) {
+    return rows;
+  }
+  const direction = state.taxInputSortDirection === "desc"
+    ? "descending"
+    : "ascending";
+  return rows
+    .map((row, originalIndex) => ({ row, originalIndex }))
+    .sort((left, right) => {
+      const leftValue = window.SortableTables.parseSortValue(
+        left.row[state.taxInputSortBy],
+      );
+      const rightValue = window.SortableTables.parseSortValue(
+        right.row[state.taxInputSortBy],
+      );
+      return window.SortableTables.compareValues(leftValue, rightValue, direction)
+        || left.originalIndex - right.originalIndex;
+    })
+    .map((item) => item.row);
 }
 
 function vatDeductionModeLabel(value) {
@@ -13825,6 +14050,49 @@ function ozonRowsCountText(rows, allRows, rowCount) {
 const STATUS_COLUMN_TOOLTIP =
   "Зелёный — строка готова к отчёту. Жёлтый — нужна проверка: сопоставление, документ или неполные данные. Красный — блокирует отправку: нет себестоимости, ошибка или строка исключена.";
 
+const WB_REPORT_ROW_HEADERS = [
+  ["Товар", "product"],
+  ["Артикул WB", "articleWb"],
+  ["Артикул 1С", "article1c"],
+  ["Баркод", "barcode"],
+  ["nmId", "nmId"],
+  ["Кабинет", "cabinet"],
+  ["Организация", "organization"],
+  ["Схема", "scheme"],
+  ["Статус", "status"],
+  ["Месяц 1С", "month"],
+  ["Продажи", "sales"],
+  ["Возвраты", "returns"],
+  ["Чистое кол-во", "netQty"],
+  ["Выручка до СПП", "revenueBeforeSpp"],
+  ["СПП", "spp"],
+  ["Выручка после СПП", "revenue"],
+  ["Выручка для прибыли", "pnlRevenue"],
+  ["Себестоимость", "cost"],
+  ["Комиссия WB", "commission"],
+  ["Логистика", "logistics"],
+  ["Хранение", "storage"],
+  ["Приемка", "acceptance"],
+  ["Продвижение", "promotion"],
+  ["Штрафы/доплаты", "penalties"],
+  ["Эквайринг", "acquiring"],
+  ["НДС-корректировка P&L", "pnlVatAdjustment"],
+  ["Прибыль до включ. налогов", "profitBeforeTax"],
+  ["Исходящий НДС", "vatOutput"],
+  ["Входящий НДС", "vatInput"],
+  ["НДС к уплате", "vatPayable"],
+  ["База НДФЛ", "incomeTaxBase"],
+  ["НДФЛ", "incomeTax"],
+  ["Налоги, включенные в итог", "includedTaxes"],
+  ["Итог после включ. налогов", "profit"],
+  ["Маржа", "margin"],
+  ["На шт", "unitProfit"],
+  ["Учетная дата 1С", "accountingPeriodDate"],
+  ["Документ-отчет", "documentReport"],
+  ["Отчет WB", "wbReportId"],
+  ["Дата отчета", "wbReportDate"],
+];
+
 function renderReportRowsHeader(mode) {
   if (!els.reviewRowsHead) {
     return;
@@ -13846,59 +14114,29 @@ function renderReportRowsHeader(mode) {
           "Номенклатура 1C",
           "Статус",
           "Причина / действие",
-        ]
-      : [
-          "Товар",
-          "Артикул WB",
-          "Артикул 1С",
-          "Баркод",
-          "nmId",
-          "Кабинет",
-          "Организация",
-          "Схема",
-          "Статус",
-          "Месяц 1С",
-          "Продажи",
-          "Возвраты",
-          "Чистое кол-во",
-          "Выручка до СПП",
-          "СПП",
-          "Выручка после СПП",
-          "Выручка для прибыли",
-          "Себестоимость",
-          "Комиссия WB",
-          "Логистика",
-          "Хранение",
-          "Приемка",
-          "Продвижение",
-          "Штрафы/доплаты",
-          "Эквайринг",
-          "НДС-корректировка P&L",
-          "Прибыль до включ. налогов",
-          "Исходящий НДС",
-          "Входящий НДС",
-          "НДС к уплате",
-          "База НДФЛ",
-          "НДФЛ",
-          "Налоги, включенные в итог",
-          "Итог после включ. налогов",
-          "Маржа",
-          "На шт",
-          "Учетная дата 1С",
-          "Документ-отчет",
-          "Отчет WB",
-          "Дата отчета",
-        ];
+        ].map((label) => [label, ""])
+      : WB_REPORT_ROW_HEADERS;
   const row = document.createElement("tr");
-  headers.forEach((label) => {
+  headers.forEach(([label, sortKey]) => {
     const cell = document.createElement("th");
     cell.textContent = label;
+    if (sortKey) {
+      cell.dataset.sortKey = sortKey;
+    }
     if (label === "Статус") {
       cell.dataset.tooltip = STATUS_COLUMN_TOOLTIP;
     }
     row.append(cell);
   });
   els.reviewRowsHead.replaceChildren(row);
+  if (els.reportRowsTable) {
+    els.reportRowsTable.dataset.sortMode = mode === "ozon" ? "local" : "remote";
+    setRemoteTableSortState(
+      els.reportRowsTable,
+      mode === "ozon" ? "" : state.rowsSortBy,
+      state.rowsSortDirection,
+    );
+  }
 }
 
 function reportRowsColumnCount(mode) {
@@ -15192,6 +15430,8 @@ function rowsFilterParams(preset = state.rowPreset) {
     scheme: els.filterScheme.value,
     loss_class: els.filterLossClass.value,
     preset,
+    sort_by: state.rowsSortBy,
+    sort_direction: state.rowsSortDirection,
   };
   Object.entries(values).forEach(([key, value]) => {
     if (value) {
@@ -15226,6 +15466,11 @@ function resetClientScopedState(options = {}) {
   state.rowsRequestKey = "";
   state.rowsOffset = 0;
   state.rowsTotal = 0;
+  state.rowsSortBy = "";
+  state.rowsSortDirection = "";
+  state.taxInputPage = 0;
+  state.taxInputSortBy = "";
+  state.taxInputSortDirection = "";
   state.drilldownRequestKey = "";
   state.drilldownPreset = "review";
   state.cogsReconciliationRequestKey = "";
@@ -15252,9 +15497,13 @@ function resetClientScopedState(options = {}) {
   state.logisticsProducts = [];
   state.logisticsProductsTotal = 0;
   state.logisticsProductsOffset = 0;
+  state.logisticsProductsSortBy = "logisticsTotal";
+  state.logisticsProductsSortDirection = "desc";
   state.logisticsOrders = [];
   state.logisticsOrdersTotal = 0;
   state.logisticsOrdersOffset = 0;
+  state.logisticsOrdersSortBy = "financialDate";
+  state.logisticsOrdersSortDirection = "desc";
   state.logisticsRequestKey = "";
   state.logisticsSelectedProductRef = "";
   state.logisticsSelectedProductLabel = "";
@@ -15268,6 +15517,7 @@ function resetClientScopedState(options = {}) {
   els.onecReconciliationFilterForm.reset();
   els.logisticsFilterForm?.reset();
   resetLogisticsWorkspace();
+  syncRemoteTableSortState();
   syncRowsPresetButtons();
   resetAiPanel();
   els.aiInput.disabled = false;

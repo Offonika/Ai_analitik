@@ -244,7 +244,7 @@ def _canonical_json_list_file_hash(
     digest = hashlib.sha256()
     digest.update(b"[")
     first = True
-    for item in _iter_json_array(path, chunk_size=chunk_size):
+    for item in iter_json_array(path, chunk_size=chunk_size):
         if not first:
             digest.update(b",")
         digest.update(
@@ -261,11 +261,13 @@ def _canonical_json_list_file_hash(
     return digest.hexdigest()
 
 
-def _iter_json_array(
+def iter_json_array(
     path: Path,
     *,
-    chunk_size: int,
+    chunk_size: int = 1024 * 1024,
 ) -> Iterator[Any]:
+    """Yield a top-level JSON array without materializing the whole file."""
+
     decoder = json.JSONDecoder()
     buffer = ""
     pos = 0

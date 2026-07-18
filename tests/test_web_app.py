@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -16,6 +17,7 @@ from sqlalchemy import event, select, text
 
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
+    LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
@@ -1654,10 +1656,22 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-open-ready-report"' not in cabinet.text
     assert "Открыть готовую ревизию" not in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
+    assert 'id="logistics-trust-freshness"' in cabinet.text
+    assert 'id="logistics-trust-low-sample"' in cabinet.text
+    assert 'id="logistics-state-action"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
+    assert cabinet.text.index('id="logistics-kpi-grid"') < cabinet.text.index(
+        'id="logistics-recommendations"'
+    )
+    assert cabinet.text.index('id="logistics-recommendations"') < cabinet.text.index(
+        'id="logistics-trust-strip"'
+    )
+    assert cabinet.text.index('id="logistics-trust-strip"') < cabinet.text.index(
+        'id="logistics-filter-form"'
+    )
     assert "loadLogisticsAnalysis" in script.text
     assert "function logisticsAnalysisReportId" in script.text
     assert "item.periodStart <= requestedStart" in script.text
@@ -1667,15 +1681,21 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "function logisticsFinancialPeriodLabel" in script.text
     assert "Нет полной недели внутри выбранного периода" in script.text
     assert "function renderTableScenarioSummary" in script.text
-    assert "Текущий отчёт собран до появления витрины логистики v4" in script.text
+    assert "Текущий отчёт собран до появления витрины логистики v5" in script.text
     assert 'reportId: params.get("report_id") || ""' in script.text
     assert "item.id === requestedReportId" in script.text
     assert "state.logisticsProductsTotal = Number(products.total || 0)" in script.text
     assert "state.logisticsOrdersTotal = Number(payload.total || 0)" in script.text
     assert "logisticsProfitEffectText(item.profitEffectAmount)" in script.text
+    assert "Финансовая связь с отчётом отсутствует" in script.text
+    assert "Финансовая связь отсутствует" in script.text
     assert "Корректировка — схема не применяется" in script.text
     assert 'dataStatus === "partial" && sliceStatus === "ready"' in script.text
-    assert 'qualityNeedsReview\n        ? "Проверить данные"' in script.text
+    assert 'normalize(item.dataQualityStatus) === "missing_profit_link"' in script.text
+    assert '? "Проверить данные"' in script.text
+    assert '"Основание / ограничение"' in script.text
+    assert '"Что сделать"' in script.text
+    assert 'status === "empty"' in script.text
 
     full_week = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
     summary = client.get("/api/reports/report-1/logistics/summary", params=full_week)
@@ -1688,6 +1708,11 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert summary.json()["dataStatus"] == "ready"
     assert summary.json()["sliceStatus"] == "ready"
     assert summary.json()["financialMetricStatus"] == "ready"
+    assert summary.json()["methodologyVersion"] == LOGISTICS_METHODOLOGY_VERSION
+    assert summary.json()["classifierVersion"] == LOGISTICS_CLASSIFIER_VERSION
+    assert summary.json()["chainKeyVersion"] == CHAIN_KEY_VERSION
+    assert datetime.fromisoformat(summary.json()["generatedAt"])
+    assert summary.json()["coverage"]["lowSampleProductCount"] == 1
     assert summary.json()["filterContext"]["dateGrain"] == "calendar_day"
     assert summary.json()["reportCoverage"]["maxDimensionDelta"] == 0
     assert summary.json()["reportCoverage"]["invalidReportRows"] == 0
@@ -1721,6 +1746,13 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     }
     report_list = client.get("/api/clients/shumeyko/reports").json()["items"]
     assert report_list[0]["logisticsDataStatus"] == "ready"
+    recommendation = summary.json()["recommendations"][0]
+    assert {
+        "impactAmount",
+        "evidenceType",
+        "actionTarget",
+        "actionLabel",
+    } <= recommendation.keys()
     assert products.status_code == 200
     assert products.json()["limit"] == 1000
     assert products.json()["items"][0]["lowSample"] is True
@@ -1772,6 +1804,15 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert comparison["kpis"]["revenue"] == 100
     assert comparison["kpis"]["logisticsSharePct"] == 10
     assert comparison["kpis"]["profitEffectAmount"] == -10
+    empty = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={**full_week, "product": "товар-которого-нет"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["financialMetricStatus"] == "not_available_empty_slice"
+    assert empty["kpis"]["logisticsTotal"] is None
+    assert empty["components"]["forward"] is None
+    assert empty["recommendations"] == []
 
 
 def test_logistics_correction_segment_does_not_count_as_order(tmp_path: Path) -> None:
@@ -1902,6 +1943,122 @@ def test_logistics_quality_status_is_visible_in_slice_and_product(
         "review_data_quality"
     ) < [item["code"] for item in recommendations].index("check_margin")
     assert products["items"][0]["dataQualityStatus"] == "partial"
+
+
+def test_logistics_missing_profit_link_fails_financial_slice_closed(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        sku_row = db.query(ReportLogisticsSkuRow).one()
+        order_values = {
+            column.name: getattr(order_row, column.name)
+            for column in ReportLogisticsOrderRow.__table__.columns
+            if column.name != "id"
+        }
+        order_values.update(
+            {
+                "chain_key": "a" * 64,
+                "chain_segment_key": "b" * 64,
+                "product_ref": "product:missing-profit-link",
+                "product_key": "nm:202",
+                "nm_id": "202",
+                "sku": "sku-202",
+                "vendor_code": "A-202",
+                "product": "Товар без финансовой связи",
+                "source_revenue": Decimal("999"),
+                "source_hash_digest": "c" * 64,
+            }
+        )
+        db.add(ReportLogisticsOrderRow(**order_values))
+        sku_values = {
+            column.name: getattr(sku_row, column.name)
+            for column in ReportLogisticsSkuRow.__table__.columns
+            if column.name != "id"
+        }
+        sku_values.update(
+            {
+                "row_uid": "d" * 64,
+                "product_ref": "product:missing-profit-link",
+                "product_key": "nm:202",
+                "nm_id": "202",
+                "sku": "sku-202",
+                "vendor_code": "A-202",
+                "product": "Товар без финансовой связи",
+                "revenue": Decimal("999"),
+                "financial_revenue": None,
+                "profit_before_tax": None,
+                "profit_without_logistics": None,
+                "profit_effect_amount": Decimal("-10"),
+                "logistics_share_pct": None,
+                "data_quality_status": "missing_profit_link",
+                "recommendation_flags": ["restore_profit_link"],
+                "source_hash_digest": "e" * 64,
+            }
+        )
+        db.add(ReportLogisticsSkuRow(**sku_values))
+        db.commit()
+    login(client)
+
+    filters = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
+    summary = client.get(
+        "/api/reports/report-1/logistics/summary", params=filters
+    ).json()
+    products = client.get(
+        "/api/reports/report-1/logistics/products", params=filters
+    ).json()
+
+    assert summary["dataStatus"] == "ready"
+    assert summary["sliceStatus"] == "partial"
+    assert (
+        summary["financialMetricStatus"]
+        == "not_available_missing_profit_link"
+    )
+    assert summary["coverage"]["missingProfitLinks"] == 1
+    assert summary["coverage"]["missingProfitLinkAmount"] == 10
+    assert summary["coverage"]["dataQualityIssues"] == 0
+    assert summary["kpis"]["logisticsTotal"] == 20
+    for key in (
+        "revenue",
+        "logisticsSharePct",
+        "profitBeforeTax",
+        "profitWithoutLogistics",
+        "profitEffectAmount",
+    ):
+        assert summary["kpis"][key] is None
+    assert summary["dynamics"][0]["revenue"] is None
+    assert summary["dynamics"][0]["logisticsSharePct"] is None
+    assert len(summary["rankings"]["byTotal"]) == 2
+    assert summary["rankings"]["byRevenueShare"] == []
+    assert summary["rankings"]["byProfitEffect"] == []
+    restore_link = next(
+        item
+        for item in summary["recommendations"]
+        if item["code"] == "restore_profit_link"
+    )
+    assert restore_link["impactAmount"] == 10
+    assert restore_link["evidenceType"] == "data_quality"
+    assert restore_link["actionTarget"] == "source"
+    assert "review_data_quality" not in {
+        item["code"] for item in summary["recommendations"]
+    }
+
+    assert products["financialMetricStatus"] == (
+        "not_available_missing_profit_link"
+    )
+    assert all(item["revenue"] is None for item in products["items"])
+    assert all(item["profitEffectAmount"] is None for item in products["items"])
+    missing = next(
+        item for item in products["items"] if item["productKey"] == "nm:202"
+    )
+    assert missing["logisticsTotal"] == 10
+    assert missing["dataQualityStatus"] == "missing_profit_link"
+    assert missing["recommendationFlags"] == ["restore_profit_link"]
 
 
 def test_logistics_api_rejects_inverted_and_outside_periods(tmp_path: Path) -> None:
@@ -2106,6 +2263,43 @@ def test_logistics_persistence_rejects_repeat_for_same_report(tmp_path: Path) ->
             repository.replace_report_logistics_analysis(db, report, result)
 
 
+def test_logistics_persistence_keeps_missing_financial_link_without_zero_sentinel(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        source_only_sku = replace(
+            result.sku_rows[0],
+            source_revenue=Decimal("125"),
+            revenue=None,
+            profit_before_tax=None,
+            profit_without_logistics=None,
+            profit_effect_amount=None,
+            logistics_share_pct=None,
+            data_quality_status="missing_profit_link",
+            recommendation_flags=("restore_profit_link",),
+        )
+        repository.replace_report_logistics_analysis(
+            db,
+            report,
+            replace(result, sku_rows=(source_only_sku,)),
+        )
+        db.flush()
+
+        persisted = db.query(ReportLogisticsSkuRow).one()
+        assert persisted.revenue == Decimal("125")
+        assert persisted.financial_revenue is None
+        assert persisted.profit_before_tax is None
+        assert persisted.profit_effect_amount == Decimal("-10")
+
+
 def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten(
     tmp_path: Path,
 ) -> None:
@@ -2193,6 +2387,9 @@ def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten(
         item["product"] != "Product 11" for item in payload["rankings"]["byTotal"]
     )
     assert recommendation["evidence"]["product"] == "Product 11"
+    assert recommendation["evidenceType"] == "limitation"
+    assert recommendation["actionTarget"] == "products"
+    assert "Причина недоступна в Finance" in recommendation["message"]
 
 
 def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
@@ -2335,6 +2532,18 @@ def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
         db.commit()
 
     login(client)
+    for sort_by in sorted(repository.LOGISTICS_PRODUCT_SORT_KEYS):
+        response = client.get(
+            "/api/reports/report-1/logistics/products",
+            params={
+                "periodStart": "2026-04-06",
+                "periodEnd": "2026-04-12",
+                "sortBy": sort_by,
+                "sortOrder": "asc",
+                "limit": 1,
+            },
+        )
+        assert response.status_code == 200, (sort_by, response.text)
     products = client.get(
         "/api/reports/report-1/logistics/products",
         params={
@@ -2345,7 +2554,44 @@ def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
     ).json()
     assert products["total"] == 2
     assert len(products["items"]) == 1
+    products_ascending = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "sortBy": "logisticsTotal",
+            "sortOrder": "asc",
+            "limit": 1,
+        },
+    ).json()
+    products_descending = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "sortBy": "logisticsTotal",
+            "sortOrder": "desc",
+            "limit": 1,
+        },
+    ).json()
+    assert (
+        products_ascending["items"][0]["logisticsTotal"]
+        < products_descending["items"][0]["logisticsTotal"]
+    )
     product_ref = products["items"][0]["productRef"]
+    for sort_by in sorted(repository.LOGISTICS_ORDER_SORT_KEYS):
+        response = client.get(
+            "/api/reports/report-1/logistics/orders",
+            params={
+                "periodStart": "2026-04-06",
+                "periodEnd": "2026-04-12",
+                "productRef": product_ref,
+                "sortBy": sort_by,
+                "sortOrder": "asc",
+                "limit": 1,
+            },
+        )
+        assert response.status_code == 200, (sort_by, response.text)
     first_order_page = client.get(
         "/api/reports/report-1/logistics/orders",
         params={
@@ -2368,9 +2614,36 @@ def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
     ).json()
     assert first_order_page["total"] == 2
     assert second_order_page["total"] == 2
-    assert first_order_page["items"][0]["chainRef"] != second_order_page["items"][0][
-        "chainRef"
-    ]
+    assert (
+        first_order_page["items"][0]["chainRef"]
+        != second_order_page["items"][0]["chainRef"]
+    )
+    ascending_order = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "productRef": product_ref,
+            "sortBy": "logisticsTotal",
+            "sortOrder": "asc",
+            "limit": 1,
+        },
+    ).json()
+    descending_order = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "productRef": product_ref,
+            "sortBy": "logisticsTotal",
+            "sortOrder": "desc",
+            "limit": 1,
+        },
+    ).json()
+    assert (
+        ascending_order["items"][0]["logisticsTotal"]
+        < descending_order["items"][0]["logisticsTotal"]
+    )
 
     classified = client.get(
         "/api/reports/report-1/logistics/summary",
@@ -2491,7 +2764,7 @@ def test_required_logistics_context_missing_or_outdated_blocks_publication(
         assert report is not None
         context = db.get(ReportLogisticsAnalysisContext, report.id)
         assert context is not None
-        context.methodology_version = "wb-logistics-v2"
+        context.methodology_version = "wb-logistics-v4"
         db.commit()
         outdated = repository.report_publication_blockers(db, report)
         blocker = next(
@@ -3814,10 +4087,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-daily-facts-replacement-index-v7"
+        "20260718-logistics-v5-daily-facts-v7-global-sorting-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260718-daily-facts-replacement-index-v7"
+        "20260718-logistics-v5-daily-facts-v7-global-sorting-v1"
     )
 
     page = client.get("/")
@@ -3968,9 +4241,13 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260718-daily-facts-replacement-index-v7" in cabinet.text
+        "styles.css?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1"
+        in cabinet.text
     )
-    assert "app.js?v=20260718-daily-facts-replacement-index-v7" in cabinet.text
+    assert (
+        "app.js?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1"
+        in cabinet.text
+    )
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -4134,13 +4411,15 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     cabinet = client.get("/cabinet")
     workflow_page = client.get("/static/accounting-workflows.html")
     script = client.get("/static/sortable-tables.js")
+    app_script = client.get("/static/app.js")
     styles = client.get("/static/sortable-tables.css")
 
     assert cabinet.status_code == 200
     assert workflow_page.status_code == 200
     assert script.status_code == 200
+    assert app_script.status_code == 200
     assert styles.status_code == 200
-    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v2"
+    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v3"
     stylesheet_path = "/static/sortable-tables.css?v=20260718-column-sorting-v1"
     assert asset_path in cabinet.text
     assert asset_path in workflow_page.text
@@ -4154,6 +4433,17 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     assert "if (indicator.textContent !== value)" in script.text
     assert 'setIndicatorText(indicator, "↕")' in script.text
     assert 'left.kind === "empty" ? 1 : -1' in script.text
+    assert 'new CustomEvent("sortable-table-sort"' in script.text
+    assert 'table.dataset.sortMode === "remote"' in script.text
+    assert 'id="report-rows-table"' in cabinet.text
+    assert 'data-sort-key="logisticsTotal"' in cabinet.text
+    assert 'data-sort-disabled="true"' in cabinet.text
+    assert "sort_by: state.rowsSortBy" in app_script.text
+    assert "sortBy: state.logisticsProductsSortBy" in app_script.text
+    assert "sortBy: state.logisticsOrdersSortBy" in app_script.text
+    assert 'table.dataset.sortScope = "tax-input"' in app_script.text
+    assert "function sortTaxInputRows(rows)" in app_script.text
+    assert "state.rowsOffset = 0;" in app_script.text
     assert ".sortable-table-header[aria-sort]" in styles.text
 
 
@@ -7273,6 +7563,116 @@ def test_informational_payout_status_does_not_fail_document_reconciliation(
     }
 
 
+@pytest.mark.parametrize(
+    "adjustment_type",
+    ["Корректировка 1С", "Корректировка себестоимости 1С"],
+)
+def test_onec_adjustment_is_informational_for_document_readiness(
+    tmp_path: Path,
+    adjustment_type: str,
+) -> None:
+    payload = deepcopy(sample_payload())
+    payload["documentReconciliation"].append(
+        {
+            **payload["documentReconciliation"][0],
+            "id": f"doc-recon-{adjustment_type}",
+            "status": adjustment_type,
+            "documentType": adjustment_type,
+            "documentReport": adjustment_type,
+            "periodStatus": "период 1С",
+            "wbReportIds": "",
+            "onecDocuments": "Документ корректировки 1С",
+            "quantityDelta": None,
+            "amountDelta": None,
+            "settlementDelta": None,
+        }
+    )
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+
+    summary = client.get("/api/reports/report-1/summary").json()
+    delta_only = client.get(
+        "/api/reports/report-1/document-reconciliation",
+        params={"delta_only": "true"},
+    ).json()
+
+    assert summary["quality"]["documentReconciliationIssues"] == 0
+    assert "onec_reconciliation_review" not in {
+        reason["code"] for reason in summary["readiness"]["reviewReasons"]
+    }
+    assert delta_only["total"] == 0
+
+
+def test_out_of_period_unmatched_onec_document_is_hidden_fail_closed(
+    tmp_path: Path,
+) -> None:
+    payload = deepcopy(sample_payload())
+    base = payload["documentReconciliation"][0]
+    payload["documentReconciliation"].extend(
+        [
+            {
+                **base,
+                "id": "doc-recon-outside-period",
+                "status": "Лишний документ в 1С",
+                "periodStatus": "период 1С",
+                "salesPeriod": "2026-02-16 - 2026-02-22",
+                "salesPeriodStart": "2026-02-16",
+                "salesPeriodEnd": "2026-02-22",
+                "expectedDocumentDate": "",
+                "summaryReportId": "",
+                "weeklySalesReportId": "",
+                "weeklyBuyoutReportId": "",
+                "wbReportIds": "",
+                "onecDocuments": "OUTSIDE-PERIOD",
+                "onecDocumentDates": "2026-02-22",
+                "quantityDelta": None,
+                "amountDelta": None,
+                "settlementDelta": None,
+            },
+            {
+                **base,
+                "id": "doc-recon-inside-period",
+                "status": "Лишний документ в 1С",
+                "periodStatus": "период 1С",
+                "salesPeriod": "2026-05-11 - 2026-05-17",
+                "salesPeriodStart": "2026-05-11",
+                "salesPeriodEnd": "2026-05-17",
+                "expectedDocumentDate": "",
+                "summaryReportId": "",
+                "weeklySalesReportId": "",
+                "weeklyBuyoutReportId": "",
+                "wbReportIds": "",
+                "onecDocuments": "INSIDE-PERIOD",
+                "onecDocumentDates": "2026-05-17",
+                "quantityDelta": None,
+                "amountDelta": None,
+                "settlementDelta": None,
+            },
+        ]
+    )
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+
+    summary = client.get("/api/reports/report-1/summary").json()
+    rows = client.get("/api/reports/report-1/document-reconciliation").json()
+    delta_only = client.get(
+        "/api/reports/report-1/document-reconciliation",
+        params={"delta_only": "true"},
+    ).json()
+
+    assert summary["quality"]["documentReconciliationRows"] == 2
+    assert summary["quality"]["documentReconciliationIssues"] == 1
+    assert "OUTSIDE-PERIOD" not in {
+        item["onecDocuments"] for item in summary["documentReconciliation"]
+    }
+    assert rows["total"] == 2
+    assert "OUTSIDE-PERIOD" not in {
+        item["onecDocuments"] for item in rows["items"]
+    }
+    assert delta_only["total"] == 1
+    assert delta_only["items"][0]["onecDocuments"] == "INSIDE-PERIOD"
+
+
 def test_buyout_amount_and_return_deltas_are_informational(tmp_path: Path) -> None:
     payload = deepcopy(sample_payload())
     payload["documentReconciliation"] = [
@@ -8094,7 +8494,9 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
                 "id": f"unit-large-{index}",
                 "product": f"{base['product']} {index}",
                 "nmId": f"{base['nmId']}-{index}",
+                "articleWb": "" if index < 2 else f"WB-{index:04d}",
                 "barcode": f"{base['barcode']}-{index}",
+                "sales": index,
             }
         )
     payload["unitRows"] = rows
@@ -8130,6 +8532,67 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
     assert len(second_page_payload["items"]) == 100
     assert second_page_payload["items"][0]["id"] != rows_payload["items"][0]["id"]
 
+    sorted_first_page = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 100,
+            "offset": 0,
+            "sort_by": "sales",
+            "sort_direction": "desc",
+        },
+    ).json()
+    sorted_second_page = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 100,
+            "offset": 100,
+            "sort_by": "sales",
+            "sort_direction": "desc",
+        },
+    ).json()
+    assert [row["sales"] for row in sorted_first_page["items"]] == list(
+        range(1199, 1099, -1)
+    )
+    assert [row["sales"] for row in sorted_second_page["items"]] == list(
+        range(1099, 999, -1)
+    )
+
+    ascending_articles = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 2,
+            "offset": 1198,
+            "sort_by": "articleWb",
+            "sort_direction": "asc",
+        },
+    ).json()
+    descending_articles = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 2,
+            "offset": 1198,
+            "sort_by": "articleWb",
+            "sort_direction": "desc",
+        },
+    ).json()
+    assert [row["articleWb"] for row in ascending_articles["items"]] == ["", ""]
+    assert [row["articleWb"] for row in descending_articles["items"]] == ["", ""]
+
+    assert (
+        client.get(
+            "/api/reports/report-1/rows",
+            params={"sort_by": "notAColumn", "sort_direction": "asc"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.get(
+            "/api/reports/report-1/rows",
+            params={"sort_by": "sales", "sort_direction": "sideways"},
+        ).status_code
+        == 400
+    )
+
     capped_rows_response = client.get(
         "/api/reports/report-1/rows",
         params={"limit": 5000},
@@ -8138,6 +8601,22 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
     capped_rows_payload = capped_rows_response.json()
     assert capped_rows_payload["total"] == 1200
     assert len(capped_rows_payload["items"]) == 1000
+
+
+def test_report_rows_accept_every_whitelisted_sort_column(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+
+    for sort_by in sorted(repository.REPORT_ROW_SORT_KEYS):
+        response = client.get(
+            "/api/reports/report-1/rows",
+            params={
+                "limit": 1,
+                "sort_by": sort_by,
+                "sort_direction": "asc",
+            },
+        )
+        assert response.status_code == 200, (sort_by, response.text)
 
 
 def test_missing_cost_drilldown_separates_review_and_absent_cost(

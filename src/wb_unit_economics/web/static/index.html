@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260718-daily-facts-replacement-index-v7"
+      content="20260718-logistics-v5-daily-facts-v7-global-sorting-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260718-daily-facts-replacement-index-v7"
+      href="/static/styles.css?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1"
     />
     <link
       rel="stylesheet"
@@ -381,6 +381,38 @@
             </p>
           </div>
 
+          <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
+
+          <section id="logistics-state-message" class="panel logistics-state-message" hidden>
+            <h3>Для текущего отчёта нет готовой логистической витрины</h3>
+            <p class="muted">
+              Числа не подменяются нулями. Нужна новая ревизия отчёта,
+              собранная на проверенном снимке WB по методике v5.
+            </p>
+            <button id="logistics-state-action" type="button" class="secondary-button" hidden>
+              Повторить загрузку
+            </button>
+          </section>
+
+          <section class="panel logistics-priority-panel" aria-labelledby="logistics-recommendations-title">
+            <p class="eyebrow">Что проверить в первую очередь</p>
+            <h3 id="logistics-recommendations-title">Приоритетные зоны по фактам</h3>
+            <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
+            <p class="logistics-overlap-note">Суммы в зонах не складываются: один товар может одновременно попадать в несколько проверок.</p>
+          </section>
+
+          <div id="logistics-trust-strip" class="logistics-trust-strip" aria-label="Доверие к расчёту">
+            <span><small>Классификация</small><strong id="logistics-trust-classification">—</strong></span>
+            <span><small>Полнота среза</small><strong id="logistics-trust-slice">—</strong></span>
+            <span><small>Свежесть источника</small><strong id="logistics-trust-freshness">—</strong></span>
+            <span><small>Малая выборка</small><strong id="logistics-trust-low-sample">—</strong></span>
+          </div>
+
+          <details class="logistics-technical-details">
+            <summary>Техническое покрытие</summary>
+            <p>Покрытие ключей: <strong id="logistics-trust-keys">—</strong>. Основание: сверенный read-only снимок WB.</p>
+          </details>
+
           <form id="logistics-filter-form" class="panel logistics-filters">
             <label>
               Организация
@@ -406,42 +438,18 @@
             <button type="submit" class="secondary-button">Показать</button>
           </form>
 
-          <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
-
-          <div id="logistics-trust-strip" class="logistics-trust-strip" aria-label="Доверие к расчёту">
-            <span><small>Ключи</small><strong id="logistics-trust-keys">—</strong></span>
-            <span><small>Классификация</small><strong id="logistics-trust-classification">—</strong></span>
-            <span><small>Полнота среза</small><strong id="logistics-trust-slice">—</strong></span>
-            <span><small>Основание</small><strong>Сверенный снимок WB</strong></span>
-          </div>
-
-          <section id="logistics-state-message" class="panel logistics-state-message" hidden>
-            <h3>Для текущего отчёта нет готовой логистической витрины</h3>
-            <p class="muted">
-              Числа не подменяются нулями. Нужна новая ревизия отчёта,
-              собранная на проверенном снимке WB по методике v4.
-            </p>
-          </section>
-
           <div class="logistics-grid-two">
-            <section class="panel" aria-labelledby="logistics-recommendations-title">
-              <p class="eyebrow">Что проверить в первую очередь</p>
-              <h3 id="logistics-recommendations-title">Приоритетные зоны по фактам</h3>
-              <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
-              <p class="logistics-overlap-note">Суммы в зонах не складываются: один товар может одновременно попадать в несколько проверок.</p>
-            </section>
             <section class="panel" aria-labelledby="logistics-components-title">
               <p class="eyebrow">Состав подтверждённого расхода</p>
               <h3 id="logistics-components-title">Прямая и обратная часть</h3>
               <div id="logistics-components" class="logistics-components"></div>
             </section>
+            <section class="panel" aria-labelledby="logistics-dynamics-title">
+              <p class="eyebrow">Динамика</p>
+              <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
+              <div id="logistics-dynamics" class="logistics-dynamics"></div>
+            </section>
           </div>
-
-          <section class="panel" aria-labelledby="logistics-dynamics-title">
-            <p class="eyebrow">Динамика</p>
-            <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
-            <div id="logistics-dynamics" class="logistics-dynamics"></div>
-          </section>
 
           <section class="panel" aria-labelledby="logistics-products-title">
             <div class="logistics-section-heading">
@@ -452,17 +460,21 @@
               <span id="logistics-products-count" class="muted"></span>
             </div>
             <div class="table-wrap">
-              <table class="logistics-table">
+              <table
+                id="logistics-products-table"
+                class="logistics-table"
+                data-sort-mode="remote"
+              >
                 <thead>
                   <tr>
-                    <th scope="col">Товар</th>
-                    <th scope="col">Логистика</th>
-                    <th scope="col">Доля</th>
-                    <th scope="col">Заказы</th>
-                    <th scope="col">Возвраты</th>
-                    <th scope="col">Влияние на прибыль</th>
-                    <th scope="col">Качество</th>
-                    <th scope="col"><span class="visually-hidden">Действие</span></th>
+                    <th scope="col" data-sort-key="product">Товар</th>
+                    <th scope="col" data-sort-key="logisticsTotal">Логистика</th>
+                    <th scope="col" data-sort-key="logisticsSharePct">Доля</th>
+                    <th scope="col" data-sort-key="orderCount">Заказы</th>
+                    <th scope="col" data-sort-key="returnQuantity">Возвраты</th>
+                    <th scope="col" data-sort-key="profitEffectAmount">Влияние на прибыль</th>
+                    <th scope="col" data-sort-key="quality">Качество</th>
+                    <th scope="col" data-sort-disabled="true"><span class="visually-hidden">Действие</span></th>
                   </tr>
                 </thead>
                 <tbody id="logistics-products-rows"></tbody>
@@ -501,17 +513,21 @@
               </button>
             </div>
             <div class="table-wrap">
-              <table class="logistics-table">
+              <table
+                id="logistics-orders-table"
+                class="logistics-table"
+                data-sort-mode="remote"
+              >
                 <thead>
                   <tr>
-                    <th scope="col">Цепочка</th>
-                    <th scope="col">Период операции</th>
-                    <th scope="col">Прямая</th>
-                    <th scope="col">Обратная</th>
-                    <th scope="col">Итого</th>
-                    <th scope="col">Продажи</th>
-                    <th scope="col">Возвраты</th>
-                    <th scope="col">Статус</th>
+                    <th scope="col" data-sort-key="chainRef">Цепочка</th>
+                    <th scope="col" data-sort-key="financialDate">Период операции</th>
+                    <th scope="col" data-sort-key="logisticsForward">Прямая</th>
+                    <th scope="col" data-sort-key="logisticsReverse">Обратная</th>
+                    <th scope="col" data-sort-key="logisticsTotal">Итого</th>
+                    <th scope="col" data-sort-key="salesQuantity">Продажи</th>
+                    <th scope="col" data-sort-key="returnQuantity">Возвраты</th>
+                    <th scope="col" data-sort-key="classificationStatus">Статус</th>
                   </tr>
                 </thead>
                 <tbody id="logistics-orders-rows"></tbody>
@@ -1789,7 +1805,11 @@
               Итог после включенных налогов не является полной чистой прибылью бизнеса.
             </p>
             <div class="table-wrap">
-              <table class="products-table data-table report-rows-table">
+              <table
+                id="report-rows-table"
+                class="products-table data-table report-rows-table"
+                data-sort-mode="remote"
+              >
                 <thead id="review-rows-head">
                   <tr>
                     <th>Товар</th>
@@ -2621,10 +2641,10 @@
         </section>
       </div>
     </main>
-    <script src="/static/sortable-tables.js?v=20260718-column-sorting-v2" defer></script>
-    <script src="/static/report-scenarios.js?v=20260718-daily-facts-replacement-index-v7" defer></script>
-    <script src="/static/month-close-report.js?v=20260718-daily-facts-replacement-index-v7" defer></script>
-    <script src="/static/tax-load-report.js?v=20260718-daily-facts-replacement-index-v7" defer></script>
-    <script src="/static/app.js?v=20260718-daily-facts-replacement-index-v7" defer></script>
+    <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
+    <script src="/static/report-scenarios.js?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1" defer></script>
+    <script src="/static/app.js?v=20260718-logistics-v5-daily-facts-v7-global-sorting-v1" defer></script>
   </body>
 </html>

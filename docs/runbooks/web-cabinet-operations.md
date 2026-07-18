@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-15"
+updated_at: "2026-07-18"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -693,25 +693,30 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
 
 ## Staff-ready анализ логистики
 
-До проверки нового снимка оба флага должны оставаться выключенными:
+Code defaults остаются выключенными:
 
 ```text
 SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false
 SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
 ```
 
+Фактическое состояние test/production перед rollout проверяется по
+`docs/runbooks/wb-logistics-v4-continuation.md` и свежему environment evidence,
+а не по defaults. Для v5 нельзя включать production или клиентский флаг без
+отдельного разрешения.
+
 Порядок test-rollout:
 
 1. Применить additive schema migration
-   `2026_07_16_logistics_hardening_v4` через штатный `init_db`. Убедиться, что
+   `2026_07_18_logistics_profit_link_v5` через штатный `init_db`. Убедиться, что
    `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`; master-флаг без DB-first является
    ошибкой конфигурации и source refresh не запускается.
 2. Включить только `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=true` на test.
 3. Запустить новый `full` source refresh с read-only WB-доступом. Витрина
    строится из сохраненных `source_snapshot_rows`, а не из ответа API на лету.
 4. Открыть новый draft-отчет под consultant/admin. Контекст должен иметь
-   `methodologyVersion=wb-logistics-v4` и
-   `chainKeyVersion=wb-order-product-v1`. `blocked`, отсутствующий, v1–v3 или
+   `methodologyVersion=wb-logistics-v5` и
+   `chainKeyVersion=wb-order-product-v1`. `blocked`, отсутствующий, v1–v4 или
    несовместимый по ключу контекст нельзя обходить fallback-ключом или ручной
    публикацией.
 5. Проверить `reportCoverage`: source/report invalid-строки,

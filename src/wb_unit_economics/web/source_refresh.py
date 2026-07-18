@@ -20,7 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from scripts.build_excel_mvp_from_snapshots import build_excel_mvp_from_args
@@ -76,7 +76,11 @@ from wb_unit_economics.ozon_mart import (
     _realization_expenses,
     _realization_quantity,
 )
-from wb_unit_economics.source_integrity import RawIntegrityError, verify_raw_directory
+from wb_unit_economics.source_integrity import (
+    RawIntegrityError,
+    iter_json_array,
+    verify_raw_directory,
+)
 from wb_unit_economics.wb_content import (
     WbContentSettings,
     WbProductCardsPageResult,
@@ -5727,7 +5731,7 @@ def _persist_wb_finance_rows(
 
 @dataclass(frozen=True)
 class _LogisticsSnapshotCandidate:
-    snapshot_id: int
+    snapshot_id: str
     refresh_run_id: str
     tenant_id: str
     client_id: str
@@ -5741,6 +5745,129 @@ class _LogisticsSnapshotCandidate:
     source_row: LogisticsSourceRow
     source_hash: str
     stable_identity: bool
+
+
+@dataclass(frozen=True)
+class _LogisticsSnapshotInput:
+    snapshot_id: str
+    refresh_run_id: str
+    tenant_id: str
+    client_id: str
+    wb_cabinet_id: str
+    source_type: str
+    source_row_id: str
+    row_number: int
+    raw_payload_hash: str
+    row_payload: Any
+    loaded_at: datetime
+    collection_id: int
+
+
+def _file_authoritative_wb_collection(
+    run: SourceRefreshRun,
+) -> SourceRefreshCollection | None:
+    collection = next(
+        (
+            item
+            for item in run.collections
+            if item.source_type == "wb_finance_detail"
+        ),
+        None,
+    )
+    if collection is None:
+        return None
+    persistence = (collection.payload or {}).get("rowPersistence") or {}
+    if persistence.get("status") not in {
+        "file_authoritative",
+        "skipped_large_snapshot",
+    }:
+        return None
+    if persistence.get("rawFilesAuthoritative") is not True:
+        return None
+    return collection
+
+
+def _iter_file_authoritative_logistics_inputs(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+) -> Iterable[_LogisticsSnapshotInput]:
+    payload = collection.payload or {}
+    if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+        raise SourceRefreshConfigError(
+            "file-authoritative WB finance raw integrity is not verified"
+        )
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise SourceRefreshConfigError(
+            "file-authoritative WB finance results are missing"
+        )
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    try:
+        verify_raw_directory(
+            raw_dir,
+            source_type="wb_finance_detail",
+            source_root=source_root,
+            collection_results=[
+                item for item in results if isinstance(item, Mapping)
+            ],
+            collection_row_count=collection.row_count,
+            collection_snapshot_hash=collection.snapshot_hash,
+        )
+    except RawIntegrityError as exc:
+        raise SourceRefreshConfigError(
+            "file-authoritative WB finance raw integrity changed"
+        ) from exc
+    row_number = 1
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise SourceRefreshConfigError(
+                "file-authoritative WB finance result is not an object"
+            )
+        output_name = str(result.get("outputFile") or "").strip()
+        if not output_name:
+            continue
+        if Path(output_name).name != output_name:
+            raise SourceRefreshConfigError(
+                "file-authoritative WB finance output path is unsafe"
+            )
+        output_path = (raw_dir / output_name).resolve()
+        resolved_raw_dir = raw_dir.resolve()
+        if not output_path.is_relative_to(resolved_raw_dir):
+            raise SourceRefreshConfigError(
+                "file-authoritative WB finance output path is unsafe"
+            )
+        page_index = int(result.get("pageIndex") or 0)
+        wb_cabinet_id = str(result.get("wbCabinetId") or "").strip()
+        for local_index, row in enumerate(iter_json_array(output_path), 1):
+            source_row_id = (
+                _first_row_id(row, "rrdId", "srid", "orderUid")
+                if isinstance(row, dict)
+                else ""
+            )
+            if not source_row_id:
+                source_row_id = f"{page_index}:{local_index}"
+            canonical_hash = _hash_payload(row)
+            yield _LogisticsSnapshotInput(
+                snapshot_id=f"file:{collection.id}:{row_number}",
+                refresh_run_id=refresh_run.id,
+                tenant_id=collection.tenant_id,
+                client_id=collection.client_id,
+                wb_cabinet_id=wb_cabinet_id,
+                source_type=collection.source_type,
+                source_row_id=source_row_id,
+                row_number=row_number,
+                raw_payload_hash=canonical_hash,
+                row_payload=row,
+                loaded_at=collection.loaded_at,
+                collection_id=collection.id,
+            )
+            row_number += 1
+    if row_number - 1 != collection.row_count:
+        raise SourceRefreshConfigError(
+            "file-authoritative WB finance row count changed"
+        )
 
 
 def _build_and_persist_logistics_analysis(
@@ -5866,6 +5993,34 @@ def _select_logistics_source_rows(
     scope_mismatches = 0
     blocking: list[str] = []
     multiple_runs = len(run_ids) > 1
+    database_row_counts = {
+        str(run_id): int(row_count)
+        for run_id, row_count in db.execute(
+            select(
+                SourceSnapshotRow.refresh_run_id,
+                func.count(SourceSnapshotRow.id),
+            )
+            .where(
+                SourceSnapshotRow.refresh_run_id.in_(run_ids),
+                SourceSnapshotRow.source_type == "wb_finance_detail",
+            )
+            .group_by(SourceSnapshotRow.refresh_run_id)
+        )
+    }
+    file_collections: dict[
+        str, tuple[SourceRefreshRun, SourceRefreshCollection]
+    ] = {}
+    database_run_ids: list[str] = []
+    for run_id in run_ids:
+        run, _role = roles[run_id]
+        collection = _file_authoritative_wb_collection(run)
+        if collection is None:
+            database_run_ids.append(run_id)
+            continue
+        if int(database_row_counts.get(run_id, 0)):
+            blocking.append("source_storage_ambiguity")
+            continue
+        file_collections[run_id] = (run, collection)
     snapshot_rows = db.execute(
         select(
             SourceSnapshotRow.id.label("snapshot_id"),
@@ -5882,7 +6037,7 @@ def _select_logistics_source_rows(
             SourceSnapshotRow.collection_id,
         )
         .where(
-            SourceSnapshotRow.refresh_run_id.in_(run_ids),
+            SourceSnapshotRow.refresh_run_id.in_(database_run_ids),
             SourceSnapshotRow.source_type == "wb_finance_detail",
         )
         .order_by(
@@ -5893,7 +6048,34 @@ def _select_logistics_source_rows(
         )
         .execution_options(stream_results=True, yield_per=1_000)
     ).yield_per(1_000)
-    for snapshot in snapshot_rows:
+
+    def snapshot_inputs() -> Iterable[_LogisticsSnapshotInput]:
+        for snapshot in snapshot_rows:
+            yield _LogisticsSnapshotInput(
+                snapshot_id=str(snapshot.snapshot_id),
+                refresh_run_id=str(snapshot.refresh_run_id),
+                tenant_id=str(snapshot.tenant_id or ""),
+                client_id=str(snapshot.client_id or ""),
+                wb_cabinet_id=str(snapshot.wb_cabinet_id or ""),
+                source_type=str(snapshot.source_type or ""),
+                source_row_id=str(snapshot.source_row_id or ""),
+                row_number=int(snapshot.row_number),
+                raw_payload_hash=str(snapshot.raw_payload_hash or ""),
+                row_payload=snapshot.row_payload,
+                loaded_at=snapshot.loaded_at,
+                collection_id=int(snapshot.collection_id),
+            )
+        for run_id in sorted(file_collections):
+            run, collection = file_collections[run_id]
+            try:
+                yield from _iter_file_authoritative_logistics_inputs(
+                    collection,
+                    refresh_run=run,
+                )
+            except (OSError, TypeError, ValueError, SourceRefreshConfigError):
+                blocking.append("file_authoritative_snapshot_invalid")
+
+    for snapshot in snapshot_inputs():
         _refresh_run, role = roles[snapshot.refresh_run_id]
         payload = snapshot.row_payload
         stored_source_hash = str(snapshot.raw_payload_hash or "")
@@ -5972,7 +6154,7 @@ def _select_logistics_source_rows(
             blocking.append("source_identity_mismatch")
         candidates.append(
             _LogisticsSnapshotCandidate(
-                snapshot_id=int(snapshot.snapshot_id),
+                snapshot_id=str(snapshot.snapshot_id),
                 refresh_run_id=str(snapshot.refresh_run_id),
                 tenant_id=str(snapshot.tenant_id or ""),
                 client_id=str(snapshot.client_id or ""),

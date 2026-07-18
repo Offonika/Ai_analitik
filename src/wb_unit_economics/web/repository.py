@@ -57,6 +57,7 @@ from wb_unit_economics.liquidity import (
 )
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
+    LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
@@ -162,6 +163,76 @@ DAILY_FACT_MUTATING_SOURCE_REFRESH_MODES = {
 READINESS_REVIEW_RATIO = 0.20
 READINESS_REVIEW_MIN_ROWS = 3
 REPORT_ROWS_MAX_LIMIT = 1000
+LOGISTICS_PRODUCT_SORT_KEYS = frozenset(
+    {
+        "product",
+        "logisticsTotal",
+        "logisticsSharePct",
+        "orderCount",
+        "returnQuantity",
+        "profitEffectAmount",
+        "quality",
+    }
+)
+LOGISTICS_ORDER_SORT_KEYS = frozenset(
+    {
+        "chainRef",
+        "financialDate",
+        "operationDateEnd",
+        "orderDate",
+        "logisticsForward",
+        "logisticsReverse",
+        "logisticsTotal",
+        "salesQuantity",
+        "returnQuantity",
+        "classificationStatus",
+        "product",
+    }
+)
+REPORT_ROW_SORT_KEYS = frozenset(
+    {
+        "product",
+        "articleWb",
+        "article1c",
+        "barcode",
+        "nmId",
+        "cabinet",
+        "organization",
+        "scheme",
+        "status",
+        "month",
+        "sales",
+        "returns",
+        "netQty",
+        "revenueBeforeSpp",
+        "spp",
+        "revenue",
+        "pnlRevenue",
+        "cost",
+        "commission",
+        "logistics",
+        "storage",
+        "acceptance",
+        "promotion",
+        "penalties",
+        "acquiring",
+        "pnlVatAdjustment",
+        "profitBeforeTax",
+        "vatOutput",
+        "vatInput",
+        "vatPayable",
+        "incomeTaxBase",
+        "incomeTax",
+        "includedTaxes",
+        "profit",
+        "margin",
+        "unitProfit",
+        "accountingPeriodDate",
+        "documentReport",
+        "wbReportId",
+        "wbReportDate",
+    }
+)
 MARKETPLACE_EXPENSE_CONTEXT_VERSION = "marketplace-expense-reconciliation-v1"
 MARKETPLACE_EXPENSE_TOLERANCE = Decimal("1")
 MARKETPLACE_EXPENSE_GROUP_LABELS = {
@@ -13018,10 +13089,17 @@ def replace_report_logistics_analysis(
                 logistics_reverse=row.logistics_reverse,
                 logistics_adjustment=row.logistics_adjustment,
                 logistics_unclassified=row.logistics_unclassified,
-                revenue=row.revenue,
+                # Legacy non-null columns keep real logistics-source facts.
+                # v5 financial queries use the nullable report-linked columns.
+                revenue=row.source_revenue,
+                financial_revenue=row.revenue,
                 profit_before_tax=row.profit_before_tax,
                 profit_without_logistics=row.profit_without_logistics,
-                profit_effect_amount=row.profit_effect_amount,
+                profit_effect_amount=(
+                    row.profit_effect_amount
+                    if row.profit_effect_amount is not None
+                    else -row.logistics_total
+                ),
                 logistics_share_pct=row.logistics_share_pct,
                 logistics_per_order=row.logistics_per_order,
                 logistics_per_sale=row.logistics_per_sale,
@@ -13149,6 +13227,21 @@ def report_logistics_summary_payload(
                 ),
             }
         )
+    if meta["sliceStatus"] == "empty":
+        return _logistics_json_safe(
+            {
+                **meta,
+                "kpis": _empty_logistics_kpis(),
+                "dynamics": [],
+                "components": _empty_logistics_components(),
+                "rankings": {
+                    "byTotal": [],
+                    "byRevenueShare": [],
+                    "byProfitEffect": [],
+                },
+                "recommendations": [],
+            }
+        )
     order_conditions = _logistics_order_conditions(
         report,
         period_start=period_start,
@@ -13203,11 +13296,13 @@ def report_logistics_summary_payload(
             )
         financials = db.execute(
             select(
-                func.coalesce(func.sum(ReportLogisticsSkuRow.revenue), 0),
+                func.sum(ReportLogisticsSkuRow.financial_revenue),
                 func.sum(ReportLogisticsSkuRow.profit_before_tax),
             ).where(*sku_conditions)
         ).one()
-        revenue = decimal_value(financials[0])
+        revenue = (
+            decimal_value(financials[0]) if financials[0] is not None else None
+        )
         profit_before_tax = (
             decimal_value(financials[1]) if financials[1] is not None else None
         )
@@ -13314,6 +13409,7 @@ def report_logistics_summary_payload(
             "recommendations": _logistics_recommendations(
                 _logistics_context_state(report, context),
                 context,
+                total_leader=by_total[0] if by_total else None,
                 reverse_leader=(
                     by_reverse[0]
                     if by_reverse
@@ -13323,6 +13419,14 @@ def report_logistics_summary_payload(
                 share_leader=by_share[0] if by_share else None,
                 classification_coverage=meta["coverage"]["classificationPct"],
                 data_quality_issue_count=meta["coverage"]["dataQualityIssues"],
+                data_quality_issue_amount=meta["coverage"][
+                    "dataQualityIssueAmount"
+                ],
+                missing_profit_link_count=meta["coverage"]["missingProfitLinks"],
+                missing_profit_link_amount=meta["coverage"][
+                    "missingProfitLinkAmount"
+                ],
+                unclassified_amount=decimal_value(totals[4]),
             ),
         }
     )
@@ -13435,10 +13539,16 @@ def report_logistics_orders_payload(
         product_ref=product_ref,
     )
     sort_fields = {
+        "chainRef": ReportLogisticsOrderRow.chain_key,
+        "financialDate": ReportLogisticsOrderRow.financial_date,
         "operationDateEnd": ReportLogisticsOrderRow.financial_date,
         "orderDate": ReportLogisticsOrderRow.order_date,
+        "logisticsForward": ReportLogisticsOrderRow.logistics_forward,
+        "logisticsReverse": ReportLogisticsOrderRow.logistics_reverse,
         "logisticsTotal": ReportLogisticsOrderRow.logistics_total,
+        "salesQuantity": ReportLogisticsOrderRow.sales_quantity,
         "returnQuantity": ReportLogisticsOrderRow.return_quantity,
+        "classificationStatus": ReportLogisticsOrderRow.classification_status,
         "product": ReportLogisticsOrderRow.product,
     }
     sort_column = sort_fields.get(sort_by, ReportLogisticsOrderRow.financial_date)
@@ -13455,7 +13565,11 @@ def report_logistics_orders_payload(
         db.scalars(
             select(ReportLogisticsOrderRow)
             .where(*conditions)
-            .order_by(direction, ReportLogisticsOrderRow.id.asc())
+            .order_by(
+                case((sort_column.is_(None), 1), else_=0),
+                direction,
+                ReportLogisticsOrderRow.id.asc(),
+            )
             .offset(offset)
             .limit(limit)
         )
@@ -13482,7 +13596,14 @@ def _report_logistics_meta(
             "dataStatus": "needs_rebuild",
             "sliceStatus": "needs_rebuild",
             "methodologyVersion": LOGISTICS_METHODOLOGY_VERSION,
+            "classifierVersion": LOGISTICS_CLASSIFIER_VERSION,
             "chainKeyVersion": CHAIN_KEY_VERSION,
+            "generatedAt": report.generated_at.isoformat(),
+            "sourceCoverageEnd": (
+                report.source_coverage_end.isoformat()
+                if report.source_coverage_end
+                else None
+            ),
             "financialMetricStatus": "not_available",
             "valueType": "fact",
             "coverage": {
@@ -13492,6 +13613,12 @@ def _report_logistics_meta(
                 "logisticsRows": 0,
                 "keyedRows": 0,
                 "productRows": 0,
+                "classifiedRows": 0,
+                "dataQualityIssues": 0,
+                "dataQualityIssueAmount": None,
+                "missingProfitLinks": 0,
+                "missingProfitLinkAmount": None,
+                "lowSampleProductCount": None,
             },
             "reportCoverage": None,
             "filterContext": {},
@@ -13501,7 +13628,14 @@ def _report_logistics_meta(
         "dataStatus": context_state,
         "sliceStatus": context_state,
         "methodologyVersion": context.methodology_version,
+        "classifierVersion": LOGISTICS_CLASSIFIER_VERSION,
         "chainKeyVersion": context.chain_key_version,
+        "generatedAt": context.created_at.isoformat(),
+        "sourceCoverageEnd": (
+            report.source_coverage_end.isoformat()
+            if report.source_coverage_end
+            else None
+        ),
         "financialMetricStatus": "ready",
         "valueType": "fact",
         "coverage": {
@@ -13512,6 +13646,12 @@ def _report_logistics_meta(
             "keyedRows": context.keyed_logistics_row_count,
             "productRows": context.product_logistics_row_count,
             "crossCabinetCollisions": context.cross_cabinet_collision_count,
+            "classifiedRows": None,
+            "dataQualityIssues": 0,
+            "dataQualityIssueAmount": Decimal("0"),
+            "missingProfitLinks": 0,
+            "missingProfitLinkAmount": Decimal("0"),
+            "lowSampleProductCount": None,
         },
         "reportCoverage": _report_logistics_coverage(context),
         "filterContext": {},
@@ -13612,11 +13752,76 @@ def _report_logistics_slice_meta(
                 ),
                 0,
             ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsOrderRow.data_quality_status != "ready",
+                            ReportLogisticsOrderRow.logistics_total,
+                        ),
+                        else_=Decimal("0"),
+                    )
+                ),
+                0,
+            ),
         ).where(*conditions)
     ).one()
     logistics_rows = int(counts[0] or 0)
     classified_rows = int(counts[1] or 0)
     data_quality_issues = int(counts[2] or 0)
+    data_quality_issue_amount = decimal_value(counts[3])
+    sku_conditions = _logistics_sku_conditions(
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query="",
+    )
+    if product_query.strip() or product_ref:
+        sku_conditions.append(_logistics_sku_product_ref_condition(conditions))
+    missing_profit_metrics = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(ReportLogisticsSkuRow.logistics_total), 0),
+        )
+        .select_from(ReportLogisticsSkuRow)
+        .where(
+            *sku_conditions,
+            ReportLogisticsSkuRow.data_quality_status == "missing_profit_link",
+        )
+    ).one()
+    missing_profit_links = int(missing_profit_metrics[0] or 0)
+    missing_profit_link_amount = decimal_value(missing_profit_metrics[1])
+    product_samples = (
+        select(
+            ReportLogisticsOrderRow.product_ref.label("product_ref"),
+            func.count(
+                func.distinct(
+                    case(
+                        (
+                            ReportLogisticsOrderRow.countable_order.is_(True),
+                            ReportLogisticsOrderRow.chain_key,
+                        ),
+                        else_=None,
+                    )
+                )
+            ).label("order_count"),
+        )
+        .where(*conditions)
+        .group_by(ReportLogisticsOrderRow.product_ref)
+        .having(func.sum(ReportLogisticsOrderRow.logistics_row_count) > 0)
+        .subquery()
+    )
+    low_sample_product_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(product_samples)
+            .where(product_samples.c.order_count < LOW_SAMPLE_THRESHOLD)
+        )
+        or 0
+    )
     meta["coverage"] = {
         "keyPct": Decimal("100") if logistics_rows else None,
         "productPct": Decimal("100") if logistics_rows else None,
@@ -13630,15 +13835,29 @@ def _report_logistics_slice_meta(
         "productRows": logistics_rows,
         "classifiedRows": classified_rows,
         "dataQualityIssues": data_quality_issues,
+        "dataQualityIssueAmount": data_quality_issue_amount,
+        "missingProfitLinks": missing_profit_links,
+        "missingProfitLinkAmount": missing_profit_link_amount,
+        "lowSampleProductCount": low_sample_product_count,
     }
     meta["sliceStatus"] = (
         "empty"
         if logistics_rows == 0
         else "partial"
-        if classified_rows != logistics_rows or data_quality_issues
+        if (
+            classified_rows != logistics_rows
+            or data_quality_issues
+            or missing_profit_links
+        )
         else "ready"
     )
-    meta["financialMetricStatus"] = financial_status
+    meta["financialMetricStatus"] = (
+        "not_available_empty_slice"
+        if logistics_rows == 0
+        else "not_available_missing_profit_link"
+        if missing_profit_links
+        else financial_status
+    )
     return meta
 
 
@@ -13756,11 +13975,11 @@ def _logistics_financial_comparison(
         )
     financials = db.execute(
         select(
-            func.coalesce(func.sum(ReportLogisticsSkuRow.revenue), 0),
+            func.sum(ReportLogisticsSkuRow.financial_revenue),
             func.sum(ReportLogisticsSkuRow.profit_before_tax),
         ).where(*sku_conditions)
     ).one()
-    revenue = decimal_value(financials[0])
+    revenue = decimal_value(financials[0]) if financials[0] is not None else None
     profit_before_tax = (
         decimal_value(financials[1]) if financials[1] is not None else None
     )
@@ -13991,57 +14210,84 @@ def _query_logistics_products(
         .subquery()
     )
     total = int(db.scalar(select(func.count()).select_from(orders)) or 0)
-    revenue_expr = literal(None)
-    profit_expr = literal(None)
-    statement = select(orders)
-    if financial_status == "ready":
-        financials = (
-            select(
-                ReportLogisticsSkuRow.product_ref.label("product_ref"),
-                func.sum(ReportLogisticsSkuRow.revenue).label("revenue"),
-                func.sum(ReportLogisticsSkuRow.profit_before_tax).label(
-                    "profit_before_tax"
-                ),
-                func.sum(
-                    case(
-                        (ReportLogisticsSkuRow.data_quality_status != "ready", 1),
-                        else_=0,
-                    )
-                ).label("sku_quality_issue_count"),
-            )
-            .where(
-                *_logistics_sku_conditions(
-                    report,
-                    period_start=period_start,
-                    period_end=period_end,
-                    wb_cabinet_id=wb_cabinet_id,
-                    client_company_id=client_company_id,
-                    scheme=scheme,
-                    product_query="",
+    financials = (
+        select(
+            ReportLogisticsSkuRow.product_ref.label("product_ref"),
+            func.sum(ReportLogisticsSkuRow.financial_revenue).label("revenue"),
+            func.sum(ReportLogisticsSkuRow.profit_before_tax).label(
+                "profit_before_tax"
+            ),
+            func.sum(
+                case(
+                    (ReportLogisticsSkuRow.data_quality_status != "ready", 1),
+                    else_=0,
                 )
-            )
-            .group_by(ReportLogisticsSkuRow.product_ref)
-            .subquery()
+            ).label("sku_quality_issue_count"),
+            func.sum(
+                case(
+                    (
+                        ReportLogisticsSkuRow.data_quality_status
+                        == "missing_profit_link",
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("missing_profit_link_count"),
         )
-        revenue_expr = financials.c.revenue
-        profit_expr = financials.c.profit_before_tax
-        statement = statement.add_columns(
+        .where(
+            *_logistics_sku_conditions(
+                report,
+                period_start=period_start,
+                period_end=period_end,
+                wb_cabinet_id=wb_cabinet_id,
+                client_company_id=client_company_id,
+                scheme=scheme,
+                product_query="",
+            )
+        )
+        .group_by(ReportLogisticsSkuRow.product_ref)
+        .subquery()
+    )
+    revenue_expr = (
+        financials.c.revenue if financial_status == "ready" else literal(None)
+    )
+    profit_expr = (
+        financials.c.profit_before_tax
+        if financial_status == "ready"
+        else literal(None)
+    )
+    statement = (
+        select(orders)
+        .add_columns(
             revenue_expr.label("revenue"),
             profit_expr.label("profit_before_tax"),
             financials.c.sku_quality_issue_count.label("sku_quality_issue_count"),
-        ).outerjoin(financials, financials.c.product_ref == orders.c.product_ref)
-    else:
-        statement = statement.add_columns(
-            revenue_expr.label("revenue"),
-            profit_expr.label("profit_before_tax"),
-            literal(0).label("sku_quality_issue_count"),
+            financials.c.missing_profit_link_count.label(
+                "missing_profit_link_count"
+            ),
         )
+        .outerjoin(financials, financials.c.product_ref == orders.c.product_ref)
+    )
     share_expr = case(
         (
             revenue_expr > 0,
             orders.c.logistics_total / revenue_expr * 100,
         ),
         else_=None,
+    )
+    quality_expr = case(
+        (
+            or_(
+                orders.c.classified_row_count != orders.c.logistics_row_count,
+                orders.c.order_quality_issue_count > 0,
+                financials.c.sku_quality_issue_count > 0
+                if financial_status == "ready"
+                else literal(False),
+            ),
+            2,
+        ),
+        (orders.c.order_count < LOW_SAMPLE_THRESHOLD, 1),
+        else_=0,
     )
     sort_expressions = {
         "logisticsTotal": orders.c.logistics_total,
@@ -14054,6 +14300,7 @@ def _query_logistics_products(
         "orderCount": orders.c.order_count,
         "returnQuantity": orders.c.return_quantity,
         "product": orders.c.product,
+        "quality": quality_expr,
     }
     sort_expression = sort_expressions.get(sort_by, orders.c.logistics_total)
     direction = (
@@ -14087,6 +14334,7 @@ def _query_logistics_products(
         data_quality_issues = int(row["order_quality_issue_count"] or 0) + int(
             row["sku_quality_issue_count"] or 0
         )
+        missing_profit_links = int(row["missing_profit_link_count"] or 0)
         flags: list[str] = []
         if classified_rows != logistics_rows:
             flags.append("restore_classification")
@@ -14094,6 +14342,8 @@ def _query_logistics_products(
             flags.append("check_returns")
         if revenue is not None and revenue > 0 and logistics_total != 0:
             flags.append("check_margin")
+        if missing_profit_links:
+            flags.append("restore_profit_link")
         items.append(
             {
                 "productRef": row["product_ref"],
@@ -14133,7 +14383,11 @@ def _query_logistics_products(
                     "ready" if classified_rows == logistics_rows else "partial"
                 ),
                 "dataQualityStatus": (
-                    "partial" if data_quality_issues else "ready"
+                    "missing_profit_link"
+                    if missing_profit_links
+                    else "partial"
+                    if data_quality_issues
+                    else "ready"
                 ),
                 "recommendationFlags": flags,
             }
@@ -14181,7 +14435,7 @@ def _logistics_dynamics(
         for week_start, revenue in db.execute(
             select(
                 ReportLogisticsSkuRow.financial_week_start,
-                func.sum(ReportLogisticsSkuRow.revenue),
+                func.sum(ReportLogisticsSkuRow.financial_revenue),
             )
             .where(*sku_conditions)
             .group_by(ReportLogisticsSkuRow.financial_week_start)
@@ -14321,9 +14575,9 @@ def _aggregate_logistics_products(
                 "logisticsAdjustment": Decimal("0"),
                 "logisticsUnclassified": Decimal("0"),
                 "revenue": Decimal("0"),
+                "revenueKnown": False,
                 "profitBeforeTax": Decimal("0"),
                 "profitKnown": False,
-                "profitEffectAmount": Decimal("0"),
                 "salesQuantity": Decimal("0"),
                 "returnQuantity": Decimal("0"),
                 "logisticsRowCount": 0,
@@ -14339,12 +14593,13 @@ def _aggregate_logistics_products(
             ("logisticsReverse", row.logistics_reverse),
             ("logisticsAdjustment", row.logistics_adjustment),
             ("logisticsUnclassified", row.logistics_unclassified),
-            ("revenue", row.revenue),
-            ("profitEffectAmount", row.profit_effect_amount),
             ("salesQuantity", row.sales_quantity),
             ("returnQuantity", row.return_quantity),
         ):
             bucket[target] += decimal_value(source)
+        if row.financial_revenue is not None:
+            bucket["revenue"] += decimal_value(row.financial_revenue)
+            bucket["revenueKnown"] = True
         if row.profit_before_tax is not None:
             bucket["profitBeforeTax"] += decimal_value(row.profit_before_tax)
             bucket["profitKnown"] = True
@@ -14361,21 +14616,27 @@ def _aggregate_logistics_products(
     for bucket in buckets.values():
         order_count = len(bucket.pop("chains"))
         profit_known = bool(bucket.pop("profitKnown"))
+        revenue_known = bool(bucket.pop("revenueKnown"))
         flags = sorted(bucket.pop("recommendationFlags"))
         classification_statuses = bucket.pop("classificationStatuses")
         quality_statuses = bucket.pop("dataQualityStatuses")
         logistics_total = decimal_value(bucket["logisticsTotal"])
-        revenue = decimal_value(bucket["revenue"])
+        revenue = decimal_value(bucket["revenue"]) if revenue_known else None
         sales = decimal_value(bucket["salesQuantity"])
         profit = decimal_value(bucket["profitBeforeTax"]) if profit_known else None
         result.append(
             {
                 **bucket,
                 "profitBeforeTax": profit,
+                "profitEffectAmount": -logistics_total if revenue_known else None,
                 "profitWithoutLogistics": (
                     profit + logistics_total if profit is not None else None
                 ),
-                "logisticsSharePct": _positive_share(logistics_total, revenue),
+                "logisticsSharePct": (
+                    _positive_share(logistics_total, revenue)
+                    if revenue is not None
+                    else None
+                ),
                 "logisticsPerOrder": (
                     logistics_total / order_count if order_count else None
                 ),
@@ -14386,7 +14647,11 @@ def _aggregate_logistics_products(
                     "ready" if classification_statuses == {"ready"} else "partial"
                 ),
                 "dataQualityStatus": (
-                    "ready" if quality_statuses == {"ready"} else "partial"
+                    "missing_profit_link"
+                    if "missing_profit_link" in quality_statuses
+                    else "ready"
+                    if quality_statuses == {"ready"}
+                    else "partial"
                 ),
                 "recommendationFlags": flags,
             }
@@ -14437,10 +14702,15 @@ def _logistics_recommendations(
     context_state: str,
     context: ReportLogisticsAnalysisContext | None,
     *,
+    total_leader: dict[str, Any] | None = None,
     reverse_leader: dict[str, Any] | None = None,
     share_leader: dict[str, Any] | None = None,
     classification_coverage: Decimal | None = None,
     data_quality_issue_count: int = 0,
+    data_quality_issue_amount: Decimal = Decimal("0"),
+    missing_profit_link_count: int = 0,
+    missing_profit_link_amount: Decimal = Decimal("0"),
+    unclassified_amount: Decimal = Decimal("0"),
 ) -> list[dict[str, Any]]:
     if context_state in {
         "missing",
@@ -14456,6 +14726,10 @@ def _logistics_recommendations(
                 "title": "Пересобрать отчёт на новом снимке",
                 "message": ("Для этого отчёта ещё нет проверенной витрины логистики."),
                 "valueType": "fact",
+                "impactAmount": None,
+                "evidenceType": "data_quality",
+                "actionTarget": None,
+                "actionLabel": "",
                 "evidence": {"dataStatus": "needs_rebuild"},
             }
         ]
@@ -14469,6 +14743,10 @@ def _logistics_recommendations(
                     "Расчёт остановлен: обязательная сверка источника не пройдена."
                 ),
                 "valueType": "fact",
+                "impactAmount": None,
+                "evidenceType": "data_quality",
+                "actionTarget": None,
+                "actionLabel": "",
                 "evidence": {
                     "keyCoveragePct": context.key_coverage_pct,
                     "productCoveragePct": context.product_coverage_pct,
@@ -14496,6 +14774,24 @@ def _logistics_recommendations(
             }
         ]
     recommendations: list[dict[str, Any]] = []
+    if missing_profit_link_count:
+        recommendations.append(
+            {
+                "code": "restore_profit_link",
+                "priority": 1,
+                "title": "Восстановить финансовую связь с отчётом",
+                "message": (
+                    "Финансовые KPI выбранного среза скрыты, пока хотя бы один "
+                    "товар логистики не связан со строкой отчёта."
+                ),
+                "valueType": "fact",
+                "impactAmount": missing_profit_link_amount,
+                "evidenceType": "data_quality",
+                "actionTarget": "source",
+                "actionLabel": "Проверить связь с отчётом",
+                "evidence": {"affectedSkuRows": missing_profit_link_count},
+            }
+        )
     if reverse_leader is not None:
         recommendations.append(
             {
@@ -14503,10 +14799,14 @@ def _logistics_recommendations(
                 "priority": 1,
                 "title": "Проверить возвратную логистику",
                 "message": (
-                    "Начните с товара с наибольшей возвратной частью. Причину "
-                    "возврата нужно подтвердить отдельно."
+                    "Начните с товара с наибольшей возвратной частью. "
+                    "Причина недоступна в Finance."
                 ),
                 "valueType": "fact",
+                "impactAmount": reverse_leader["logisticsReverse"],
+                "evidenceType": "limitation",
+                "actionTarget": "products",
+                "actionLabel": "Открыть товары",
                 "evidence": {
                     "productRef": reverse_leader["productRef"],
                     "productKey": reverse_leader["productKey"],
@@ -14527,6 +14827,10 @@ def _logistics_recommendations(
                     "выручке выбранного среза."
                 ),
                 "valueType": "fact",
+                "impactAmount": share_leader["logisticsTotal"],
+                "evidenceType": "fact",
+                "actionTarget": "products",
+                "actionLabel": "Открыть товары",
                 "evidence": {
                     "productRef": share_leader["productRef"],
                     "productKey": share_leader["productKey"],
@@ -14549,6 +14853,10 @@ def _logistics_recommendations(
                     "операции пока не подтверждено."
                 ),
                 "valueType": "fact",
+                "impactAmount": unclassified_amount,
+                "evidenceType": "data_quality",
+                "actionTarget": "source",
+                "actionLabel": "Проверить операции",
                 "evidence": {"classificationCoveragePct": classification_coverage},
             }
         )
@@ -14563,12 +14871,44 @@ def _logistics_recommendations(
                     "противоречивыми исходными данными."
                 ),
                 "valueType": "fact",
+                "impactAmount": data_quality_issue_amount,
+                "evidenceType": "data_quality",
+                "actionTarget": "source",
+                "actionLabel": "Открыть исходные данные",
                 "evidence": {"affectedOrderRows": data_quality_issue_count},
+            }
+        )
+    if not recommendations and total_leader is not None:
+        recommendations.append(
+            {
+                "code": "check_top_logistics",
+                "priority": 2,
+                "title": "Проверить товар с максимальной логистикой",
+                "message": (
+                    "Это крупнейшая сумма логистики в выбранном срезе."
+                ),
+                "valueType": "fact",
+                "impactAmount": total_leader["logisticsTotal"],
+                "evidenceType": "fact",
+                "actionTarget": "products",
+                "actionLabel": "Открыть товары",
+                "evidence": {
+                    "productRef": total_leader["productRef"],
+                    "productKey": total_leader["productKey"],
+                    "product": total_leader["product"],
+                },
             }
         )
     return sorted(
         recommendations,
-        key=lambda item: (item["priority"], item["code"]),
+        key=lambda item: (
+            item["priority"],
+            item["impactAmount"] is None,
+            -abs(decimal_value(item["impactAmount"]))
+            if item["impactAmount"] is not None
+            else Decimal("0"),
+            item["code"],
+        ),
     )
 
 
@@ -15221,13 +15561,7 @@ def report_full_payload(
             .order_by(ReportReconciliationMonthly.id)
         )
     )
-    document_reconciliation = list(
-        db.scalars(
-            select(ReportDocumentReconciliationRow)
-            .where(ReportDocumentReconciliationRow.report_run_id == report.id)
-            .order_by(ReportDocumentReconciliationRow.id)
-        )
-    )
+    document_reconciliation = _document_reconciliation_rows_for_report(db, report)
     loads = _source_loads_for_report(db, report)
     source_coverage = _source_coverage_for_report(db, report)
     unit_rows = [_row_payload(row) for row in rows]
@@ -18985,9 +19319,56 @@ def _document_reconciliation_missing_onec(
     return not as_text(row.onec_documents)
 
 
+def _document_reconciliation_is_informational_adjustment(
+    row: ReportDocumentReconciliationRow,
+) -> bool:
+    document_type = as_text(row.document_type).strip().casefold()
+    status = as_text(row.status).strip().casefold()
+    adjustment_types = {
+        "Корректировка 1С".casefold(),
+        "Корректировка себестоимости 1С".casefold(),
+    }
+    return bool(
+        document_type in adjustment_types
+        and status == document_type
+        and as_text(row.period_status).strip().casefold() == "период 1с".casefold()
+        and not _document_reconciliation_missing_onec(row)
+        and not _document_reconciliation_has_delta(row)
+    )
+
+
+def _document_reconciliation_is_visible_for_report(
+    row: ReportDocumentReconciliationRow,
+    report: ReportRun,
+) -> bool:
+    unmatched_statuses = {
+        "Лишний документ в 1С".casefold(),
+        "Корректировка 1С".casefold(),
+        "Корректировка себестоимости 1С".casefold(),
+    }
+    if as_text(row.status).strip().casefold() not in unmatched_statuses:
+        return True
+    if any(
+        as_text(value)
+        for value in (
+            row.summary_report_id,
+            row.weekly_sales_report_id,
+            row.weekly_buyout_report_id,
+            row.wb_report_ids,
+        )
+    ):
+        return True
+    document_date = _onec_calendar_document_date(row)
+    if document_date is None:
+        return True
+    return report.period_start <= document_date <= report.period_end
+
+
 def _document_reconciliation_has_issue(
     row: ReportDocumentReconciliationRow,
 ) -> bool:
+    if _document_reconciliation_is_informational_adjustment(row):
+        return False
     status = as_text(row.status).lower()
     period_status = as_text(row.period_status).lower()
     accepted_statuses = {"ok"}
@@ -19162,13 +19543,18 @@ def _unit_rows_for_report(db: Session, report: ReportRun) -> list[ReportUnitRow]
 def _document_reconciliation_rows_for_report(
     db: Session, report: ReportRun
 ) -> list[ReportDocumentReconciliationRow]:
-    return list(
+    rows = list(
         db.scalars(
             select(ReportDocumentReconciliationRow)
             .where(ReportDocumentReconciliationRow.report_run_id == report.id)
             .order_by(ReportDocumentReconciliationRow.id)
         )
     )
+    return [
+        row
+        for row in rows
+        if _document_reconciliation_is_visible_for_report(row, report)
+    ]
 
 
 def _source_loads_for_report(db: Session, report: ReportRun) -> list[SourceLoad]:
@@ -19727,6 +20113,11 @@ def _filtered_report_analytics_payload(
     document_reconciliation_rows = _document_reconciliation_rows_for_conditions(
         db, *document_reconciliation_conditions
     )
+    document_reconciliation_rows = [
+        row
+        for row in document_reconciliation_rows
+        if _document_reconciliation_is_visible_for_report(row, report)
+    ]
     filtered_rows = list(db.scalars(select(ReportUnitRow).where(*unit_conditions)))
     tax_context = _tax_context_payload(db, report, filtered_rows)
     return {
@@ -19758,6 +20149,70 @@ def _filtered_report_analytics_payload(
     }
 
 
+def _report_row_sort_expressions() -> dict[str, Any]:
+    def sortable_text(column: Any) -> Any:
+        return func.nullif(func.lower(func.trim(column)), "")
+
+    pnl_revenue = _pnl_revenue_expression()
+    direct_expenses = (
+        ReportUnitRow.commission
+        + ReportUnitRow.logistics
+        + ReportUnitRow.storage
+        + ReportUnitRow.acceptance
+        + ReportUnitRow.promotion
+        + ReportUnitRow.penalties
+        + ReportUnitRow.acquiring
+    )
+    return {
+        "product": sortable_text(ReportUnitRow.product),
+        "articleWb": sortable_text(ReportUnitRow.article_wb),
+        "article1c": sortable_text(ReportUnitRow.article_1c),
+        "barcode": sortable_text(ReportUnitRow.barcode),
+        "nmId": sortable_text(ReportUnitRow.nm_id),
+        "cabinet": sortable_text(ReportUnitRow.cabinet),
+        "organization": sortable_text(ReportUnitRow.organization),
+        "scheme": sortable_text(ReportUnitRow.scheme),
+        "status": sortable_text(ReportUnitRow.status),
+        "month": func.coalesce(
+            ReportUnitRow.accounting_period_date,
+            ReportUnitRow.week,
+        ),
+        "sales": ReportUnitRow.sales,
+        "returns": ReportUnitRow.returns,
+        "netQty": ReportUnitRow.net_qty,
+        "revenueBeforeSpp": ReportUnitRow.revenue_before_spp,
+        "spp": ReportUnitRow.spp,
+        "revenue": ReportUnitRow.revenue,
+        "pnlRevenue": pnl_revenue,
+        "cost": ReportUnitRow.cost,
+        "commission": ReportUnitRow.commission,
+        "logistics": ReportUnitRow.logistics,
+        "storage": ReportUnitRow.storage,
+        "acceptance": ReportUnitRow.acceptance,
+        "promotion": ReportUnitRow.promotion,
+        "penalties": ReportUnitRow.penalties,
+        "acquiring": ReportUnitRow.acquiring,
+        "pnlVatAdjustment": (
+            ReportUnitRow.profit_before_tax
+            - (pnl_revenue - ReportUnitRow.cost - direct_expenses)
+        ),
+        "profitBeforeTax": ReportUnitRow.profit_before_tax,
+        "vatOutput": ReportUnitRow.vat_output,
+        "vatInput": ReportUnitRow.vat_input,
+        "vatPayable": ReportUnitRow.vat_payable,
+        "incomeTaxBase": ReportUnitRow.income_tax_base,
+        "incomeTax": ReportUnitRow.income_tax,
+        "includedTaxes": ReportUnitRow.profit_before_tax - ReportUnitRow.profit,
+        "profit": ReportUnitRow.profit,
+        "margin": ReportUnitRow.margin,
+        "unitProfit": ReportUnitRow.unit_profit,
+        "accountingPeriodDate": ReportUnitRow.accounting_period_date,
+        "documentReport": sortable_text(ReportUnitRow.document_report),
+        "wbReportId": sortable_text(ReportUnitRow.wb_report_id),
+        "wbReportDate": sortable_text(ReportUnitRow.wb_report_date),
+    }
+
+
 def query_report_rows(
     db: Session,
     report: ReportRun,
@@ -19775,6 +20230,8 @@ def query_report_rows(
     loss_class: str = "",
     document_report: str = "",
     preset: str = "",
+    sort_by: str = "",
+    sort_direction: str = "",
     limit: int = 250,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -19851,14 +20308,29 @@ def query_report_rows(
         )
     statement = select(ReportUnitRow).where(*conditions)
     total = _count_rows(db, *conditions)
-    order_column = (
-        func.abs(ReportUnitRow.revenue).desc()
-        if preset == "missingCost"
-        else ReportUnitRow.profit.asc()
-    )
-    rows = list(
-        db.scalars(statement.order_by(order_column).offset(offset).limit(limit))
-    )
+    if sort_by:
+        sort_expressions = _report_row_sort_expressions()
+        if sort_by not in sort_expressions:
+            raise ValueError(f"unsupported report row sort key: {sort_by}")
+        sort_expression = sort_expressions[sort_by]
+        direction = (
+            sort_expression.desc()
+            if sort_direction.casefold() == "desc"
+            else sort_expression.asc()
+        )
+        ordering = (
+            case((sort_expression.is_(None), 1), else_=0),
+            direction,
+            ReportUnitRow.id.asc(),
+        )
+    else:
+        order_column = (
+            func.abs(ReportUnitRow.revenue).desc()
+            if preset == "missingCost"
+            else ReportUnitRow.profit.asc()
+        )
+        ordering = (order_column, ReportUnitRow.id.asc())
+    rows = list(db.scalars(statement.order_by(*ordering).offset(offset).limit(limit)))
     stats = _row_stats_for_conditions(db, *conditions)
     requested_lost_sales_start = period_start
     requested_lost_sales_end = period_end
@@ -20530,6 +21002,11 @@ def query_document_reconciliation_rows(
             )
         )
     )
+    rows = [
+        row
+        for row in rows
+        if _document_reconciliation_is_visible_for_report(row, report)
+    ]
     if delta_only:
         rows = [row for row in rows if _document_reconciliation_has_issue(row)]
     page_rows = rows[offset : offset + limit]
