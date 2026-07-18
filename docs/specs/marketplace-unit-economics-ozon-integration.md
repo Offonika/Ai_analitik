@@ -14,6 +14,23 @@ related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_contract
 contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_sku_mapping, marketplace_api_snapshot, unit_economics_report]
 depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
 changelog_path: docs/changelogs/ozon-integration.md
+ai_sections:
+  status: "Implementation Status"
+  goal: "Goal"
+  canonical_pnl: "Canonical Ozon P&L v2"
+  scope: "Scope"
+  api_sources: "Ozon API Sources"
+  provider_registry: "Provider Registry"
+  source_refresh: "Source Refresh"
+  contracts: "Data Contracts"
+  preview: "Web Preview"
+  mart: "Ozon Unit Economics Mart v1"
+  mapping_costs: "Mapping And Costs"
+  rollout: "Rollout"
+  tests: "Test Plan"
+code_anchors:
+  - path: src/wb_unit_economics/ozon_mart.py
+    symbols: ["def build_ozon_unit_economics_mart", "def combine_ozon_monthly_marts"]
 supersedes: []
 rollout_required: true
 updated_at: "2026-07-15"

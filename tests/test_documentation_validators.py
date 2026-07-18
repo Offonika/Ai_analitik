@@ -221,7 +221,7 @@ def test_index_consistency_rejects_missing_scope_and_stale_status() -> None:
     index_text = (
         "| Scope | Canonical | Priority |\n"
         "| --- | --- | ---: |\n"
-        "| Contour | `docs/specs/old.md` | draft | Description |\n"
+        "| `old` | `docs/specs/old.md` | 100 | draft | Description |\n"
     )
 
     failures = validate_index_consistency(records, index_text)

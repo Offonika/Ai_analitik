@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from docs_metadata import (
     date_text,
@@ -24,10 +26,101 @@ REQUIRED_KEYS = {
     "source_of_truth",
     "updated_at",
 }
+AI_SECTION_REQUIRED_LINES = 500
 
 
 def _reference_exists(reference: str, spec_ids: set[str]) -> bool:
     return reference in spec_ids or (ROOT / reference).exists()
+
+
+def validate_ai_sections(
+    rel_path: Path,
+    metadata: dict[str, Any],
+    body: str,
+) -> list[str]:
+    failures: list[str] = []
+    value = metadata.get("ai_sections")
+    if value is None:
+        if (
+            metadata.get("source_of_truth") is True
+            and metadata.get("status") in {"accepted", "implemented"}
+            and len(body.splitlines()) >= AI_SECTION_REQUIRED_LINES
+        ):
+            failures.append(
+                f"{rel_path}: canonical spec with at least "
+                f"{AI_SECTION_REQUIRED_LINES} lines needs ai_sections"
+            )
+        return failures
+    if not isinstance(value, dict) or not value:
+        return [f"{rel_path}: ai_sections must be a non-empty mapping"]
+
+    for key, heading in value.items():
+        if not isinstance(key, str) or not key:
+            failures.append(f"{rel_path}: ai_sections keys must be non-empty strings")
+            continue
+        if not isinstance(heading, str) or not heading:
+            failures.append(
+                f"{rel_path}: ai_sections[{key!r}] must be a non-empty heading"
+            )
+            continue
+        pattern = re.compile(rf"^#{{1,6}}\s+{re.escape(heading)}\s*$", re.MULTILINE)
+        if pattern.search(body) is None:
+            failures.append(
+                f"{rel_path}: ai_sections[{key!r}] heading does not exist: "
+                f"{heading!r}"
+            )
+    return failures
+
+
+def validate_anchors(
+    rel_path: Path,
+    metadata: dict[str, Any],
+    key: str,
+    registered_key: str,
+) -> list[str]:
+    failures: list[str] = []
+    value = metadata.get(key)
+    if value is None:
+        return failures
+    if not isinstance(value, list) or not value:
+        return [f"{rel_path}: {key} must be a non-empty list"]
+
+    registered = set(string_list(metadata.get(registered_key)))
+    for index, item in enumerate(value):
+        label = f"{rel_path}: {key}[{index}]"
+        if not isinstance(item, dict):
+            failures.append(f"{label} must be a mapping")
+            continue
+        target = item.get("path")
+        symbols = string_list(item.get("symbols"))
+        if not isinstance(target, str) or not target:
+            failures.append(f"{label}.path must be a non-empty string")
+            continue
+        if target not in registered:
+            failures.append(
+                f"{label}.path must also be listed in {registered_key}: {target}"
+            )
+        target_path = ROOT / target
+        if not target_path.exists():
+            failures.append(f"{label}.path does not exist: {target}")
+            continue
+        raw_symbols = item.get("symbols")
+        if (
+            not isinstance(raw_symbols, list)
+            or not symbols
+            or len(symbols) != len(raw_symbols)
+        ):
+            failures.append(f"{label}.symbols must be a non-empty string list")
+            continue
+        try:
+            text = target_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            failures.append(f"{label}.path cannot be read as UTF-8: {exc}")
+            continue
+        for symbol in symbols:
+            if symbol not in text:
+                failures.append(f"{label} symbol does not exist: {symbol!r}")
+    return failures
 
 
 def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
@@ -53,6 +146,7 @@ def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
     if metadata.get("status") == "draft" and metadata.get("source_of_truth") is True:
         failures.append(f"{rel_path}: draft spec cannot be source_of_truth")
     failures.extend(validate_truth_metadata(metadata, str(rel_path)))
+    failures.extend(validate_ai_sections(rel_path, metadata, body))
 
     for key in ("related_code", "related_tests"):
         value = metadata.get(key, [])
@@ -66,6 +160,13 @@ def validate_spec(path: Path, spec_ids: set[str] | None = None) -> list[str]:
                 failures.append(
                     f"{rel_path}: {key} path does not exist: {target_path}"
                 )
+
+    failures.extend(
+        validate_anchors(rel_path, metadata, "code_anchors", "related_code")
+    )
+    failures.extend(
+        validate_anchors(rel_path, metadata, "test_anchors", "related_tests")
+    )
 
     known_ids = spec_ids or set()
     for key in ("depends_on", "related_specs", "superseded_by"):

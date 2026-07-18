@@ -10,6 +10,15 @@ documents:
     truth_scope: "project-governance"
     truth_priority: 100
     summary: "Правила работы агента, безопасность, spec-first workflow."
+    read_when: "Перед изменением файлов, разрешением конфликтов документации или работой с секретами и внешними интеграциями."
+    search_terms: ["правила агента", "безопасность", "source of truth", "spec first"]
+  - path: "CLAUDE.md"
+    title: "CLAUDE.md"
+    doc_type: "agent_rules"
+    status: "active"
+    audience: ["agent"]
+    source_of_truth: false
+    summary: "Автозагружаемая точка входа Claude Code: импорт AGENTS.md, быстрые команды и навигация по крупным файлам."
   - path: "README.md"
     title: "AI-аналитик отчетов: пилот Шумейко WB/1C"
     doc_type: "project_overview"
@@ -19,6 +28,8 @@ documents:
     truth_scope: "project-overview"
     truth_priority: 100
     summary: "Локальная структура, секреты и базовые команды пилота AI-аналитика отчетов."
+    read_when: "Нужен обзор репозитория, локальный setup, структура каталогов или базовые команды пилота."
+    search_terms: ["обзор проекта", "setup", "структура репозитория", "ключи WB"]
   - path: "config/README.md"
     title: "Config"
     doc_type: "config_guide"
@@ -28,6 +39,8 @@ documents:
     truth_scope: "configuration"
     truth_priority: 100
     summary: "Правила non-secret конфигурации."
+    read_when: "Меняется non-secret конфигурация клиента, методики, налогового профиля или account mapping."
+    search_terms: ["config", "конфигурация клиента", "non secret", "налоговый профиль"]
   - path: "docs/index.md"
     title: "Индекс документации проекта"
     doc_type: "docs_index"
@@ -58,6 +71,8 @@ documents:
     truth_scope: "product-scope"
     truth_priority: 100
     summary: "Продуктовая рамка пилота AI-аналитика отчетов на WB/1C юнит-экономике."
+    read_when: "Меняется продуктовый scope пилота, роли, этапы, общий результат или границы AI-аналитика отчетов."
+    search_terms: ["product scope", "MVP", "пилот", "AI аналитик отчетов"]
   - path: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
     title: "AI-аналитик отчетов: Excel MVP пилота Шумейко WB/1C"
     doc_type: "spec"
@@ -67,6 +82,8 @@ documents:
     truth_scope: "excel-methodology"
     truth_priority: 100
     summary: "Accepted implementation spec текущего Excel MVP как фактического слоя пилота AI-аналитика отчетов."
+    read_when: "Меняются источники WB/1С, формулы, data contracts, состав workbook или критерии приемки Excel MVP."
+    search_terms: ["Excel MVP", "юнит экономика", "формулы", "workbook", "себестоимость 1С"]
   - path: "docs/specs/marketplace-1c-mapping-service.md"
     title: "Own marketplace/1C mapping service"
     doc_type: "spec"
@@ -76,6 +93,8 @@ documents:
     truth_scope: "mapping"
     truth_priority: 100
     summary: "Implemented spec собственного сервиса сопоставления WB/Ozon и 1С с кандидатами, ручными решениями и экспортом sku_mapping."
+    read_when: "Меняется сопоставление товаров WB/Ozon и 1С, candidate import, решения оператора или экспорт sku_mapping."
+    search_terms: ["sku mapping", "сопоставление товаров", "candidate import", "артикул 1С"]
   - path: "docs/specs/onec-marketplace-mapping-http-service.md"
     title: "1C marketplace mapping read-only HTTP service"
     doc_type: "spec"
@@ -127,6 +146,8 @@ documents:
     truth_scope: "web-cabinet"
     truth_priority: 100
     summary: "Accepted implementation spec для пилотного FastAPI/PostgreSQL-кабинета, multi-client структуры, авторизации, AI tools и закрытого экспорта."
+    read_when: "Меняется авторизованный кабинет, роли, multi-client доступ, API, AI tools, readiness или закрытый экспорт."
+    search_terms: ["web кабинет", "FastAPI", "авторизация", "AI tools", "multi client"]
   - path: "docs/specs/web-cabinet-runtime-contours.md"
     title: "Web-кабинет: production и test контуры"
     doc_type: "spec"
@@ -136,6 +157,8 @@ documents:
     truth_scope: "runtime-contours"
     truth_priority: 100
     summary: "Accepted разделение analitika production и shumeiko staff-only test: независимые БД, процессы, файлы, immutable releases и rollback."
+    read_when: "Меняются production/test контуры, runtime paths, systemd units, releases, promotion или rollback."
+    search_terms: ["runtime contours", "production test", "systemd", "immutable release", "rollback"]
   - path: "docs/specs/wb-unit-economics-db-first-report-marts.md"
     title: "Шумейко WB/1C: DB-first report marts"
     doc_type: "spec"
@@ -145,6 +168,8 @@ documents:
     truth_scope: "report-publication"
     truth_priority: 100
     summary: "Accepted spec DB-first публикации: расчетные витрины БД как источник правды, Excel/web/DOCX/PDF/HTML/CSV как экспорты."
+    read_when: "Меняются report marts, публикация report_id, lineage, current report или экспортные форматы."
+    search_terms: ["DB first", "report marts", "публикация отчета", "report_id", "экспорт отчета"]
   - path: "docs/specs/wb-logistics-cost-analysis-implementation.md"
     title: "WB: анализ затрат на логистику"
     doc_type: "spec"
@@ -154,6 +179,8 @@ documents:
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
     summary: "Accepted staff-ready реализация WB-логистики v4: строгий data gate, фактические затраты, проблемные товары, рекомендации и обезличенные цепочки заказов; калькуляторы вне текущего этапа."
+    read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
+    search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
   - path: "docs/specs/client-analytical-report-implementation.md"
     title: "Клиентский аналитический отчёт WB/1С"
     doc_type: "spec"
@@ -163,6 +190,8 @@ documents:
     truth_scope: "client-analytical-report"
     truth_priority: 100
     summary: "Accepted DB-first spec клиентского Markdown/DOCX/PDF/HTML по одному report_id с executive summary, evidence и налоговыми настройками из 1С."
+    read_when: "Меняется клиентский аналитический документ, executive summary, evidence, формат DOCX/PDF/HTML или narrative по report_id."
+    search_terms: ["клиентский отчет", "executive summary", "DOCX PDF HTML", "evidence", "report narrative"]
   - path: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
     title: "Shumeyko source refresh hardening and provider registry"
     doc_type: "spec"
@@ -172,6 +201,8 @@ documents:
     truth_scope: "source-refresh"
     truth_priority: 100
     summary: "Accepted spec для source_refresh guards, provider registry, collector contract и dry-run retention CLI."
+    read_when: "Меняется загрузка WB/1С/Ozon, provider registry, refresh guards, collectors, resume или raw snapshot lifecycle."
+    search_terms: ["source refresh", "provider registry", "collector", "resume", "raw snapshot"]
   - path: "docs/specs/source-refresh-database-retention.md"
     title: "Source refresh: ретенция PostgreSQL и освобождение диска"
     doc_type: "spec"
@@ -180,7 +211,9 @@ documents:
     source_of_truth: true
     truth_scope: "source-retention"
     truth_priority: 100
-    summary: "Accepted spec пакетной очистки raw snapshot rows с защитой report lineage и безопасной оптимизацией индекса."
+    summary: "Accepted spec очистки raw snapshot rows и устаревших report drafts с backup, lineage и fail-closed guards."
+    read_when: "Меняются raw-row retention, очистка старых черновиков отчетов, backup verification, VACUUM или освобождение диска."
+    search_terms: ["source retention", "очистка черновиков отчетов", "report draft retention", "prune_report_drafts", "VACUUM backup"]
   - path: "docs/specs/marketplace-unit-economics-ozon-integration.md"
     title: "Marketplace unit economics: Ozon integration"
     doc_type: "spec"
@@ -190,6 +223,8 @@ documents:
     truth_scope: "ozon"
     truth_priority: 100
     summary: "Accepted spec для read-only Ozon Seller API, raw snapshots и общего marketplace_api_snapshot слоя."
+    read_when: "Меняются Ozon Seller API, finance/accrual sources, Ozon mart, расходы, mapping или Ozon preview."
+    search_terms: ["Ozon", "Seller API", "Ozon unit economics", "finance cash flow", "Ozon расходы"]
   - path: "docs/specs/month-close-control-pilot.md"
     title: "Пилот контроля закрытия месяца по 1С"
     doc_type: "spec"
@@ -206,6 +241,8 @@ documents:
     truth_scope: "multi-report-cabinet"
     truth_priority: 100
     summary: "Accepted архитектура report_kind, асинхронной генерации, независимого current и staff-only advisory rollout; production evidence проходит повторную реализацию."
+    read_when: "Меняются report_kind, registry отчетов, асинхронная генерация, shared report contract или advisory/enforced checks."
+    search_terms: ["multi report", "report_kind", "registry отчетов", "асинхронная генерация", "advisory checks"]
   - path: "docs/specs/month-close-control-report-implementation.md"
     title: "Контроль закрытия месяца: web-сценарий и Excel"
     doc_type: "spec"
@@ -215,6 +252,8 @@ documents:
     truth_scope: "month-close-control"
     truth_priority: 100
     summary: "Accepted staff-only advisory-сценарий календарного закрытия месяца: read-only 1С, evidence, web и Excel."
+    read_when: "Меняется контроль закрытия месяца, ОСВ/evidence, календарь, проверки 1С, web или Excel этого report_kind."
+    search_terms: ["закрытие месяца", "month close", "ОСВ", "evidence", "календарь закрытия"]
   - path: "docs/specs/tax-load-report-implementation.md"
     title: "Налоговая нагрузка: web-сценарий и Excel"
     doc_type: "spec"
@@ -224,6 +263,8 @@ documents:
     truth_scope: "tax-load-report"
     truth_priority: 100
     summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v2, профиль 1С, web и Excel."
+    read_when: "Меняется отчет налоговой нагрузки, формула ФНС, tax profile, evidence v2, web или Excel этого report_kind."
+    search_terms: ["налоговая нагрузка", "tax load", "формула ФНС", "tax profile", "evidence v2"]
   - path: "docs/specs/accounting-reports-smart-process-onepage.md"
     title: "ONEPAGE: смарт-процесс закрытия месяца и налоговой нагрузки"
     doc_type: "spec"
@@ -233,15 +274,19 @@ documents:
     truth_scope: "accounting-reports-smart-process"
     truth_priority: 100
     summary: "Implemented staff-only workflow-модуль за выключенным feature-флагом: ежемесячный Канбан, две задачи, ручная отправка tax_load, evidence, follow-up, SLA и проверяемое закрытие к зарплате."
+    read_when: "Меняется бухгалтерский Канбан, workflow tasks, SLA, delivery/follow-up, feature flag или закрытие к зарплате."
+    search_terms: ["бухгалтерский смарт процесс", "Канбан", "workflow task", "SLA", "закрытие к зарплате"]
   - path: "docs/specs/wb-unit-economics-ai-git-workflow.md"
-    title: "AI development Git workflow"
+    title: "AI development and documentation routing workflow"
     doc_type: "spec"
     status: "accepted"
     audience: ["engineering", "agent"]
     source_of_truth: true
     truth_scope: "development-workflow"
     truth_priority: 100
-    summary: "Accepted spec безопасного Git workflow для разработки с ИИ: read-only GitHub CI, local hooks, checks, commit и push."
+    summary: "Accepted spec AI-разработки: компактная маршрутизация документации, read-only CI, local hooks, checks, commit и push."
+    read_when: "Меняется AI-навигация по документации, docs metadata, CI, hooks, проверки, commit/push или безопасная публикация изменений."
+    search_terms: ["AI documentation routing", "docs route", "Git workflow", "CI", "поиск документации"]
   - path: "docs/client-scope.md"
     title: "AI-аналитик отчетов: пилот Шумейко WB/1C"
     doc_type: "client_scope"
@@ -376,12 +421,12 @@ documents:
     source_of_truth: false
     summary: "Active production runbook для hourly daily, weekly full и staff incremental source refresh через отдельный systemd worker."
   - path: "docs/runbooks/ai-git-workflow.md"
-    title: "AI Git workflow"
+    title: "AI development workflow"
     doc_type: "runbook"
     status: "active"
     audience: ["engineering", "agent"]
     source_of_truth: false
-    summary: "Безопасный цикл разработки с ИИ: локальные проверки, read-only GitHub CI, commit, push и pre-commit hook."
+    summary: "Компактная AI-навигация, локальные проверки, read-only GitHub CI, commit, push и pre-commit hook."
   - path: "docs/runbooks/wb-logistics-v4-continuation.md"
     title: "Продолжение работ по WB-логистике v4"
     doc_type: "runbook"
@@ -405,6 +450,8 @@ documents:
     truth_scope: "tax-methodology"
     truth_priority: 100
     summary: "Accepted ADR по налоговым профилям, ОСНО, НДС к уплате, Управленческой прибыли WB и прибыли до налогов."
+    read_when: "Меняются налоговые профили, ОСНО, входящий/исходящий НДС, НДС к уплате или прибыль до налогов."
+    search_terms: ["налоговая методика", "ОСНО", "НДС к уплате", "tax profile", "прибыль до налогов"]
   - path: "docs/decisions/2026-07-14-accounting-reports-accountant-questions.md"
     title: "Вопросы бухгалтеру по закрытию месяца и налоговой нагрузке"
     doc_type: "decision"

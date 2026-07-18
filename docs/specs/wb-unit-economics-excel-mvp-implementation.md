@@ -56,6 +56,19 @@ depends_on:
 related_specs:
   - docs/specs/marketplace-1c-mapping-service.md
 changelog_path: docs/changelogs/excel-mvp.md
+ai_sections:
+  status: "Implementation Status"
+  purpose: "Назначение"
+  scope: "Scope"
+  sources: "Источники данных"
+  decisions: "Decisions"
+  data_flow: "Data Flow"
+  contracts: "Data Contracts"
+  calculation: "Calculation"
+  workbook: "Excel Workbook"
+  acceptance: "Acceptance Criteria"
+  tests: "Tests"
+  commands: "Runbook Commands"
 supersedes: []
 rollout_required: false
 updated_at: "2026-07-15"

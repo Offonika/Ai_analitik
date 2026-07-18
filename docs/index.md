@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "consultant", "client"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-16"
+updated_at: "2026-07-18"
 ---
 
 # Индекс документации проекта
@@ -14,80 +14,17 @@ updated_at: "2026-07-16"
 конфликтуют, порядок источников правды задан в `AGENTS.md`: accepted
 implementation spec, затем общий MVP spec, затем клиентские документы и README.
 
-# Главные источники правды
+# Источники истины и AI-маршрут
 
 `source_of_truth` сохраняется для обратной совместимости. Машинный приоритет
 задают `truth_scope` и `truth_priority`: документы сравниваются только внутри
 одного scope, большее число имеет приоритет. Для каждого scope в manifest есть
 ровно один документ с максимальным приоритетом.
 
-- `AGENTS.md` — правила работы агента, безопасность, spec-first workflow и
-  порядок разрешения конфликтов.
-- `docs/product-concept-ai-report-analyst.md` — продуктовая рамка
-  `AI-аналитик отчетов`: Шумейко является пилотным WB/1C контуром, а не
-  названием всего продукта.
-- `docs/specs/wb-unit-economics-excel-mvp-implementation.md` — accepted spec
-  текущего Excel MVP.
-- `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` — accepted ADR по
-  налоговым профилям, ОСНО, НДС к уплате и прибыли до налогов.
-- `docs/specs/marketplace-1c-mapping-service.md` — implemented spec собственного
-  сервиса сопоставления WB/Ozon и 1С; это текущий источник правды для
-  `sku_mapping`.
-- `docs/specs/onec-marketplace-mapping-http-service.md` — superseded spec
-  узкого read-only HTTP-сервиса 1С; теперь только candidate import/fallback.
-- `docs/specs/onec-marketplace-mapping-client-extension.md` — superseded spec
-  клиентского `.cfe` расширения; теперь только candidate import/fallback.
-- `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` — accepted
-  spec авторизованного web-кабинета, PostgreSQL-витрины и AI-аналитика.
-- `docs/specs/wb-unit-economics-db-first-report-marts.md` — accepted spec
-  DB-first публикации: БД как источник готового отчета, Excel/web/DOCX/PDF/CSV
-  как экспорты.
-- `docs/specs/wb-logistics-cost-analysis-implementation.md` — accepted spec
-  анализа фактических затрат на логистику, проблемных товаров, факторов,
-  детализации заказов и последующих сценарных калькуляторов.
-- `docs/specs/client-analytical-report-implementation.md` — accepted spec
-  клиентского аналитического Markdown/DOCX/PDF/HTML по одному `report_id`.
-- `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` —
-  accepted spec hardening `source_refresh`, provider registry и retention CLI.
-- `docs/specs/source-refresh-database-retention.md` — accepted spec пакетной
-  ретенции raw snapshot rows PostgreSQL с защитой report lineage.
-- `docs/specs/marketplace-unit-economics-ozon-integration.md` — accepted spec
-  read-only Ozon Seller API, raw snapshots и общего marketplace-слоя WB/Ozon.
-- `docs/specs/wb-unit-economics-ai-git-workflow.md` — accepted spec
-  безопасного Git workflow для разработки с ИИ, локальных hooks и публикации.
-- `docs/specs/wb-unit-economics-mvp.md` — продуктовая рамка пилота и будущих
-  этапов.
-- `docs/specs/wb-unit-economics-client-web-cabinet.md` — superseded draft,
-  сохраненный как исторический предшественник accepted web-spec.
-- `docs/generated/web-api.md` — route inventory, автоматически собранный из
-  текущего FastAPI OpenAPI.
-- `README.md` — локальная структура проекта, секреты, базовые команды.
-- `config/README.md` — что можно хранить в non-secret конфигурации.
-
-# Источники истины по scope
-
-| Scope | Канонический документ | Приоритет |
-| --- | --- | ---: |
-| `project-governance` | `AGENTS.md` | 100 |
-| `project-overview` | `README.md` | 100 |
-| `configuration` | `config/README.md` | 100 |
-| `product-scope` | `docs/specs/wb-unit-economics-mvp.md` | 100 |
-| `excel-methodology` | `docs/specs/wb-unit-economics-excel-mvp-implementation.md` | 100 |
-| `tax-methodology` | `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` | 100 |
-| `mapping` | `docs/specs/marketplace-1c-mapping-service.md` | 100 |
-| `report-publication` | `docs/specs/wb-unit-economics-db-first-report-marts.md` | 100 |
-| `logistics-cost-analysis` | `docs/specs/wb-logistics-cost-analysis-implementation.md` | 100 |
-| `client-analytical-report` | `docs/specs/client-analytical-report-implementation.md` | 100 |
-| `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 |
-| `runtime-contours` | `docs/specs/web-cabinet-runtime-contours.md` | 100 |
-| `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 |
-| `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 |
-| `ozon` | `docs/specs/marketplace-unit-economics-ozon-integration.md` | 100 |
-| `multi-report-cabinet` | `docs/specs/multi-report-cabinet-implementation.md` | 100 |
-| `month-close-control` | `docs/specs/month-close-control-report-implementation.md` | 100 |
-| `tax-load-report` | `docs/specs/tax-load-report-implementation.md` | 100 |
-| `accounting-reports-smart-process` | `docs/specs/accounting-reports-smart-process-onepage.md` | 100 |
-| `development-workflow` | `docs/specs/wb-unit-economics-ai-git-workflow.md` | 100 |
+- `CLAUDE.md` — короткая автозагружаемая точка входа Claude Code;
+- `docs/product-concept-ai-report-analyst.md` — supporting product concept;
+- `docs/generated/web-api.md` — generated inventory текущего FastAPI OpenAPI;
+- `docs/generated/ai-routing.jsonl` — generated одно-строчная AI-карта.
 
 ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 остается поддерживающим источником scope `source-refresh` с приоритетом 80.
@@ -96,29 +33,41 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 Концептуальные обратные ссылки хранятся в `related_specs` и не участвуют в
 порядке rollout.
 
-# Что читать по контуру
+Карта scope → код и тесты хранится в frontmatter самого спека: поля
+`related_code` и `related_tests`. Существование перечисленных путей проверяет
+`scripts/validate_specs.py`; при переносе или добавлении модулей эти списки
+обновляются в том же изменении.
 
-| Контур | Главный документ | Статус | Когда читать |
-| --- | --- | --- | --- |
-| Product frame | `docs/product-concept-ai-report-analyst.md` | accepted | Уточнить, что Шумейко WB/1C является пилотом продукта `AI-аналитик отчетов`. |
-| Excel MVP | `docs/specs/wb-unit-economics-excel-mvp-implementation.md` | accepted | Меняется методика, состав workbook, формулы, источники WB/1С или критерии приемки Excel. |
-| Marketplace/1C mapping | `docs/specs/marketplace-1c-mapping-service.md` | implemented | Меняется сервис сопоставления WB/Ozon и 1С, статусы, решения оператора, candidate import или экспорт `sku_mapping`. |
-| 1C marketplace mapping fallback | `docs/specs/onec-marketplace-mapping-client-extension.md` | superseded | Нужно понять старый путь импорта кандидатов из расширения `ИС_Маркетплейс`; не использовать как основной источник правды. |
-| DB-first publication | `docs/specs/wb-unit-economics-db-first-report-marts.md` | accepted | Меняется источник готового отчета, публикация `report_run` или экспорт Excel/DOCX/PDF/CSV. |
-| WB logistics cost analysis | `docs/specs/wb-logistics-cost-analysis-implementation.md` | accepted | Меняется блок фактической логистики, проблемных товаров, факторов затрат, детализации заказов или сценарных калькуляторов. |
-| Client analytical report | `docs/specs/client-analytical-report-implementation.md` | accepted | Меняется состав, DB-first источник, DOCX/PDF/HTML-рендеринг, рекомендации или налоговое пояснение клиентского отчёта. |
-| Web cabinet / AI | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | accepted | Меняется авторизованный кабинет, multi-client переключение, роли, API, AI-черновик, readiness или закрытый экспорт. |
-| Runtime contours | `docs/specs/web-cabinet-runtime-contours.md` | accepted | Меняются production/test домены, БД, systemd/nginx, release promotion, test sanitization или rollback. |
-| Multi-report cabinet | `docs/specs/multi-report-cabinet-implementation.md` | accepted | Реализуется каталог `report_kind`, асинхронная генерация из read-only evidence, независимый current и staff-only rollout. |
-| Source refresh | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | accepted | Меняется регулярная загрузка источников, provider registry, guards или retention raw snapshots. |
-| Source refresh DB retention | `docs/specs/source-refresh-database-retention.md` | accepted | Меняются правила хранения raw snapshot rows PostgreSQL или процедура освобождения диска. |
-| Ozon integration | `docs/specs/marketplace-unit-economics-ozon-integration.md` | accepted | Добавляется Ozon Seller API, Ozon raw snapshots, marketplace-разрез или смешанная WB/Ozon финмодель. |
-| Month close pilot | `docs/specs/month-close-control-pilot.md` | superseded | Исторический discovery-контур закрытия месяца; действующая реализация описана в accepted report spec. |
-| Month close report | `docs/specs/month-close-control-report-implementation.md` | accepted | Реализуется staff-only web + Excel сценарий календарного закрытия месяца с evidence v2 и advisory-проверками. |
-| Tax load report | `docs/specs/tax-load-report-implementation.md` | accepted | Реализуется staff-only отчет налоговой нагрузки за месяц и YTD, web + Excel, без неподтвержденных значений. |
-| Accounting reports smart process | `docs/specs/accounting-reports-smart-process-onepage.md` | implemented | Меняется реализованный за выключенным feature-флагом staff-only модуль: Канбан закрытия к зарплате, одна ежемесячная карточка клиента и организации, две задачи, ручная отправка `tax_load`, evidence, контрольный контакт и SLA. |
-| AI Git workflow | `docs/specs/wb-unit-economics-ai-git-workflow.md` | accepted | Меняется безопасная публикация AI-assisted изменений, GitHub CI, hooks, checks или commit/push workflow. |
-| Client handoff | `docs/client-acceptance-package.md` | draft | Нужно собрать пакет приемки конкретного опубликованного `report_id` без статического «текущего» отчета. |
+Таблица ниже генерируется из `docs/manifest.yml`. Для компактного AI-поиска
+использовать `.venv/bin/python scripts/docs_route.py --query "<задача>"`.
+
+<!-- BEGIN GENERATED AI ROUTING -->
+| Scope | Канонический документ | Приоритет | Статус | Когда читать |
+| --- | --- | ---: | --- | --- |
+| `accounting-reports-smart-process` | `docs/specs/accounting-reports-smart-process-onepage.md` | 100 | implemented | Меняется бухгалтерский Канбан, workflow tasks, SLA, delivery/follow-up, feature flag или закрытие к зарплате. |
+| `client-analytical-report` | `docs/specs/client-analytical-report-implementation.md` | 100 | accepted | Меняется клиентский аналитический документ, executive summary, evidence, формат DOCX/PDF/HTML или narrative по report_id. |
+| `configuration` | `config/README.md` | 100 | active | Меняется non-secret конфигурация клиента, методики, налогового профиля или account mapping. |
+| `development-workflow` | `docs/specs/wb-unit-economics-ai-git-workflow.md` | 100 | accepted | Меняется AI-навигация по документации, docs metadata, CI, hooks, проверки, commit/push или безопасная публикация изменений. |
+| `excel-methodology` | `docs/specs/wb-unit-economics-excel-mvp-implementation.md` | 100 | accepted | Меняются источники WB/1С, формулы, data contracts, состав workbook или критерии приемки Excel MVP. |
+| `logistics-cost-analysis` | `docs/specs/wb-logistics-cost-analysis-implementation.md` | 100 | accepted | Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины. |
+| `mapping` | `docs/specs/marketplace-1c-mapping-service.md` | 100 | implemented | Меняется сопоставление товаров WB/Ozon и 1С, candidate import, решения оператора или экспорт sku_mapping. |
+| `month-close-control` | `docs/specs/month-close-control-report-implementation.md` | 100 | accepted | Меняется контроль закрытия месяца, ОСВ/evidence, календарь, проверки 1С, web или Excel этого report_kind. |
+| `multi-report-cabinet` | `docs/specs/multi-report-cabinet-implementation.md` | 100 | accepted | Меняются report_kind, registry отчетов, асинхронная генерация, shared report contract или advisory/enforced checks. |
+| `ozon` | `docs/specs/marketplace-unit-economics-ozon-integration.md` | 100 | accepted | Меняются Ozon Seller API, finance/accrual sources, Ozon mart, расходы, mapping или Ozon preview. |
+| `product-scope` | `docs/specs/wb-unit-economics-mvp.md` | 100 | accepted | Меняется продуктовый scope пилота, роли, этапы, общий результат или границы AI-аналитика отчетов. |
+| `project-governance` | `AGENTS.md` | 100 | active | Перед изменением файлов, разрешением конфликтов документации или работой с секретами и внешними интеграциями. |
+| `project-overview` | `README.md` | 100 | active | Нужен обзор репозитория, локальный setup, структура каталогов или базовые команды пилота. |
+| `report-publication` | `docs/specs/wb-unit-economics-db-first-report-marts.md` | 100 | accepted | Меняются report marts, публикация report_id, lineage, current report или экспортные форматы. |
+| `runtime-contours` | `docs/specs/web-cabinet-runtime-contours.md` | 100 | accepted | Меняются production/test контуры, runtime paths, systemd units, releases, promotion или rollback. |
+| `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 | accepted | Меняется загрузка WB/1С/Ozon, provider registry, refresh guards, collectors, resume или raw snapshot lifecycle. |
+| `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 | accepted | Меняются raw-row retention, очистка старых черновиков отчетов, backup verification, VACUUM или освобождение диска. |
+| `tax-load-report` | `docs/specs/tax-load-report-implementation.md` | 100 | accepted | Меняется отчет налоговой нагрузки, формула ФНС, tax profile, evidence v2, web или Excel этого report_kind. |
+| `tax-methodology` | `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` | 100 | accepted | Меняются налоговые профили, ОСНО, входящий/исходящий НДС, НДС к уплате или прибыль до налогов. |
+| `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 | accepted | Меняется авторизованный кабинет, роли, multi-client доступ, API, AI tools, readiness или закрытый экспорт. |
+<!-- END GENERATED AI ROUTING -->
+
+Supporting, draft и superseded документы не входят в таблицу. Их можно найти
+явно флагами `--include-supporting --include-history`.
 
 # Клиентский пакет
 
@@ -163,7 +112,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 - `docs/runbooks/source-refresh-schedule.md` — active runbook для systemd
   timers, отдельного worker и staff incremental source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
-  локальные проверки, GitHub CI, коммит, push и pre-commit hook.
+  компактный docs route, локальные проверки, GitHub CI, коммит и push.
 - `docs/runbooks/wb-logistics-v4-continuation.md` — handoff текущего состояния
   WB-логистики v4, проверок, ограничений dirty worktree и следующего безопасного
   этапа test-rollout.
@@ -196,6 +145,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 ```bash
 .venv/bin/python scripts/validate_docs_manifest.py
 .venv/bin/python scripts/validate_llm_docs.py
+.venv/bin/python scripts/docs_route.py --check-generated
 .venv/bin/python scripts/validate_specs.py
 .venv/bin/python scripts/validate_documentation_contracts.py
 .venv/bin/python scripts/build_client_tz_docx.py --check
