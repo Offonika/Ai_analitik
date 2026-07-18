@@ -5748,8 +5748,16 @@ def _persist_wb_finance_rows(
 
 @dataclass(frozen=True)
 class _LogisticsSnapshotCandidate:
-    snapshot: SourceSnapshotRow
-    refresh_run: SourceRefreshRun
+    snapshot_id: int
+    refresh_run_id: str
+    tenant_id: str
+    client_id: str
+    wb_cabinet_id: str
+    source_type: str
+    source_row_id: str
+    loaded_at: datetime
+    collection_id: int
+    row_number: int
     role: str
     source_row: LogisticsSourceRow
     source_hash: str
@@ -5879,8 +5887,21 @@ def _select_logistics_source_rows(
     scope_mismatches = 0
     blocking: list[str] = []
     multiple_runs = len(run_ids) > 1
-    snapshot_rows = db.scalars(
-        select(SourceSnapshotRow)
+    snapshot_rows = db.execute(
+        select(
+            SourceSnapshotRow.id.label("snapshot_id"),
+            SourceSnapshotRow.refresh_run_id,
+            SourceSnapshotRow.tenant_id,
+            SourceSnapshotRow.client_id,
+            SourceSnapshotRow.wb_cabinet_id,
+            SourceSnapshotRow.source_type,
+            SourceSnapshotRow.source_row_id,
+            SourceSnapshotRow.row_number,
+            SourceSnapshotRow.raw_payload_hash,
+            SourceSnapshotRow.row_payload,
+            SourceSnapshotRow.loaded_at,
+            SourceSnapshotRow.collection_id,
+        )
         .where(
             SourceSnapshotRow.refresh_run_id.in_(run_ids),
             SourceSnapshotRow.source_type == "wb_finance_detail",
@@ -5891,9 +5912,10 @@ def _select_logistics_source_rows(
             SourceSnapshotRow.collection_id,
             SourceSnapshotRow.row_number,
         )
-    )
+        .execution_options(stream_results=True, yield_per=1_000)
+    ).yield_per(1_000)
     for snapshot in snapshot_rows:
-        refresh_run, role = roles[snapshot.refresh_run_id]
+        _refresh_run, role = roles[snapshot.refresh_run_id]
         payload = snapshot.row_payload
         stored_source_hash = str(snapshot.raw_payload_hash or "")
         canonical_source_hash = _hash_payload(payload)
@@ -5971,8 +5993,16 @@ def _select_logistics_source_rows(
             blocking.append("source_identity_mismatch")
         candidates.append(
             _LogisticsSnapshotCandidate(
-                snapshot=snapshot,
-                refresh_run=refresh_run,
+                snapshot_id=int(snapshot.snapshot_id),
+                refresh_run_id=str(snapshot.refresh_run_id),
+                tenant_id=str(snapshot.tenant_id or ""),
+                client_id=str(snapshot.client_id or ""),
+                wb_cabinet_id=wb_cabinet_id,
+                source_type=str(snapshot.source_type or ""),
+                source_row_id=snapshot_row_id,
+                loaded_at=snapshot.loaded_at,
+                collection_id=int(snapshot.collection_id),
+                row_number=int(snapshot.row_number),
                 role=role,
                 source_row=source_row,
                 source_hash=source_hash,
@@ -6001,7 +6031,7 @@ def _select_logistics_source_rows(
         financial_date = candidate.source_row.financial_date
         if financial_date is not None:
             candidates_by_date.setdefault(financial_date, set()).add(
-                candidate.refresh_run.id
+                candidate.refresh_run_id
             )
 
     selected_candidates: list[_LogisticsSnapshotCandidate] = []
@@ -6009,11 +6039,11 @@ def _select_logistics_source_rows(
     for candidate in candidates:
         financial_date = candidate.source_row.financial_date
         record = {
-            "runId": candidate.refresh_run.id,
+            "runId": candidate.refresh_run_id,
             "role": candidate.role,
-            "sourceRowId": str(candidate.snapshot.source_row_id or ""),
+            "sourceRowId": candidate.source_row_id,
             "sourceHash": candidate.source_hash,
-            "cabinetId": str(candidate.snapshot.wb_cabinet_id or ""),
+            "cabinetId": candidate.wb_cabinet_id,
             "financialDate": (
                 financial_date.isoformat() if financial_date is not None else None
             ),
@@ -6033,7 +6063,7 @@ def _select_logistics_source_rows(
         )
         if owner_conflict and financial_date is not None:
             owner_conflict_dates.add(financial_date)
-        if candidate.refresh_run.id != owner_id:
+        if candidate.refresh_run_id != owner_id:
             source_revision_discarded += 1
             lineage.append(
                 {
@@ -6053,25 +6083,28 @@ def _select_logistics_source_rows(
     selected: list[LogisticsSourceRow] = []
     by_identity: dict[tuple[str, ...], list[_LogisticsSnapshotCandidate]] = {}
     for candidate in selected_candidates:
-        snapshot = candidate.snapshot
         identity = (
-            str(snapshot.tenant_id or ""),
-            str(snapshot.client_id or ""),
-            str(snapshot.wb_cabinet_id or ""),
-            str(snapshot.source_type or ""),
-            str(snapshot.source_row_id or ""),
+            candidate.tenant_id,
+            candidate.client_id,
+            candidate.wb_cabinet_id,
+            candidate.source_type,
+            candidate.source_row_id,
         )
         if not candidate.stable_identity:
-            identity = (*identity, snapshot.refresh_run_id, str(snapshot.id))
+            identity = (
+                *identity,
+                candidate.refresh_run_id,
+                str(candidate.snapshot_id),
+            )
         by_identity.setdefault(identity, []).append(candidate)
     for identity in sorted(by_identity):
         revisions = sorted(
             by_identity[identity],
             key=lambda item: (
-                item.snapshot.loaded_at,
-                item.snapshot.refresh_run_id,
-                item.snapshot.collection_id,
-                item.snapshot.row_number,
+                item.loaded_at,
+                item.refresh_run_id,
+                item.collection_id,
+                item.row_number,
             ),
         )
         hashes = {item.source_hash for item in revisions}

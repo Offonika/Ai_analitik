@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
+from wb_unit_economics import logistics_analysis
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
@@ -540,6 +541,75 @@ def test_invalid_payload_shape_diagnostics_are_hashed_and_block_gate() -> None:
     assert blocked.context.invalid_source_row_count == 1
     assert blocked.context.invalid_source_payload_shape_count == 1
     assert blocked.context.input_hash != baseline.context.input_hash
+
+
+def test_streaming_input_hash_matches_legacy_canonical_payload() -> None:
+    source_rows = [
+        _source_row(),
+        _source_row(
+            source_row_id="row-2",
+            source_hash="hash-2",
+            order_uid="order-2",
+        ),
+    ]
+    unit_rows = [_unit_row()]
+    diagnostics = LogisticsInputDiagnostics(
+        invalid_source_payload_shape_count=1,
+        source_identity_error_count=2,
+        source_revision_conflict_count=3,
+        source_revision_discarded_count=4,
+        scope_mismatch_count=5,
+        blocking_reasons=("reason-b", "reason-a"),
+        lineage_records=(
+            {"runId": "run-2", "selection": "candidate"},
+            {"runId": "run-1", "selection": "discarded"},
+        ),
+    )
+    period_start = date(2026, 7, 1)
+    period_end = date(2026, 7, 31)
+    legacy_payload = {
+        "methodology": LOGISTICS_METHODOLOGY_VERSION,
+        "chain": CHAIN_KEY_VERSION,
+        "reportPeriodStart": period_start.isoformat(),
+        "reportPeriodEnd": period_end.isoformat(),
+        "inputDiagnostics": {
+            "invalidSourcePayloadShapeCount": 1,
+            "sourceIdentityErrorCount": 2,
+            "sourceRevisionConflictCount": 3,
+            "sourceRevisionDiscardedCount": 4,
+            "scopeMismatchCount": 5,
+            "blockingReasons": ["reason-a", "reason-b"],
+            "lineage": sorted(
+                (dict(item) for item in diagnostics.lineage_records),
+                key=lambda item: logistics_analysis.json.dumps(
+                    item, ensure_ascii=False, sort_keys=True
+                ),
+            ),
+        },
+        "source": sorted(
+            (
+                logistics_analysis._source_hash_record(row)
+                for row in source_rows
+            ),
+            key=lambda item: logistics_analysis.json.dumps(
+                item, ensure_ascii=False, sort_keys=True
+            ),
+        ),
+        "unit": sorted(
+            (logistics_analysis._unit_hash_record(row) for row in unit_rows),
+            key=lambda item: logistics_analysis.json.dumps(
+                item, ensure_ascii=False, sort_keys=True
+            ),
+        ),
+    }
+
+    assert logistics_analysis._input_hash(
+        source_rows,
+        unit_rows,
+        report_period_start=period_start,
+        report_period_end=period_end,
+        input_diagnostics=diagnostics,
+    ) == logistics_analysis._hash_payload(legacy_payload)
 
 
 def test_strict_date_and_scheme_parsers_reject_trailing_or_embedded_values() -> None:

@@ -14,7 +14,7 @@ related_tests: [tests/test_logistics_analysis.py, tests/test_wb_finance.py, test
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-18"
 ---
 
 # Статус документа
@@ -169,6 +169,15 @@ Excel-экспорт этого блока не входит в первую о�
    продаж и действующая классификация расходов.
 3. Сохраненный raw snapshot — доказательная база и возможность повторного
    расчета после изменения классификатора.
+
+Текущая реализация `wb-logistics-v4` выбирает финансовую детализацию из
+`source_snapshot_rows`. Production-режим
+`SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=files_only` не создает эти строки, поэтому
+scheduled logistics build нельзя включать одновременно с `files_only`, пока не
+реализован проверяемый file-authoritative reader. Для разовой staff-приемки
+разрешено восстановить строки из уже проверенных immutable-файлов штатной
+идемпотентной командой recovery и создать только новый immutable draft; старый
+report run не дополняется на месте.
 
 Операционные данные о заказах могут использоваться для дополнительного
 контекста, но не должны заменять итоговую финансовую детализацию.
@@ -831,6 +840,12 @@ AI не может:
 4. После приемки включить клиентским ролям.
 5. Калькуляторы выпускать отдельным feature flag после фактического блока.
 
+На production со включенным `files_only` feature flag web-интерфейса и flag
+scheduled source-refresh worker разделяются. Worker flag остается выключенным
+до появления file-authoritative reader или отдельного принятого решения о
+возврате `legacy`; иначе новый run обязан получить `blocked`, а не пустые
+витрины.
+
 Staff-only приемка draft выполняется по прямой ссылке кабинета с
 `report_id=<draft_report_id>`. Frontend может выбрать эту ревизию только из
 списка отчетов, уже отфильтрованного сервером для текущего пользователя;
@@ -867,6 +882,11 @@ rollout и rollback не изменяются.
 
 # Changelog
 
+- 2026-07-18 — закреплена граница с source-refresh `files_only`: текущий v4
+  требует проверяемых `source_snapshot_rows`, разовый staff-rebuild использует
+  идемпотентное восстановление уже сохраненного immutable snapshot и новый
+  report run, а scheduled worker flag не включается до file-authoritative
+  reader или отдельного решения о `legacy`.
 - 2026-07-17 — согласована information architecture без отдельного пункта
   `Логистика`: сценарий перенесен в `Аналитика и таблицы`, закреплены
   `#tables/logistics`, answer-first summary, граница между расходом и устранимой

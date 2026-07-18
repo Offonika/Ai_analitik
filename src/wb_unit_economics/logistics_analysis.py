@@ -1378,43 +1378,72 @@ def _input_hash(
     report_period_end: date | None,
     input_diagnostics: LogisticsInputDiagnostics,
 ) -> str:
-    value = {
-        "methodology": LOGISTICS_METHODOLOGY_VERSION,
-        "chain": CHAIN_KEY_VERSION,
-        "reportPeriodStart": _date_text(report_period_start),
-        "reportPeriodEnd": _date_text(report_period_end),
-        "inputDiagnostics": {
-            "invalidSourcePayloadShapeCount": (
-                input_diagnostics.invalid_source_payload_shape_count
-            ),
-            "sourceIdentityErrorCount": (
-                input_diagnostics.source_identity_error_count
-            ),
-            "sourceRevisionConflictCount": (
-                input_diagnostics.source_revision_conflict_count
-            ),
-            "sourceRevisionDiscardedCount": (
-                input_diagnostics.source_revision_discarded_count
-            ),
-            "scopeMismatchCount": input_diagnostics.scope_mismatch_count,
-            "blockingReasons": sorted(input_diagnostics.blocking_reasons),
-            "lineage": sorted(
-                (dict(item) for item in input_diagnostics.lineage_records),
-                key=lambda item: json.dumps(
-                    item, ensure_ascii=False, sort_keys=True
-                ),
-            ),
-        },
-        "source": sorted(
-            (_source_hash_record(row) for row in source_rows),
-            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
-        ),
-        "unit": sorted(
-            (_unit_hash_record(row) for row in unit_rows),
-            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
-        ),
-    }
-    return _hash_payload(value)
+    digest = hashlib.sha256()
+
+    def write(text: str) -> None:
+        digest.update(text.encode("utf-8"))
+
+    # Keep byte-for-byte parity with the previous canonical json.dumps payload,
+    # but never materialize the full multi-hundred-thousand-row object graph.
+    write('{"chain":')
+    write(_canonical_json(CHAIN_KEY_VERSION))
+    write(',"inputDiagnostics":{"blockingReasons":')
+    write(_canonical_json(sorted(input_diagnostics.blocking_reasons)))
+    write(',"invalidSourcePayloadShapeCount":')
+    write(_canonical_json(input_diagnostics.invalid_source_payload_shape_count))
+    write(',"lineage":')
+    _update_sorted_json_records(
+        digest,
+        (dict(item) for item in input_diagnostics.lineage_records),
+    )
+    write(',"scopeMismatchCount":')
+    write(_canonical_json(input_diagnostics.scope_mismatch_count))
+    write(',"sourceIdentityErrorCount":')
+    write(_canonical_json(input_diagnostics.source_identity_error_count))
+    write(',"sourceRevisionConflictCount":')
+    write(_canonical_json(input_diagnostics.source_revision_conflict_count))
+    write(',"sourceRevisionDiscardedCount":')
+    write(_canonical_json(input_diagnostics.source_revision_discarded_count))
+    write('},"methodology":')
+    write(_canonical_json(LOGISTICS_METHODOLOGY_VERSION))
+    write(',"reportPeriodEnd":')
+    write(_canonical_json(_date_text(report_period_end)))
+    write(',"reportPeriodStart":')
+    write(_canonical_json(_date_text(report_period_start)))
+    write(',"source":')
+    _update_sorted_json_records(
+        digest,
+        (_source_hash_record(row) for row in source_rows),
+    )
+    write(',"unit":')
+    _update_sorted_json_records(
+        digest,
+        (_unit_hash_record(row) for row in unit_rows),
+    )
+    write("}")
+    return digest.hexdigest()
+
+
+def _update_sorted_json_records(
+    digest: Any,
+    records: Iterable[Mapping[str, Any]],
+) -> None:
+    serialized = sorted(_canonical_json(dict(item)) for item in records)
+    digest.update(b"[")
+    for index, item in enumerate(serialized):
+        if index:
+            digest.update(b",")
+        digest.update(item.encode("utf-8"))
+    digest.update(b"]")
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _source_hash_record(row: LogisticsSourceRow) -> dict[str, Any]:
