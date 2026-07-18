@@ -302,12 +302,36 @@ def test_document_reconciliation_uses_loaded_onec_documents() -> None:
         external_report_id=expected.wb_report_ids[0],
         source_row_count=1,
     )
+    outside_date = report.report_period_start - timedelta(days=1)
+    outside_week_start = outside_date - timedelta(days=outside_date.weekday())
+    outside = actual.model_copy(
+        update={
+            "document_id": "onec-document-outside-period",
+            "document_number": "OUTSIDE-PERIOD",
+            "document_date": outside_date,
+            "week_start": outside_week_start,
+            "week_end": outside_week_start + timedelta(days=6),
+            "external_report_id": "",
+        }
+    )
+    inside_date = report.report_period_start + timedelta(days=1)
+    inside_week_start = inside_date - timedelta(days=inside_date.weekday())
+    inside_unmatched = outside.model_copy(
+        update={
+            "organization_id": "onec-unmatched-organization",
+            "document_id": "onec-document-inside-period",
+            "document_number": "INSIDE-PERIOD",
+            "document_date": inside_date,
+            "week_start": inside_week_start,
+            "week_end": inside_week_start + timedelta(days=6),
+        }
+    )
 
     payload = build_report_marts(
         report,
         cost_snapshots=cost_snapshots(),
         sku_mappings=sku_mappings(),
-        onec_gross_profit_rows=[actual],
+        onec_gross_profit_rows=[actual, outside, inside_unmatched],
     ).to_dashboard_payload()
     row = next(
         item
@@ -320,6 +344,15 @@ def test_document_reconciliation_uses_loaded_onec_documents() -> None:
     assert row["onecQuantity"] == float(expected.quantity)
     assert row["quantityDelta"] == 0.0
     assert row["amountDelta"] == 0.0
+    assert not any(
+        "OUTSIDE-PERIOD" in item["onecDocuments"]
+        for item in payload["documentReconciliation"]
+    )
+    assert any(
+        item["status"] == "Лишний документ в 1С"
+        and "INSIDE-PERIOD" in item["onecDocuments"]
+        for item in payload["documentReconciliation"]
+    )
 
 
 def test_document_reconciliation_keeps_month_end_cost_adjustment_separate() -> None:

@@ -19174,9 +19174,29 @@ def _document_reconciliation_missing_onec(
     return not as_text(row.onec_documents)
 
 
+def _document_reconciliation_is_informational_adjustment(
+    row: ReportDocumentReconciliationRow,
+) -> bool:
+    document_type = as_text(row.document_type).strip().casefold()
+    status = as_text(row.status).strip().casefold()
+    adjustment_types = {
+        "Корректировка 1С".casefold(),
+        "Корректировка себестоимости 1С".casefold(),
+    }
+    return bool(
+        document_type in adjustment_types
+        and status == document_type
+        and as_text(row.period_status).strip().casefold() == "период 1с".casefold()
+        and not _document_reconciliation_missing_onec(row)
+        and not _document_reconciliation_has_delta(row)
+    )
+
+
 def _document_reconciliation_has_issue(
     row: ReportDocumentReconciliationRow,
 ) -> bool:
+    if _document_reconciliation_is_informational_adjustment(row):
+        return False
     status = as_text(row.status).lower()
     period_status = as_text(row.period_status).lower()
     accepted_statuses = {"ok"}

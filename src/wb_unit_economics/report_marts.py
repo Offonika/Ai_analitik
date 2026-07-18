@@ -739,6 +739,12 @@ def document_reconciliation_mart(
     for actual in onec_rows:
         if _onec_document_actual_key(actual) in matched_actual_keys:
             continue
+        if not (
+            report.report_period_start
+            <= actual.document_date
+            <= report.report_period_end
+        ):
+            continue
         unmatched = _unmatched_onec_document_row(
             actual,
             organization_labels=organization_labels,
