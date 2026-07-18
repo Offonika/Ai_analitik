@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-13"
+updated_at: "2026-07-18"
 ---
 
 # Назначение
@@ -22,6 +22,26 @@ updated_at: "2026-07-13"
 Shumeyko. Расписание запускает только read-only CLI
 `scripts/run_source_refresh.py`; raw snapshots остаются в `data/source_refresh`
 и не публикуются клиенту напрямую.
+
+## Operational evidence 2026-07-18
+
+На revision `865dac2` аддитивная миграция
+`2026_07_18_daily_fact_replacement_indexes_v1` применена штатным
+`scripts/migrate_web_database.py`: test — `6,30` секунды, production — `7,38`
+секунды. Read-only запрос к `pg_indexes` подтвердил оба индекса
+`ix_marketplace_daily_facts_refresh_run` и
+`ix_marketplace_daily_facts_report_key`.
+
+После миграции команда
+`systemctl start shumeiko-source-refresh-daily.service` создала run
+`source_refresh_98f0e1cf3b9f488d8908a991c06b3047` за период
+`2026-07-04..2026-07-17`. Read-only проверка
+`SELECT count(*) FROM marketplace_finance_daily_facts WHERE
+source_refresh_run_id = :run_id` вернула `9 129` строк; run завершился за
+`96,750041` секунды со статусом `needs_review`, пустыми `failure_code` и
+`error_message`. Предыдущий `QueryCanceled` на replacement DELETE не
+повторился; `needs_review` относится к отдельной проверке mapping и не является
+ошибкой PostgreSQL.
 
 # Расписание
 
