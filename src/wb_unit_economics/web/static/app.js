@@ -160,9 +160,6 @@ const els = {
   ),
   logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
   logisticsStateMessage: document.querySelector("#logistics-state-message"),
-  logisticsOpenReadyReport: document.querySelector(
-    "#logistics-open-ready-report",
-  ),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
@@ -600,10 +597,6 @@ function init() {
     state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
-  els.logisticsOpenReadyReport?.addEventListener(
-    "click",
-    openReadyLogisticsReport,
-  );
   els.logisticsProductsPrev?.addEventListener("click", () => {
     if (state.logisticsProductsOffset <= 0) {
       return;
@@ -3538,16 +3531,6 @@ function updateReportContextLocation({ replace = false } = {}) {
   window.history[replace ? "replaceState" : "pushState"]({}, "", url);
 }
 
-function updateSelectedReportLocation(reportId, { replace = false } = {}) {
-  const url = new URL(window.location.href);
-  if (reportId) {
-    url.searchParams.set("report_id", reportId);
-  } else {
-    url.searchParams.delete("report_id");
-  }
-  window.history[replace ? "replaceState" : "pushState"]({}, "", url);
-}
-
 function accountingOrganizations() {
   return activeClientCompanies().filter((item) => item.onecOrganizationId);
 }
@@ -4573,7 +4556,8 @@ async function loadLogisticsAnalysis(options = {}) {
   ) {
     return;
   }
-  const reportId = state.reportId;
+  const selectedReportId = state.reportId;
+  const reportId = logisticsAnalysisReportId();
   const summaryParams = logisticsFilterParams();
   const productParams = logisticsFilterParams({
     offset: state.logisticsProductsOffset,
@@ -4602,7 +4586,8 @@ async function loadLogisticsAnalysis(options = {}) {
       ),
     ]);
     if (
-      state.reportId !== reportId ||
+      state.reportId !== selectedReportId ||
+      logisticsAnalysisReportId() !== reportId ||
       state.logisticsRequestKey !== requestKey ||
       state.logisticsRequestId !== requestId
     ) {
@@ -4614,7 +4599,8 @@ async function loadLogisticsAnalysis(options = {}) {
     renderLogisticsWorkspace();
   } catch (error) {
     if (
-      state.reportId !== reportId ||
+      state.reportId !== selectedReportId ||
+      logisticsAnalysisReportId() !== reportId ||
       state.logisticsRequestKey !== requestKey ||
       state.logisticsRequestId !== requestId
     ) {
@@ -4627,7 +4613,8 @@ async function loadLogisticsAnalysis(options = {}) {
     renderLogisticsLoadError();
   } finally {
     if (
-      state.reportId === reportId &&
+      state.reportId === selectedReportId &&
+      logisticsAnalysisReportId() === reportId &&
       state.logisticsRequestKey === requestKey &&
       state.logisticsRequestId === requestId
     ) {
@@ -4646,8 +4633,6 @@ function resetLogisticsWorkspace() {
   els.logisticsTrustClassification.textContent = "—";
   els.logisticsTrustSlice.textContent = "Нет данных";
   els.logisticsStateMessage.hidden = true;
-  els.logisticsOpenReadyReport.hidden = true;
-  els.logisticsOpenReadyReport.disabled = false;
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
@@ -4686,7 +4671,6 @@ function renderLogisticsWorkspace() {
     ? "partial"
     : sliceStatus;
   const coverage = summary.coverage || {};
-  const readyReport = newReadyLogisticsReport();
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
     partial: `Требует проверки · классификация ${logisticsPercent(coverage.classificationPct)}`,
@@ -4706,21 +4690,13 @@ function renderLogisticsWorkspace() {
     needs_rebuild: "Нужна пересборка",
   }[status] || "Недоступно";
   els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
-  els.logisticsOpenReadyReport.hidden = !(
-    readyReport && new Set(["needs_rebuild", "blocked"]).has(status)
-  );
-  els.logisticsOpenReadyReport.disabled = false;
   if (!els.logisticsStateMessage.hidden) {
     els.logisticsStateMessage.querySelector("h3").textContent =
-      readyReport
-        ? "Новая проверенная ревизия уже готова"
-        : status === "needs_rebuild"
+      status === "needs_rebuild"
         ? "Текущий отчёт собран до появления витрины логистики v4"
         : "Логистическая витрина пока не готова";
     els.logisticsStateMessage.querySelector("p").textContent =
-      readyReport
-        ? "Откройте готовую ревизию с реальными данными WB. Текущий опубликованный отчёт останется неизменным."
-        : status === "needs_rebuild"
+      status === "needs_rebuild"
         ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
         : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
   }
@@ -4739,9 +4715,15 @@ function renderLogisticsWorkspace() {
     return;
   }
   const kpis = summary.kpis || {};
-  const profitEffect = Number(kpis.profitEffectAmount || 0);
-  const financialMetricsReady = summary.financialMetricStatus === "ready";
-  const profitEffectReady = financialMetricsReady && kpis.profitEffectAmount !== null;
+  const financialComparison = summary.financialComparison || {};
+  const comparisonReady = normalize(financialComparison.status) === "ready";
+  const financialKpis = comparisonReady ? financialComparison.kpis || {} : kpis;
+  const profitEffect = Number(financialKpis.profitEffectAmount || 0);
+  const financialMetricsReady =
+    summary.financialMetricStatus === "ready" || comparisonReady;
+  const profitEffectReady =
+    financialMetricsReady && financialKpis.profitEffectAmount !== null;
+  const financialPeriod = logisticsFinancialPeriodLabel(financialComparison);
   renderMetrics(els.logisticsKpiGrid, [
     [
       "Общая логистика",
@@ -4752,14 +4734,14 @@ function renderLogisticsWorkspace() {
     ],
     [
       "Доля в выручке",
-      logisticsPercent(kpis.logisticsSharePct),
+      logisticsPercent(financialKpis.logisticsSharePct),
       !financialMetricsReady
-        ? "Недоступно для выбранной части недели"
-        : kpis.revenue > 0
-          ? `Выручка ${money(kpis.revenue)}`
+        ? "Нет полной недели внутри выбранного периода"
+        : financialKpis.revenue > 0
+          ? `${financialPeriod} · выручка ${money(financialKpis.revenue)}`
           : "Нет положительной выручки",
-      Number(kpis.logisticsSharePct || 0) >= 15 ? "warning" : "",
-      "Логистика / положительная выручка × 100%.",
+      Number(financialKpis.logisticsSharePct || 0) >= 15 ? "warning" : "",
+      "Логистика и выручка берутся за один явно подписанный период полных недель.",
     ],
     [
       profitEffectReady && profitEffect < 0
@@ -4769,12 +4751,12 @@ function renderLogisticsWorkspace() {
           : "Влияние на прибыль",
       profitEffectReady ? money(Math.abs(profitEffect)) : "—",
       !financialMetricsReady
-        ? "Финансовые KPI недоступны для части недели"
-        : kpis.profitBeforeTax === null
+        ? "Нет полной недели внутри выбранного периода"
+        : financialKpis.profitBeforeTax === null
           ? "Прибыль не связана с витриной"
-          : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
+          : `${financialPeriod} · без логистики ${signedMoney(financialKpis.profitWithoutLogistics)}`,
       profitEffectReady && profitEffect < 0 ? "warning" : "",
-      "Показывается абсолютная сумма и направление влияния на прибыль.",
+      "Показывается абсолютная сумма и направление влияния за подписанный период полных недель.",
     ],
   ]);
   renderLogisticsComponents(summary.components || {});
@@ -4784,34 +4766,33 @@ function renderLogisticsWorkspace() {
   renderWorkspaceHeader();
 }
 
-function newReadyLogisticsReport() {
-  if (!isStaffUser()) return null;
+function logisticsAnalysisReportId() {
+  if (!isStaffUser()) return state.reportId;
   const selected = state.reports.find((item) => item.id === state.reportId);
   const selectedAt = Date.parse(selected?.generatedAt || "") || 0;
-  return state.reports.find((item) => {
-    const generatedAt = Date.parse(item.generatedAt || "") || 0;
-    return item.id !== state.reportId
-      && normalize(item.logisticsDataStatus) === "ready"
-      && generatedAt > selectedAt;
-  }) || null;
+  const requestedStart = els.topbarPeriodStart?.value || selected?.periodStart || "";
+  const requestedEnd = els.topbarPeriodEnd?.value || selected?.periodEnd || "";
+  const readyReport = state.reports
+    .filter((item) => {
+      const generatedAt = Date.parse(item.generatedAt || "") || 0;
+      return item.id !== state.reportId
+        && item.reportKind === selected?.reportKind
+        && normalize(item.logisticsDataStatus) === "ready"
+        && generatedAt > selectedAt
+        && (!requestedStart || item.periodStart <= requestedStart)
+        && (!requestedEnd || item.periodEnd >= requestedEnd);
+    })
+    .sort((left, right) => (
+      (Date.parse(right.generatedAt || "") || 0)
+      - (Date.parse(left.generatedAt || "") || 0)
+    ))[0];
+  return readyReport?.id || state.reportId;
 }
 
-async function openReadyLogisticsReport() {
-  const report = newReadyLogisticsReport();
-  if (!report || !state.clientId) return;
-  const context = currentClientLoadContext();
-  els.logisticsOpenReadyReport.disabled = true;
-  updateSelectedReportLocation(report.id);
-  try {
-    await loadReport(report.id, context);
-    if (state.reportId === report.id) {
-      selectTableScenario("logistics", { load: false, focus: true });
-    }
-  } catch (error) {
-    if (state.reportId === report.id) {
-      els.logisticsOpenReadyReport.disabled = false;
-    }
-  }
+function logisticsFinancialPeriodLabel(comparison) {
+  const start = formatCompactDate(comparison?.periodStart);
+  const end = formatCompactDate(comparison?.periodEnd);
+  return start && end ? `За ${start}–${end}` : "Финансовый период недоступен";
 }
 
 function renderLogisticsEmpty(target, text) {
@@ -5039,7 +5020,8 @@ async function loadLogisticsOrdersPage(options = {}) {
   if (!isStaffUser() || !state.reportId || !state.logisticsSelectedProductRef) {
     return;
   }
-  const reportId = state.reportId;
+  const selectedReportId = state.reportId;
+  const reportId = logisticsAnalysisReportId();
   const productRef = state.logisticsSelectedProductRef;
   const requestId = ++state.logisticsOrdersRequestId;
   const loadingRow = document.createElement("tr");
@@ -5065,7 +5047,8 @@ async function loadLogisticsOrdersPage(options = {}) {
       `/api/reports/${encodeURIComponent(reportId)}/logistics/orders?${params}`,
     );
     if (
-      state.reportId !== reportId ||
+      state.reportId !== selectedReportId ||
+      logisticsAnalysisReportId() !== reportId ||
       state.logisticsSelectedProductRef !== productRef ||
       state.logisticsOrdersRequestId !== requestId
     ) {

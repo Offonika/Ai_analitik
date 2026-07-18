@@ -13133,6 +13133,9 @@ def report_logistics_summary_payload(
             {
                 **meta,
                 "kpis": _empty_logistics_kpis(),
+                "financialComparison": _empty_logistics_financial_comparison(
+                    status="not_available"
+                ),
                 "dynamics": [],
                 "components": _empty_logistics_components(),
                 "rankings": {
@@ -13286,6 +13289,16 @@ def report_logistics_summary_payload(
                 "returnQuantity": return_quantity,
                 "revenue": revenue,
             },
+            "financialComparison": _logistics_financial_comparison(
+                db,
+                report,
+                period_start=period_start,
+                period_end=period_end,
+                wb_cabinet_id=wb_cabinet_id,
+                client_company_id=client_company_id,
+                scheme=scheme,
+                product_query=product_query,
+            ),
             "dynamics": dynamics,
             "components": {
                 "forward": decimal_value(totals[1]),
@@ -13671,6 +13684,108 @@ def _logistics_financial_metric_status(
     if effective_start.weekday() != 0 or effective_end.weekday() != 6:
         return "not_available_partial_week"
     return "ready"
+
+
+def _logistics_complete_week_period(
+    report: ReportRun,
+    *,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[date, date] | None:
+    effective_start = period_start or report.period_start
+    effective_end = period_end or report.period_end
+    complete_start = effective_start + timedelta(
+        days=(-effective_start.weekday()) % 7
+    )
+    complete_end = effective_end - timedelta(
+        days=(effective_end.weekday() + 1) % 7
+    )
+    if complete_start > complete_end:
+        return None
+    return complete_start, complete_end
+
+
+def _logistics_financial_comparison(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None,
+    period_end: date | None,
+    wb_cabinet_id: str,
+    client_company_id: str,
+    scheme: str,
+    product_query: str,
+) -> dict[str, Any]:
+    complete_period = _logistics_complete_week_period(
+        report,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    if complete_period is None:
+        return _empty_logistics_financial_comparison()
+
+    complete_start, complete_end = complete_period
+    order_conditions = _logistics_order_conditions(
+        report,
+        period_start=complete_start,
+        period_end=complete_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    logistics_total = decimal_value(
+        db.scalar(
+            select(
+                func.coalesce(func.sum(ReportLogisticsOrderRow.logistics_total), 0)
+            ).where(*order_conditions)
+        )
+    )
+    sku_conditions = _logistics_sku_conditions(
+        report,
+        period_start=complete_start,
+        period_end=complete_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query="" if product_query.strip() else product_query,
+    )
+    if product_query.strip():
+        sku_conditions.append(
+            _logistics_sku_product_ref_condition(order_conditions)
+        )
+    financials = db.execute(
+        select(
+            func.coalesce(func.sum(ReportLogisticsSkuRow.revenue), 0),
+            func.sum(ReportLogisticsSkuRow.profit_before_tax),
+        ).where(*sku_conditions)
+    ).one()
+    revenue = decimal_value(financials[0])
+    profit_before_tax = (
+        decimal_value(financials[1]) if financials[1] is not None else None
+    )
+    effective_start = period_start or report.period_start
+    effective_end = period_end or report.period_end
+    return {
+        "status": "ready",
+        "periodStart": complete_start.isoformat(),
+        "periodEnd": complete_end.isoformat(),
+        "isSameAsSelectedPeriod": (
+            complete_start == effective_start and complete_end == effective_end
+        ),
+        "kpis": {
+            "logisticsTotal": logistics_total,
+            "revenue": revenue,
+            "logisticsSharePct": _positive_share(logistics_total, revenue),
+            "profitBeforeTax": profit_before_tax,
+            "profitWithoutLogistics": (
+                profit_before_tax + logistics_total
+                if profit_before_tax is not None
+                else None
+            ),
+            "profitEffectAmount": -logistics_total,
+        },
+    }
 
 
 def _logistics_order_conditions(
@@ -14481,6 +14596,26 @@ def _empty_logistics_kpis() -> dict[str, Any]:
         "salesQuantity": None,
         "returnQuantity": None,
         "revenue": None,
+    }
+
+
+def _empty_logistics_financial_comparison(
+    *,
+    status: str = "not_available_no_complete_week",
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "periodStart": None,
+        "periodEnd": None,
+        "isSameAsSelectedPeriod": False,
+        "kpis": {
+            "logisticsTotal": None,
+            "revenue": None,
+            "logisticsSharePct": None,
+            "profitBeforeTax": None,
+            "profitWithoutLogistics": None,
+            "profitEffectAmount": None,
+        },
     }
 
 

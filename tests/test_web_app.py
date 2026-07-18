@@ -1572,6 +1572,7 @@ def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
     assert payload["sliceStatus"] == "needs_rebuild"
     assert payload["reportCoverage"] is None
     assert payload["kpis"]["logisticsTotal"] is None
+    assert payload["financialComparison"]["status"] == "not_available"
     assert payload["dynamics"] == []
     assert enabled.get("/api/me").json()["logisticsAnalysisEnabled"] is True
     report_list = enabled.get("/api/clients/shumeyko/reports").json()["items"]
@@ -1650,16 +1651,21 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="table-scenario-kpi-grid"' in cabinet.text
     assert 'id="table-scenario-summary-status"' in cabinet.text
     assert 'id="logistics-state-message"' in cabinet.text
-    assert 'id="logistics-open-ready-report"' in cabinet.text
-    assert "Открыть готовую ревизию" in cabinet.text
+    assert 'id="logistics-open-ready-report"' not in cabinet.text
+    assert "Открыть готовую ревизию" not in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
     assert "loadLogisticsAnalysis" in script.text
-    assert "function newReadyLogisticsReport" in script.text
-    assert "updateSelectedReportLocation(report.id)" in script.text
+    assert "function logisticsAnalysisReportId" in script.text
+    assert "item.periodStart <= requestedStart" in script.text
+    assert "item.periodEnd >= requestedEnd" in script.text
+    assert "function newReadyLogisticsReport" not in script.text
+    assert "updateSelectedReportLocation(report.id)" not in script.text
+    assert "function logisticsFinancialPeriodLabel" in script.text
+    assert "Нет полной недели внутри выбранного периода" in script.text
     assert "function renderTableScenarioSummary" in script.text
     assert "Текущий отчёт собран до появления витрины логистики v4" in script.text
     assert 'reportId: params.get("report_id") || ""' in script.text
@@ -1693,6 +1699,20 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert summary.json()["reportCoverage"]["scopeMismatches"] == 0
     assert summary.json()["kpis"]["logisticsTotal"] == 10
     assert summary.json()["kpis"]["logisticsSharePct"] == 10
+    assert summary.json()["financialComparison"] == {
+        "status": "ready",
+        "periodStart": "2026-04-06",
+        "periodEnd": "2026-04-12",
+        "isSameAsSelectedPeriod": True,
+        "kpis": {
+            "logisticsTotal": 10,
+            "revenue": 100,
+            "logisticsSharePct": 10,
+            "profitBeforeTax": 20,
+            "profitWithoutLogistics": 30,
+            "profitEffectAmount": -10,
+        },
+    }
     assert summary.json()["components"] == {
         "forward": 10,
         "reverse": 0,
@@ -1725,6 +1745,10 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert partial["kpis"]["logisticsSharePct"] is None
     assert partial["kpis"]["profitBeforeTax"] is None
     assert partial["kpis"]["profitEffectAmount"] is None
+    assert partial["financialComparison"]["status"] == (
+        "not_available_no_complete_week"
+    )
+    assert partial["financialComparison"]["kpis"]["revenue"] is None
     assert partial["rankings"]["byProfitEffect"] == []
     partial_products = client.get(
         "/api/reports/report-1/logistics/products",
@@ -1732,6 +1756,22 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     ).json()
     assert partial_products["financialMetricStatus"] == "not_available_partial_week"
     assert partial_products["items"][0]["profitEffectAmount"] is None
+
+    partial_boundary = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={"periodStart": "2026-04-05", "periodEnd": "2026-04-13"},
+    ).json()
+    assert partial_boundary["financialMetricStatus"] == "not_available_partial_week"
+    assert partial_boundary["kpis"]["logisticsTotal"] == 10
+    assert partial_boundary["kpis"]["revenue"] is None
+    comparison = partial_boundary["financialComparison"]
+    assert comparison["status"] == "ready"
+    assert comparison["periodStart"] == "2026-04-06"
+    assert comparison["periodEnd"] == "2026-04-12"
+    assert comparison["isSameAsSelectedPeriod"] is False
+    assert comparison["kpis"]["revenue"] == 100
+    assert comparison["kpis"]["logisticsSharePct"] == 10
+    assert comparison["kpis"]["profitEffectAmount"] == -10
 
 
 def test_logistics_correction_segment_does_not_count_as_order(tmp_path: Path) -> None:
@@ -3774,9 +3814,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-wb-logistics-ready-revision-v5"
+        "20260718-wb-logistics-auto-ready-financial-v6"
     )
-    assert health.json()["staticBuildId"] == ("20260718-wb-logistics-ready-revision-v5")
+    assert health.json()["staticBuildId"] == (
+        "20260718-wb-logistics-auto-ready-financial-v6"
+    )
 
     page = client.get("/")
     assert page.status_code == 200
@@ -3925,8 +3967,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260718-wb-logistics-ready-revision-v5" in cabinet.text
-    assert "app.js?v=20260718-wb-logistics-ready-revision-v5" in cabinet.text
+    assert (
+        "styles.css?v=20260718-wb-logistics-auto-ready-financial-v6" in cabinet.text
+    )
+    assert "app.js?v=20260718-wb-logistics-auto-ready-financial-v6" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
