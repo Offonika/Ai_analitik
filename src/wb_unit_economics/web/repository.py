@@ -16233,8 +16233,8 @@ def _tax_input_reconciliation_payload_from_unit_rows(
             bucket["statuses"].add(row.vat_input_completeness)
     result = []
     deduction_status = str((tax_context or {}).get("vatDeductionMode") or "unknown")
-    deduction_status_by_organization = (
-        _tax_input_deduction_status_by_organization(tax_context)
+    deduction_status_by_organization = _tax_input_deduction_status_by_organization(
+        tax_context
     )
     for bucket in buckets.values():
         vat_from_wb = bucket["vatInputFromWb"]
@@ -16359,8 +16359,8 @@ def _summary_tax_input_reconciliation_payload(
 
     result = []
     deduction_status = str((tax_context or {}).get("vatDeductionMode") or "unknown")
-    deduction_status_by_organization = (
-        _tax_input_deduction_status_by_organization(tax_context)
+    deduction_status_by_organization = _tax_input_deduction_status_by_organization(
+        tax_context
     )
     for bucket in buckets.values():
         vat_from_wb = bucket["vatInputFromWb"]

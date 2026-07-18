@@ -4128,6 +4128,35 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert client.get("/api/reports").status_code == 401
 
 
+def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    cabinet = client.get("/cabinet")
+    workflow_page = client.get("/static/accounting-workflows.html")
+    script = client.get("/static/sortable-tables.js")
+    styles = client.get("/static/sortable-tables.css")
+
+    assert cabinet.status_code == 200
+    assert workflow_page.status_code == 200
+    assert script.status_code == 200
+    assert styles.status_code == 200
+    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v2"
+    stylesheet_path = "/static/sortable-tables.css?v=20260718-column-sorting-v1"
+    assert asset_path in cabinet.text
+    assert asset_path in workflow_page.text
+    assert stylesheet_path in cabinet.text
+    assert stylesheet_path in workflow_page.text
+    assert 'const HEADER_SELECTOR = "table thead th"' in script.text
+    assert 'new Intl.Collator("ru"' in script.text
+    assert 'header.setAttribute("aria-sort", state.direction)' in script.text
+    assert 'event.key !== "Enter" && event.key !== " "' in script.text
+    assert "new MutationObserver(handleMutations)" in script.text
+    assert "if (indicator.textContent !== value)" in script.text
+    assert 'setIndicatorText(indicator, "↕")' in script.text
+    assert 'left.kind === "empty" ? 1 : -1' in script.text
+    assert ".sortable-table-header[aria-sort]" in styles.text
+
+
 def test_user_guide_is_generated_from_current_interface_metadata(
     tmp_path: Path,
 ) -> None:

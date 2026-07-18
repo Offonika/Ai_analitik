@@ -226,6 +226,17 @@ def test_report_marts_build_without_excel_and_preserve_quality_statuses(
     assert "vatInputFrom1c" in payload["unitRows"][0]
     assert "vatInputDifference" in payload["unitRows"][0]
     assert "vatInputCompleteness" in payload["unitRows"][0]
+    unit_row = payload["unitRows"][0]
+    assert unit_row["afterCost"] == unit_row["pnlRevenue"] - unit_row["cost"]
+    assert unit_row["afterCommission"] == (
+        unit_row["afterCost"] - unit_row["commission"]
+    )
+    assert unit_row["profitBeforeTax"] == (
+        unit_row["beforeVatAdjustment"] + unit_row["pnlVatAdjustment"]
+    )
+    assert unit_row["profit"] == (
+        unit_row["profitBeforeTax"] - unit_row["includedTaxes"]
+    )
     assert payload["taxInputReconciliation"]
     assert "vatInputCompleteness" in payload["taxInputReconciliation"][0]
     assert payload["liquidityRows"]

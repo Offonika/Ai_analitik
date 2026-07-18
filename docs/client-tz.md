@@ -6,8 +6,8 @@ audience: ["client", "consultant"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-15"
-updated_at: "2026-07-15"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-17"
+updated_at: "2026-07-17"
 ---
 
 # Техническое задание на пилот AI-аналитика отчетов
@@ -19,7 +19,7 @@ updated_at: "2026-07-15"
 Версия: draft для согласования с клиентом. Для реализации текущего Excel MVP
 приоритет имеет accepted implementation spec.
 
-Дата актуализации: 15 июля 2026.
+Дата актуализации: 17 июля 2026.
 
 Этот документ описывает клиентский Excel-пакет пилота. DB-first публикация
 (публикация из расчетной БД), авторизованный web-кабинет и регулярный source

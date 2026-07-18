@@ -347,9 +347,7 @@ class SourceRefreshService:
         self._ozon_returns_exporter = ozon_returns_exporter
         self._onec_exporter = onec_exporter
         self._onec_accounting_balance_exporter = onec_accounting_balance_exporter
-        self._onec_accounting_recordtype_exporter = (
-            onec_accounting_recordtype_exporter
-        )
+        self._onec_accounting_recordtype_exporter = onec_accounting_recordtype_exporter
         self._onec_metadata_checker = onec_metadata_checker or check_onec_odata_metadata
         self._workbook_builder = workbook_builder
         self._dashboard_payload_builder = dashboard_payload_builder
@@ -711,7 +709,6 @@ class SourceRefreshService:
             )
         return result
 
-
     @staticmethod
     def _read_onec_collection_rows(
         raw_path: str,
@@ -732,9 +729,7 @@ class SourceRefreshService:
             return []
         if not isinstance(payload, dict):
             return []
-        return [
-            row for row in _extract_onec_rows(payload) if isinstance(row, dict)
-        ]
+        return [row for row in _extract_onec_rows(payload) if isinstance(row, dict)]
 
     def _create_refresh_run(
         self,
@@ -799,8 +794,7 @@ class SourceRefreshService:
                 )
             if not self.settings.marketplace_daily_facts_enabled and not dry_run:
                 raise SourceRefreshConfigError(
-                    "incremental requires "
-                    "SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true"
+                    "incremental requires SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true"
                 )
             if not self.settings.db_first_reports_enabled and not dry_run:
                 raise SourceRefreshConfigError(
@@ -1023,21 +1017,22 @@ class SourceRefreshService:
                 finance.status not in MANDATORY_OK_STATUSES
                 or cards.status not in MANDATORY_OK_STATUSES
                 or daily_facts.get("status") != "materialized"
-                or (daily_facts.get("parity") or {}).get("status")
-                != "aggregate_only"
-                or (daily_facts.get("persistedParity") or {}).get("status")
-                != "matched"
+                or (daily_facts.get("parity") or {}).get("status") != "aggregate_only"
+                or (daily_facts.get("persistedParity") or {}).get("status") != "matched"
             ):
                 continue
             if not self._wb_collection_manifest_is_complete(finance):
                 continue
-            if self._daily_facts_coverage_issue(
-                db,
-                tenant_id=source_report.tenant_id,
-                client_id=source_report.client_id,
-                period_start=source_report.period_start,
-                period_end=required_coverage_end,
-            ) is None:
+            if (
+                self._daily_facts_coverage_issue(
+                    db,
+                    tenant_id=source_report.tenant_id,
+                    client_id=source_report.client_id,
+                    period_start=source_report.period_start,
+                    period_end=required_coverage_end,
+                )
+                is None
+            ):
                 return candidate
         return None
 
@@ -1050,10 +1045,8 @@ class SourceRefreshService:
             db.scalars(
                 select(MarketplaceFinanceDailyFactModel.source_refresh_run_id)
                 .where(
-                    MarketplaceFinanceDailyFactModel.tenant_id
-                    == refresh_run.tenant_id,
-                    MarketplaceFinanceDailyFactModel.client_id
-                    == refresh_run.client_id,
+                    MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
+                    MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
                     MarketplaceFinanceDailyFactModel.marketplace == "wb",
                     MarketplaceFinanceDailyFactModel.fact_date
                     >= refresh_run.period_start,
@@ -1089,20 +1082,26 @@ class SourceRefreshService:
             MarketplaceFinanceDailyFactModel.fact_date >= period_start,
             MarketplaceFinanceDailyFactModel.fact_date <= period_end,
         )
-        if db.scalar(
-            select(MarketplaceFinanceDailyFactModel.id)
-            .where(*fact_conditions)
-            .limit(1)
-        ) is None:
-            return "daily_facts_empty"
-        if db.scalar(
-            select(MarketplaceFinanceDailyFactModel.id)
-            .where(
-                *fact_conditions,
-                MarketplaceFinanceDailyFactModel.is_partial_source.is_(True),
+        if (
+            db.scalar(
+                select(MarketplaceFinanceDailyFactModel.id)
+                .where(*fact_conditions)
+                .limit(1)
             )
-            .limit(1)
-        ) is not None:
+            is None
+        ):
+            return "daily_facts_empty"
+        if (
+            db.scalar(
+                select(MarketplaceFinanceDailyFactModel.id)
+                .where(
+                    *fact_conditions,
+                    MarketplaceFinanceDailyFactModel.is_partial_source.is_(True),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
             return "daily_facts_partial_source"
         run_ids = list(
             db.scalars(
@@ -1112,9 +1111,7 @@ class SourceRefreshService:
             )
         )
         runs = list(
-            db.scalars(
-                select(SourceRefreshRun).where(SourceRefreshRun.id.in_(run_ids))
-            )
+            db.scalars(select(SourceRefreshRun).where(SourceRefreshRun.id.in_(run_ids)))
         )
         intervals: list[tuple[date, date]] = []
         for item in runs:
@@ -1655,11 +1652,7 @@ class SourceRefreshService:
                 db,
                 new_report,
                 primary_document_refresh,
-                source_runs=(
-                    contributing_runs
-                    if mode == "incremental"
-                    else ()
-                ),
+                source_runs=(contributing_runs if mode == "incremental" else ()),
             )
             _commit_source_refresh_progress(db)
             self._attach_source_loads(
@@ -1676,9 +1669,11 @@ class SourceRefreshService:
                 new_report.id,
             )
             logistics_needs_review = bool(
-                self.settings.logistics_analysis_enabled
-                and logistics_context is not None
-                and logistics_context.data_status != "ready"
+                new_report.logistics_analysis_required
+                and (
+                    logistics_context is None
+                    or logistics_context.data_status != "ready"
+                )
             )
             final_status = (
                 "needs_review"
@@ -3230,12 +3225,10 @@ class SourceRefreshService:
             *(item.date_to for item in replacement_summary_rows),
             *(item.create_date for item in replacement_summary_rows),
         ]
-        materialization_period_start = week_bounds(
-            min(materialization_boundary_dates)
-        )[0]
-        materialization_period_end = week_bounds(
-            max(materialization_boundary_dates)
-        )[1]
+        materialization_period_start = week_bounds(min(materialization_boundary_dates))[
+            0
+        ]
+        materialization_period_end = week_bounds(max(materialization_boundary_dates))[1]
 
         args = argparse.Namespace(
             client_id=refresh_run.client_id,
@@ -3364,8 +3357,7 @@ class SourceRefreshService:
                     str(item.report_id).strip(),
                 )
                 for item in replacement_summary_rows
-                if str(item.seller_account_id).strip()
-                and str(item.report_id).strip()
+                if str(item.seller_account_id).strip() and str(item.report_id).strip()
             }
         )
         daily_facts = [
@@ -3442,15 +3434,13 @@ class SourceRefreshService:
                     str(item.report_id).strip(),
                 )
                 for item in wb_summary_rows
-                if str(item.seller_account_id).strip()
-                and str(item.report_id).strip()
+                if str(item.seller_account_id).strip() and str(item.report_id).strip()
             }
         )
         fact_period_start = week_bounds(refresh_run.period_start)[0]
         fact_period_end = week_bounds(refresh_run.period_end)[1]
         report_scope = and_(
-            MarketplaceFinanceDailyFactModel.fact_date
-            >= fact_period_start,
+            MarketplaceFinanceDailyFactModel.fact_date >= fact_period_start,
             MarketplaceFinanceDailyFactModel.fact_date <= fact_period_end,
         )
         if report_keys:
@@ -3470,10 +3460,8 @@ class SourceRefreshService:
             db.scalars(
                 select(MarketplaceFinanceDailyFactModel)
                 .where(
-                    MarketplaceFinanceDailyFactModel.tenant_id
-                    == refresh_run.tenant_id,
-                    MarketplaceFinanceDailyFactModel.client_id
-                    == refresh_run.client_id,
+                    MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
+                    MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
                     MarketplaceFinanceDailyFactModel.marketplace == "wb",
                     report_scope,
                 )
@@ -3536,9 +3524,9 @@ class SourceRefreshService:
                 current_report_list_dir,
                 client_id=refresh_run.client_id,
             ):
-                rows_by_key[
-                    (row.seller_account_id, row.report_id, row.report_type)
-                ] = row
+                rows_by_key[(row.seller_account_id, row.report_id, row.report_type)] = (
+                    row
+                )
         return sorted(
             rows_by_key.values(),
             key=lambda row: (
@@ -3620,8 +3608,7 @@ class SourceRefreshService:
             stream_cache_dir=Path("data/.cache/source_refresh_stream") / refresh_run.id,
             keep_stream_cache=False,
             marketplace_daily_facts_enabled=(
-                self.settings.marketplace_daily_facts_enabled
-                and wb_daily_facts is None
+                self.settings.marketplace_daily_facts_enabled and wb_daily_facts is None
             ),
             postgres_db_name="shumeyko_wb_unit_economics",
             postgres_host="",
@@ -3682,10 +3669,7 @@ class SourceRefreshService:
             tax_profiles=tax_profiles,
             input_vat_policies=input_vat_policies,
         )
-        if (
-            self.settings.marketplace_daily_facts_enabled
-            and wb_daily_facts is None
-        ):
+        if self.settings.marketplace_daily_facts_enabled and wb_daily_facts is None:
             self._save_wb_daily_facts(
                 db,
                 refresh_run,
@@ -3710,14 +3694,13 @@ class SourceRefreshService:
             contributing_runs=contributing_runs,
         )
         if self.settings.logistics_analysis_enabled:
-            logistics_refresh_runs = [refresh_run, integrity_refresh_run]
-            if base_refresh_run is not None:
-                logistics_refresh_runs.append(base_refresh_run)
-            logistics_refresh_runs.extend(contributing_runs)
+            report.logistics_analysis_required = True
             _build_and_persist_logistics_analysis(
                 db,
                 report,
-                refresh_runs=logistics_refresh_runs,
+                primary_refresh_run=refresh_run,
+                base_refresh_run=base_refresh_run,
+                contributing_runs=contributing_runs,
             )
         _validate_marts(build["payload"])
         db.commit()
@@ -5172,11 +5155,7 @@ def _wb_daily_fact_parity(
         ),
     }
     differences = {key: left - right for key, (left, right) in checks.items()}
-    mismatches = [
-        key
-        for key, difference in differences.items()
-        if difference != 0
-    ]
+    mismatches = [key for key, difference in differences.items() if difference != 0]
     source_row_count = sum(item.source_row_count for item in daily_facts)
     if source_row_count != int(build.get("wb_rows") or 0):
         mismatches.append("sourceRowCount")

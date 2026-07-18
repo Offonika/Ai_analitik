@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Shumeyko source refresh retention maintenance
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=shumeiko-source-refresh-retention-maintenance.service
+
+[Install]
+WantedBy=timers.target

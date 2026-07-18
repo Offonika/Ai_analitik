@@ -42,11 +42,12 @@ CHANGELOG_REQUIRED_SPECS = {
 RECONCILED_RE = re.compile(r"^(?P<path>.+?)\s+@\s+(?P<date>\d{4}-\d{2}-\d{2})$")
 TRUTH_TABLE_ROW_RE = re.compile(
     r"^\| `(?P<scope>[^`]+)` \| `(?P<path>[^`]+)` \| "
-    r"(?P<priority>\d+) \|$",
+    r"(?P<priority>\d+) \|(?:.*\|)?$",
     re.MULTILINE,
 )
 CONTOUR_STATUS_ROW_RE = re.compile(
-    r"^\| [^|]+ \| `(?P<path>[^`]+)` \| (?P<status>[a-z-]+) \|",
+    r"^\| `[^`]+` \| `(?P<path>[^`]+)` \| \d+ \| "
+    r"(?P<status>[a-z-]+) \|",
     re.MULTILINE,
 )
 CHANGELOG_HEADING_RE = re.compile(r"^# Changelog\s*$", re.MULTILINE)
@@ -224,6 +225,47 @@ def validate_truth_precedence(records: list[dict[str, Any]]) -> list[str]:
             failures.append(
                 f"truth_scope {scope!r} must have one highest-priority document; "
                 f"found {', '.join(leaders)}"
+            )
+    return failures
+
+
+def validate_routing_metadata(records: list[dict[str, Any]]) -> list[str]:
+    """Require compact search metadata on each canonical scope leader."""
+    failures: list[str] = []
+    truth_by_scope: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        scope = record.get("truth_scope")
+        priority = record.get("truth_priority")
+        if (
+            record.get("source_of_truth") is True
+            and isinstance(scope, str)
+            and isinstance(priority, int)
+            and not isinstance(priority, bool)
+        ):
+            truth_by_scope.setdefault(scope, []).append(record)
+
+    for scope, scoped_records in sorted(truth_by_scope.items()):
+        highest = max(int(record["truth_priority"]) for record in scoped_records)
+        leaders = [
+            record for record in scoped_records if record["truth_priority"] == highest
+        ]
+        if len(leaders) != 1:
+            continue
+        leader = leaders[0]
+        path = str(leader.get("path", scope))
+        read_when = leader.get("read_when")
+        if not isinstance(read_when, str) or not read_when.strip():
+            failures.append(f"{path}: canonical route needs non-empty read_when")
+        raw_terms = leader.get("search_terms")
+        terms = string_list(raw_terms)
+        if (
+            not isinstance(raw_terms, list)
+            or len(terms) < 2
+            or len(terms) != len(raw_terms)
+            or any(not term.strip() for term in terms)
+        ):
+            failures.append(
+                f"{path}: canonical route needs at least two search_terms"
             )
     return failures
 
@@ -414,6 +456,7 @@ def main() -> int:
             validate_markdown_metadata(rel_path, record, failures)
 
     failures.extend(validate_truth_precedence(records))
+    failures.extend(validate_routing_metadata(records))
     failures.extend(validate_changelog_registration(records))
     if DOCS_INDEX.exists():
         failures.extend(

@@ -15,6 +15,18 @@ contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
 related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cabinet-runtime-contours.md]
 changelog_path: docs/changelogs/web-cabinet.md
+ai_sections:
+  status: "Implementation Status"
+  goal: "Goal"
+  scope: "Scope"
+  architecture: "Architecture"
+  data_model: "Data Model"
+  public_api: "Public API"
+  ai_boundaries: "AI Boundaries"
+  security_rollout: "Security And Rollout"
+  operations: "Operations"
+  acceptance: "Acceptance Criteria"
+  tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
 updated_at: "2026-07-18"

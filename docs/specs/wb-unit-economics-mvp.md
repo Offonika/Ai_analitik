@@ -12,6 +12,16 @@ truth_priority: 100
 related_code: []
 related_tests: [scripts/validate_specs.py, scripts/validate_docs_manifest.py, scripts/validate_llm_docs.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
+ai_sections:
+  purpose: "Назначение"
+  scope: "Scope / Out of Scope"
+  source_of_truth: "Source of Truth"
+  product_path: "Recommended Product Path"
+  data_flow: "Data Flow"
+  contracts: "API / Data Contracts"
+  security: "Security / Access"
+  acceptance: "Acceptance Criteria"
+  tests: "Tests"
 depends_on: []
 supersedes: []
 rollout_required: false

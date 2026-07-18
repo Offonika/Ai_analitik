@@ -29,6 +29,17 @@ related_tests:
   - tests/test_provider_registry.py
   - tests/test_source_refresh_prune.py
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report]
+ai_sections:
+  status: "Implementation Status"
+  goal: "Goal"
+  scope: "Scope"
+  guards: "Runtime Guards"
+  providers: "Provider Registry"
+  collectors: "Source Collectors"
+  staff_ux: "Staff Refresh Control UX"
+  retention: "Retention"
+  acceptance: "Acceptance Criteria"
+  rollout: "Rollout"
 depends_on:
   - docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
   - docs/specs/wb-unit-economics-db-first-report-marts.md
