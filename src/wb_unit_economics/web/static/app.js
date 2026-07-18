@@ -16,6 +16,9 @@ const state = {
   clientReportReportId: "",
   clientReportScopeKey: "",
   clientReportBusy: false,
+  reportWizardRefresh: null,
+  reportWizardRequest: null,
+  reportWizardBusy: false,
   clientLoadToken: 0,
   rowsRequestKey: "",
   drilldownRequestKey: "",
@@ -53,16 +56,37 @@ const state = {
   chatkitEnabled: false,
   onecReconciliationLoaded: false,
   rowPreset: "",
+  rowsOffset: 0,
+  rowsTotal: 0,
   taxInputPage: 0,
   logisticsSummary: null,
   logisticsProducts: [],
+  logisticsProductsTotal: 0,
+  logisticsProductsOffset: 0,
   logisticsOrders: [],
+  logisticsOrdersTotal: 0,
+  logisticsOrdersOffset: 0,
   logisticsRequestKey: "",
-  logisticsSelectedProductKey: "",
+  logisticsRequestId: 0,
+  logisticsOrdersRequestId: 0,
+  logisticsSelectedProductRef: "",
+  logisticsSelectedProductLabel: "",
   logisticsBusy: false,
   workspace: "overview",
   checkView: "summary",
+  tableScenario: "summary",
 };
+
+const LOGISTICS_PAGE_SIZE = 250;
+const REPORT_ROWS_PAGE_SIZE = 100;
+const LOGISTICS_SCHEME_OPTIONS = [
+  { value: "fbo", label: "Склад WB (FBO / FBW)" },
+  { value: "fbs", label: "Склад продавца (FBS / DBS)" },
+  {
+    value: "not_applicable",
+    label: "Корректировка — схема не применяется",
+  },
+];
 
 const FOCUSABLE_WIDGET_SELECTOR = [
   "a[href]",
@@ -95,7 +119,10 @@ const els = {
   reportSubtitle: document.querySelector("#report-subtitle"),
   reportLoadRetryButton: document.querySelector("#report-load-retry-button"),
   workspaceNavButtons: document.querySelectorAll("[data-workspace-nav]"),
-  logisticsWorkspaceNav: document.querySelector("#logistics-workspace-nav"),
+  tableScenarioNavButtons: document.querySelectorAll("[data-table-scenario-nav]"),
+  logisticsEntryPoints: document.querySelectorAll(
+    "#logistics-scenario-nav, [data-logistics-entry]",
+  ),
   accountingWorkflowOpen: document.querySelector("#accounting-workflow-open"),
   guideStartList: document.querySelector("#guide-start-list"),
   guideSectionsList: document.querySelector("#guide-sections-list"),
@@ -114,6 +141,10 @@ const els = {
   accountingScenarioOverview: document.querySelector("#accounting-scenario-overview"),
   accountingScenarioChecks: document.querySelector("#accounting-scenario-checks"),
   accountingScenarioTables: document.querySelector("#accounting-scenario-tables"),
+  tableScenarioSummaryStatus: document.querySelector(
+    "#table-scenario-summary-status",
+  ),
+  tableScenarioKpiGrid: document.querySelector("#table-scenario-kpi-grid"),
   logisticsWorkspace: document.querySelector("#logistics-workspace"),
   logisticsDataStatus: document.querySelector("#logistics-data-status"),
   logisticsFilterForm: document.querySelector("#logistics-filter-form"),
@@ -123,15 +154,35 @@ const els = {
   logisticsSchemeFilter: document.querySelector("#logistics-scheme-filter"),
   logisticsProductFilter: document.querySelector("#logistics-product-filter"),
   logisticsKpiGrid: document.querySelector("#logistics-kpi-grid"),
+  logisticsTrustKeys: document.querySelector("#logistics-trust-keys"),
+  logisticsTrustClassification: document.querySelector(
+    "#logistics-trust-classification",
+  ),
+  logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
+  logisticsStateMessage: document.querySelector("#logistics-state-message"),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
   logisticsProductsCount: document.querySelector("#logistics-products-count"),
   logisticsProductsRows: document.querySelector("#logistics-products-rows"),
+  logisticsProductsPagination: document.querySelector(
+    "#logistics-products-pagination",
+  ),
+  logisticsProductsPrev: document.querySelector("#logistics-products-prev"),
+  logisticsProductsPage: document.querySelector("#logistics-products-page"),
+  logisticsProductsNext: document.querySelector("#logistics-products-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
   logisticsOrdersRows: document.querySelector("#logistics-orders-rows"),
   logisticsOrdersClose: document.querySelector("#logistics-orders-close"),
+  logisticsOrdersPagination: document.querySelector(
+    "#logistics-orders-pagination",
+  ),
+  logisticsOrdersPrev: document.querySelector("#logistics-orders-prev"),
+  logisticsOrdersPage: document.querySelector("#logistics-orders-page"),
+  logisticsOrdersNext: document.querySelector("#logistics-orders-next"),
+  detailsTitle: document.querySelector("#details-title"),
+  rowsTitle: document.querySelector("#rows-title"),
   topbarCabinetSelect: document.querySelector("#topbar-cabinet-select"),
   topbarPeriodStart: document.querySelector("#topbar-period-start"),
   topbarPeriodEnd: document.querySelector("#topbar-period-end"),
@@ -146,10 +197,17 @@ const els = {
   reportWizardMode: document.querySelector("#report-wizard-mode"),
   reportWizardModeHint: document.querySelector("#report-wizard-mode-hint"),
   reportWizardPeriodMode: document.querySelector("#report-wizard-period-mode"),
+  reportWizardPeriodHint: document.querySelector("#report-wizard-period-hint"),
   reportWizardPeriodFields: document.querySelector("#report-wizard-period-fields"),
   reportWizardPeriodStart: document.querySelector("#report-wizard-period-start"),
   reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
-  reportWizardDryRun: document.querySelector("#report-wizard-dry-run"),
+  reportWizardCurrent: document.querySelector("#report-wizard-current"),
+  reportWizardCurrentPeriod: document.querySelector(
+    "#report-wizard-current-period",
+  ),
+  reportWizardCurrentDownload: document.querySelector(
+    "#report-wizard-current-download",
+  ),
   reportWizardStatus: document.querySelector("#report-wizard-status"),
   reportWizardResult: document.querySelector("#report-wizard-result"),
   reportWizardResultTitle: document.querySelector("#report-wizard-result-title"),
@@ -162,6 +220,8 @@ const els = {
   reportWizardPdfDownload: document.querySelector("#report-wizard-pdf-download"),
   reportDownloadButton: document.querySelector("#report-download-button"),
   reportWizardSubmit: document.querySelector("#report-wizard-submit"),
+  reportWizardCheck: document.querySelector("#report-wizard-check"),
+  reportWizardReset: document.querySelector("#report-wizard-reset"),
   aiOpenButton: document.querySelector("#ai-open-button"),
   reconciliationOpenButton: document.querySelector(
     "#reconciliation-open-button",
@@ -444,6 +504,9 @@ const els = {
   reviewRowsHead: document.querySelector("#review-rows-head"),
   reviewRows: document.querySelector("#review-rows"),
   rowsCount: document.querySelector("#rows-count"),
+  rowsPagination: document.querySelector("#rows-pagination"),
+  rowsPagePrev: document.querySelector("#rows-page-prev"),
+  rowsPageNext: document.querySelector("#rows-page-next"),
 };
 
 const OZON_UNIT_STATUS_OPTIONS = [
@@ -494,6 +557,14 @@ function init() {
       });
     });
   });
+  els.tableScenarioNavButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      selectTableScenario(button.dataset.tableScenarioNav || "summary", {
+        updateLocation: true,
+        focus: true,
+      });
+    });
+  });
   window.addEventListener("hashchange", () => configureWorkspaceFromLocation());
   window.addEventListener("popstate", () => {
     configureWorkspaceFromLocation();
@@ -523,9 +594,36 @@ function init() {
   });
   els.logisticsFilterForm?.addEventListener("submit", (event) => {
     event.preventDefault();
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsProductsPrev?.addEventListener("click", () => {
+    if (state.logisticsProductsOffset <= 0) {
+      return;
+    }
+    state.logisticsProductsOffset = Math.max(
+      0,
+      state.logisticsProductsOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsProductsNext?.addEventListener("click", () => {
+    if (
+      state.logisticsProductsOffset + state.logisticsProducts.length >=
+      state.logisticsProductsTotal
+    ) {
+      return;
+    }
+    state.logisticsProductsOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsOrdersClose?.addEventListener("click", closeLogisticsOrders);
+  els.logisticsOrdersPrev?.addEventListener("click", () => {
+    changeLogisticsOrdersPage(-1);
+  });
+  els.logisticsOrdersNext?.addEventListener("click", () => {
+    changeLogisticsOrdersPage(1);
+  });
   els.clientSelect.addEventListener("change", () => selectClient(els.clientSelect.value));
   els.reportKindSelect.addEventListener("change", () =>
     selectReportKind(els.reportKindSelect.value),
@@ -554,16 +652,28 @@ function init() {
       closeReportWizard();
     }
   });
-  els.reportWizardMode.addEventListener("change", renderReportWizardSettings);
+  els.reportWizardMode.addEventListener("change", onReportWizardSettingsChange);
   els.reportWizardPeriodMode.addEventListener(
     "change",
-    renderReportWizardSettings,
+    onReportWizardSettingsChange,
   );
-  els.reportWizardDryRun.addEventListener("change", renderReportWizardSettings);
+  els.reportWizardPeriodStart.addEventListener(
+    "change",
+    onReportWizardSettingsChange,
+  );
+  els.reportWizardPeriodEnd.addEventListener(
+    "change",
+    onReportWizardSettingsChange,
+  );
   els.reportWizardForm.addEventListener("submit", onReportWizardSubmit);
+  els.reportWizardCheck.addEventListener("click", onReportWizardCheck);
+  els.reportWizardReset.addEventListener("click", resetReportWizardSession);
   els.reportWizardClientReportGenerate.addEventListener(
     "click",
-    generateClientAnalyticalReport,
+    () =>
+      generateClientAnalyticalReport({
+        reportId: reportWizardGeneratedReportId(),
+      }),
   );
   els.nextActionButton.addEventListener("click", onNextAction);
   els.nextActionUploadFile.addEventListener("change", () =>
@@ -696,9 +806,13 @@ function init() {
   els.reconciliationOpenButton?.addEventListener("click", () =>
     openReconciliationHub("documents"),
   );
-  els.reconciliationHubBack?.addEventListener("click", () =>
-    selectWorkspace("checks", { checkView: "summary", updateLocation: true }),
-  );
+  els.reconciliationHubBack?.addEventListener("click", () => {
+    if (state.workspace === "tables") {
+      selectTableScenario("summary", { updateLocation: true, focus: true });
+      return;
+    }
+    selectWorkspace("checks", { checkView: "summary", updateLocation: true });
+  });
   els.reconciliationHubTabs.forEach((button) => {
     button.addEventListener("click", () =>
       selectReconciliationHubTab(button.dataset.reconciliationTab || "documents"),
@@ -740,6 +854,8 @@ function init() {
       selectRowsPreset(button.dataset.rowPreset || ""),
     );
   });
+  els.rowsPagePrev?.addEventListener("click", () => changeRowsPage(-1));
+  els.rowsPageNext?.addEventListener("click", () => changeRowsPage(1));
   document.addEventListener("click", onAnalyticsAction);
   document.addEventListener("keydown", onAnalyticsAction);
   els.clientReportGenerateButton.addEventListener(
@@ -802,7 +918,10 @@ function bindAutoApplyingFilters() {
   els.filterQuery.addEventListener("input", debounce(applyRowsFilters, 250));
 }
 
-function applyRowsFilters() {
+function applyRowsFilters(options = {}) {
+  if (options.preserveOffset !== true) {
+    state.rowsOffset = 0;
+  }
   const previousOzonParams = state.ozonDiagnosticsParams || "";
   syncTopbarFiltersFromRows();
   saveFilterState();
@@ -826,11 +945,24 @@ function applyRowsFilters() {
 
 function selectRowsPreset(preset = "", options = {}) {
   state.rowPreset = preset || "";
+  state.rowsOffset = 0;
   saveFilterState();
   syncRowsPresetButtons();
   if (options.load !== false) {
     applyRowsFilters();
   }
+}
+
+function changeRowsPage(direction) {
+  const nextOffset = Math.max(
+    0,
+    state.rowsOffset + direction * REPORT_ROWS_PAGE_SIZE,
+  );
+  if (direction > 0 && nextOffset >= state.rowsTotal) {
+    return;
+  }
+  state.rowsOffset = nextOffset;
+  loadReviewRows();
 }
 
 function syncRowsPresetButtons() {
@@ -1057,7 +1189,7 @@ function configurePageMode() {
 function workspaceFromLocation() {
   const value = window.location.hash.replace(/^#/, "").replace(/\/+$/, "");
   if (!value || value === "overview") {
-    return { workspace: "overview", checkView: "summary", valid: true };
+    return { workspace: "overview", checkView: "summary", tableScenario: "summary", valid: true };
   }
   if (value === "checks") {
     return { workspace: "checks", checkView: "summary", valid: true };
@@ -1069,10 +1201,27 @@ function workspaceFromLocation() {
     return { workspace: "checks", checkView: "reconciliation", valid: true };
   }
   if (value === "tables") {
-    return { workspace: "tables", checkView: "summary", valid: true };
+    return { workspace: "tables", checkView: "summary", tableScenario: "summary", valid: true };
+  }
+  const tableScenario = value.match(
+    /^tables\/(summary|products|logistics|returns|wb-expenses|source)$/,
+  );
+  if (tableScenario) {
+    return {
+      workspace: "tables",
+      checkView: "summary",
+      tableScenario: tableScenario[1],
+      valid: true,
+    };
   }
   if (value === "logistics") {
-    return { workspace: "logistics", checkView: "summary", valid: true };
+    return {
+      workspace: "tables",
+      checkView: "summary",
+      tableScenario: "logistics",
+      valid: true,
+      canonicalize: true,
+    };
   }
   if (value === "guide") {
     return { workspace: "guide", checkView: "summary", valid: true };
@@ -1084,21 +1233,43 @@ function configureWorkspaceFromLocation(options = {}) {
   const route = workspaceFromLocation();
   selectWorkspace(route.workspace, {
     checkView: route.checkView,
+    tableScenario: route.tableScenario,
     updateLocation: false,
   });
-  if (!route.valid && options.replaceInvalid !== false) {
-    replaceWorkspaceLocation("overview", "summary");
+  if ((!route.valid || route.canonicalize) && options.replaceInvalid !== false) {
+    replaceWorkspaceLocation(
+      route.valid ? route.workspace : "overview",
+      route.valid ? route.checkView : "summary",
+      route.valid ? route.tableScenario : "summary",
+    );
   }
 }
 
 function selectWorkspace(workspace = "overview", options = {}) {
-  const allowed = new Set(["overview", "checks", "tables", "logistics", "guide"]);
+  const allowed = new Set(["overview", "checks", "tables", "guide"]);
   const allowedCheckViews = new Set(["cost", "reconciliation"]);
+  const allowedTableScenarios = new Set([
+    "summary",
+    "products",
+    "logistics",
+    "returns",
+    "wb-expenses",
+    "source",
+  ]);
   state.workspace = allowed.has(workspace) ? workspace : "overview";
   state.checkView =
     state.workspace === "checks" && allowedCheckViews.has(options.checkView)
       ? options.checkView
       : "summary";
+  state.tableScenario =
+    state.workspace === "tables" && allowedTableScenarios.has(options.tableScenario)
+      ? options.tableScenario
+      : state.workspace === "tables"
+        ? state.tableScenario
+        : "summary";
+  if (!allowedTableScenarios.has(state.tableScenario)) {
+    state.tableScenario = "summary";
+  }
   // The cost-review workflow only understands WB's weekly missing-cost model;
   // Ozon clients fall back to the "summary" check view (and its own
   // missing-cost drilldown, see onNextAction) until an Ozon-specific cost
@@ -1112,6 +1283,7 @@ function selectWorkspace(workspace = "overview", options = {}) {
   }
   els.cabinetView.dataset.activeWorkspace = state.workspace;
   els.cabinetView.dataset.checkView = state.checkView;
+  els.cabinetView.dataset.tableScenario = state.tableScenario;
   els.workspaceNavButtons.forEach((button) => {
     const selected = button.dataset.workspaceNav === state.workspace;
     if (selected) {
@@ -1120,25 +1292,35 @@ function selectWorkspace(workspace = "overview", options = {}) {
       button.removeAttribute("aria-current");
     }
   });
+  syncTableScenarioNavigation();
+  syncReconciliationHubContext();
   if (options.updateLocation) {
-    updateWorkspaceLocation(state.workspace, state.checkView, options.replaceLocation);
+    updateWorkspaceLocation(
+      state.workspace,
+      state.checkView,
+      options.replaceLocation,
+      state.tableScenario,
+    );
   }
   renderWorkspaceHeader();
   if (state.workspace === "checks" && state.checkView === "cost") {
     renderCostReview(state.summary || {});
   }
-  if (state.workspace === "logistics") {
-    loadLogisticsAnalysis();
+  if (state.workspace === "tables") {
+    applyTableScenario({ load: options.load !== false, focus: options.focus });
   }
   window.scrollTo({ top: 0, behavior: options.instant ? "auto" : "smooth" });
 }
 
-function workspaceHash(workspace, checkView) {
+function workspaceHash(workspace, checkView, tableScenario = "summary") {
   if (workspace === "checks" && checkView === "cost") {
     return "#checks/cost";
   }
   if (workspace === "checks" && checkView === "reconciliation") {
     return "#checks/reconciliation";
+  }
+  if (workspace === "tables") {
+    return tableScenario === "summary" ? "#tables" : `#tables/${tableScenario}`;
   }
   return `#${workspace || "overview"}`;
 }
@@ -1148,14 +1330,74 @@ function workspaceBasePath() {
   return ["/ai", "/integrations"].includes(path) ? "/cabinet" : path;
 }
 
-function updateWorkspaceLocation(workspace, checkView, replace = false) {
-  const url = `${workspaceBasePath()}${window.location.search}${workspaceHash(workspace, checkView)}`;
+function updateWorkspaceLocation(workspace, checkView, replace = false, tableScenario = "summary") {
+  const url = `${workspaceBasePath()}${window.location.search}${workspaceHash(workspace, checkView, tableScenario)}`;
   const method = replace ? "replaceState" : "pushState";
   window.history[method]({}, "", url);
 }
 
-function replaceWorkspaceLocation(workspace, checkView) {
-  updateWorkspaceLocation(workspace, checkView, true);
+function replaceWorkspaceLocation(workspace, checkView, tableScenario = "summary") {
+  updateWorkspaceLocation(workspace, checkView, true, tableScenario);
+}
+
+function selectTableScenario(tableScenario = "summary", options = {}) {
+  selectWorkspace("tables", {
+    ...options,
+    tableScenario,
+  });
+}
+
+function syncTableScenarioNavigation() {
+  els.tableScenarioNavButtons.forEach((button) => {
+    const selected = button.dataset.tableScenarioNav === state.tableScenario;
+    button.classList.toggle("active", selected);
+    if (selected) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
+  });
+}
+
+function applyTableScenario(options = {}) {
+  if (state.tableScenario === "logistics") {
+    if (options.load !== false) {
+      loadLogisticsAnalysis();
+    }
+  } else if (state.tableScenario === "returns") {
+    els.detailsTitle.textContent = "Возвраты по товарным строкам";
+    els.rowsTitle.textContent = "Товары с возвратами";
+    selectDetailTab("products");
+    selectRowsPreset("returns", { load: options.load !== false });
+  } else if (state.tableScenario === "products" || state.tableScenario === "source") {
+    els.detailsTitle.textContent = state.tableScenario === "source"
+      ? "Исходные строки расчёта"
+      : "Товары и юнит-экономика";
+    els.rowsTitle.textContent = state.tableScenario === "source"
+      ? "Нормализованные строки отчёта"
+      : "Юнит-экономика";
+    selectDetailTab("products");
+    selectRowsPreset("", { load: options.load !== false });
+  } else if (state.tableScenario === "wb-expenses") {
+    selectReconciliationHubTab("expenses");
+  }
+  if (options.focus) {
+    const target = document.querySelector(
+      `[data-table-scenario-panel~="${state.tableScenario}"] h2[tabindex="-1"], [data-table-scenario-panel~="${state.tableScenario}"] h2`,
+    );
+    target?.focus({ preventScroll: true });
+  }
+}
+
+function syncReconciliationHubContext() {
+  const expensesScenario =
+    state.workspace === "tables" && state.tableScenario === "wb-expenses";
+  els.reconciliationHubBack.textContent = expensesScenario
+    ? "Назад к сводке"
+    : "Назад к проверкам";
+  els.reconciliationHubTabs.forEach((button) => {
+    button.hidden = expensesScenario && button.dataset.reconciliationTab !== "expenses";
+  });
 }
 
 function closeWorkspaceActionsMenu() {
@@ -1288,11 +1530,11 @@ function renderWorkspaceHeader() {
     );
     return;
   }
-  if (state.workspace === "logistics") {
+  if (state.workspace === "tables" && state.tableScenario === "logistics") {
     const logistics = state.logisticsSummary || {};
-    const status = normalize(logistics.dataStatus);
+    const status = normalize(logistics.sliceStatus || logistics.dataStatus);
     setTopbarNotice(
-      "Анализ затрат на логистику",
+      "Логистика: расходы и зоны проверки",
       status === "ready"
         ? "Снимок WB сверен с расчётной витриной отчёта."
         : status === "partial"
@@ -1303,8 +1545,15 @@ function renderWorkspaceHeader() {
     return;
   }
   if (state.workspace === "tables") {
+    const scenarioTitles = {
+      summary: "Аналитика и таблицы",
+      products: "Товары и юнит-экономика",
+      returns: "Возвраты по товарным строкам",
+      "wb-expenses": "Расходы WB и сверка с 1С",
+      source: "Исходные строки расчёта",
+    };
     setTopbarNotice(
-      "Рабочие таблицы отчёта",
+      scenarioTitles[state.tableScenario] || "Аналитика и таблицы",
       freshnessCopy || "Фильтры клиента, кабинета и периода применяются ко всем строкам.",
       "is-info",
     );
@@ -1446,19 +1695,24 @@ function closeClientOutputWidget(options = {}) {
   closeWidgetOverlay(els.clientOutputWidgetOverlay, options);
 }
 
-function clientReportCanGenerate() {
+function clientReportCanGenerate(reportId = state.reportId) {
   return Boolean(
-    state.reportId &&
+    reportId &&
+      reportId === state.reportId &&
       !isAccountingReportKind() &&
       normalize(state.summary?.marketplace) !== "ozon",
   );
 }
 
-function currentClientReportPayload() {
-  return state.clientReportReportId === state.reportId &&
-    state.clientReportScopeKey === clientReportScopeKey()
+function clientReportPayloadForReport(reportId, scopeKey = null) {
+  return state.clientReportReportId === reportId &&
+    (scopeKey === null || state.clientReportScopeKey === scopeKey)
     ? state.clientReportPayload
     : null;
+}
+
+function currentClientReportPayload() {
+  return clientReportPayloadForReport(state.reportId, clientReportScopeKey());
 }
 
 function clientReportScopeRequest() {
@@ -1531,28 +1785,48 @@ function setClientReportDownloadLink(link, file) {
 function syncClientReportControls() {
   const payload = currentClientReportPayload();
   const excel = reportDownloadContext();
-  [els.clientReportExcelDownload, els.reportWizardExcelDownload].forEach((link) => {
-    link.hidden = !excel.visible;
-    link.href = excel.visible ? excel.href : "#";
-  });
-  [els.clientReportDocxDownload, els.reportWizardDocxDownload].forEach((link) =>
-    setClientReportDownloadLink(link, payload?.files?.docx),
-  );
-  [els.clientReportPdfDownload, els.reportWizardPdfDownload].forEach((link) =>
-    setClientReportDownloadLink(link, payload?.files?.pdf),
-  );
+  els.clientReportExcelDownload.hidden = !excel.visible;
+  els.clientReportExcelDownload.href = excel.visible ? excel.href : "#";
+  setClientReportDownloadLink(els.clientReportDocxDownload, payload?.files?.docx);
+  setClientReportDownloadLink(els.clientReportPdfDownload, payload?.files?.pdf);
   const canGenerate = clientReportCanGenerate();
-  [els.clientReportGenerateButton, els.reportWizardClientReportGenerate].forEach(
-    (button) => {
-      button.hidden = !canGenerate;
-      button.disabled = state.clientReportBusy;
-      button.textContent = state.clientReportBusy
-        ? "Формируем документ…"
-        : payload
-          ? "Сформировать заново"
-          : "Сформировать отчёт клиенту";
-    },
+  els.clientReportGenerateButton.hidden = !canGenerate;
+  els.clientReportGenerateButton.disabled = state.clientReportBusy;
+  els.clientReportGenerateButton.textContent = state.clientReportBusy
+    ? "Формируем документ…"
+    : payload
+      ? "Обновить DOCX и PDF"
+      : "Сформировать отчёт клиенту";
+
+  const wizardReportId = reportWizardGeneratedReportId();
+  const wizardPayload = clientReportPayloadForReport(wizardReportId);
+  const wizardIsOzon = normalize(state.reportWizardRequest?.mode) === "ozon-only";
+  const wizardCanGenerate = Boolean(wizardReportId && !wizardIsOzon);
+  if (wizardReportId) {
+    els.reportWizardExcelDownload.hidden = false;
+    els.reportWizardExcelDownload.href =
+      `/api/reports/${encodeURIComponent(wizardReportId)}/export.xlsx`;
+  } else {
+    els.reportWizardExcelDownload.hidden = true;
+    els.reportWizardExcelDownload.href = "#";
+  }
+  setClientReportDownloadLink(
+    els.reportWizardDocxDownload,
+    wizardPayload?.files?.docx,
   );
+  setClientReportDownloadLink(
+    els.reportWizardPdfDownload,
+    wizardPayload?.files?.pdf,
+  );
+  els.reportWizardClientReportGenerate.hidden = !wizardCanGenerate;
+  els.reportWizardClientReportGenerate.disabled = Boolean(
+    state.clientReportBusy || state.reportId !== wizardReportId,
+  );
+  els.reportWizardClientReportGenerate.textContent = state.clientReportBusy
+    ? "Формируем документ…"
+    : wizardPayload
+      ? "Обновить DOCX и PDF"
+      : "Подготовить DOCX и PDF";
 }
 
 function renderClientReportReadyState(payload) {
@@ -1567,9 +1841,8 @@ function renderClientReportReadyState(payload) {
   syncClientReportControls();
 }
 
-async function generateClientAnalyticalReport() {
-  const reportId = state.reportId;
-  if (!reportId || !clientReportCanGenerate() || state.clientReportBusy) {
+async function generateClientAnalyticalReport({ reportId = state.reportId } = {}) {
+  if (!reportId || !clientReportCanGenerate(reportId) || state.clientReportBusy) {
     return;
   }
   const request = clientReportScopeRequest();
@@ -1601,11 +1874,12 @@ async function generateClientAnalyticalReport() {
     if (state.reportId !== reportId) {
       return;
     }
-    const message =
-      error?.message || "Не удалось сформировать отчёт клиенту.";
+    const message = "Не удалось подготовить DOCX и PDF.";
     els.draftStatus.textContent = message;
-    els.reportWizardResultCopy.textContent =
-      `${message} Excel остаётся доступен для скачивания.`;
+    if (reportWizardGeneratedReportId() === reportId) {
+      els.reportWizardResultCopy.textContent =
+        `${message} Сформированный Excel остаётся доступен.`;
+    }
   } finally {
     state.clientReportBusy = false;
     syncClientReportControls();
@@ -1722,24 +1996,18 @@ function openReportWizard() {
     return;
   }
   const client = selectedClient();
-  const selectedCabinet = selectedMarketplaceCabinet();
   els.reportWizardClient.textContent =
     client?.name || client?.clientId || client?.id || "Клиент не выбран";
-  els.reportWizardMode.value =
-    selectedCabinet && isOzonMarketplaceCabinet(selectedCabinet)
-      ? "ozon-only"
-      : "full";
-  const hasSelectedPeriod = Boolean(
-    els.topbarPeriodStart.value || els.topbarPeriodEnd.value,
-  );
-  els.reportWizardPeriodMode.value = hasSelectedPeriod ? "custom" : "default";
-  els.reportWizardPeriodStart.value = els.topbarPeriodStart.value || "";
-  els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value || "";
-  els.reportWizardDryRun.checked = false;
+  if (!state.reportWizardRequest && !state.reportWizardRefresh) {
+    initializeReportWizardSettings();
+  }
   renderReportWizardSettings();
-  renderReportWizardStatus(state.latestSourceRefresh);
+  renderReportWizardStatus();
   openWidgetOverlay(els.reportWizardOverlay);
-  window.setTimeout(() => els.reportWizardMode.focus(), 0);
+  const focusTarget = reportWizardGeneratedReportId()
+    ? els.reportWizardReset
+    : els.reportWizardMode;
+  window.setTimeout(() => focusTarget.focus(), 0);
 }
 
 function closeReportWizard(options = {}) {
@@ -1755,13 +2023,92 @@ function fillReportWizardPeriodFromTopbar() {
   }
 }
 
+function initializeReportWizardSettings() {
+  const selectedCabinet = selectedMarketplaceCabinet();
+  els.reportWizardMode.value =
+    selectedCabinet && isOzonMarketplaceCabinet(selectedCabinet)
+      ? "ozon-only"
+      : "full";
+  const hasSelectedPeriod = Boolean(
+    els.topbarPeriodStart.value || els.topbarPeriodEnd.value,
+  );
+  els.reportWizardPeriodMode.value = hasSelectedPeriod ? "custom" : "default";
+  els.reportWizardPeriodStart.value = els.topbarPeriodStart.value || "";
+  els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value || "";
+}
+
+function reportWizardPublishedReport() {
+  return state.reports.find(
+    (item) =>
+      Boolean(item.isCurrent) && normalize(item.publicationStatus) === "published",
+  ) || null;
+}
+
+function reportWizardGeneratedReportId() {
+  return String(state.reportWizardRefresh?.newReportRunId || "");
+}
+
+function reportWizardRequestFromSettings({ dryRun = false } = {}) {
+  const customPeriod = els.reportWizardPeriodMode.value === "custom";
+  return {
+    dryRun: Boolean(dryRun),
+    mode: els.reportWizardMode.value || "full",
+    periodStart: customPeriod ? els.reportWizardPeriodStart.value : "",
+    periodEnd: customPeriod ? els.reportWizardPeriodEnd.value : "",
+  };
+}
+
+function reportWizardPeriodLabel(request = state.reportWizardRequest) {
+  if (!request?.periodStart && !request?.periodEnd) {
+    return "по настройкам клиента";
+  }
+  return [formatCompactDate(request.periodStart), formatCompactDate(request.periodEnd)]
+    .filter(Boolean)
+    .join("–");
+}
+
+function reportWizardHasExternalActiveRefresh() {
+  const active = state.activeSourceRefresh || state.latestSourceRefresh;
+  return Boolean(
+    isActiveSourceRefresh(active) &&
+      active?.id &&
+      active.id !== state.reportWizardRefresh?.id,
+  );
+}
+
+function renderReportWizardCurrent() {
+  const report = reportWizardPublishedReport();
+  const visible = Boolean(report && els.reportWizardMode.value !== "ozon-only");
+  els.reportWizardCurrent.hidden = !visible;
+  if (!visible) {
+    els.reportWizardCurrentDownload.href = "#";
+    els.reportWizardCurrentPeriod.textContent = "";
+    return;
+  }
+  const period = [formatCompactDate(report.periodStart), formatCompactDate(report.periodEnd)]
+    .filter(Boolean)
+    .join("–");
+  els.reportWizardCurrentPeriod.textContent = period ? `Период: ${period}` : "";
+  els.reportWizardCurrentDownload.href =
+    `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
+}
+
+function onReportWizardSettingsChange() {
+  const refresh = state.reportWizardRefresh;
+  if (refresh && !isActiveSourceRefresh(refresh) && !refresh.newReportRunId) {
+    state.reportWizardRefresh = null;
+    state.reportWizardRequest = null;
+  }
+  renderReportWizardSettings();
+  renderReportWizardStatus();
+}
+
 function renderReportWizardSettings() {
   const mode = els.reportWizardMode.value || "full";
   const customPeriod = els.reportWizardPeriodMode.value === "custom";
   if (customPeriod) {
     fillReportWizardPeriodFromTopbar();
   }
-  const dryRun = els.reportWizardDryRun.checked;
   const cabinets = activeMarketplaceCabinets().filter((cabinet) =>
     mode === "ozon-only"
       ? isOzonMarketplaceCabinet(cabinet)
@@ -1777,75 +2124,133 @@ function renderReportWizardSettings() {
       ? "Загрузится служебная витрина Ozon + 1С. Клиентский отчёт и Excel не публикуются."
       : "Система прочитает активные WB и 1С подключения, проверит данные и безопасно опубликует новый отчёт.";
   els.reportWizardPeriodFields.hidden = !customPeriod;
+  els.reportWizardPeriodHint.hidden = customPeriod;
   els.reportWizardPeriodStart.required = customPeriod;
   els.reportWizardPeriodEnd.required = customPeriod;
-  els.reportWizardSubmit.textContent = dryRun
-    ? "Проверить готовность"
-    : mode === "ozon-only"
-      ? "Запустить диагностику"
-      : "Проверить и сформировать";
-  updateReportDownloadControl();
-  renderReportWizardResult(state.latestSourceRefresh);
+  const generatedReportId = reportWizardGeneratedReportId();
+  const locked = Boolean(
+    generatedReportId ||
+      state.reportWizardBusy ||
+      isActiveSourceRefresh(state.reportWizardRefresh),
+  );
+  const externalActive = reportWizardHasExternalActiveRefresh();
+  [
+    els.reportWizardMode,
+    els.reportWizardPeriodMode,
+    els.reportWizardPeriodStart,
+    els.reportWizardPeriodEnd,
+  ].forEach((control) => {
+    control.disabled = locked;
+  });
+  const request = reportWizardRequestFromSettings();
+  const periodLabel = reportWizardPeriodLabel(request);
+  els.reportWizardSubmit.textContent = mode === "ozon-only"
+    ? request.periodStart || request.periodEnd
+      ? `Запустить диагностику Ozon за ${periodLabel}`
+      : "Запустить диагностику Ozon"
+    : request.periodStart || request.periodEnd
+      ? `Создать Excel за ${periodLabel}`
+      : "Создать Excel по настройкам клиента";
+  els.reportWizardSubmit.hidden = Boolean(generatedReportId);
+  els.reportWizardCheck.hidden = Boolean(generatedReportId);
+  els.reportWizardReset.hidden = !generatedReportId;
+  els.reportWizardSubmit.disabled = locked || externalActive;
+  els.reportWizardCheck.disabled = locked || externalActive;
+  renderReportWizardCurrent();
 }
 
-function renderReportWizardResult(refresh = state.latestSourceRefresh) {
-  const mode = els.reportWizardMode.value || "full";
-  const reportIsOzon = normalize(state.summary?.marketplace) === "ozon";
-  const reportMatchesMode = mode === "ozon-only" ? reportIsOzon : !reportIsOzon;
-  const excel = reportDownloadContext();
-  const visible = Boolean(
-    state.reportId &&
-      reportMatchesMode &&
-      !isActiveSourceRefresh(refresh) &&
-      (excel.visible || clientReportCanGenerate()),
-  );
+function renderReportWizardResult() {
+  const refresh = state.reportWizardRefresh;
+  const generatedReportId = reportWizardGeneratedReportId();
+  const visible = Boolean(generatedReportId);
   els.reportWizardResult.hidden = !visible;
+  els.reportWizardResult.classList.remove("is-warning");
   if (!visible) {
-    syncClientReportControls();
+    els.reportWizardExcelDownload.hidden = true;
+    els.reportWizardClientReportGenerate.hidden = true;
+    els.reportWizardDocxDownload.hidden = true;
+    els.reportWizardPdfDownload.hidden = true;
     return;
   }
-  const justCreated = Boolean(
-    refresh?.newReportRunId === state.reportId ||
-      normalize(refresh?.status) === "report_created",
-  );
-  els.reportWizardResultTitle.textContent = justCreated
-    ? "Отчёт готов — скачайте файл"
-    : "Текущий отчёт можно скачать";
-  if (!currentClientReportPayload()) {
-    els.reportWizardResultCopy.textContent = mode === "ozon-only"
-      ? "Служебная Excel-диагностика готова для скачивания."
-      : "Excel можно скачать сразу. DOCX отчёта клиенту формируется по этим же данным.";
-  }
+  const request = {
+    ...(state.reportWizardRequest || {}),
+    mode: state.reportWizardRequest?.mode || refresh?.mode || "full",
+    periodStart:
+      refresh?.periodStart || state.reportWizardRequest?.periodStart || "",
+    periodEnd: refresh?.periodEnd || state.reportWizardRequest?.periodEnd || "",
+  };
+  const periodLabel = reportWizardPeriodLabel(request);
+  const needsReview = normalize(refresh?.status) === "needs_review";
+  const isOzonOnly = normalize(request?.mode) === "ozon-only";
+  els.reportWizardResult.classList.toggle("is-warning", needsReview);
+  els.reportWizardResultTitle.textContent = isOzonOnly
+    ? needsReview
+      ? `Диагностика Ozon за ${periodLabel} создана с замечаниями`
+      : `Диагностика Ozon за ${periodLabel} готова`
+    : needsReview
+      ? `Excel за ${periodLabel} создан с замечаниями и пока не опубликован как текущий`
+      : `Excel за ${periodLabel} готов`;
+  els.reportWizardResultCopy.textContent = needsReview
+    ? "Проверьте замечания перед отправкой клиенту."
+    : isOzonOnly
+      ? "Служебная диагностика готова для скачивания."
+      : "Сформирован новый Excel именно по параметрам этого запуска.";
+  els.reportWizardExcelDownload.hidden = false;
+  els.reportWizardExcelDownload.href =
+    `/api/reports/${encodeURIComponent(generatedReportId)}/export.xlsx`;
+  els.reportWizardClientReportGenerate.hidden = isOzonOnly;
   syncClientReportControls();
+  if (els.reportWizardResult.dataset.focusedReportId !== generatedReportId) {
+    els.reportWizardResult.dataset.focusedReportId = generatedReportId;
+    window.setTimeout(() => els.reportWizardResult.focus(), 0);
+  }
 }
 
-function renderReportWizardStatus(refresh) {
+function renderReportWizardStatus() {
   if (!els.reportWizardStatus) {
     return;
   }
+  const refresh = state.reportWizardRefresh;
   const status = normalize(refresh?.status);
   const active = isActiveSourceRefresh(refresh);
-  els.reportWizardSubmit.disabled = active;
   const steps = Array.from(
-    els.reportWizardOverlay.querySelectorAll(".report-wizard-steps span"),
+    els.reportWizardOverlay.querySelectorAll(".report-wizard-steps li"),
   );
-  const activeStep = active || status === "dry_run_ready" || status === "needs_review"
-    ? 1
-    : refresh?.newReportRunId || status === "report_created"
-      ? 2
+  const activeStep = refresh?.newReportRunId
+    ? 2
+    : refresh
+      ? 1
       : 0;
   steps.forEach((step, index) => {
     step.classList.toggle("active", index === activeStep);
     step.classList.toggle("done", index < activeStep);
+    if (index === activeStep) {
+      step.setAttribute("aria-current", "step");
+    } else {
+      step.removeAttribute("aria-current");
+    }
   });
-  updateReportDownloadControl();
-  renderReportWizardResult(refresh);
+  renderReportWizardSettings();
+  renderReportWizardResult();
   if (!refresh) {
+    if (reportWizardHasExternalActiveRefresh()) {
+      els.reportWizardStatus.hidden = false;
+      els.reportWizardStatus.className = "report-wizard-status";
+      els.reportWizardStatus.textContent =
+        "Сейчас выполняется фоновое обновление данных. Новый запуск будет доступен после его завершения.";
+      return;
+    }
+    els.reportWizardStatus.hidden = true;
     els.reportWizardStatus.className = "report-wizard-status";
-    els.reportWizardStatus.textContent =
-      "После запуска здесь появятся проверка источников и ход формирования отчёта.";
+    els.reportWizardStatus.textContent = "";
     return;
   }
+  if (refresh.newReportRunId) {
+    els.reportWizardStatus.hidden = true;
+    els.reportWizardStatus.textContent = "";
+    return;
+  }
+  els.reportWizardStatus.hidden = false;
   els.reportWizardStatus.className = `report-wizard-status ${sourceStatusTone(refresh.status)}`;
   if (active) {
     els.reportWizardStatus.textContent =
@@ -1853,15 +2258,14 @@ function renderReportWizardStatus(refresh) {
       `Период: ${sourcePeriodText(refresh)}.`;
     return;
   }
-  if (refresh.newReportRunId || status === "report_created") {
+  if (status === "dry_run_ready") {
+    els.reportWizardStatus.className = "report-wizard-status is-ok";
     els.reportWizardStatus.textContent =
-      `Новый отчёт готов. Период: ${sourcePeriodText(refresh)}. Он уже открыт в кабинете.`;
+      "Проверка пройдена. Теперь можно создать Excel по выбранным настройкам.";
     return;
   }
-  if (status === "dry_run_ready") {
-    els.reportWizardStatus.textContent =
-      "Проверка пройдена. Снимите флажок «Только проверить готовность» и запустите формирование отчёта.";
-    return;
+  if (status === "failed" || status === "error") {
+    els.reportWizardStatus.className = "report-wizard-status is-blocked";
   }
   els.reportWizardStatus.textContent =
     `${sourceStatusText(refresh.status)}. ${localizedOperationalMessage(
@@ -1871,36 +2275,89 @@ function renderReportWizardStatus(refresh) {
 
 async function onReportWizardSubmit(event) {
   event.preventDefault();
-  if (!state.clientId || !isStaffUser() || els.reportWizardSubmit.disabled) {
+  await startReportWizard(false);
+}
+
+async function onReportWizardCheck() {
+  await startReportWizard(true);
+}
+
+async function startReportWizard(dryRun) {
+  if (
+    !state.clientId ||
+    !isStaffUser() ||
+    state.reportWizardBusy ||
+    reportWizardGeneratedReportId()
+  ) {
     return;
   }
-  const customPeriod = els.reportWizardPeriodMode.value === "custom";
-  const periodStart = customPeriod ? els.reportWizardPeriodStart.value : "";
-  const periodEnd = customPeriod ? els.reportWizardPeriodEnd.value : "";
-  if (customPeriod && (!periodStart || !periodEnd)) {
+  const request = reportWizardRequestFromSettings({ dryRun });
+  if (
+    els.reportWizardPeriodMode.value === "custom" &&
+    (!request.periodStart || !request.periodEnd)
+  ) {
+    els.reportWizardStatus.hidden = false;
     els.reportWizardStatus.className = "report-wizard-status is-warning";
     els.reportWizardStatus.textContent = "Укажите дату начала и дату конца периода.";
     return;
   }
-  if (periodStart && periodEnd && periodStart > periodEnd) {
+  if (
+    request.periodStart &&
+    request.periodEnd &&
+    request.periodStart > request.periodEnd
+  ) {
+    els.reportWizardStatus.hidden = false;
     els.reportWizardStatus.className = "report-wizard-status is-warning";
     els.reportWizardStatus.textContent =
       "Дата начала не может быть позже даты конца.";
     return;
   }
-  els.reportWizardSubmit.disabled = true;
-  const refresh = await runClientSourceRefresh({
-    dryRun: els.reportWizardDryRun.checked,
-    mode: els.reportWizardMode.value || "full",
-    periodStart,
-    periodEnd,
+  state.reportWizardRequest = request;
+  state.reportWizardBusy = true;
+  state.reportWizardRefresh = {
+    status: "queued",
+    mode: request.mode,
+    dryRun: request.dryRun,
+    periodStart: request.periodStart || null,
+    periodEnd: request.periodEnd || null,
+  };
+  renderReportWizardStatus();
+  await runClientSourceRefresh({
+    dryRun: request.dryRun,
+    mode: request.mode,
+    periodStart: request.periodStart,
+    periodEnd: request.periodEnd,
     origin: "wizard",
   });
-  if (refresh) {
-    renderReportWizardStatus(refresh);
-  } else {
-    els.reportWizardSubmit.disabled = false;
+  state.reportWizardBusy = false;
+  renderReportWizardStatus();
+}
+
+function resetReportWizardSession() {
+  state.reportWizardRefresh = null;
+  state.reportWizardRequest = null;
+  state.reportWizardBusy = false;
+  els.reportWizardResult.dataset.focusedReportId = "";
+  initializeReportWizardSettings();
+  renderReportWizardSettings();
+  renderReportWizardStatus();
+  window.setTimeout(() => els.reportWizardMode.focus(), 0);
+}
+
+function syncReportWizardRefresh(refresh) {
+  if (
+    !refresh?.id ||
+    !state.reportWizardRefresh?.id ||
+    refresh.id !== state.reportWizardRefresh.id
+  ) {
+    return;
   }
+  state.reportWizardRefresh = {
+    ...state.reportWizardRefresh,
+    ...refresh,
+  };
+  state.reportWizardBusy = isActiveSourceRefresh(refresh);
+  renderReportWizardStatus();
 }
 
 function openIntegrationsWidget(options = {}) {
@@ -2969,6 +3426,9 @@ async function onLogout() {
   state.clientId = null;
   state.reports = [];
   state.reportId = null;
+  state.reportWizardRefresh = null;
+  state.reportWizardRequest = null;
+  state.reportWizardBusy = false;
   state.aiThreadId = null;
   state.integrationItems = [];
   state.editingIntegrationKey = "";
@@ -3045,6 +3505,7 @@ function reportContextFromLocation() {
   const params = new URLSearchParams(window.location.search);
   return {
     clientId: params.get("client_id") || "",
+    reportId: params.get("report_id") || "",
     reportKind: params.get("report_kind") || "",
     organizationId: params.get("organization_id") || "",
     periodMonth: params.get("period_month") || "",
@@ -3160,6 +3621,9 @@ function clearReportSelection() {
   state.clientReportReportId = "";
   state.clientReportScopeKey = "";
   state.clientReportBusy = false;
+  state.reportWizardRefresh = null;
+  state.reportWizardRequest = null;
+  state.reportWizardBusy = false;
   state.summary = null;
   state.scenario = null;
   state.freshness = null;
@@ -3320,9 +3784,10 @@ async function loadReports(context = currentClientLoadContext()) {
     }
     return;
   }
+  const requestedReportId = reportContextFromLocation().reportId;
   const selectedReport = isAccountingReportKind()
     ? state.reports.find((item) => String(item.periodStart || "").startsWith(state.periodMonth))
-    : state.reports[0];
+    : state.reports.find((item) => item.id === requestedReportId) || state.reports[0];
   if (!selectedReport) {
     clearReportSelection();
     setEmptyCabinet(
@@ -3416,6 +3881,16 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   configurePageMode();
 }
 
+function accountingScenarioStatusLabel(status) {
+  const labels = {
+    accountant_review_required: "Нужна проверка бухгалтера",
+    preliminary: "Предварительный",
+    can_confirm: "Можно подтвердить",
+    cannot_confirm: "Нельзя подтвердить",
+  };
+  return labels[normalize(status)] || "Требует проверки";
+}
+
 function renderAccountingScenario(payload) {
   syncReportKindSurface();
   window.MultiReportScenarios?.render(state.reportKind, payload, {
@@ -3428,7 +3903,7 @@ function renderAccountingScenario(payload) {
   const status = payload.businessRecommendation || payload.businessStatus || "preliminary";
   setTopbarNotice(
     title,
-    `Предварительный staff-only отчёт · ${state.periodMonth} · статус ${status}`,
+    `Внутренний предварительный отчёт · ${state.periodMonth} · ${accountingScenarioStatusLabel(status)}`,
     status === "cannot_confirm" ? "is-warning" : "is-info",
   );
   updateReportBuildButton();
@@ -3956,6 +4431,7 @@ function renderReport() {
     summary.taxContext || {},
     summary.lostSalesCoverage || {},
   );
+  renderTableScenarioSummary(summary);
   renderAnalytics(summary);
   renderOzonPreview(latestRefresh, state.latestOzonDiagnostics);
   renderLiquidity(asArray(summary.liquidityRows));
@@ -3988,10 +4464,68 @@ function renderReport() {
   renderAiContext(summary);
   renderChecksNavigation(readiness);
   syncLogisticsEntryPoint();
-  if (state.workspace === "logistics") {
+  if (state.workspace === "tables" && state.tableScenario === "logistics") {
     loadLogisticsAnalysis();
   }
   renderWorkspaceHeader();
+}
+
+function renderTableScenarioSummary(summary = {}) {
+  const kpis = summary.kpis || {};
+  const quality = summary.quality || {};
+  const readiness = summary.readiness || {};
+  const hasReport = Boolean(state.reportId && Object.keys(summary).length);
+  if (!hasReport) {
+    els.tableScenarioSummaryStatus.textContent =
+      "Выберите отчёт — показатели появятся после загрузки расчётной витрины.";
+    renderMetrics(els.tableScenarioKpiGrid, []);
+    return;
+  }
+  const revenue = numberOrNull(kpis.revenueWithoutVat ?? kpis.revenue);
+  const profit = numberOrNull(kpis.profitBeforeTax ?? kpis.profitManagement);
+  const expenses = numberOrNull(kpis.wbMarketplacePnlExpenses);
+  const rowCount = Number(quality.rowCount ?? kpis.rowCount ?? 0);
+  const sales = Number(kpis.sales || 0);
+  const returns = Number(kpis.returns || 0);
+  const returnRate = sales ? Math.round((returns / sales) * 1000) / 10 : null;
+  const readinessLabel = readiness.label || readiness.status || "Статус не рассчитан";
+  els.tableScenarioSummaryStatus.textContent =
+    `${readinessLabel} · ${number(rowCount)} строк в расчёте. ` +
+    "Все суммы относятся к выбранным клиенту, кабинету и периоду.";
+  renderMetrics(els.tableScenarioKpiGrid, [
+    [
+      "Выручка WB",
+      revenue === null ? "Не рассчитано" : money(revenue),
+      "База текущего отчёта",
+      revenue === null ? "warning" : "info",
+    ],
+    [
+      "Прибыль до налогов",
+      profit === null ? "Не рассчитано" : money(profit),
+      "Управленческий результат",
+      profit === null ? "warning" : profit < 0 ? "bad" : "ok",
+    ],
+    [
+      "Расходы WB",
+      expenses === null ? "Не рассчитано" : money(expenses),
+      "Комиссия, логистика и прочие услуги",
+      expenses === null ? "warning" : "info",
+      "Показатель рассчитан в базе применённого налогового профиля.",
+      () => selectTableScenario("wb-expenses", { updateLocation: true, focus: true }),
+      "Открыть сверку",
+    ],
+    [
+      "Строк в расчёте",
+      number(rowCount),
+      returnRate === null
+        ? `${number(sales)} продаж`
+        : `Возвраты ${number(returns)} · ${number(returnRate)}% от продаж`,
+      rowCount ? "info" : "warning",
+      "Количество нормализованных строк выбранного отчёта.",
+      () => selectTableScenario("products", { updateLocation: true, focus: true }),
+      "Открыть товары",
+    ],
+  ]);
 }
 
 function logisticsFilterParams(extra = {}) {
@@ -4015,17 +4549,20 @@ function logisticsFilterParams(extra = {}) {
 
 async function loadLogisticsAnalysis(options = {}) {
   if (
-    state.workspace !== "logistics" ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
     !state.reportId ||
-    !state.user?.logisticsAnalysisEnabled ||
-    isAccountingReportKind() ||
-    normalize(state.summary?.marketplace) === "ozon"
+    !logisticsScenarioAvailable()
   ) {
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({ limit: 250 });
-  const requestKey = `${reportId}?${params}`;
+  const summaryParams = logisticsFilterParams();
+  const productParams = logisticsFilterParams({
+    offset: state.logisticsProductsOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${productParams}`;
   if (!options.force && requestKey === state.logisticsRequestKey) {
     if (!state.logisticsBusy) {
       renderLogisticsWorkspace();
@@ -4033,31 +4570,50 @@ async function loadLogisticsAnalysis(options = {}) {
     return;
   }
   state.logisticsRequestKey = requestKey;
+  const requestId = ++state.logisticsRequestId;
   state.logisticsBusy = true;
-  state.logisticsSelectedProductKey = "";
+  state.logisticsSelectedProductRef = "";
   closeLogisticsOrders();
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
     const [summary, products] = await Promise.all([
-      api(`/api/reports/${encodeURIComponent(reportId)}/logistics/summary?${params}`),
-      api(`/api/reports/${encodeURIComponent(reportId)}/logistics/products?${params}`),
+      api(
+        `/api/reports/${encodeURIComponent(reportId)}/logistics/summary?${summaryParams}`,
+      ),
+      api(
+        `/api/reports/${encodeURIComponent(reportId)}/logistics/products?${productParams}`,
+      ),
     ]);
-    if (state.reportId !== reportId || state.logisticsRequestKey !== requestKey) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRequestKey !== requestKey ||
+      state.logisticsRequestId !== requestId
+    ) {
       return;
     }
     state.logisticsSummary = summary;
     state.logisticsProducts = asArray(products.items);
+    state.logisticsProductsTotal = Number(products.total || 0);
     renderLogisticsWorkspace();
   } catch (error) {
-    if (state.reportId !== reportId || state.logisticsRequestKey !== requestKey) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRequestKey !== requestKey ||
+      state.logisticsRequestId !== requestId
+    ) {
       return;
     }
     state.logisticsSummary = null;
     state.logisticsProducts = [];
+    state.logisticsProductsTotal = 0;
     state.logisticsRequestKey = "";
     renderLogisticsLoadError();
   } finally {
-    if (state.reportId === reportId) {
+    if (
+      state.reportId === reportId &&
+      state.logisticsRequestKey === requestKey &&
+      state.logisticsRequestId === requestId
+    ) {
       state.logisticsBusy = false;
     }
   }
@@ -4068,12 +4624,24 @@ function resetLogisticsWorkspace() {
     return;
   }
   els.logisticsDataStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsDataStatus.dataset.status = "empty";
+  els.logisticsTrustKeys.textContent = "—";
+  els.logisticsTrustClassification.textContent = "—";
+  els.logisticsTrustSlice.textContent = "Нет данных";
+  els.logisticsStateMessage.hidden = true;
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
   els.logisticsRecommendations.replaceChildren();
   els.logisticsProductsRows.replaceChildren();
   els.logisticsProductsCount.textContent = "";
+  renderLogisticsPagination(
+    els.logisticsProductsPagination,
+    els.logisticsProductsPrev,
+    els.logisticsProductsPage,
+    els.logisticsProductsNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
   closeLogisticsOrders();
 }
 
@@ -4081,12 +4649,23 @@ function renderLogisticsLoadError() {
   resetLogisticsWorkspace();
   els.logisticsDataStatus.textContent =
     "Не удалось загрузить блок. Повторите попытку или проверьте доступ.";
+  els.logisticsDataStatus.dataset.status = "error";
+  els.logisticsTrustSlice.textContent = "Ошибка загрузки";
+  els.logisticsStateMessage.hidden = false;
+  els.logisticsStateMessage.querySelector("h3").textContent =
+    "Не удалось загрузить логистическую витрину";
+  els.logisticsStateMessage.querySelector("p").textContent =
+    "Повторите попытку. Ранее показанные числа очищены и не используются как актуальные.";
   renderWorkspaceHeader();
 }
 
 function renderLogisticsWorkspace() {
   const summary = state.logisticsSummary || {};
-  const status = normalize(summary.dataStatus);
+  const dataStatus = normalize(summary.dataStatus);
+  const sliceStatus = normalize(summary.sliceStatus || dataStatus);
+  const status = dataStatus === "partial" && sliceStatus === "ready"
+    ? "partial"
+    : sliceStatus;
   const coverage = summary.coverage || {};
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
@@ -4096,6 +4675,27 @@ function renderLogisticsWorkspace() {
   }[status];
   els.logisticsDataStatus.textContent = statusCopy || "Витрина пока недоступна.";
   els.logisticsDataStatus.dataset.status = status || "unknown";
+  els.logisticsTrustKeys.textContent = logisticsPercent(coverage.keyPct);
+  els.logisticsTrustClassification.textContent = logisticsPercent(
+    coverage.classificationPct,
+  );
+  els.logisticsTrustSlice.textContent = {
+    ready: "Полный проверенный срез",
+    partial: "Часть операций требует проверки",
+    blocked: "Сверка не пройдена",
+    needs_rebuild: "Нужна пересборка",
+  }[status] || "Недоступно";
+  els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
+  if (!els.logisticsStateMessage.hidden) {
+    els.logisticsStateMessage.querySelector("h3").textContent =
+      status === "needs_rebuild"
+        ? "Текущий отчёт собран до появления витрины логистики v4"
+        : "Логистическая витрина пока не готова";
+    els.logisticsStateMessage.querySelector("p").textContent =
+      status === "needs_rebuild"
+        ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
+        : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
+  }
   if (!new Set(["ready", "partial"]).has(status)) {
     renderMetrics(els.logisticsKpiGrid, []);
     renderLogisticsEmpty(
@@ -4112,6 +4712,8 @@ function renderLogisticsWorkspace() {
   }
   const kpis = summary.kpis || {};
   const profitEffect = Number(kpis.profitEffectAmount || 0);
+  const financialMetricsReady = summary.financialMetricStatus === "ready";
+  const profitEffectReady = financialMetricsReady && kpis.profitEffectAmount !== null;
   renderMetrics(els.logisticsKpiGrid, [
     [
       "Общая логистика",
@@ -4123,18 +4725,28 @@ function renderLogisticsWorkspace() {
     [
       "Доля в выручке",
       logisticsPercent(kpis.logisticsSharePct),
-      kpis.revenue > 0 ? `Выручка ${money(kpis.revenue)}` : "Нет положительной выручки",
+      !financialMetricsReady
+        ? "Недоступно для выбранной части недели"
+        : kpis.revenue > 0
+          ? `Выручка ${money(kpis.revenue)}`
+          : "Нет положительной выручки",
       Number(kpis.logisticsSharePct || 0) >= 15 ? "warning" : "",
       "Логистика / положительная выручка × 100%.",
     ],
     [
-      profitEffect < 0 ? "Логистика уменьшила прибыль" : "Влияние на прибыль",
-      money(Math.abs(profitEffect)),
-      kpis.profitBeforeTax === null
-        ? "Прибыль не связана с витриной"
-        : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
-      profitEffect < 0 ? "warning" : "",
-      "Отрицательное значение показывает уменьшение прибыли из-за логистики.",
+      profitEffectReady && profitEffect < 0
+        ? "Логистика уменьшила прибыль"
+        : profitEffectReady && profitEffect > 0
+          ? "Корректировки увеличили прибыль"
+          : "Влияние на прибыль",
+      profitEffectReady ? money(Math.abs(profitEffect)) : "—",
+      !financialMetricsReady
+        ? "Финансовые KPI недоступны для части недели"
+        : kpis.profitBeforeTax === null
+          ? "Прибыль не связана с витриной"
+          : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
+      profitEffectReady && profitEffect < 0 ? "warning" : "",
+      "Показывается абсолютная сумма и направление влияния на прибыль.",
     ],
   ]);
   renderLogisticsComponents(summary.components || {});
@@ -4233,23 +4845,60 @@ function renderLogisticsRecommendations(items) {
       item.className = "logistics-recommendation";
       const title = document.createElement("strong");
       title.textContent = recommendation.title || "Проверить данные";
+      const priority = document.createElement("span");
+      priority.className = "logistics-priority-badge";
+      priority.textContent = Number(recommendation.priority || 0) === 1
+        ? "Высокий приоритет"
+        : "Проверить";
       const message = document.createElement("p");
       message.textContent = recommendation.message || "";
       const evidence = document.createElement("small");
       const facts = recommendation.evidence || {};
-      evidence.textContent = facts.product
-        ? `${facts.product}${facts.logisticsSharePct != null ? ` · ${logisticsPercent(facts.logisticsSharePct)}` : ""}`
+      const evidenceParts = [];
+      if (facts.product) {
+        evidenceParts.push(facts.product);
+      }
+      if (facts.logisticsSharePct != null) {
+        evidenceParts.push(`доля ${logisticsPercent(facts.logisticsSharePct)}`);
+      }
+      if (facts.reverseLogistics != null) {
+        evidenceParts.push(`обратная логистика ${signedMoney(facts.reverseLogistics)}`);
+      }
+      if (facts.classificationCoveragePct != null) {
+        evidenceParts.push(
+          `классификация ${logisticsPercent(facts.classificationCoveragePct)}`,
+        );
+      }
+      if (facts.affectedOrderRows != null) {
+        evidenceParts.push(`${number(facts.affectedOrderRows)} цепочек затронуто`);
+      }
+      evidence.textContent = evidenceParts.length
+        ? `Факт: ${evidenceParts.join(" · ")}`
         : "Основание: рассчитанная витрина отчёта.";
-      item.append(title, message, evidence);
+      item.append(priority, title, message, evidence);
       return item;
     }),
   );
 }
 
 function renderLogisticsProducts(items) {
+  const total = state.logisticsProductsTotal;
+  const start = items.length ? state.logisticsProductsOffset + 1 : 0;
+  const end = items.length ? state.logisticsProductsOffset + items.length : 0;
   els.logisticsProductsCount.textContent = items.length
-    ? `${number(items.length)} товаров`
+    ? `${number(start)}–${number(end)} из ${number(total)}`
     : "";
+  renderLogisticsPagination(
+    els.logisticsProductsPagination,
+    els.logisticsProductsPrev,
+    els.logisticsProductsPage,
+    els.logisticsProductsNext,
+    {
+      offset: state.logisticsProductsOffset,
+      itemCount: items.length,
+      total,
+    },
+  );
   if (!items.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -4273,18 +4922,24 @@ function renderLogisticsProducts(items) {
         logisticsTableCell(logisticsPercent(item.logisticsSharePct), "numeric"),
         logisticsTableCell(number(item.orderCount), "numeric"),
         logisticsTableCell(number(item.returnQuantity), "numeric"),
-        logisticsTableCell(signedMoney(item.profitEffectAmount), "numeric"),
+        logisticsTableCell(logisticsProfitEffectText(item.profitEffectAmount), "numeric"),
       );
       const quality = logisticsTableCell("");
       const badge = document.createElement("span");
-      badge.className = item.lowSample
+      const qualityNeedsReview = normalize(item.dataQualityStatus) !== "ready"
+        || normalize(item.classificationStatus) !== "ready";
+      badge.className = qualityNeedsReview || item.lowSample
         ? "logistics-quality-badge is-warning"
         : "logistics-quality-badge";
-      badge.textContent = item.lowSample ? "Малая выборка" : "Достаточно данных";
+      badge.textContent = qualityNeedsReview
+        ? "Проверить данные"
+        : item.lowSample
+          ? "Малая выборка"
+          : "Достаточно данных";
       quality.append(badge);
       row.append(quality);
       const action = logisticsTableCell("");
-      if (state.user?.logisticsOrdersEnabled) {
+      if (isStaffUser()) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "secondary-button logistics-orders-open";
@@ -4306,43 +4961,89 @@ function logisticsTableCell(value, className = "") {
 }
 
 async function openLogisticsOrders(product) {
-  if (!state.user?.logisticsOrdersEnabled || !state.reportId) {
+  if (!isStaffUser() || !state.reportId) {
+    return;
+  }
+  const productRef = String(product.productRef || "");
+  if (!productRef) {
+    return;
+  }
+  state.logisticsSelectedProductRef = productRef;
+  state.logisticsSelectedProductLabel = product.product || product.vendorCode || "Товар";
+  state.logisticsOrdersOffset = 0;
+  state.logisticsOrdersTotal = 0;
+  els.logisticsOrdersSection.hidden = false;
+  els.logisticsOrdersSubtitle.textContent = state.logisticsSelectedProductLabel;
+  await loadLogisticsOrdersPage({ scroll: true });
+}
+
+async function loadLogisticsOrdersPage(options = {}) {
+  if (!isStaffUser() || !state.reportId || !state.logisticsSelectedProductRef) {
     return;
   }
   const reportId = state.reportId;
-  const productKey = String(product.productKey || "");
-  state.logisticsSelectedProductKey = productKey;
-  els.logisticsOrdersSection.hidden = false;
-  els.logisticsOrdersSubtitle.textContent = product.product || product.vendorCode || "Товар";
+  const productRef = state.logisticsSelectedProductRef;
+  const requestId = ++state.logisticsOrdersRequestId;
   const loadingRow = document.createElement("tr");
   const loadingCell = document.createElement("td");
   loadingCell.colSpan = 8;
   loadingCell.textContent = "Загружаем обезличенные цепочки…";
   loadingRow.append(loadingCell);
   els.logisticsOrdersRows.replaceChildren(loadingRow);
+  renderLogisticsPagination(
+    els.logisticsOrdersPagination,
+    els.logisticsOrdersPrev,
+    els.logisticsOrdersPage,
+    els.logisticsOrdersNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
   try {
-    const params = logisticsFilterParams({ productKey, limit: 250 });
+    const params = logisticsFilterParams({
+      productRef,
+      offset: state.logisticsOrdersOffset,
+      limit: LOGISTICS_PAGE_SIZE,
+    });
     const payload = await api(
       `/api/reports/${encodeURIComponent(reportId)}/logistics/orders?${params}`,
     );
     if (
       state.reportId !== reportId ||
-      state.logisticsSelectedProductKey !== productKey
+      state.logisticsSelectedProductRef !== productRef ||
+      state.logisticsOrdersRequestId !== requestId
     ) {
       return;
     }
     state.logisticsOrders = asArray(payload.items);
+    state.logisticsOrdersTotal = Number(payload.total || 0);
     renderLogisticsOrders(state.logisticsOrders);
-    els.logisticsOrdersSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (options.scroll) {
+      els.logisticsOrdersSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   } catch (error) {
-    if (state.logisticsSelectedProductKey !== productKey) {
+    if (
+      state.logisticsSelectedProductRef !== productRef ||
+      state.logisticsOrdersRequestId !== requestId
+    ) {
       return;
     }
+    state.logisticsOrders = [];
+    state.logisticsOrdersTotal = 0;
     renderLogisticsOrders([], "Не удалось загрузить цепочки.");
   }
 }
 
 function renderLogisticsOrders(items, emptyText = "Для товара нет цепочек в выбранном срезе.") {
+  renderLogisticsPagination(
+    els.logisticsOrdersPagination,
+    els.logisticsOrdersPrev,
+    els.logisticsOrdersPage,
+    els.logisticsOrdersNext,
+    {
+      offset: state.logisticsOrdersOffset,
+      itemCount: items.length,
+      total: state.logisticsOrdersTotal,
+    },
+  );
   if (!items.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -4359,7 +5060,11 @@ function renderLogisticsOrders(items, emptyText = "Для товара нет ц
       row.append(
         logisticsTableCell(item.chainRef || "—"),
         logisticsTableCell(
-          `${formatCompactDate(item.operationDateStart)} — ${formatCompactDate(item.operationDateEnd)}`,
+          item.orderPeriodStatus === "previous_report_period"
+            ? `${formatCompactDate(item.financialDate)} · возврат из прошлого периода`
+            : item.orderPeriodStatus === "order_before_report_period"
+              ? `${formatCompactDate(item.financialDate)} · заказ оформлен до периода`
+            : formatCompactDate(item.financialDate),
         ),
         logisticsTableCell(signedMoney(item.logisticsForward), "numeric"),
         logisticsTableCell(signedMoney(item.logisticsReverse), "numeric"),
@@ -4375,13 +5080,71 @@ function renderLogisticsOrders(items, emptyText = "Для товара нет ц
   );
 }
 
+function changeLogisticsOrdersPage(direction) {
+  const nextOffset = Math.max(
+    0,
+    state.logisticsOrdersOffset + direction * LOGISTICS_PAGE_SIZE,
+  );
+  if (
+    nextOffset === state.logisticsOrdersOffset
+    || nextOffset >= state.logisticsOrdersTotal
+  ) {
+    return;
+  }
+  state.logisticsOrdersOffset = nextOffset;
+  loadLogisticsOrdersPage();
+}
+
+function renderLogisticsPagination(
+  container,
+  previousButton,
+  pageLabel,
+  nextButton,
+  { offset, itemCount, total },
+) {
+  if (!container || !previousButton || !pageLabel || !nextButton) {
+    return;
+  }
+  const pageCount = total ? Math.ceil(total / LOGISTICS_PAGE_SIZE) : 0;
+  const page = total ? Math.floor(offset / LOGISTICS_PAGE_SIZE) + 1 : 0;
+  pageLabel.textContent = total ? `Страница ${number(page)} из ${number(pageCount)}` : "";
+  previousButton.disabled = offset <= 0;
+  nextButton.disabled = offset + itemCount >= total;
+  container.hidden = total <= LOGISTICS_PAGE_SIZE && offset === 0;
+}
+
+function logisticsProfitEffectText(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const amount = Number(value);
+  if (amount < 0) {
+    return `Снижение на ${money(Math.abs(amount))}`;
+  }
+  if (amount > 0) {
+    return `Рост на ${money(Math.abs(amount))}`;
+  }
+  return money(0);
+}
+
 function closeLogisticsOrders() {
-  state.logisticsSelectedProductKey = "";
+  state.logisticsSelectedProductRef = "";
+  state.logisticsSelectedProductLabel = "";
+  state.logisticsOrdersRequestId += 1;
   state.logisticsOrders = [];
+  state.logisticsOrdersTotal = 0;
+  state.logisticsOrdersOffset = 0;
   if (els.logisticsOrdersSection) {
     els.logisticsOrdersSection.hidden = true;
   }
   els.logisticsOrdersRows?.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsOrdersPagination,
+    els.logisticsOrdersPrev,
+    els.logisticsOrdersPage,
+    els.logisticsOrdersNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
 }
 
 function logisticsPercent(value) {
@@ -4414,7 +5177,11 @@ function renderFilters(options) {
     organizationOptions,
     "Все организации",
   );
-  setOptions(els.logisticsSchemeFilter, options.schemes || [], "Все схемы");
+  setOptions(
+    els.logisticsSchemeFilter,
+    LOGISTICS_SCHEME_OPTIONS,
+    "Все схемы",
+  );
   if (
     [...els.logisticsOrganizationFilter.options].some(
       (option) => option.value === logisticsOrganization,
@@ -4497,7 +5264,8 @@ function applyTopbarFilter(kind) {
     }
   }
   loadReviewRows();
-  if (state.workspace === "logistics") {
+  if (state.workspace === "tables" && state.tableScenario === "logistics") {
+    state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   }
 }
@@ -4547,7 +5315,6 @@ function saveFilterState() {
   }
   writeFilterState({
     clientId: state.clientId,
-    rowPreset: state.rowPreset || "",
     ozonUnitStatusFilter: state.ozonUnitStatusFilter || "",
     rows: {
       query: els.filterQuery.value,
@@ -4601,7 +5368,7 @@ function restoreFilterState() {
   setSelectValue(els.onecFilterDocumentType, onec.documentType || "");
   els.onecFilterDeltaOnly.checked = Boolean(onec.deltaOnly);
 
-  state.rowPreset = saved.rowPreset || "";
+  state.rowPreset = "";
   state.ozonUnitStatusFilter = saved.ozonUnitStatusFilter || "";
   if (els.ozonUnitStatusFilter) {
     setSelectValue(els.ozonUnitStatusFilter, state.ozonUnitStatusFilter);
@@ -4883,12 +5650,16 @@ async function loadSourceRefreshStatus(context = {}) {
       state.latestSourceRefresh,
       state.latestSourceRefreshAttempt,
     );
+    syncReportWizardRefresh(state.latestSourceRefreshAttempt);
+    syncReportWizardRefresh(payload.latestCompleted);
     const completedRefresh =
       state.latestSourceRefresh?.id === state.sourceRefreshAutoOpenRunId
         ? state.latestSourceRefresh
         : state.latestSourceRefreshAttempt?.id === state.sourceRefreshAutoOpenRunId
           ? state.latestSourceRefreshAttempt
-          : null;
+          : payload.latestCompleted?.id === state.sourceRefreshAutoOpenRunId
+            ? payload.latestCompleted
+            : null;
     if (completedRefresh?.newReportRunId) {
       state.sourceRefreshAutoOpenRunId = "";
       await loadReport(completedRefresh.newReportRunId, context);
@@ -4907,7 +5678,7 @@ async function loadSourceRefreshStatus(context = {}) {
     state.activeSourceRefresh = null;
     state.latestOzonDiagnostics = null;
     updateReportBuildButton(null);
-    renderReportWizardStatus(null);
+    renderReportWizardStatus();
     els.sourceRefreshStatus.textContent =
       "Не удалось загрузить статус обновления источников.";
     renderSourceRefreshSteps(null);
@@ -5734,7 +6505,7 @@ function sourceRefreshAppearsStalled(refresh) {
 function renderSourceRefreshControl(refresh, latestAttempt = null) {
   els.sourceRefreshPanel.hidden = false;
   updateReportBuildButton(refresh);
-  renderReportWizardStatus(refresh);
+  syncReportWizardRefresh(refresh);
   renderSourceRefreshSteps(refresh);
   if (!refresh) {
     const title = document.createElement("strong");
@@ -6956,7 +7727,7 @@ function resetSourceRefreshPanel(options = {}) {
   state.sourceRefreshAutoOpenRunId = "";
   state.latestOzonDiagnostics = null;
   updateReportBuildButton(null);
-  renderReportWizardStatus(null);
+  renderReportWizardStatus();
   els.sourceRefreshStatus.textContent = "Статус еще не загружен.";
   renderSourceRefreshSteps(null);
   els.sourceRefreshCollections.replaceChildren();
@@ -6983,13 +7754,6 @@ async function runClientSourceRefresh({
   }
   setSourceRefreshButtonsBusy(true);
   els.sourceRefreshStatus.textContent = sourceRefreshStartText({ dryRun, mode });
-  renderReportWizardStatus({
-    status: "queued",
-    mode,
-    dryRun: Boolean(dryRun),
-    periodStart: periodStart || null,
-    periodEnd: periodEnd || null,
-  });
   try {
     const payload = await api(
       `/api/clients/${encodeURIComponent(clientId)}/source-refresh`,
@@ -7008,8 +7772,17 @@ async function runClientSourceRefresh({
       return null;
     }
     const refresh = payload.latest || null;
-    if (!dryRun && mode === "incremental" && refresh?.id) {
+    if (
+      !dryRun &&
+      refresh?.id &&
+      (mode === "incremental" || origin === "wizard")
+    ) {
       state.sourceRefreshAutoOpenRunId = refresh.id;
+    }
+    if (origin === "wizard" && refresh) {
+      state.reportWizardRefresh = refresh;
+      state.reportWizardBusy = isActiveSourceRefresh(refresh);
+      renderReportWizardStatus();
     }
     state.latestSourceRefresh = refresh;
     renderSourceRefreshControl(refresh);
@@ -7037,8 +7810,19 @@ async function runClientSourceRefresh({
             : "Не удалось запустить полное обновление источников.",
     );
     els.sourceRefreshStatus.textContent = safeMessage;
-    els.reportWizardStatus.className = "report-wizard-status is-blocked";
-    els.reportWizardStatus.textContent = safeMessage;
+    if (origin === "wizard") {
+      state.reportWizardRefresh = {
+        ...(state.reportWizardRefresh || {}),
+        status: "failed",
+        mode,
+        dryRun: Boolean(dryRun),
+        periodStart: periodStart || null,
+        periodEnd: periodEnd || null,
+        safeMessage,
+      };
+      state.reportWizardBusy = false;
+      renderReportWizardStatus();
+    }
     return null;
   } finally {
     setSourceRefreshButtonsBusy(false);
@@ -9380,7 +10164,12 @@ function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {
       "Комиссия, логистика и прочие услуги",
       wbMarketplacePnlExpenses === null ? "warning" : "info",
       "Расходы WB в базе применённого налогового профиля. Для документной сверки с 1С используется отдельная сумма с НДС.",
-      openMarketplaceExpenseReconciliationWidget,
+      logisticsScenarioAvailable()
+        ? openLogisticsScenario
+        : openMarketplaceExpenseReconciliationWidget,
+      logisticsScenarioAvailable()
+        ? "Разобрать логистику"
+        : "Открыть сверку",
     ],
     [
       "Управленческая прибыль WB",
@@ -12345,7 +13134,15 @@ function liquidityMainDriver(rows) {
 
 function renderMetrics(target, items) {
   target.replaceChildren(
-    ...items.map(([label, value, caption = "", tone = "", formula = "", action = null]) => {
+    ...items.map(([
+      label,
+      value,
+      caption = "",
+      tone = "",
+      formula = "",
+      action = null,
+      actionLabel = "",
+    ]) => {
       const item = document.createElement("div");
       item.className = `metric ${tone ? `metric-${tone}` : ""} ${
         typeof action === "function" ? "metric-action" : ""
@@ -12356,7 +13153,10 @@ function renderMetrics(target, items) {
       if (typeof action === "function") {
         item.tabIndex = 0;
         item.setAttribute("role", "button");
-        item.setAttribute("aria-label", `${label}. Открыть расшифровку.`);
+        item.setAttribute(
+          "aria-label",
+          `${label}. ${actionLabel || "Открыть расшифровку"}.`,
+        );
         item.addEventListener("click", action);
         item.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -12378,6 +13178,12 @@ function renderMetrics(target, items) {
         const captionNode = document.createElement("small");
         captionNode.textContent = String(caption);
         item.append(captionNode);
+      }
+      if (actionLabel) {
+        const actionNode = document.createElement("small");
+        actionNode.className = "metric-action-label";
+        actionNode.textContent = String(actionLabel);
+        item.append(actionNode);
       }
       return item;
     }),
@@ -12699,6 +13505,10 @@ function runReasonAction(action) {
 
 function renderRowsLoadingState() {
   const message = "Загружаем строки и показатели по текущим фильтрам.";
+  if (els.rowsPagePrev) {
+    els.rowsPagePrev.disabled = true;
+    els.rowsPageNext.disabled = true;
+  }
   renderRowsAnalyticsStatus(message, "Загрузка", "info");
   renderReviewRowsStatus(message, "Загрузка");
 }
@@ -12727,7 +13537,9 @@ function renderReviewRowsStatus(message, countText) {
   renderReportRowsHeader("wb");
   renderReportRowsControls("wb");
   els.rowsCount.textContent = countText;
-  replaceTableBodyWithMessage(els.reviewRows, 17, message);
+  state.rowsTotal = 0;
+  renderRowsPagination(0, 0);
+  replaceTableBodyWithMessage(els.reviewRows, reportRowsColumnCount("wb"), message);
 }
 
 function renderLiquidityStatus(message, countText) {
@@ -12759,8 +13571,25 @@ function renderReviewRows(rows, total) {
   renderReportRowsHeader("wb");
   renderReportRowsControls("wb");
   const safeRows = asArray(rows);
-  els.rowsCount.textContent = total ? `${total} строк` : "Нет строк";
+  state.rowsTotal = Number(total || 0);
+  renderRowsPagination(state.rowsTotal, safeRows.length);
   renderReportRowsTable(els.reviewRows, safeRows);
+}
+
+function renderRowsPagination(total, visibleCount) {
+  if (!total || !visibleCount) {
+    els.rowsCount.textContent = total ? `${number(total)} строк` : "Нет строк";
+  } else {
+    const start = state.rowsOffset + 1;
+    const end = Math.min(state.rowsOffset + visibleCount, total);
+    els.rowsCount.textContent = `${number(start)}–${number(end)} из ${number(total)} строк`;
+  }
+  if (!els.rowsPagination) {
+    return;
+  }
+  els.rowsPagination.hidden = total <= REPORT_ROWS_PAGE_SIZE;
+  els.rowsPagePrev.disabled = state.rowsOffset <= 0;
+  els.rowsPageNext.disabled = state.rowsOffset + visibleCount >= total;
 }
 
 function shouldRenderOzonMartInReportRows() {
@@ -12836,6 +13665,9 @@ function renderReportRowsControls(mode) {
     els.rowsFilterForm.hidden = false;
   }
   applyRowsFilterMode(ozonMode ? "ozon" : "wb");
+  if (els.rowsPagination) {
+    els.rowsPagination.hidden = ozonMode || state.rowsTotal <= REPORT_ROWS_PAGE_SIZE;
+  }
 }
 
 function applyRowsFilterMode(mode) {
@@ -12975,23 +13807,46 @@ function renderReportRowsHeader(mode) {
           "Причина / действие",
         ]
       : [
-          "Месяц 1С",
-          "Документ-отчет",
-          "Отчет WB",
-          "Дата отчета",
-          "Кабинет",
           "Товар",
           "Артикул WB",
           "Артикул 1С",
           "Баркод",
+          "nmId",
+          "Кабинет",
+          "Организация",
           "Схема",
           "Статус",
+          "Месяц 1С",
           "Продажи",
           "Возвраты",
-          "Выручка",
-          "Прибыль",
+          "Чистое кол-во",
+          "Выручка до СПП",
+          "СПП",
+          "Выручка после СПП",
+          "Выручка для прибыли",
+          "Себестоимость",
+          "Комиссия WB",
+          "Логистика",
+          "Хранение",
+          "Приемка",
+          "Продвижение",
+          "Штрафы/доплаты",
+          "Эквайринг",
+          "НДС-корректировка P&L",
+          "Прибыль до включ. налогов",
+          "Исходящий НДС",
+          "Входящий НДС",
+          "НДС к уплате",
+          "База НДФЛ",
+          "НДФЛ",
+          "Налоги, включенные в итог",
+          "Итог после включ. налогов",
           "Маржа",
           "На шт",
+          "Учетная дата 1С",
+          "Документ-отчет",
+          "Отчет WB",
+          "Дата отчета",
         ];
   const row = document.createElement("tr");
   headers.forEach((label) => {
@@ -13003,6 +13858,10 @@ function renderReportRowsHeader(mode) {
     row.append(cell);
   });
   els.reviewRowsHead.replaceChildren(row);
+}
+
+function reportRowsColumnCount(mode) {
+  return mode === "ozon" ? 12 : 40;
 }
 
 function ozonMartReportRowNode(item) {
@@ -14047,7 +14906,7 @@ function renderReportRowsTable(target, rows) {
   if (!rows.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 17;
+    cell.colSpan = reportRowsColumnCount("wb");
     cell.textContent = "Строки не найдены. Переключите вкладку или измените фильтры периода/кабинета.";
     row.append(cell);
     target.replaceChildren(row);
@@ -14059,16 +14918,15 @@ function renderReportRowsTable(target, rows) {
 function reportRowNode(item) {
   const row = document.createElement("tr");
   row.className = tableRowClass(item);
+  const bridge = unitProfitBridge(item);
   appendTableCells(row, [
-    { value: item.month || "-", className: "text-nowrap" },
-    { value: item.documentReport || "-", className: "text-wide" },
-    { value: item.wbReportId || "-", className: "text-code" },
-    { value: item.wbReportDate || "-", className: "text-nowrap" },
-    { value: item.cabinet || "-", className: "text-wide" },
     { value: item.product || "-", className: "text-wide text-strong" },
     { value: item.articleWb || "-", className: "text-code" },
     { value: item.article1c || "-", className: "text-code" },
     { value: item.barcode || "-", className: "text-code" },
+    { value: item.nmId || "-", className: "text-code" },
+    { value: item.cabinet || "-", className: "text-wide" },
+    { value: item.organization || "-", className: "text-wide" },
     { value: item.scheme || "-", badge: true, tone: "neutral" },
     {
       value: statusLabel(item.status),
@@ -14076,14 +14934,35 @@ function reportRowNode(item) {
       tone: statusTone(item.status, item.statusReason || item.lossDriver),
       title: statusExplanation(item.status, item.statusReason),
     },
+    { value: item.month || "-", className: "text-nowrap" },
     { value: number(item.sales || 0), className: "numeric" },
     {
       value: number(item.returns || 0),
       className: `numeric ${Number(item.returns || 0) > 0 ? "warning" : ""}`.trim(),
     },
-    { value: money(item.revenue || 0), className: "numeric" },
+    { value: number(item.netQty || 0), className: "numeric" },
+    { value: optionalMoney(item.revenueBeforeSpp), className: "numeric" },
+    { value: optionalMoney(item.spp), className: "numeric" },
+    { value: optionalMoney(item.revenue), className: "numeric" },
+    { value: optionalMoney(bridge.pnlRevenue), className: "numeric" },
+    { value: optionalMoney(item.cost), className: "numeric" },
+    { value: optionalMoney(item.commission), className: "numeric" },
+    { value: optionalMoney(item.logistics), className: "numeric" },
+    { value: optionalMoney(item.storage), className: "numeric" },
+    { value: optionalMoney(item.acceptance), className: "numeric" },
+    { value: optionalMoney(item.promotion), className: "numeric" },
+    { value: optionalMoney(item.penalties), className: "numeric" },
+    { value: optionalMoney(item.acquiring), className: "numeric" },
+    { value: optionalMoney(bridge.pnlVatAdjustment), className: "numeric bridge-adjustment" },
+    { value: optionalMoney(item.profitBeforeTax), className: `numeric ${valueTone(item.profitBeforeTax)}` },
+    { value: optionalMoney(item.vatOutput), className: "numeric" },
+    { value: optionalMoney(item.vatInput), className: "numeric" },
+    { value: optionalMoney(item.vatPayable), className: "numeric" },
+    { value: optionalMoney(item.incomeTaxBase), className: "numeric" },
+    { value: optionalMoney(item.incomeTax), className: "numeric" },
+    { value: optionalMoney(bridge.includedTaxes), className: "numeric" },
     {
-      value: signedMoney(item.profit || 0),
+      value: optionalMoney(item.profit),
       className: `numeric ${valueTone(item.profit)}`,
     },
     {
@@ -14100,8 +14979,55 @@ function reportRowNode(item) {
           : "-",
       className: `numeric ${valueTone(item.unitProfit)}`,
     },
+    { value: item.accountingPeriodDate || "-", className: "text-nowrap" },
+    { value: item.documentReport || "-", className: "text-wide" },
+    { value: item.wbReportId || "-", className: "text-code" },
+    { value: item.wbReportDate || "-", className: "text-nowrap" },
   ]);
   return row;
+}
+
+function unitProfitBridge(item) {
+  const revenue = numberOrNull(item.revenue);
+  const revenueWithoutVat = numberOrNull(item.revenueWithoutVat);
+  const cost = numberOrNull(item.cost);
+  const commission = numberOrNull(item.commission);
+  const logistics = numberOrNull(item.logistics);
+  const storage = numberOrNull(item.storage);
+  const acceptance = numberOrNull(item.acceptance);
+  const promotion = numberOrNull(item.promotion);
+  const penalties = numberOrNull(item.penalties);
+  const acquiring = numberOrNull(item.acquiring);
+  const profitBeforeTax = numberOrNull(item.profitBeforeTax);
+  const profit = numberOrNull(item.profit);
+  const pnlRevenue =
+    item.pnlVatMode === "without_vat_for_osno" ? revenueWithoutVat : revenue;
+  const required = [
+    pnlRevenue, cost, commission, logistics, storage, acceptance,
+    promotion, penalties, acquiring, profitBeforeTax, profit,
+  ];
+  if (required.some((value) => value === null)) {
+    return {
+      pnlRevenue,
+      pnlVatAdjustment: null,
+      includedTaxes: null,
+    };
+  }
+  const beforeVatAdjustment =
+    pnlRevenue -
+    cost -
+    commission -
+    logistics -
+    storage -
+    acceptance -
+    promotion -
+    penalties -
+    acquiring;
+  return {
+    pnlRevenue,
+    pnlVatAdjustment: profitBeforeTax - beforeVatAdjustment,
+    includedTaxes: profitBeforeTax - profit,
+  };
 }
 
 function renderLostSales(rows, coverage = {}) {
@@ -14212,7 +15138,8 @@ function hasActiveOnecReconciliationFilters() {
 
 function rowsFilterParams(preset = state.rowPreset) {
   const params = new URLSearchParams();
-  params.set("limit", preset === "missingCost" ? "1000" : "50");
+  params.set("limit", String(REPORT_ROWS_PAGE_SIZE));
+  params.set("offset", String(state.rowsOffset));
   const values = {
     query: els.filterQuery.value.trim(),
     status_filter: els.filterStatus.value,
@@ -14244,6 +15171,9 @@ function resetClientScopedState(options = {}) {
   state.clientReportReportId = "";
   state.clientReportScopeKey = "";
   state.clientReportBusy = false;
+  state.reportWizardRefresh = null;
+  state.reportWizardRequest = null;
+  state.reportWizardBusy = false;
   state.reportKinds = [];
   state.scenario = null;
   state.generationIdempotencyKey = "";
@@ -14253,6 +15183,8 @@ function resetClientScopedState(options = {}) {
     state.periodMonth = "";
   }
   state.rowsRequestKey = "";
+  state.rowsOffset = 0;
+  state.rowsTotal = 0;
   state.drilldownRequestKey = "";
   state.drilldownPreset = "review";
   state.cogsReconciliationRequestKey = "";
@@ -14277,9 +15209,14 @@ function resetClientScopedState(options = {}) {
   state.rowPreset = "";
   state.logisticsSummary = null;
   state.logisticsProducts = [];
+  state.logisticsProductsTotal = 0;
+  state.logisticsProductsOffset = 0;
   state.logisticsOrders = [];
+  state.logisticsOrdersTotal = 0;
+  state.logisticsOrdersOffset = 0;
   state.logisticsRequestKey = "";
-  state.logisticsSelectedProductKey = "";
+  state.logisticsSelectedProductRef = "";
+  state.logisticsSelectedProductLabel = "";
   state.logisticsBusy = false;
   els.topbarCabinetSelect.replaceChildren();
   els.reportLoadRetryButton.hidden = true;
@@ -14318,20 +15255,18 @@ function syncIntegrationsEntryPoint() {
 }
 
 function syncLogisticsEntryPoint() {
-  if (!els.logisticsWorkspaceNav) {
-    return;
-  }
-  const supportedReport =
-    Boolean(state.reportId) &&
-    !isAccountingReportKind() &&
-    normalize(state.summary?.marketplace) !== "ozon";
-  const visible = Boolean(state.user?.logisticsAnalysisEnabled && supportedReport);
-  const roleAllowed = Boolean(
-    isStaffUser() || state.user?.logisticsAnalysisClientEnabled,
-  );
-  els.logisticsWorkspaceNav.hidden = !(visible && roleAllowed);
-  if (!(visible && roleAllowed) && state.workspace === "logistics") {
-    selectWorkspace("overview", {
+  const available = logisticsScenarioAvailable();
+  els.logisticsEntryPoints.forEach((entryPoint) => {
+    entryPoint.hidden = !available;
+  });
+  if (
+    !available &&
+    state.workspace === "tables" &&
+    state.tableScenario === "logistics" &&
+    (Boolean(state.reportId) || Boolean(state.clientId && state.reports.length === 0))
+  ) {
+    selectWorkspace("tables", {
+      tableScenario: "summary",
       updateLocation: true,
       replaceLocation: true,
       instant: true,
@@ -14339,11 +15274,33 @@ function syncLogisticsEntryPoint() {
   }
 }
 
+function logisticsScenarioAvailable() {
+  const supportedReport =
+    Boolean(state.reportId) &&
+    !isAccountingReportKind() &&
+    normalize(state.summary?.marketplace) !== "ozon";
+  const roleAllowed = Boolean(
+    isStaffUser() || state.user?.logisticsAnalysisClientEnabled,
+  );
+  return Boolean(
+    state.user?.logisticsAnalysisEnabled && supportedReport && roleAllowed,
+  );
+}
+
+function openLogisticsScenario() {
+  if (!logisticsScenarioAvailable()) {
+    openMarketplaceExpenseReconciliationWidget();
+    return;
+  }
+  selectTableScenario("logistics", { updateLocation: true, focus: true });
+}
+
 function setEmptyCabinet(title = "Нет доступных отчетов", subtitle = "После импорта отчета здесь появится расчетная витрина.") {
   setTopbarNotice(title, subtitle);
   renderMetrics(els.kpiGrid, []);
   renderMetrics(els.onecKpiGrid, []);
   renderMetrics(els.qualityGrid, []);
+  renderTableScenarioSummary({});
   renderAnalytics({});
   renderOzonPreview(state.latestSourceRefresh, state.latestOzonDiagnostics);
   renderCostReview({});

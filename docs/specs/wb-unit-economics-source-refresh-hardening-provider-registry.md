@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-18"
 ---
 
 # Implementation Status
@@ -378,6 +378,13 @@ WB Finance и Ozon всегда сначала сохраняют immutable raw-
 сравнения. В `files_only` marketplace raw rows не создаются, а collection
 получает `rowPersistence.status=file_authoritative`.
 
+Downstream-расчет, который еще читает `source_snapshot_rows` (в частности,
+текущий `wb-logistics-v4`), несовместим с автоматическим build в `files_only`.
+Его scheduled worker flag остается выключенным до миграции на проверяемый
+file-authoritative reader. Разовый recovery из уже записанного immutable
+snapshot допускается штатным идемпотентным restore-скриптом в `legacy`-режиме;
+он не выполняет новый внешний API-read и не изменяет существующий report run.
+
 При включенном `SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED` расчет после нормализации и
 строкочувствительных распределений атомарно заменяет текущее окно таблицы
 `marketplace_finance_daily_facts`. Ее grain:
@@ -442,8 +449,12 @@ Aggregate parity дневной витрины требует точного с�
 денежных показателей, включая себестоимость. Перед сохранением дневных фактов
 копеечный residual себестоимости детерминированно распределяется внутри того же
 report grain, поэтому сумма дневной витрины должна совпадать с отчетом без
-допуска. Поле `roundingTolerance.cogs` сохраняется для совместимости со значением
-`0.00`; любая ненулевая дельта блокирует promotion.
+допуска. Контрольная сумма каждого grain берется из той же уже округленной до
+копеек недельной строки отчета, а не вычисляется повторным сложением дневных
+неокругленных подгрупп: порядок сложения длинных `Decimal` не может изменить
+результат на границе половины копейки. Поле `roundingTolerance.cogs` сохраняется
+для совместимости со значением `0.00`; любая ненулевая дельта блокирует
+promotion.
 
 При composite rebuild, который обновляет только 1С, общий raw-integrity verifier
 проверяет WB finance и WB report-list в базовом refresh run. Отсутствие collection
@@ -553,9 +564,20 @@ mutual-settlement сохраняет документные строки, а buy
 4. Проверить `scripts/check_source_refresh_health.py --systemd`.
 5. Включать или перезапускать daily timer только после проверки, что active full
    завершен и disk guard больше не блокирует нормальный refresh.
+6. Не включать downstream worker, зависящий от `source_snapshot_rows`, при
+   `SOURCE_REFRESH_RAW_DB_MODE=files_only`; сначала перевести reader на
+   file-authoritative контракт или явно вернуть `legacy` отдельным rollout-
+   решением с оценкой диска и retention.
 
 # Changelog
 
+- 2026-07-18: зафиксирована несовместимость downstream logistics-v4 reader с
+  автоматическим build в `files_only`, безопасный verified restore для разовой
+  staff-приемки и запрет включать scheduled worker до file-authoritative reader
+  или отдельного rollout-решения о `legacy`.
+- 2026-07-17: tied daily-fact COGS residual reconciliation to the exact rounded
+  controls of final weekly report rows, eliminating order-sensitive Decimal
+  re-aggregation while retaining zero tolerance.
 - 2026-07-13: persisted the allocated SPP discount and marked daily-fact COGS,
   controlled expenses and input VAT as precomputed during DB-first rebuild, so
   incremental output does not repeat cent-sensitive allocations.

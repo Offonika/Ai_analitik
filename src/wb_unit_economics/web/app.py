@@ -96,11 +96,55 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260716-weekly-client-report-v3"
+WEB_BUILD_ID = "20260718-unit-table-cleanup-logistics-v4"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
 logger = logging.getLogger(__name__)
+LOGISTICS_PERIOD_ERROR_OPENAPI = {
+    400: {
+        "description": "Некорректный период анализа логистики.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "detail": {
+                        "code": "invalid_logistics_period",
+                        "message": "Период должен находиться внутри отчёта.",
+                        "reportPeriodStart": "2026-04-06",
+                        "reportPeriodEnd": "2026-04-12",
+                    }
+                }
+            }
+        },
+    }
+}
+
+
+def _logistics_period(
+    report: ReportRun,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[date, date]:
+    effective_start = period_start or report.period_start
+    effective_end = period_end or report.period_end
+    if (
+        effective_start > effective_end
+        or effective_start < report.period_start
+        or effective_end > report.period_end
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "invalid_logistics_period",
+                "message": (
+                    "Период логистики должен находиться внутри периода отчёта, "
+                    "а дата начала не может быть позже даты окончания."
+                ),
+                "reportPeriodStart": report.period_start.isoformat(),
+                "reportPeriodEnd": report.period_end.isoformat(),
+            },
+        )
+    return effective_start, effective_end
 
 
 def _run_report_generation_background(
@@ -523,6 +567,12 @@ def create_app(
             "blocked_low_disk",
             "needs_full_refresh",
         }
+        expected_disabled_statuses = (
+            {"needs_configuration", "needs_full_refresh"}
+            if runtime_settings.runtime_environment == "test"
+            and not runtime_settings.external_integrations_enabled
+            else set()
+        )
         health_refresh = (
             latest_completed_refresh
             if latest_completed_refresh is not None
@@ -531,7 +581,9 @@ def create_app(
         )
         health_status = (
             "degraded"
-            if health_refresh is not None and health_refresh.status in degraded_statuses
+            if health_refresh is not None
+            and health_refresh.status in degraded_statuses
+            and health_refresh.status not in expected_disabled_statuses
             else "ok"
         )
         return {
@@ -2629,7 +2681,10 @@ def create_app(
         )
         return payload
 
-    @app.get("/api/reports/{report_id}/logistics/summary")
+    @app.get(
+        "/api/reports/{report_id}/logistics/summary",
+        responses=LOGISTICS_PERIOD_ERROR_OPENAPI,
+    )
     def report_logistics_summary(
         report_id: str,
         current: CurrentUser,
@@ -2647,18 +2702,24 @@ def create_app(
             report.tenant_id,
             runtime_settings,
         )
+        period_start, period_end = _logistics_period(
+            report, periodStart, periodEnd
+        )
         return repository.report_logistics_summary_payload(
             db,
             report,
-            period_start=periodStart,
-            period_end=periodEnd,
+            period_start=period_start,
+            period_end=period_end,
             wb_cabinet_id=wbCabinetId,
             client_company_id=clientCompanyId,
             scheme=scheme,
             product_query=product,
         )
 
-    @app.get("/api/reports/{report_id}/logistics/products")
+    @app.get(
+        "/api/reports/{report_id}/logistics/products",
+        responses=LOGISTICS_PERIOD_ERROR_OPENAPI,
+    )
     def report_logistics_products(
         report_id: str,
         current: CurrentUser,
@@ -2680,11 +2741,14 @@ def create_app(
             report.tenant_id,
             runtime_settings,
         )
+        period_start, period_end = _logistics_period(
+            report, periodStart, periodEnd
+        )
         return repository.report_logistics_products_payload(
             db,
             report,
-            period_start=periodStart,
-            period_end=periodEnd,
+            period_start=period_start,
+            period_end=period_end,
             wb_cabinet_id=wbCabinetId,
             client_company_id=clientCompanyId,
             scheme=scheme,
@@ -2695,7 +2759,10 @@ def create_app(
             limit=min(max(limit, 1), 1000),
         )
 
-    @app.get("/api/reports/{report_id}/logistics/orders")
+    @app.get(
+        "/api/reports/{report_id}/logistics/orders",
+        responses=LOGISTICS_PERIOD_ERROR_OPENAPI,
+    )
     def report_logistics_orders(
         report_id: str,
         current: CurrentUser,
@@ -2706,7 +2773,7 @@ def create_app(
         clientCompanyId: str = "",
         scheme: str = "",
         product: str = "",
-        productKey: str = "",
+        productRef: str = "",
         sortBy: str = "operationDateEnd",
         sortOrder: str = "desc",
         offset: int = 0,
@@ -2719,16 +2786,19 @@ def create_app(
             runtime_settings,
             staff_only=True,
         )
+        period_start, period_end = _logistics_period(
+            report, periodStart, periodEnd
+        )
         return repository.report_logistics_orders_payload(
             db,
             report,
-            period_start=periodStart,
-            period_end=periodEnd,
+            period_start=period_start,
+            period_end=period_end,
             wb_cabinet_id=wbCabinetId,
             client_company_id=clientCompanyId,
             scheme=scheme,
             product_query=product,
-            product_key=productKey,
+            product_ref=productRef,
             sort_by=sortBy,
             sort_order=sortOrder,
             offset=max(offset, 0),

@@ -9,8 +9,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.orm import Session
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -29,6 +30,7 @@ from wb_unit_economics.web.models import (  # noqa: E402
     SessionToken,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceSnapshotRow,
     TenantIntegration,
     User,
 )
@@ -104,6 +106,19 @@ def _copy_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _delete_raw_snapshot_rows(db: Session) -> int:
+    count = int(
+        db.scalar(select(func.count()).select_from(SourceSnapshotRow)) or 0
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("TRUNCATE TABLE wb_unit_economics.source_snapshot_rows")
+        )
+    else:
+        db.execute(delete(SourceSnapshotRow))
+    return count
+
+
 def main() -> int:
     args = parse_args()
     settings = WebSettings(_env_file=None)
@@ -112,7 +127,10 @@ def main() -> int:
     if not _is_test_database(settings.database_url):
         raise SystemExit("Refusing: target database name must end with _test")
 
-    engine = make_engine(settings.database_url)
+    engine = make_engine(
+        settings.database_url,
+        statement_timeout_ms=settings.postgres_statement_timeout_ms,
+    )
     factory = make_session_factory(engine)
     production_root = args.production_report_root.resolve()
     test_root = args.test_report_root.resolve()
@@ -147,6 +165,9 @@ def main() -> int:
             ),
             "integrations": len(integrations),
             "activeRuns": len(active_runs),
+            "rawSnapshotRows": int(
+                db.scalar(select(func.count()).select_from(SourceSnapshotRow)) or 0
+            ),
             "apply": bool(args.apply),
         }
         print(" ".join(f"{key}={value}" for key, value in summary.items()))
@@ -219,6 +240,7 @@ def main() -> int:
         db.execute(delete(LiveCheckCache))
         db.execute(delete(ReportGenerationRequest))
         db.execute(delete(DataRefreshJob))
+        deleted_snapshot_rows = _delete_raw_snapshot_rows(db)
 
         for user in users:
             if not repository.has_role(user, repository.STAFF_ROLES):
@@ -250,7 +272,8 @@ def main() -> int:
             f"copiedWorkbooks={copied_workbooks} "
             f"copiedArtifacts={copied_artifacts} "
             f"reusedWorkbooks={reused_workbooks} "
-            f"reusedArtifacts={reused_artifacts} status=prepared"
+            f"reusedArtifacts={reused_artifacts} "
+            f"deletedRawSnapshotRows={deleted_snapshot_rows} status=prepared"
         )
     return 0
 

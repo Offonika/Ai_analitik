@@ -15,6 +15,8 @@ from openpyxl import Workbook, load_workbook
 from sqlalchemy import event, select, text
 
 from wb_unit_economics.logistics_analysis import (
+    CHAIN_KEY_VERSION,
+    LOGISTICS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
     build_logistics_analysis,
@@ -32,6 +34,9 @@ from wb_unit_economics.web.database import init_db, make_engine, make_session_fa
 from wb_unit_economics.web.models import (
     OrganizationTaxProfile,
     OrganizationTaxProfileOverride,
+    ReportLogisticsAnalysisContext,
+    ReportLogisticsOrderRow,
+    ReportLogisticsSkuRow,
     ReportLostSalesRow,
     SourceLoad,
     SourceRefreshRun,
@@ -47,6 +52,55 @@ from wb_unit_economics.web.refresh import (
 from wb_unit_economics.web.repository import import_dashboard_payload, upsert_user
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh_worker import SourceRefreshWorkerLaunchError
+
+
+@pytest.mark.parametrize(
+    ("runtime_environment", "external_integrations_enabled", "expected_status"),
+    (
+        ("test", False, "ok"),
+        ("test", True, "degraded"),
+        ("production", False, "degraded"),
+    ),
+)
+def test_health_accepts_missing_refresh_configuration_only_for_disabled_test(
+    tmp_path: Path,
+    runtime_environment: str,
+    external_integrations_enabled: bool,
+    expected_status: str,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "runtime_environment": runtime_environment,
+            "external_integrations_enabled": external_integrations_enabled,
+        },
+    )
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        refresh = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-needs-configuration",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 10),
+            reason="health configuration test",
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh,
+            status="needs_configuration",
+            finished_at=datetime(2026, 7, 10, 1, 0),
+        )
+        db.commit()
+
+    payload = client.get("/api/health").json()
+
+    assert payload["status"] == expected_status
+    assert payload["sourceRefreshHealthStatus"] == "needs_configuration"
 
 
 def test_health_is_degraded_while_new_run_follows_failed_completed_run(
@@ -1384,57 +1438,108 @@ def login_as(client: TestClient, email: str, password: str) -> None:
     assert response.status_code == 200
 
 
+def _ensure_logistics_dimensions(
+    db,
+    report,
+    *,
+    cabinet_id: str = "cabinet-logistics",
+    company_id: str = "company-logistics",
+    tenant_id: str | None = None,
+    client_id: str | None = None,
+) -> None:
+    scope_tenant_id = tenant_id or report.tenant_id
+    scope_client_id = client_id or report.client_id
+    now = repository.security.utcnow()
+    if db.get(repository.ClientCompany, company_id) is None:
+        db.add(
+            repository.ClientCompany(
+                id=company_id,
+                tenant_id=scope_tenant_id,
+                client_id=scope_client_id,
+                display_name=f"Организация {company_id}",
+                source_key=f"test-{company_id}",
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.flush()
+    if db.get(repository.WbCabinet, cabinet_id) is None:
+        db.add(
+            repository.WbCabinet(
+                id=cabinet_id,
+                tenant_id=scope_tenant_id,
+                client_id=scope_client_id,
+                client_company_id=company_id,
+                display_name=f"Кабинет {cabinet_id}",
+                cabinet_key=f"test-{cabinet_id}",
+                provider="wb_api",
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.flush()
+
+
+def _logistics_fixture_result(report):
+    source_rows = [
+        LogisticsSourceRow(
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            wb_cabinet_id="cabinet-logistics",
+            client_company_id="company-logistics",
+            source_row_id="logistics-1",
+            source_hash="safe-source-hash-1",
+            financial_date=date(2026, 4, 6),
+            order_date=date(2026, 4, 5),
+            order_uid="external-order-must-not-leak",
+            nm_id="101",
+            sku="sku-101",
+            vendor_code="A-101",
+            product="Товар для проверки логистики",
+            scheme="fbo",
+            warehouse="Коледино",
+            destination="Россия",
+            document_type="Логистика",
+            operation_name="Логистика",
+            quantity=Decimal("0"),
+            retail_amount=Decimal("0"),
+            delivery_service=Decimal("10"),
+            delivery_amount=Decimal("1"),
+            return_amount=Decimal("0"),
+            rebill_logistic_cost=Decimal("0"),
+        )
+    ]
+    unit_rows = [
+        UnitEconomicsSlice(
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            financial_week_start=date(2026, 4, 6),
+            wb_cabinet_id="cabinet-logistics",
+            client_company_id="company-logistics",
+            scheme="fbo",
+            nm_id="101",
+            sku="sku-101",
+            vendor_code="A-101",
+            product="Товар для проверки логистики",
+            revenue=Decimal("100"),
+            profit_before_tax=Decimal("20"),
+            logistics=Decimal("10"),
+        )
+    ]
+    return build_logistics_analysis(source_rows, unit_rows)
+
+
 def persist_logistics_fixture(client: TestClient) -> None:
     with client.app.state.session_factory() as db:
         report = db.get(repository.ReportRun, "report-1")
         assert report is not None
-        source_rows = [
-            LogisticsSourceRow(
-                tenant_id=report.tenant_id,
-                client_id=report.client_id,
-                wb_cabinet_id="cabinet-logistics",
-                client_company_id="company-logistics",
-                source_row_id="logistics-1",
-                source_hash="safe-source-hash-1",
-                financial_date=date(2026, 4, 6),
-                order_date=date(2026, 4, 5),
-                order_uid="external-order-must-not-leak",
-                nm_id="101",
-                sku="sku-101",
-                vendor_code="A-101",
-                product="Товар для проверки логистики",
-                scheme="fbo",
-                warehouse="Коледино",
-                destination="Россия",
-                document_type="Логистика",
-                operation_name="Логистика",
-                quantity=Decimal("0"),
-                retail_amount=Decimal("0"),
-                delivery_service=Decimal("10"),
-                delivery_amount=Decimal("1"),
-                return_amount=Decimal("0"),
-                rebill_logistic_cost=Decimal("0"),
-            )
-        ]
-        unit_rows = [
-            UnitEconomicsSlice(
-                financial_week_start=date(2026, 4, 6),
-                wb_cabinet_id="cabinet-logistics",
-                client_company_id="company-logistics",
-                scheme="fbo",
-                nm_id="101",
-                sku="sku-101",
-                vendor_code="A-101",
-                product="Товар для проверки логистики",
-                revenue=Decimal("100"),
-                profit_before_tax=Decimal("20"),
-                logistics=Decimal("10"),
-            )
-        ]
+        _ensure_logistics_dimensions(db, report)
         repository.replace_report_logistics_analysis(
             db,
             report,
-            build_logistics_analysis(source_rows, unit_rows),
+            _logistics_fixture_result(report),
         )
         db.commit()
 
@@ -1449,9 +1554,9 @@ def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
     disabled = make_client(disabled_path)
     login(disabled)
     assert disabled.get("/api/reports/report-1/logistics/summary").status_code == 404
-    assert "logisticsAnalysis" not in disabled.get(
-        "/api/reports/report-1/summary"
-    ).json()
+    assert (
+        "logisticsAnalysis" not in disabled.get("/api/reports/report-1/summary").json()
+    )
     assert disabled.get("/api/me").json()["logisticsAnalysisEnabled"] is False
 
     enabled = make_client(
@@ -1464,6 +1569,8 @@ def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
     assert response.status_code == 200
     payload = response.json()
     assert payload["dataStatus"] == "needs_rebuild"
+    assert payload["sliceStatus"] == "needs_rebuild"
+    assert payload["reportCoverage"] is None
     assert payload["kpis"]["logisticsTotal"] is None
     assert payload["dynamics"] == []
     assert enabled.get("/api/me").json()["logisticsAnalysisEnabled"] is True
@@ -1479,24 +1586,53 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
 
     cabinet = client.get("/cabinet")
     script = client.get("/static/app.js")
-    assert 'data-workspace-nav="logistics"' in cabinet.text
+    assert 'data-workspace-nav="logistics"' not in cabinet.text
+    assert 'data-workspace-nav="tables"' in cabinet.text
+    assert 'id="logistics-scenario-nav"' in cabinet.text
+    assert 'data-table-scenario-nav="logistics"' in cabinet.text
+    assert 'data-table-scenario-panel="logistics"' in cabinet.text
+    assert "Аналитика и таблицы" in cabinet.text
+    assert "Логистика: расходы и зоны проверки" in cabinet.text
+    assert 'id="table-scenario-kpi-grid"' in cabinet.text
+    assert 'id="table-scenario-summary-status"' in cabinet.text
+    assert 'id="logistics-state-message"' in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
+    assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-orders-rows"' in cabinet.text
+    assert 'id="logistics-orders-pagination"' in cabinet.text
     assert "loadLogisticsAnalysis" in script.text
+    assert "function renderTableScenarioSummary" in script.text
+    assert "Текущий отчёт собран до появления витрины логистики v4" in script.text
+    assert 'reportId: params.get("report_id") || ""' in script.text
+    assert "item.id === requestedReportId" in script.text
+    assert "state.logisticsProductsTotal = Number(products.total || 0)" in script.text
+    assert "state.logisticsOrdersTotal = Number(payload.total || 0)" in script.text
+    assert "logisticsProfitEffectText(item.profitEffectAmount)" in script.text
+    assert "Корректировка — схема не применяется" in script.text
+    assert 'dataStatus === "partial" && sliceStatus === "ready"' in script.text
+    assert 'qualityNeedsReview\n        ? "Проверить данные"' in script.text
 
-    summary = client.get("/api/reports/report-1/logistics/summary")
+    full_week = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
+    summary = client.get("/api/reports/report-1/logistics/summary", params=full_week)
     products = client.get(
         "/api/reports/report-1/logistics/products",
-        params={"product": "проверки", "limit": 10000},
-    )
-    orders = client.get(
-        "/api/reports/report-1/logistics/orders",
-        params={"productKey": "nm:101"},
+        params={**full_week, "product": "проверки", "limit": 10000},
     )
 
     assert summary.status_code == 200
     assert summary.json()["dataStatus"] == "ready"
+    assert summary.json()["sliceStatus"] == "ready"
+    assert summary.json()["financialMetricStatus"] == "ready"
+    assert summary.json()["filterContext"]["dateGrain"] == "calendar_day"
+    assert summary.json()["reportCoverage"]["maxDimensionDelta"] == 0
+    assert summary.json()["reportCoverage"]["invalidReportRows"] == 0
+    assert summary.json()["reportCoverage"]["reportRequiredFieldErrors"] == 0
+    assert summary.json()["reportCoverage"]["chainDimensionConflicts"] == 0
+    assert summary.json()["reportCoverage"]["invalidSourcePayloadShapes"] == 0
+    assert summary.json()["reportCoverage"]["sourceIdentityErrors"] == 0
+    assert summary.json()["reportCoverage"]["sourceRevisionConflicts"] == 0
+    assert summary.json()["reportCoverage"]["scopeMismatches"] == 0
     assert summary.json()["kpis"]["logisticsTotal"] == 10
     assert summary.json()["kpis"]["logisticsSharePct"] == 10
     assert summary.json()["components"] == {
@@ -1508,11 +1644,652 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert products.status_code == 200
     assert products.json()["limit"] == 1000
     assert products.json()["items"][0]["lowSample"] is True
+    product_ref = products.json()["items"][0]["productRef"]
+    orders = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={**full_week, "productRef": product_ref},
+    )
     assert orders.status_code == 200
     assert orders.json()["items"][0]["chainRef"]
     serialized = f"{summary.text}{products.text}{orders.text}"
     assert "external-order-must-not-leak" not in serialized
     assert "safe-source-hash-1" not in serialized
+
+    partial = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={"periodStart": "2026-04-06", "periodEnd": "2026-04-06"},
+    ).json()
+    assert partial["kpis"]["logisticsTotal"] == 10
+    assert partial["financialMetricStatus"] == "not_available_partial_week"
+    assert partial["kpis"]["revenue"] is None
+    assert partial["kpis"]["logisticsSharePct"] is None
+    assert partial["kpis"]["profitBeforeTax"] is None
+    assert partial["kpis"]["profitEffectAmount"] is None
+    assert partial["rankings"]["byProfitEffect"] == []
+    partial_products = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={"periodStart": "2026-04-06", "periodEnd": "2026-04-06"},
+    ).json()
+    assert partial_products["financialMetricStatus"] == "not_available_partial_week"
+    assert partial_products["items"][0]["profitEffectAmount"] is None
+
+
+def test_logistics_correction_segment_does_not_count_as_order(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        order_row.countable_order = False
+        order_row.scheme = "not_applicable"
+        sku_row = db.query(ReportLogisticsSkuRow).one()
+        sku_row.scheme = "not_applicable"
+        db.commit()
+    login(client)
+
+    filters = {
+        "periodStart": "2026-04-06",
+        "periodEnd": "2026-04-12",
+        "scheme": "not_applicable",
+    }
+    summary = client.get(
+        "/api/reports/report-1/logistics/summary", params=filters
+    ).json()
+    products = client.get(
+        "/api/reports/report-1/logistics/products", params=filters
+    ).json()
+
+    assert summary["kpis"]["logisticsTotal"] == 10
+    assert summary["kpis"]["orderCount"] == 0
+    assert summary["kpis"]["logisticsPerOrder"] is None
+    assert products["items"][0]["orderCount"] == 0
+    assert products["items"][0]["logisticsPerOrder"] is None
+
+
+def test_logistics_product_filter_uses_one_canonical_product_reference(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        sku_row = db.query(ReportLogisticsSkuRow).one()
+        order_row.product = "Старое название только в WB"
+        sku_row.product = "Другое название в отчёте"
+        values = {
+            column.name: getattr(order_row, column.name)
+            for column in ReportLogisticsOrderRow.__table__.columns
+            if column.name != "id"
+        }
+        values.update(
+            {
+                "chain_key": "f" * 64,
+                "chain_segment_key": "e" * 64,
+                "product": "Новое название того же товара",
+                "source_hash_digest": "d" * 64,
+            }
+        )
+        db.add(ReportLogisticsOrderRow(**values))
+        db.commit()
+    login(client)
+
+    filters = {
+        "periodStart": "2026-04-06",
+        "periodEnd": "2026-04-12",
+        "product": "Старое название",
+    }
+    summary = client.get(
+        "/api/reports/report-1/logistics/summary", params=filters
+    ).json()
+    products = client.get(
+        "/api/reports/report-1/logistics/products", params=filters
+    ).json()
+
+    assert summary["kpis"]["logisticsTotal"] == 20
+    assert summary["kpis"]["revenue"] == 100
+    assert summary["kpis"]["profitBeforeTax"] == 20
+    assert summary["dynamics"][0]["revenue"] == 100
+    assert products["total"] == 1
+    assert products["items"][0]["logisticsTotal"] == 20
+    assert products["items"][0]["revenue"] == 100
+    assert products["items"][0]["profitBeforeTax"] == 20
+    orders = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={**filters, "productRef": products["items"][0]["productRef"]},
+    ).json()
+    assert orders["total"] == 2
+
+
+def test_logistics_quality_status_is_visible_in_slice_and_product(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        context = db.get(ReportLogisticsAnalysisContext, "report-1")
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        assert context is not None
+        context.data_status = "partial"
+        order_row.data_quality_status = "partial"
+        db.commit()
+    login(client)
+
+    filters = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
+    summary = client.get(
+        "/api/reports/report-1/logistics/summary", params=filters
+    ).json()
+    products = client.get(
+        "/api/reports/report-1/logistics/products", params=filters
+    ).json()
+
+    assert summary["dataStatus"] == "partial"
+    assert summary["sliceStatus"] == "partial"
+    assert summary["coverage"]["dataQualityIssues"] == 1
+    recommendations = summary["recommendations"]
+    assert "review_data_quality" in {item["code"] for item in recommendations}
+    assert [item["priority"] for item in recommendations] == sorted(
+        item["priority"] for item in recommendations
+    )
+    assert [item["code"] for item in recommendations].index(
+        "review_data_quality"
+    ) < [item["code"] for item in recommendations].index("check_margin")
+    assert products["items"][0]["dataQualityStatus"] == "partial"
+
+
+def test_logistics_api_rejects_inverted_and_outside_periods(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    login(client)
+
+    for endpoint in ("summary", "products", "orders"):
+        inverted = client.get(
+            f"/api/reports/report-1/logistics/{endpoint}",
+            params={"periodStart": "2026-04-12", "periodEnd": "2026-04-06"},
+        )
+        outside = client.get(
+            f"/api/reports/report-1/logistics/{endpoint}",
+            params={"periodStart": "2020-04-05", "periodEnd": "2026-04-12"},
+        )
+        assert inverted.status_code == 400
+        assert outside.status_code == 400
+        assert inverted.json()["detail"]["code"] == "invalid_logistics_period"
+        assert outside.json()["detail"]["code"] == "invalid_logistics_period"
+
+    openapi = client.get("/openapi.json").json()
+    for endpoint in ("summary", "products", "orders"):
+        operation = openapi["paths"][
+            f"/api/reports/{{report_id}}/logistics/{endpoint}"
+        ]["get"]
+        assert "400" in operation["responses"]
+
+
+def test_invalid_logistics_context_status_blocks_publication_and_api(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        context = db.get(repository.ReportLogisticsAnalysisContext, "report-1")
+        assert report is not None
+        assert context is not None
+        context.data_status = "unexpected"
+        db.commit()
+        blocker = next(
+            item
+            for item in repository.report_publication_blockers(db, report)
+            if item["code"] == "logistics_analysis_invalid_status"
+        )
+
+    login(client)
+    response = client.get("/api/reports/report-1/logistics/summary")
+
+    assert blocker["nonOverridable"] is True
+    assert response.status_code == 200
+    assert response.json()["dataStatus"] == "needs_rebuild"
+    assert response.json()["kpis"]["logisticsTotal"] is None
+    assert response.json()["rankings"]["byTotal"] == []
+
+
+def test_logistics_persistence_rejects_result_from_another_scope(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        source = LogisticsSourceRow(
+            tenant_id="other-tenant",
+            client_id="other-client",
+            wb_cabinet_id="other-cabinet",
+            client_company_id="other-company",
+            source_row_id="other-row",
+            source_hash="other-hash",
+            financial_date=date(2026, 4, 6),
+            order_date=date(2026, 4, 6),
+            order_uid="other-order",
+            nm_id="101",
+            sku="sku-101",
+            vendor_code="A-101",
+            product="Чужой товар",
+            scheme="fbo",
+            warehouse="Коледино",
+            destination="Россия",
+            document_type="Логистика",
+            operation_name="Логистика",
+            quantity=Decimal("0"),
+            retail_amount=Decimal("0"),
+            delivery_service=Decimal("10"),
+            delivery_amount=Decimal("1"),
+            return_amount=Decimal("0"),
+            rebill_logistic_cost=Decimal("0"),
+        )
+        unit = UnitEconomicsSlice(
+            tenant_id="other-tenant",
+            client_id="other-client",
+            financial_week_start=date(2026, 4, 6),
+            wb_cabinet_id="other-cabinet",
+            client_company_id="other-company",
+            scheme="fbo",
+            nm_id="101",
+            sku="sku-101",
+            vendor_code="A-101",
+            product="Чужой товар",
+            revenue=Decimal("100"),
+            profit_before_tax=Decimal("20"),
+            logistics=Decimal("10"),
+        )
+        result = build_logistics_analysis([source], [unit])
+        assert result.context.data_status == "ready"
+
+        with pytest.raises(ValueError, match="scope does not match report"):
+            repository.replace_report_logistics_analysis(db, report, result)
+
+
+def test_logistics_persistence_rejects_foreign_cabinet_and_company(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(
+            db,
+            report,
+            cabinet_id="foreign-logistics-cabinet",
+            company_id="foreign-logistics-company",
+            tenant_id="other",
+            client_id="other",
+        )
+        source = LogisticsSourceRow(
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            wb_cabinet_id="foreign-logistics-cabinet",
+            client_company_id="foreign-logistics-company",
+            source_row_id="foreign-row",
+            source_hash="foreign-hash",
+            financial_date=date(2026, 4, 6),
+            order_date=date(2026, 4, 6),
+            order_uid="foreign-order",
+            nm_id="101",
+            sku="sku-101",
+            vendor_code="A-101",
+            product="Чужой кабинет",
+            scheme="fbo",
+            warehouse="Коледино",
+            destination="Россия",
+            document_type="Логистика",
+            operation_name="Логистика",
+            quantity=Decimal("0"),
+            retail_amount=Decimal("0"),
+            delivery_service=Decimal("10"),
+            delivery_amount=Decimal("1"),
+            return_amount=Decimal("0"),
+            rebill_logistic_cost=Decimal("0"),
+        )
+        unit = UnitEconomicsSlice(
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            financial_week_start=date(2026, 4, 6),
+            wb_cabinet_id="foreign-logistics-cabinet",
+            client_company_id="foreign-logistics-company",
+            scheme="fbo",
+            nm_id="101",
+            sku="sku-101",
+            vendor_code="A-101",
+            product="Чужой кабинет",
+            revenue=Decimal("100"),
+            profit_before_tax=Decimal("20"),
+            logistics=Decimal("10"),
+        )
+        result = build_logistics_analysis([source], [unit])
+        assert result.context.data_status == "ready"
+
+        with pytest.raises(ValueError, match="cabinet or company scope"):
+            repository.replace_report_logistics_analysis(db, report, result)
+
+
+def test_logistics_persistence_rejects_repeat_for_same_report(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        repository.replace_report_logistics_analysis(db, report, result)
+        db.flush()
+
+        with pytest.raises(ValueError, match="immutable for a report"):
+            repository.replace_report_logistics_analysis(db, report, result)
+
+
+def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        source_rows = []
+        unit_rows = []
+        for index in range(1, 12):
+            reverse = index == 11
+            logistics = Decimal("1") if reverse else Decimal(110 - index)
+            source_rows.append(
+                LogisticsSourceRow(
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    wb_cabinet_id="cabinet-logistics",
+                    client_company_id="company-logistics",
+                    source_row_id=f"row-{index}",
+                    source_hash=f"hash-{index}",
+                    financial_date=date(2026, 4, 6),
+                    order_date=date(2026, 4, 6),
+                    order_uid=f"order-{index}",
+                    nm_id=str(index),
+                    sku=f"sku-{index}",
+                    vendor_code=f"A-{index}",
+                    product=f"Product {index}",
+                    scheme="fbo",
+                    warehouse="Коледино",
+                    destination="Россия",
+                    document_type="Логистика",
+                    operation_name="Логистика",
+                    quantity=Decimal("0"),
+                    retail_amount=Decimal("0"),
+                    delivery_service=logistics,
+                    delivery_amount=Decimal("0" if reverse else "1"),
+                    return_amount=Decimal("1" if reverse else "0"),
+                    rebill_logistic_cost=Decimal("0"),
+                )
+            )
+            unit_rows.append(
+                UnitEconomicsSlice(
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    financial_week_start=date(2026, 4, 6),
+                    wb_cabinet_id="cabinet-logistics",
+                    client_company_id="company-logistics",
+                    scheme="fbo",
+                    nm_id=str(index),
+                    sku=f"sku-{index}",
+                    vendor_code=f"A-{index}",
+                    product=f"Product {index}",
+                    revenue=Decimal("100"),
+                    profit_before_tax=Decimal("20"),
+                    logistics=logistics,
+                )
+            )
+        repository.replace_report_logistics_analysis(
+            db,
+            report,
+            build_logistics_analysis(
+                source_rows,
+                unit_rows,
+                expected_tenant_id=report.tenant_id,
+                expected_client_id=report.client_id,
+            ),
+        )
+        db.commit()
+
+    login(client)
+    payload = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={"periodStart": "2026-04-06", "periodEnd": "2026-04-12"},
+    ).json()
+    recommendation = next(
+        item for item in payload["recommendations"] if item["code"] == "check_returns"
+    )
+
+    assert len(payload["rankings"]["byTotal"]) == 10
+    assert all(
+        item["product"] != "Product 11" for item in payload["rankings"]["byTotal"]
+    )
+    assert recommendation["evidence"]["product"] == "Product 11"
+
+
+def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(
+            db,
+            report,
+            cabinet_id="cabinet-1",
+            company_id="company-1",
+        )
+        _ensure_logistics_dimensions(
+            db,
+            report,
+            cabinet_id="cabinet-2",
+            company_id="company-2",
+        )
+        rows = [
+            LogisticsSourceRow(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="cabinet-1",
+                client_company_id="company-1",
+                source_row_id="row-1",
+                source_hash="hash-1",
+                financial_date=date(2026, 4, 6),
+                order_date=date(2026, 4, 6),
+                order_uid="order-1",
+                nm_id="",
+                sku="same-sku",
+                vendor_code="A",
+                product="Первый",
+                scheme="fbo",
+                warehouse="Коледино",
+                destination="Москва",
+                document_type="Логистика",
+                operation_name="Логистика",
+                quantity=Decimal("0"),
+                retail_amount=Decimal("0"),
+                delivery_service=Decimal("5"),
+                delivery_amount=Decimal("1"),
+                return_amount=Decimal("0"),
+                rebill_logistic_cost=Decimal("0"),
+            ),
+            LogisticsSourceRow(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="cabinet-2",
+                client_company_id="company-2",
+                source_row_id="row-2",
+                source_hash="hash-2",
+                financial_date=date(2026, 4, 6),
+                order_date=date(2026, 4, 6),
+                order_uid="order-2",
+                nm_id="",
+                sku="same-sku",
+                vendor_code="B",
+                product="Второй",
+                scheme="fbo",
+                warehouse="Коледино",
+                destination="Москва",
+                document_type="Логистика",
+                operation_name="Логистика",
+                quantity=Decimal("0"),
+                retail_amount=Decimal("0"),
+                delivery_service=Decimal("5"),
+                delivery_amount=Decimal("1"),
+                return_amount=Decimal("0"),
+                rebill_logistic_cost=Decimal("0"),
+            ),
+            LogisticsSourceRow(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="cabinet-1",
+                client_company_id="company-1",
+                source_row_id="row-3",
+                source_hash="hash-3",
+                financial_date=date(2026, 4, 7),
+                order_date=date(2026, 4, 6),
+                order_uid="order-3",
+                nm_id="",
+                sku="same-sku",
+                vendor_code="A",
+                product="Первый",
+                scheme="fbo",
+                warehouse="Коледино",
+                destination="Москва",
+                document_type="Логистика",
+                operation_name="Неизвестно",
+                quantity=Decimal("0"),
+                retail_amount=Decimal("0"),
+                delivery_service=Decimal("3"),
+                delivery_amount=Decimal("0"),
+                return_amount=Decimal("0"),
+                rebill_logistic_cost=Decimal("0"),
+            ),
+        ]
+        units = [
+            UnitEconomicsSlice(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                financial_week_start=date(2026, 4, 6),
+                wb_cabinet_id="cabinet-1",
+                client_company_id="company-1",
+                scheme="fbo",
+                nm_id="",
+                sku="same-sku",
+                vendor_code="A",
+                product="Первый",
+                revenue=Decimal("100"),
+                profit_before_tax=Decimal("20"),
+                logistics=Decimal("8"),
+            ),
+            UnitEconomicsSlice(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                financial_week_start=date(2026, 4, 6),
+                wb_cabinet_id="cabinet-2",
+                client_company_id="company-2",
+                scheme="fbo",
+                nm_id="",
+                sku="same-sku",
+                vendor_code="B",
+                product="Второй",
+                revenue=Decimal("100"),
+                profit_before_tax=Decimal("20"),
+                logistics=Decimal("5"),
+            ),
+        ]
+        repository.replace_report_logistics_analysis(
+            db, report, build_logistics_analysis(rows, units)
+        )
+        db.commit()
+
+    login(client)
+    products = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "limit": 1,
+        },
+    ).json()
+    assert products["total"] == 2
+    assert len(products["items"]) == 1
+    product_ref = products["items"][0]["productRef"]
+    first_order_page = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "productRef": product_ref,
+            "limit": 1,
+            "offset": 0,
+        },
+    ).json()
+    second_order_page = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "productRef": product_ref,
+            "limit": 1,
+            "offset": 1,
+        },
+    ).json()
+    assert first_order_page["total"] == 2
+    assert second_order_page["total"] == 2
+    assert first_order_page["items"][0]["chainRef"] != second_order_page["items"][0][
+        "chainRef"
+    ]
+
+    classified = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={"periodStart": "2026-04-06", "periodEnd": "2026-04-06"},
+    ).json()
+    unclassified = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={"periodStart": "2026-04-07", "periodEnd": "2026-04-07"},
+    ).json()
+    assert classified["coverage"]["classificationPct"] == 100
+    assert classified["sliceStatus"] == "ready"
+    assert unclassified["coverage"]["classificationPct"] == 0
+    assert unclassified["sliceStatus"] == "partial"
+    assert "restore_classification" not in {
+        item["code"] for item in classified["recommendations"]
+    }
+    assert "restore_classification" in {
+        item["code"] for item in unclassified["recommendations"]
+    }
 
 
 def test_blocked_logistics_gate_is_non_overridable_publication_blocker(
@@ -1555,6 +2332,8 @@ def test_blocked_logistics_gate_is_non_overridable_publication_blocker(
         ]
         unit_rows = [
             UnitEconomicsSlice(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
                 financial_week_start=date(2026, 4, 6),
                 wb_cabinet_id="cabinet-logistics",
                 client_company_id="company-logistics",
@@ -1580,6 +2359,90 @@ def test_blocked_logistics_gate_is_non_overridable_publication_blocker(
         )
 
     assert blocker["nonOverridable"] is True
+
+
+def test_required_logistics_context_missing_or_outdated_blocks_publication(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.logistics_analysis_required = True
+        db.flush()
+        missing = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item for item in missing if item["code"] == "logistics_analysis_missing"
+        )
+        assert blocker["nonOverridable"] is True
+        report.logistics_analysis_required = False
+        assert not any(
+            item["code"].startswith("logistics_analysis_")
+            for item in repository.report_publication_blockers(db, report)
+        )
+        db.rollback()
+
+    persist_logistics_fixture(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        assert context is not None
+        context.methodology_version = "wb-logistics-v2"
+        db.commit()
+        outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item for item in outdated if item["code"] == "logistics_analysis_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+    login(client)
+    payload = client.get("/api/reports/report-1/logistics/summary").json()
+    assert payload["dataStatus"] == "needs_rebuild"
+    assert payload["kpis"]["logisticsTotal"] is None
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        assert context is not None
+        context.methodology_version = LOGISTICS_METHODOLOGY_VERSION
+        context.chain_key_version = "wb-order-product-legacy"
+        db.commit()
+        key_outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in key_outdated
+            if item["code"] == "logistics_analysis_key_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+    payload = client.get("/api/reports/report-1/logistics/summary").json()
+    assert payload["dataStatus"] == "needs_rebuild"
+    assert payload["chainKeyVersion"] == CHAIN_KEY_VERSION
+    assert payload["kpis"]["logisticsTotal"] is None
+
+
+def test_report_with_logistics_context_cannot_be_reimported_in_place(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    persist_logistics_fixture(client)
+    with (
+        client.app.state.session_factory() as db,
+        pytest.raises(ValueError, match="create a new report run"),
+    ):
+        repository.import_dashboard_payload(
+            db,
+            sample_payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-1",
+            source_workbook_path="",
+        )
 
 
 def test_logistics_client_flag_does_not_expose_order_chains(tmp_path: Path) -> None:
@@ -2850,8 +3713,12 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260716-weekly-client-report-v3"
-    assert health.json()["staticBuildId"] == "20260716-weekly-client-report-v3"
+    assert health.json()["backendBuildId"] == (
+        "20260718-unit-table-cleanup-logistics-v4"
+    )
+    assert health.json()["staticBuildId"] == (
+        "20260718-unit-table-cleanup-logistics-v4"
+    )
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2873,6 +3740,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="ai-widget-close"' in ai_page.text
     assert 'id="client-output-widget-overlay"' in cabinet.text
     assert 'id="client-output-widget-close"' in cabinet.text
+    assert 'id="accounting-scenario-checks"' in cabinet.text
+    assert 'data-check-panel="summary"' in cabinet.text
     assert 'id="integrations-widget-overlay"' in integrations.text
     assert 'id="integrations-widget-close"' in integrations.text
     assert 'id="mapping-widget-overlay"' in cabinet.text
@@ -2915,7 +3784,18 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="report-wizard-form"' in cabinet.text
     assert 'id="report-wizard-period-start"' in cabinet.text
     assert 'id="report-wizard-period-end"' in cabinet.text
-    assert 'id="report-wizard-dry-run"' in cabinet.text
+    assert 'id="report-wizard-period-hint"' in cabinet.text
+    assert 'id="report-wizard-dry-run"' not in cabinet.text
+    assert '<ol class="report-wizard-steps"' in cabinet.text
+    assert 'aria-current="step"' in cabinet.text
+    assert 'id="report-wizard-current"' in cabinet.text
+    assert 'id="report-wizard-current-period"' in cabinet.text
+    assert 'id="report-wizard-current-download"' in cabinet.text
+    assert 'id="report-wizard-check"' in cabinet.text
+    assert 'id="report-wizard-reset"' in cabinet.text
+    assert "Не относится к настройкам нового отчёта ниже" in cabinet.text
+    assert "Проверить источники без создания" in cabinet.text
+    assert "Сформировать другой период" in cabinet.text
     assert 'id="report-wizard-result"' in cabinet.text
     assert 'id="report-wizard-excel-download"' in cabinet.text
     assert 'id="report-wizard-client-report-generate"' in cabinet.text
@@ -2931,6 +3811,13 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Дата конца" in cabinet.text
     assert "products-table" in cabinet.text
     assert 'class="products-table data-table report-rows-table"' in cabinet.text
+    assert 'id="rows-pagination"' in cabinet.text
+    assert 'id="rows-page-prev"' in cabinet.text
+    assert 'id="rows-page-next"' in cabinet.text
+    assert "Себестоимость" in cabinet.text
+    assert "Остаток после" not in cabinet.text
+    assert "НДС-корректировка P&amp;L" in cabinet.text
+    assert "Итог после включ. налогов" in cabinet.text
     assert 'class="products-table data-table liquidity-table"' in cabinet.text
     assert 'class="products-table data-table lost-sales-table"' in cabinet.text
     assert 'id="analytics-panel"' in cabinet.text
@@ -2980,8 +3867,14 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260716-report-download-flow-v1" in cabinet.text
-    assert "app.js?v=20260716-report-download-flow-v1" in cabinet.text
+    assert (
+            "styles.css?v=20260718-unit-table-cleanup-logistics-v4"
+        in cabinet.text
+    )
+    assert (
+            "app.js?v=20260718-unit-table-cleanup-logistics-v4"
+        in cabinet.text
+    )
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -3165,7 +4058,9 @@ def test_user_guide_is_generated_from_current_interface_metadata(
 
     assert app_js.status_code == 200
     assert 'if (value === "guide")' in app_js.text
-    assert '["overview", "checks", "tables", "logistics", "guide"]' in app_js.text
+    assert '["overview", "checks", "tables", "guide"]' in app_js.text
+    assert "#tables/${tableScenario}" in app_js.text
+    assert 'tableScenario: "logistics"' in app_js.text
     assert "function renderUserGuide()" in app_js.text
     assert "document.querySelectorAll(`[data-guide-entry=" in app_js.text
     assert "guideEntryVisibleForRole" in app_js.text
@@ -3202,6 +4097,36 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
     assert "word-break: break-word;" in styles.text
 
 
+def test_tax_load_v2_renderer_localizes_contract_and_keeps_tables_accessible(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+    scenarios = client.get("/static/report-scenarios.js")
+    tax_load = client.get("/static/tax-load-report.js")
+    styles = client.get("/static/styles.css")
+
+    assert app_js.status_code == 200
+    assert scenarios.status_code == 200
+    assert tax_load.status_code == 200
+    assert styles.status_code == 200
+    assert 'header.scope = "col"' in scenarios.text
+    assert "wrapper.tabIndex = 0" in scenarios.text
+    assert 'wrapper.setAttribute("aria-label", options.label)' in scenarios.text
+    assert "Нужна проверка бухгалтера" in tax_load.text
+    assert "Открытых дозапросов нет" in tax_load.text
+    assert "В нагрузке ФНС" in tax_load.text
+    assert "formatMoney" in tax_load.text
+    assert "formatDate" in tax_load.text
+    assert "accountingScenarioStatusLabel" in app_js.text
+    assert "Внутренний предварительный отчёт" in app_js.text
+    assert "status ${status}" not in app_js.text
+    assert ".scenario-table-wrap:focus-visible" in styles.text
+    assert ".scenario-table-hint" in styles.text
+    assert ".scenario-heading .status-pill" in styles.text
+
+
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     tmp_path: Path,
 ) -> None:
@@ -3234,7 +4159,11 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "generatedAtIso" in app_js.text
     assert "openReportWizard" in app_js.text
     assert "onReportWizardSubmit" in app_js.text
+    assert "onReportWizardCheck" in app_js.text
     assert "renderReportWizardResult" in app_js.text
+    assert "reportWizardPublishedReport" in app_js.text
+    assert "reportWizardGeneratedReportId" in app_js.text
+    assert "syncReportWizardRefresh" in app_js.text
     assert "generateClientAnalyticalReport" in app_js.text
     assert "/analytical-report" in app_js.text
     assert "Отчёт клиенту ещё не сформирован" in app_js.text
@@ -3248,7 +4177,16 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
         in app_js.text
     )
     assert "Последняя закрытая неделя" in cabinet.text
-    assert "Только проверить готовность" in app_js.text
+    assert "Проверить источники без создания" in cabinet.text
+    assert "Создать Excel за ${periodLabel}" in app_js.text
+    assert "els.reportWizardPeriodHint.hidden = customPeriod" in app_js.text
+    assert "dry_run: Boolean(dryRun)" in app_js.text
+    assert "Только проверить готовность" not in cabinet.text
+    assert "Только проверить готовность" not in app_js.text
+    assert "Не удалось подготовить DOCX и PDF." in app_js.text
+    assert "Сформированный Excel остаётся доступен." in app_js.text
+    assert "Обновить DOCX и PDF" in app_js.text
+    assert "Сформировать заново" not in app_js.text
     assert "Отчёт формируется" in app_js.text
     assert "Данные обновляются" in app_js.text
     assert "Нет подтверждённой активности" in app_js.text
@@ -3371,7 +4309,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "sourceRefreshBlockedAttemptMessage" in app_js.text
     assert 'mode: "ozon-only"' in app_js.text
     assert "Загружаем служебную витрину Ozon + 1C без обязательного WB" in app_js.text
-    assert "Проверить готовность" in app_js.text
+    assert "Проверить источники без создания" in cabinet.text
     assert "Запустите refresh" not in app_js.text
     assert "Отправляем файл и запускаем пересборку" in app_js.text
     assert "FormData" in app_js.text
@@ -3559,6 +4497,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "filteredAnalyticsSummary" in app_js.text
     assert "bindAutoApplyingFilters" in app_js.text
     assert "applyRowsFilters" in app_js.text
+    assert "REPORT_ROWS_PAGE_SIZE = 100" in app_js.text
+    assert 'params.set("offset", String(state.rowsOffset))' in app_js.text
+    assert "renderRowsPagination" in app_js.text
+    assert "unitProfitBridge" in app_js.text
+    assert 'return mode === "ozon" ? 12 : 40' in app_js.text
+    assert "saved.rowPreset" not in app_js.text
     assert "debounce(applyRowsFilters" in app_js.text
     assert "/api/integrations" in app_js.text
     assert "isIntegrationsPage" in app_js.text
@@ -3846,6 +4790,49 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "reason-columns" not in css.text
     assert ".file-picker" in css.text
     assert "overflow-wrap: anywhere" in css.text
+
+
+def test_report_wizard_keeps_published_report_and_new_run_separate(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert app_js.status_code == 200
+    assert styles.status_code == 200
+    assert cabinet.text.index('id="report-wizard-current"') < cabinet.text.index(
+        'id="report-wizard-mode"'
+    )
+    assert cabinet.text.index('id="report-wizard-submit"') < cabinet.text.index(
+        'id="report-wizard-check"'
+    )
+    assert (
+        'Boolean(item.isCurrent) && normalize(item.publicationStatus) === "published"'
+        in app_js.text
+    )
+    assert "state.reportWizardRefresh?.newReportRunId" in app_js.text
+    assert "refresh.id !== state.reportWizardRefresh.id" in app_js.text
+    assert "state.reportWizardRefresh = state.latestSourceRefresh" not in app_js.text
+    assert "renderReportWizardStatus(state.latestSourceRefresh" not in app_js.text
+    assert (
+        "/api/reports/${encodeURIComponent(report.id)}/export.xlsx"
+        in app_js.text
+    )
+    assert (
+        "/api/reports/${encodeURIComponent(generatedReportId)}/export.xlsx"
+        in app_js.text
+    )
+    assert 'normalize(refresh?.status) === "needs_review"' in app_js.text
+    assert "и пока не опубликован как текущий" in app_js.text
+    assert "Служебная диагностика готова для скачивания" in app_js.text
+    mobile_actions = styles.text.rsplit(".report-wizard-actions {", 1)[1].split(
+        "}", 1
+    )[0]
+    assert "flex-direction: column;" in mobile_actions
+    assert "column-reverse" not in mobile_actions
 
 
 def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
@@ -7007,6 +7994,16 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
     assert rows_payload["total"] == 1200
     assert rows_payload["kpis"]["rowCount"] == 1200
     assert len(rows_payload["items"]) == 250
+
+    second_page_response = client.get(
+        "/api/reports/report-1/rows",
+        params={"limit": 100, "offset": 100},
+    )
+    assert second_page_response.status_code == 200
+    second_page_payload = second_page_response.json()
+    assert second_page_payload["total"] == 1200
+    assert len(second_page_payload["items"]) == 100
+    assert second_page_payload["items"][0]["id"] != rows_payload["items"][0]["id"]
 
     capped_rows_response = client.get(
         "/api/reports/report-1/rows",

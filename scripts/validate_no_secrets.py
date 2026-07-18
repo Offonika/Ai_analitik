@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,11 +34,19 @@ def should_skip(path: Path) -> bool:
     return path.name in SKIP_NAMES or any(part in SKIP_PARTS for part in path.parts)
 
 
+def iter_candidate_files(root: Path) -> Iterator[Path]:
+    for current, dir_names, file_names in os.walk(root):
+        dir_names[:] = [name for name in dir_names if name not in SKIP_PARTS]
+        directory = Path(current)
+        for name in file_names:
+            path = directory / name
+            if path.is_file() and not should_skip(path.relative_to(root)):
+                yield path
+
+
 def main() -> int:
     failures: list[str] = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or should_skip(path):
-            continue
+    for path in iter_candidate_files(ROOT):
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:

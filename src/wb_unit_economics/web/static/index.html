@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260716-report-download-flow-v1"
+      content="20260718-unit-table-cleanup-logistics-v4"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260716-report-download-flow-v1"
+      href="/static/styles.css?v=20260718-unit-table-cleanup-logistics-v4"
     />
   </head>
   <body>
@@ -88,23 +88,10 @@
               data-workspace-nav="tables"
               data-guide-entry="sections"
               data-guide-order="30"
-              data-guide-description="Детальные строки юнит-экономики, ликвидность ассортимента и недополученный доход."
+              data-guide-description="Сценарии аналитики: товары, логистика, возвраты, расходы WB и исходные строки расчёта."
             >
               <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
-              <span>Таблицы</span>
-            </button>
-            <button
-              id="logistics-workspace-nav"
-              type="button"
-              data-workspace-nav="logistics"
-              data-guide-entry="sections"
-              data-guide-order="35"
-              data-guide-roles="consultant,admin"
-              data-guide-description="Фактические затраты на прямую и обратную логистику, рейтинг товаров и безопасные рекомендации."
-              hidden
-            >
-              <img src="/static/icons/chart-bar.svg" alt="" aria-hidden="true" />
-              <span>Логистика</span>
+              <span>Аналитика и таблицы</span>
             </button>
             <button type="button" data-workspace-nav="guide">
               <img src="/static/icons/file-text.svg" alt="" aria-hidden="true" />
@@ -294,6 +281,7 @@
           id="accounting-scenario-checks"
           class="panel full-width report-page-section accounting-scenario-panel"
           data-workspace-panel="checks"
+          data-check-panel="summary"
           hidden
         ></section>
         <section
@@ -304,18 +292,84 @@
         ></section>
 
         <section
+          class="panel table-scenario-frame report-page-section"
+          data-workspace-panel="tables"
+          data-table-scenario-frame
+          aria-labelledby="table-scenario-title"
+        >
+          <div class="table-scenario-heading">
+            <div>
+              <p class="eyebrow">Аналитика и таблицы</p>
+              <h2 id="table-scenario-title">Выберите сценарий анализа</h2>
+            </div>
+            <p class="muted">Клиент, кабинет и период сохраняются при переходах.</p>
+          </div>
+          <nav class="table-scenario-nav" aria-label="Сценарии аналитики">
+            <button type="button" data-table-scenario-nav="summary">Сводка</button>
+            <button type="button" data-table-scenario-nav="products">Товары</button>
+            <button
+              id="logistics-scenario-nav"
+              type="button"
+              data-table-scenario-nav="logistics"
+              hidden
+            >Логистика</button>
+            <button type="button" data-table-scenario-nav="returns">Возвраты</button>
+            <button type="button" data-table-scenario-nav="wb-expenses">Расходы WB</button>
+            <button type="button" data-table-scenario-nav="source">Исходные данные</button>
+          </nav>
+        </section>
+
+        <section
+          id="table-scenario-summary"
+          class="panel table-scenario-summary report-page-section"
+          data-workspace-panel="tables"
+          data-table-scenario-panel="summary"
+          aria-labelledby="table-scenario-summary-title"
+        >
+          <p class="eyebrow">Сводка сценариев</p>
+          <h2 id="table-scenario-summary-title" tabindex="-1">От общего результата — к проверяемым фактам</h2>
+          <p class="muted">
+            Выберите вопрос: какие товары формируют результат, где растут расходы
+            логистики, что связано с возвратами или как расходы WB сверяются с 1С.
+          </p>
+          <p id="table-scenario-summary-status" class="table-scenario-summary-status" role="status">
+            Загружаем показатели отчёта…
+          </p>
+          <div
+            id="table-scenario-kpi-grid"
+            class="metric-grid table-scenario-kpi-grid"
+            aria-label="Основные показатели отчёта"
+          ></div>
+          <div class="table-scenario-cards">
+            <button type="button" data-table-scenario-nav="products">
+              <strong>Товары</strong><span>Юнит-экономика, ликвидность и недополученный доход.</span>
+            </button>
+            <button type="button" data-table-scenario-nav="logistics" data-logistics-entry hidden>
+              <strong>Логистика</strong><span>Фактический расход, структура и зоны проверки.</span>
+            </button>
+            <button type="button" data-table-scenario-nav="returns">
+              <strong>Возвраты</strong><span>Товарные строки с возвратами без догадок о причинах.</span>
+            </button>
+            <button type="button" data-table-scenario-nav="wb-expenses">
+              <strong>Расходы WB</strong><span>Документная сверка расходов WB ↔ 1С.</span>
+            </button>
+          </div>
+        </section>
+
+        <section
           id="logistics-workspace"
           class="logistics-workspace report-page-section"
-          data-workspace-panel="logistics"
+          data-workspace-panel="tables"
+          data-table-scenario-panel="logistics"
           aria-labelledby="logistics-workspace-title"
         >
           <div class="panel logistics-heading">
             <div>
               <p class="eyebrow">WB · фактическая витрина</p>
-              <h2 id="logistics-workspace-title">Анализ затрат на логистику</h2>
+              <h2 id="logistics-workspace-title" tabindex="-1">Логистика: расходы и зоны проверки</h2>
               <p class="muted">
-                Сводка строится только после сверки снимка WB с действующим отчётом.
-                Причины возвратов здесь не угадываются.
+                Показываем подтверждённый расход и приоритеты проверки. Это не
+                оценка потенциальной экономии: зоны могут пересекаться между собой.
               </p>
             </div>
             <p id="logistics-data-status" class="logistics-data-status" role="status">
@@ -350,16 +404,32 @@
 
           <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
 
+          <div id="logistics-trust-strip" class="logistics-trust-strip" aria-label="Доверие к расчёту">
+            <span><small>Ключи</small><strong id="logistics-trust-keys">—</strong></span>
+            <span><small>Классификация</small><strong id="logistics-trust-classification">—</strong></span>
+            <span><small>Полнота среза</small><strong id="logistics-trust-slice">—</strong></span>
+            <span><small>Основание</small><strong>Сверенный снимок WB</strong></span>
+          </div>
+
+          <section id="logistics-state-message" class="panel logistics-state-message" hidden>
+            <h3>Для текущего отчёта нет готовой логистической витрины</h3>
+            <p class="muted">
+              Числа не подменяются нулями. Нужна новая ревизия отчёта,
+              собранная на проверенном снимке WB по методике v4.
+            </p>
+          </section>
+
           <div class="logistics-grid-two">
-            <section class="panel" aria-labelledby="logistics-components-title">
-              <p class="eyebrow">Состав затрат</p>
-              <h3 id="logistics-components-title">Прямая и обратная часть</h3>
-              <div id="logistics-components" class="logistics-components"></div>
-            </section>
             <section class="panel" aria-labelledby="logistics-recommendations-title">
               <p class="eyebrow">Что проверить в первую очередь</p>
-              <h3 id="logistics-recommendations-title">Рекомендации по фактам</h3>
+              <h3 id="logistics-recommendations-title">Приоритетные зоны по фактам</h3>
               <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
+              <p class="logistics-overlap-note">Суммы в зонах не складываются: один товар может одновременно попадать в несколько проверок.</p>
+            </section>
+            <section class="panel" aria-labelledby="logistics-components-title">
+              <p class="eyebrow">Состав подтверждённого расхода</p>
+              <h3 id="logistics-components-title">Прямая и обратная часть</h3>
+              <div id="logistics-components" class="logistics-components"></div>
             </section>
           </div>
 
@@ -393,6 +463,20 @@
                 </thead>
                 <tbody id="logistics-products-rows"></tbody>
               </table>
+            </div>
+            <div
+              id="logistics-products-pagination"
+              class="logistics-pagination"
+              aria-label="Страницы рейтинга товаров"
+              hidden
+            >
+              <button id="logistics-products-prev" type="button" class="secondary-button">
+                Назад
+              </button>
+              <span id="logistics-products-page" class="muted"></span>
+              <button id="logistics-products-next" type="button" class="secondary-button">
+                Далее
+              </button>
             </div>
           </section>
 
@@ -428,6 +512,20 @@
                 </thead>
                 <tbody id="logistics-orders-rows"></tbody>
               </table>
+            </div>
+            <div
+              id="logistics-orders-pagination"
+              class="logistics-pagination"
+              aria-label="Страницы цепочек заказов"
+              hidden
+            >
+              <button id="logistics-orders-prev" type="button" class="secondary-button">
+                Назад
+              </button>
+              <span id="logistics-orders-page" class="muted"></span>
+              <button id="logistics-orders-next" type="button" class="secondary-button">
+                Далее
+              </button>
             </div>
           </section>
         </section>
@@ -927,14 +1025,15 @@
         <section
           id="reconciliation-hub-panel"
           class="panel full-width reconciliation-hub-panel"
-          data-workspace-panel="checks"
+          data-workspace-panel="checks tables"
           data-check-panel="reconciliation"
+          data-table-scenario-panel="wb-expenses"
           aria-labelledby="reconciliation-hub-title"
         >
           <div class="panel-header widget-header">
             <div>
               <p class="eyebrow">Сверка источников</p>
-              <h2 id="reconciliation-hub-title">Сверка WB ↔ 1С</h2>
+              <h2 id="reconciliation-hub-title" tabindex="-1">Сверка WB ↔ 1С</h2>
             </div>
             <div class="widget-actions">
               <button
@@ -1460,12 +1559,13 @@
         <section
           class="panel full-width detail-workspace report-page-section"
           data-workspace-panel="tables"
+          data-table-scenario-panel="products returns source"
           aria-labelledby="details-title"
         >
           <div class="panel-header">
             <div>
               <p class="eyebrow">Детализации</p>
-              <h2 id="details-title">Рабочие таблицы отчета</h2>
+              <h2 id="details-title" tabindex="-1">Товары и юнит-экономика</h2>
             </div>
           </div>
           <div class="detail-tabs" role="tablist" aria-label="Детализации отчета">
@@ -1596,7 +1696,17 @@
                 <p class="eyebrow">Расчетная таблица</p>
                 <h3 id="rows-title">Юнит-экономика</h3>
               </div>
-              <span id="rows-count" class="muted"></span>
+              <div class="rows-table-status">
+                <span id="rows-count" class="muted"></span>
+                <div id="rows-pagination" class="rows-pagination" hidden>
+                  <button id="rows-page-prev" type="button" class="secondary-button">
+                    Назад
+                  </button>
+                  <button id="rows-page-next" type="button" class="secondary-button">
+                    Вперед
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="row-preset-bar" aria-label="Быстрые фильтры юнит-экономики">
               <button type="button" class="active" data-row-preset="" aria-pressed="true">
@@ -1670,27 +1780,54 @@
                 </button>
               </div>
             </form>
+            <p class="rows-table-help muted">
+              Горизонтальная прокрутка показывает полный расчет по статьям.
+              Итог после включенных налогов не является полной чистой прибылью бизнеса.
+            </p>
             <div class="table-wrap">
               <table class="products-table data-table report-rows-table">
                 <thead id="review-rows-head">
                   <tr>
-                    <th>Месяц 1С</th>
-                    <th>Документ-отчет</th>
-                    <th>Отчет WB</th>
-                    <th>Дата отчета</th>
-                    <th>Кабинет</th>
                     <th>Товар</th>
                     <th>Артикул WB</th>
                     <th>Артикул 1С</th>
                     <th>Баркод</th>
+                    <th>nmId</th>
+                    <th>Кабинет</th>
+                    <th>Организация</th>
                     <th>Схема</th>
                     <th>Статус</th>
+                    <th>Месяц 1С</th>
                     <th>Продажи</th>
                     <th>Возвраты</th>
-                    <th>Выручка</th>
-                    <th>Прибыль</th>
+                    <th>Чистое кол-во</th>
+                    <th>Выручка до СПП</th>
+                    <th>СПП</th>
+                    <th>Выручка после СПП</th>
+                    <th>Выручка для прибыли</th>
+                    <th>Себестоимость</th>
+                    <th>Комиссия WB</th>
+                    <th>Логистика</th>
+                    <th>Хранение</th>
+                    <th>Приемка</th>
+                    <th>Продвижение</th>
+                    <th>Штрафы/доплаты</th>
+                    <th>Эквайринг</th>
+                    <th>НДС-корректировка P&amp;L</th>
+                    <th>Прибыль до включ. налогов</th>
+                    <th>Исходящий НДС</th>
+                    <th>Входящий НДС</th>
+                    <th>НДС к уплате</th>
+                    <th>База НДФЛ</th>
+                    <th>НДФЛ</th>
+                    <th>Налоги, включенные в итог</th>
+                    <th>Итог после включ. налогов</th>
                     <th>Маржа</th>
                     <th>На шт</th>
+                    <th>Учетная дата 1С</th>
+                    <th>Документ-отчет</th>
+                    <th>Отчет WB</th>
+                    <th>Дата отчета</th>
                   </tr>
                 </thead>
                 <tbody id="review-rows"></tbody>
@@ -1972,11 +2109,11 @@
               </button>
             </div>
           </div>
-          <div class="report-wizard-steps" aria-label="Шаги формирования отчета">
-            <span class="active"><b>1</b> Настройки</span>
-            <span><b>2</b> Проверка данных</span>
-            <span><b>3</b> Готовый отчёт</span>
-          </div>
+          <ol class="report-wizard-steps" aria-label="Шаги формирования отчета">
+            <li class="active" aria-current="step"><b>1</b> Настройки</li>
+            <li><b>2</b> Проверка данных</li>
+            <li><b>3</b> Готовый отчёт</li>
+          </ol>
           <form id="report-wizard-form" class="report-wizard-form">
             <div class="report-wizard-context">
               <div>
@@ -1988,6 +2125,27 @@
                 <strong id="report-wizard-scope">Все активные кабинеты клиента</strong>
               </div>
             </div>
+            <section
+              id="report-wizard-current"
+              class="report-wizard-current"
+              aria-labelledby="report-wizard-current-title"
+              hidden
+            >
+              <div>
+                <strong id="report-wizard-current-title">
+                  Текущий опубликованный отчёт
+                </strong>
+                <span id="report-wizard-current-period"></span>
+                <small>Не относится к настройкам нового отчёта ниже.</small>
+              </div>
+              <a
+                id="report-wizard-current-download"
+                class="button-link secondary-button"
+                href="#"
+              >
+                Скачать текущий Excel
+              </a>
+            </section>
             <label>
               <span>Что сформировать</span>
               <select id="report-wizard-mode">
@@ -2002,7 +2160,7 @@
                 <option value="default">По настройкам клиента</option>
                 <option value="custom">Указать даты</option>
               </select>
-              <small class="muted">
+              <small id="report-wizard-period-hint" class="muted">
                 По умолчанию используется штатный период загрузки для клиента.
               </small>
             </label>
@@ -2016,20 +2174,39 @@
                 <input id="report-wizard-period-end" type="date" />
               </label>
             </div>
-            <label class="report-wizard-check-option">
-              <input id="report-wizard-dry-run" type="checkbox" />
-              <span>
-                <strong>Только проверить готовность</strong>
-                <small>Источники будут проверены, но новый отчёт не создастся.</small>
-              </span>
-            </label>
+            <div class="report-wizard-actions">
+              <button id="report-wizard-submit" type="submit">
+                Создать Excel по настройкам клиента
+              </button>
+              <button
+                id="report-wizard-check"
+                type="button"
+                class="secondary-button"
+              >
+                Проверить источники без создания
+              </button>
+              <button
+                id="report-wizard-reset"
+                type="button"
+                class="secondary-button"
+                hidden
+              >
+                Сформировать другой период
+              </button>
+            </div>
             <div
               id="report-wizard-status"
               class="report-wizard-status"
               role="status"
               aria-live="polite"
+              hidden
             ></div>
-            <section id="report-wizard-result" class="report-wizard-result" hidden>
+            <section
+              id="report-wizard-result"
+              class="report-wizard-result"
+              tabindex="-1"
+              hidden
+            >
               <div>
                 <strong id="report-wizard-result-title">Отчёт готов — выберите файл</strong>
                 <span id="report-wizard-result-copy">
@@ -2044,14 +2221,14 @@
                   href="#"
                   hidden
                 >
-                  Скачать Excel
+                  Скачать сформированный Excel
                 </a>
                 <button
                   id="report-wizard-client-report-generate"
                   type="button"
                   class="secondary-button"
                 >
-                  Сформировать отчёт клиенту
+                  Подготовить DOCX и PDF
                 </button>
                 <a
                   id="report-wizard-docx-download"
@@ -2071,11 +2248,6 @@
                 </a>
               </div>
             </section>
-            <div class="report-wizard-actions">
-              <button id="report-wizard-submit" type="submit">
-                Проверить и сформировать
-              </button>
-            </div>
           </form>
         </section>
       </div>
@@ -2445,9 +2617,9 @@
         </section>
       </div>
     </main>
-    <script src="/static/report-scenarios.js?v=20260716-report-download-flow-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260716-report-download-flow-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260716-report-download-flow-v1" defer></script>
-    <script src="/static/app.js?v=20260716-report-download-flow-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
+    <script src="/static/month-close-report.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
+    <script src="/static/tax-load-report.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
+    <script src="/static/app.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
   </body>
 </html>

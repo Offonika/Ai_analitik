@@ -3,10 +3,13 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
+from sqlalchemy import inspect, text
+
 from wb_unit_economics.report_exports import file_sha256
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import (
     DB_FIRST_SCHEMA_VERSION,
+    LOGISTICS_HARDENING_SCHEMA_VERSION,
     init_db,
     make_engine,
     make_session_factory,
@@ -94,6 +97,51 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
     engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
     init_db(engine)
     assert schema_version(engine) == DB_FIRST_SCHEMA_VERSION
+    inspector = inspect(engine)
+    assert "logistics_analysis_required" in {
+        column["name"] for column in inspector.get_columns("report_runs")
+    }
+    assert {
+        "source_quality_status",
+        "required_field_error_count",
+        "invalid_report_row_count",
+        "report_required_field_error_count",
+        "chain_dimension_conflict_count",
+        "invalid_source_payload_shape_count",
+        "source_identity_error_count",
+        "source_revision_conflict_count",
+        "source_revision_discarded_count",
+        "scope_mismatch_count",
+        "max_dimension_delta",
+    } <= {
+        column["name"]
+        for column in inspector.get_columns("report_logistics_analysis_contexts")
+    }
+    with engine.begin() as connection:
+        versions = set(
+            connection.execute(text("SELECT version FROM schema_migrations")).scalars()
+        )
+    assert LOGISTICS_HARDENING_SCHEMA_VERSION in versions
+    assert {"tenant_id", "client_id"} <= {
+        column["name"]
+        for column in inspector.get_columns("report_logistics_sku_rows")
+    }
+    assert "ix_report_logistics_orders_calendar_filter" in {
+        index["name"]
+        for index in inspector.get_indexes("report_logistics_order_rows")
+    }
+    postgres_schema = Path("sql/postgres_schema.sql").read_text(encoding="utf-8")
+    for column in (
+        "invalid_report_row_count",
+        "report_required_field_error_count",
+        "chain_dimension_conflict_count",
+        "invalid_source_payload_shape_count",
+        "source_revision_conflict_count",
+        "scope_mismatch_count",
+    ):
+        assert f"ADD COLUMN IF NOT EXISTS {column}" in postgres_schema
+    init_db(engine)
+    assert schema_version(engine) == LOGISTICS_HARDENING_SCHEMA_VERSION
     session_factory = make_session_factory(engine)
     with session_factory() as db:
         user = upsert_user(

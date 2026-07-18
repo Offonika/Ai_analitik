@@ -164,6 +164,9 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
   timers, отдельного worker и staff incremental source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
   локальные проверки, GitHub CI, коммит, push и pre-commit hook.
+- `docs/runbooks/wb-logistics-v4-continuation.md` — handoff текущего состояния
+  WB-логистики v4, проверок, ограничений dirty worktree и следующего безопасного
+  этапа test-rollout.
 
 # Решения
 

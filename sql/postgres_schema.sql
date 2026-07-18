@@ -425,3 +425,70 @@ CREATE INDEX IF NOT EXISTS ix_accounting_workflow_audit_card
 
 CREATE INDEX IF NOT EXISTS ix_accounting_workflow_audit_tenant
     ON wb_unit_economics.accounting_workflow_audit_events (tenant_id, created_at);
+-- Logistics hardening v3 is additive. Existing wb-logistics-v1/v2 rows are
+-- kept untouched and are exposed as needs_rebuild by the application.
+ALTER TABLE IF EXISTS wb_unit_economics.report_runs
+    ADD COLUMN IF NOT EXISTS logistics_analysis_required boolean NOT NULL DEFAULT false;
+
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts
+    ADD COLUMN IF NOT EXISTS source_quality_status text NOT NULL DEFAULT 'ready',
+    ADD COLUMN IF NOT EXISTS invalid_source_row_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS required_field_error_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS invalid_report_row_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS report_required_field_error_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS chain_dimension_conflict_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS raw_order_uid_cross_cabinet_reuse_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS unmatched_source_dimension_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS unmatched_report_dimension_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS dimension_delta_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS max_dimension_delta numeric NOT NULL DEFAULT 0;
+
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_order_rows
+    ADD COLUMN IF NOT EXISTS financial_date date,
+    ADD COLUMN IF NOT EXISTS order_period_status text NOT NULL DEFAULT 'unknown',
+    ADD COLUMN IF NOT EXISTS product_ref text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS warehouse_status text NOT NULL DEFAULT 'missing',
+    ADD COLUMN IF NOT EXISTS destination_status text NOT NULL DEFAULT 'missing';
+
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_sku_rows
+    ADD COLUMN IF NOT EXISTS financial_week_end date,
+    ADD COLUMN IF NOT EXISTS product_ref text NOT NULL DEFAULT '';
+
+DO $$
+BEGIN
+    IF to_regclass('wb_unit_economics.report_logistics_order_rows') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS ix_report_logistics_orders_product_ref
+            ON wb_unit_economics.report_logistics_order_rows
+            (report_run_id, product_ref, financial_date);
+    END IF;
+    IF to_regclass('wb_unit_economics.report_logistics_sku_rows') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS ix_report_logistics_sku_product_ref
+            ON wb_unit_economics.report_logistics_sku_rows
+            (report_run_id, product_ref, financial_week_start);
+    END IF;
+END
+$$;
+
+-- Logistics hardening v4 is additive. Existing wb-logistics-v1/v2/v3 rows
+-- remain immutable and the application exposes them as needs_rebuild.
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts
+    ADD COLUMN IF NOT EXISTS invalid_source_payload_shape_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS source_identity_error_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS source_revision_conflict_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS source_revision_discarded_count integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS scope_mismatch_count integer NOT NULL DEFAULT 0;
+
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_sku_rows
+    ADD COLUMN IF NOT EXISTS tenant_id text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS client_id text NOT NULL DEFAULT '';
+
+DO $$
+BEGIN
+    IF to_regclass('wb_unit_economics.report_logistics_order_rows') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS ix_report_logistics_orders_calendar_filter
+            ON wb_unit_economics.report_logistics_order_rows
+            (report_run_id, financial_date, wb_cabinet_id,
+             client_company_id, scheme, product_ref);
+    END IF;
+END
+$$;

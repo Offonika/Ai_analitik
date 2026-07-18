@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Visual target — WB-логистика v4</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --background: #f6f8fb;
+        --surface: #ffffff;
+        --surface-muted: #f1f5f8;
+        --text: #172033;
+        --muted: #667486;
+        --line: #d9e1ea;
+        --brand: #236a70;
+        --brand-dark: #143f45;
+        --brand-bg: #e6f3f1;
+        --ready: #167449;
+        --ready-bg: #e8f4ee;
+        --review: #9a6500;
+        --review-bg: #fff3d2;
+        --blocked: #a43a32;
+        --blocked-bg: #fde9e6;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+
+      a { color: inherit; }
+      a:focus-visible, summary:focus-visible, h1:focus {
+        outline: 3px solid color-mix(in srgb, var(--brand), transparent 65%);
+        outline-offset: 2px;
+      }
+
+      .prototype-note {
+        padding: 9px 16px;
+        background: var(--review-bg);
+        border-bottom: 1px solid #ead391;
+        color: #75500a;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .shell {
+        width: min(1440px, 100%);
+        min-height: calc(100vh - 35px);
+        margin: 0 auto;
+        padding: 18px 28px 36px;
+        display: grid;
+        grid-template-columns: 218px minmax(0, 1fr);
+        gap: 24px;
+      }
+
+      aside {
+        border-right: 1px solid var(--line);
+        padding-right: 18px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 5px 8px 28px;
+        font-weight: 850;
+      }
+
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        background: var(--brand-bg);
+      }
+
+      .mark img { width: 20px; height: 20px; }
+      .nav { display: grid; gap: 6px; }
+
+      .nav a {
+        min-height: 42px;
+        border-radius: 8px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        background: transparent;
+        color: var(--muted);
+        text-align: left;
+        text-decoration: none;
+        font-weight: 720;
+      }
+
+      .nav a.active { background: var(--brand-bg); color: var(--brand-dark); }
+      .nav img { width: 19px; height: 19px; flex: 0 0 19px; }
+      main { min-width: 0; }
+
+      .context {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .context strong { display: block; font-size: 18px; }
+      .context span { color: var(--muted); font-size: 12px; }
+      .filters { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+      .filter {
+        padding: 9px 11px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: white;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .breadcrumbs { margin: 17px 0 9px; color: var(--muted); font-size: 12px; }
+
+      .scenario-nav {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+        padding: 4px;
+        background: var(--surface-muted);
+        border-radius: 10px;
+        scrollbar-gutter: stable;
+      }
+
+      .scenario-nav a {
+        min-height: 38px;
+        border-radius: 7px;
+        padding: 0 13px;
+        display: inline-flex;
+        align-items: center;
+        background: transparent;
+        color: var(--muted);
+        white-space: nowrap;
+        text-decoration: none;
+        font-weight: 750;
+      }
+
+      .scenario-nav a.active {
+        background: white;
+        color: var(--brand-dark);
+        box-shadow: 0 1px 4px #17203318;
+      }
+
+      .heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: end;
+        margin: 22px 0 14px;
+      }
+
+      .eyebrow {
+        margin: 0 0 6px;
+        color: var(--brand);
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      h1 { margin: 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.12; }
+      .heading p:last-child { margin: 7px 0 0; color: var(--muted); }
+
+      .status {
+        padding: 7px 10px;
+        border-radius: 999px;
+        background: var(--ready-bg);
+        color: var(--ready);
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .answer {
+        display: grid;
+        grid-template-columns: 1.5fr repeat(2, minmax(150px, .65fr));
+        gap: 10px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-left: 5px solid var(--blocked);
+        border-radius: 12px;
+        background: white;
+      }
+
+      .answer-primary { padding: 7px 10px; }
+      .answer-primary span, .kpi span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; }
+      .answer-primary strong { display: block; margin: 5px 0 3px; color: var(--blocked); font-size: 30px; }
+      .answer-primary p { margin: 0; font-weight: 760; }
+      .kpi { padding: 12px; border-radius: 9px; background: #f8fafc; }
+      .kpi strong { display: block; margin-top: 8px; font-size: 21px; }
+      .kpi small { display: block; margin-top: 8px; color: var(--muted); line-height: 1.35; }
+      .panel { margin-top: 12px; padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+      .panel-title { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      h2 { margin: 0; font-size: 19px; }
+      .panel-title p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+
+      .issue-head, .issue {
+        display: grid;
+        grid-template-columns: 1.05fr 150px 1.35fr 1.25fr;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .issue-head {
+        padding: 0 12px 7px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .issue { padding: 13px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+      .issue-cell { min-width: 0; }
+      .issue-name { font-size: 14px; }
+      .field-label { display: none; }
+      .amount { font-size: 15px; font-weight: 850; white-space: nowrap; }
+
+      .evidence-tag {
+        display: inline-block;
+        margin: 0 6px 4px 0;
+        padding: 3px 6px;
+        border-radius: 5px;
+        font-size: 10px;
+        font-weight: 850;
+        text-transform: uppercase;
+        letter-spacing: .02em;
+      }
+
+      .evidence-tag.fact { background: var(--ready-bg); color: var(--ready); }
+      .evidence-tag.limit { background: var(--review-bg); color: var(--review); }
+      .evidence-tag.quality { background: var(--blocked-bg); color: var(--blocked); }
+      .limitation { color: #75500a; font-weight: 720; }
+      .action { color: var(--brand-dark); font-weight: 800; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+      .issue-note { margin: 10px 12px 0; color: var(--muted); font-size: 12px; }
+      .trust { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+      .trust div { padding: 10px 12px; border-radius: 8px; background: var(--surface-muted); }
+      .trust span { display: block; color: var(--muted); font-size: 11px; }
+      .trust strong { display: block; margin-top: 4px; font-size: 13px; }
+      details { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+      summary { padding: 15px 17px; cursor: pointer; font-weight: 800; }
+      summary span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; font-weight: 600; }
+      .details-copy { padding: 0 17px 17px; color: var(--muted); }
+
+      @media (max-width: 900px) {
+        .shell { grid-template-columns: 76px minmax(0, 1fr); gap: 14px; padding-inline: 14px; }
+        aside { padding-right: 10px; }
+        .brand-copy, .nav a span { display: none; }
+        .nav a { justify-content: center; padding: 0; }
+        .nav img { width: 22px; height: 22px; }
+        .answer { grid-template-columns: 1fr 1fr; }
+        .answer-primary { grid-column: 1 / -1; }
+        .issue-head { display: none; }
+        .issue { grid-template-columns: 1fr 130px; }
+        .issue-cell:nth-child(n + 3) { grid-column: 1 / -1; }
+      }
+
+      @media (max-width: 560px) {
+        .prototype-note { text-align: left; }
+        .shell { display: block; padding: 10px 12px 28px; }
+        aside { border: 0; border-bottom: 1px solid var(--line); padding: 0 0 8px; }
+        .brand { margin: 2px 0 8px; }
+        .brand-copy { display: inline; }
+        .nav { grid-template-columns: repeat(4, 1fr); }
+
+        .nav a {
+          min-height: 50px;
+          flex-direction: column;
+          justify-content: center;
+          gap: 2px;
+          padding: 4px 2px;
+          font-size: 10px;
+          text-align: center;
+        }
+
+        .nav a span {
+          display: block;
+          max-width: 100%;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+        }
+
+        .nav img { width: 19px; height: 19px; }
+        .context { margin-top: 10px; display: block; }
+
+        .filters {
+          margin-top: 8px;
+          justify-content: flex-start;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          padding-bottom: 5px;
+        }
+
+        .filter { flex: 0 0 auto; }
+        .scenario-nav { margin-inline: -2px; }
+        .heading { align-items: start; }
+        .status { display: none; }
+        .answer { grid-template-columns: 1fr 1fr; padding: 12px; }
+        .answer-primary { grid-column: 1 / -1; }
+        .answer-primary strong { font-size: 27px; }
+        .kpi { padding: 10px; }
+        .kpi strong { font-size: 18px; }
+        .kpi small { font-size: 11px; }
+
+        .issue {
+          grid-template-columns: 1fr;
+          margin-top: 8px;
+          padding: 12px;
+          border: 1px solid var(--line);
+          border-radius: 9px;
+        }
+
+        .issue-cell:nth-child(n + 3) { grid-column: auto; }
+        .field-label { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; font-weight: 850; text-transform: uppercase; }
+        .amount { color: var(--blocked); }
+        .trust { grid-template-columns: 1fr 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype-note">Визуальный target · все значения синтетические · runtime и расчетная методика не изменены</div>
+    <div class="shell">
+      <aside aria-label="Навигация кабинета">
+        <div class="brand">
+          <span class="mark"><img src="../../src/wb_unit_economics/web/static/icons/chart-bar.svg" alt="" /></span>
+          <span class="brand-copy">AI-аналитик<br />отчётов</span>
+        </div>
+        <nav class="nav">
+          <a href="#overview"><img src="../../src/wb_unit_economics/web/static/icons/house.svg" alt="" /><span>Обзор</span></a>
+          <a href="#checks"><img src="../../src/wb_unit_economics/web/static/icons/shield-check.svg" alt="" /><span>Проверки</span></a>
+          <a class="active" href="#tables/logistics" aria-current="page"><img src="../../src/wb_unit_economics/web/static/icons/table.svg" alt="" /><span>Аналитика и таблицы</span></a>
+          <a href="#guide"><img src="../../src/wb_unit_economics/web/static/icons/file-text.svg" alt="" /><span>Инструкция</span></a>
+        </nav>
+      </aside>
+      <main>
+        <header class="context">
+          <div><strong>Шумейко и партнёры</strong><span>WB · разрешённый draft</span></div>
+          <div class="filters" aria-label="Текущий срез">
+            <span class="filter">Все кабинеты</span><span class="filter">Все организации</span>
+            <span class="filter">01.04–30.06.20XX</span><span class="filter">Все схемы</span>
+          </div>
+        </header>
+        <p class="breadcrumbs">Аналитика и таблицы / Логистика</p>
+        <nav class="scenario-nav" aria-label="Сценарии аналитики">
+          <a href="#tables/summary">Сводка</a><a href="#tables/products">Товары</a><a class="active" href="#tables/logistics" aria-current="page">Логистика</a>
+          <a href="#tables/returns">Возвраты</a><a href="#tables/wb-expenses">Расходы WB</a><a href="#tables/source">Исходные данные</a>
+        </nav>
+        <div class="heading">
+          <div><p class="eyebrow">Фактические расходы WB</p><h1 tabindex="-1">Логистика: расходы и зоны проверки</h1><p>Сначала итог и действия, затем товары и цепочки.</p></div>
+          <span class="status">Данные готовы</span>
+        </div>
+        <section class="answer" aria-label="Главный итог">
+          <div class="answer-primary"><span>Фактический расход на логистику за период</span><strong>1 200 000 ₽</strong><p>Логистика уменьшила прибыль на 1 200 000 ₽</p></div>
+          <div class="kpi"><span>Доля в выручке</span><strong>8,0%</strong><small>Полные недели, показатель доступен</small></div>
+          <div class="kpi"><span>Крупнейшая часть</span><strong>360 000 ₽</strong><small>Обратная логистика · 30% расходов</small></div>
+        </section>
+        <section class="panel" aria-labelledby="issues-title">
+          <div class="panel-title"><div><h2 id="issues-title">Что проверить в первую очередь</h2><p>Зона проверки · сумма · основание или ограничение · действие</p></div></div>
+          <div class="issue-head" aria-hidden="true"><span>Зона проверки</span><span>Сумма</span><span>Основание / ограничение</span><span>Что сделать</span></div>
+          <div role="list">
+            <article class="issue" role="listitem"><div class="issue-cell"><span class="field-label">Зона проверки</span><strong class="issue-name">Обратная логистика</strong></div><div class="issue-cell"><span class="field-label">Сумма</span><span class="amount">360 000 ₽</span></div><div class="issue-cell limitation"><span class="field-label">Основание / ограничение</span><span class="evidence-tag limit">Ограничение</span>Причина покупателя недоступна в Finance</div><div class="issue-cell"><span class="field-label">Что сделать</span><a class="action" href="#tables/products">Проверить товары-лидеры и покрытие источника возвратов</a></div></article>
+            <article class="issue" role="listitem"><div class="issue-cell"><span class="field-label">Зона проверки</span><strong class="issue-name">Три товара-лидера</strong></div><div class="issue-cell"><span class="field-label">Сумма</span><span class="amount">240 000 ₽</span></div><div class="issue-cell"><span class="field-label">Основание / ограничение</span><span class="evidence-tag fact">Факт</span>Максимальный расход в выбранном срезе</div><div class="issue-cell"><span class="field-label">Что сделать</span><a class="action" href="#tables/products">Открыть рейтинг товаров</a></div></article>
+            <article class="issue" role="listitem"><div class="issue-cell"><span class="field-label">Зона проверки</span><strong class="issue-name">Не классифицировано</strong></div><div class="issue-cell"><span class="field-label">Сумма</span><span class="amount">48 000 ₽</span></div><div class="issue-cell limitation"><span class="field-label">Основание / ограничение</span><span class="evidence-tag quality">Качество данных</span>4,0% суммы без направления</div><div class="issue-cell"><span class="field-label">Что сделать</span><a class="action" href="#tables/source">Проверить операции и качество данных</a></div></article>
+          </div>
+          <p class="issue-note">Зоны могут пересекаться: суммы строк не складываются между собой.</p>
+        </section>
+        <section class="panel" aria-label="Доверие к выводу">
+          <div class="panel-title"><div><h2>Можно ли действовать по этим данным</h2><p>Защитные показатели не скрывают денежный итог.</p></div></div>
+          <div class="trust"><div><span>Классификация</span><strong>96,0% суммы</strong></div><div><span>Свежесть</span><strong>Актуально</strong></div><div><span>Полнота среза</span><strong>Полные недели</strong></div><div><span>Выборка</span><strong>12 480 цепочек</strong></div></div>
+        </section>
+        <details><summary>Товары, динамика и обезличенные цепочки<span>Второй уровень: фильтры, рейтинг, детализация и техническая сверка</span></summary><div class="details-copy">В runtime здесь используются существующие SQL-пагинация, productRef drill-down и разрешенные роли. Raw payload и внешние идентификаторы не показываются.</div></details>
+      </main>
+    </div>
+  </body>
+</html>

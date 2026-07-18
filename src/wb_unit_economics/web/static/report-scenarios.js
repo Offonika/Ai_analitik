@@ -23,23 +23,46 @@
     return grid;
   }
 
-  function table(rows) {
+  function table(rows, options = {}) {
     const source = Array.isArray(rows) ? rows : [];
-    if (!source.length) return node("p", "analytics-empty", "Нет подтверждённых данных.");
-    const headers = [];
+    if (!source.length) {
+      return node(
+        "p",
+        "analytics-empty",
+        options.emptyText || "Нет подтверждённых данных.",
+      );
+    }
+    const keys = [];
     source.forEach((row) => Object.keys(row || {}).forEach((key) => {
-      if (!headers.includes(key)) headers.push(key);
+      if (!keys.includes(key)) keys.push(key);
     }));
+    const columns = Array.isArray(options.columns) && options.columns.length
+      ? options.columns
+      : keys.map((key) => ({ key, label: key }));
     const wrapper = node("div", "table-wrap scenario-table-wrap");
+    wrapper.tabIndex = 0;
+    if (options.label) wrapper.setAttribute("aria-label", options.label);
     const element = node("table", "data-table scenario-table");
     const head = node("thead");
     const headRow = node("tr");
-    headers.forEach((header) => headRow.append(node("th", "", header)));
+    columns.forEach((column) => {
+      const header = node("th", "", column.label || column.key);
+      header.scope = "col";
+      headRow.append(header);
+    });
     head.append(headRow);
     const body = node("tbody");
     source.forEach((row) => {
       const line = node("tr");
-      headers.forEach((header) => line.append(node("td", "", value(row?.[header], "—"))));
+      columns.forEach((column) => {
+        const rawValue = row?.[column.key];
+        const displayValue = typeof column.format === "function"
+          ? column.format(rawValue, row)
+          : value(rawValue, "—");
+        const cell = node("td", "", value(displayValue, "—"));
+        cell.dataset.label = column.label || column.key;
+        line.append(cell);
+      });
       body.append(line);
     });
     element.append(head, body);

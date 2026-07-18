@@ -27,7 +27,10 @@ from wb_unit_economics.web.models import (
     WbCabinet,
 )
 
-DB_FIRST_SCHEMA_VERSION = "2026_07_16_accounting_workflow_v1"
+ACCOUNTING_WORKFLOW_SCHEMA_VERSION = "2026_07_16_accounting_workflow_v1"
+LOGISTICS_HARDENING_V3_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v3"
+LOGISTICS_HARDENING_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v4"
+DB_FIRST_SCHEMA_VERSION = LOGISTICS_HARDENING_SCHEMA_VERSION
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -103,13 +106,16 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_marketplace_operation_fact_columns(engine)
     _ensure_marketplace_finance_daily_fact_columns(engine)
     _ensure_tax_profile_columns(engine)
+    _ensure_logistics_hardening_columns_and_indexes(engine)
     _ensure_multi_client_columns(engine)
     _ensure_ai_thread_scope_columns(engine)
     _ensure_multi_client_indexes(engine)
     if run_backfill and schema_version(engine) != DB_FIRST_SCHEMA_VERSION:
         if not _schema_migration_at_least(engine, MULTI_CLIENT_BACKFILL_VERSION):
             _backfill_multi_client_hierarchy(engine)
-        _record_schema_migration(engine, DB_FIRST_SCHEMA_VERSION)
+        _record_schema_migration(engine, ACCOUNTING_WORKFLOW_SCHEMA_VERSION)
+        _record_schema_migration(engine, LOGISTICS_HARDENING_V3_SCHEMA_VERSION)
+        _record_schema_migration(engine, LOGISTICS_HARDENING_SCHEMA_VERSION)
 
 
 def schema_version(engine: Engine) -> str:
@@ -118,7 +124,8 @@ def schema_version(engine: Engine) -> str:
         with engine.begin() as connection:
             result = connection.execute(
                 text(
-                    f"SELECT version FROM {table_name} ORDER BY applied_at DESC LIMIT 1"
+                    f"SELECT version FROM {table_name} "
+                    "ORDER BY applied_at DESC, version DESC LIMIT 1"
                 )
             )
             value = result.scalar_one_or_none()
@@ -191,6 +198,9 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
         "source_coverage_start": "DATE",
         "source_coverage_end": "DATE",
         "marketplace_expense_context_version": "VARCHAR NOT NULL DEFAULT ''",
+        "logistics_analysis_required": (
+            f"BOOLEAN NOT NULL DEFAULT {bool_default}"
+        ),
     }
     missing = [
         (column, definition)
@@ -204,6 +214,95 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
         for column, definition in missing:
             connection.execute(
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+            )
+
+
+def _ensure_logistics_hardening_columns_and_indexes(engine: Engine) -> None:
+    """Apply additive v4 logistics schema without rewriting old rows."""
+
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    table_specs: dict[str, dict[str, str]] = {
+        "report_logistics_analysis_contexts": {
+            "source_quality_status": "VARCHAR NOT NULL DEFAULT 'ready'",
+            "invalid_source_row_count": "INTEGER NOT NULL DEFAULT 0",
+            "required_field_error_count": "INTEGER NOT NULL DEFAULT 0",
+            "invalid_report_row_count": "INTEGER NOT NULL DEFAULT 0",
+            "report_required_field_error_count": "INTEGER NOT NULL DEFAULT 0",
+            "chain_dimension_conflict_count": "INTEGER NOT NULL DEFAULT 0",
+            "invalid_source_payload_shape_count": (
+                "INTEGER NOT NULL DEFAULT 0"
+            ),
+            "source_identity_error_count": "INTEGER NOT NULL DEFAULT 0",
+            "source_revision_conflict_count": "INTEGER NOT NULL DEFAULT 0",
+            "source_revision_discarded_count": "INTEGER NOT NULL DEFAULT 0",
+            "scope_mismatch_count": "INTEGER NOT NULL DEFAULT 0",
+            "raw_order_uid_cross_cabinet_reuse_count": (
+                "INTEGER NOT NULL DEFAULT 0"
+            ),
+            "unmatched_source_dimension_count": "INTEGER NOT NULL DEFAULT 0",
+            "unmatched_report_dimension_count": "INTEGER NOT NULL DEFAULT 0",
+            "dimension_delta_count": "INTEGER NOT NULL DEFAULT 0",
+            "max_dimension_delta": "NUMERIC NOT NULL DEFAULT 0",
+        },
+        "report_logistics_order_rows": {
+            "financial_date": "DATE",
+            "order_period_status": "VARCHAR NOT NULL DEFAULT 'unknown'",
+            "product_ref": "VARCHAR NOT NULL DEFAULT ''",
+            "warehouse_status": "VARCHAR NOT NULL DEFAULT 'missing'",
+            "destination_status": "VARCHAR NOT NULL DEFAULT 'missing'",
+        },
+        "report_logistics_sku_rows": {
+            "tenant_id": "VARCHAR NOT NULL DEFAULT ''",
+            "client_id": "VARCHAR NOT NULL DEFAULT ''",
+            "financial_week_end": "DATE",
+            "product_ref": "VARCHAR NOT NULL DEFAULT ''",
+        },
+    }
+    table_names = set(inspector.get_table_names(schema=schema))
+    with engine.begin() as connection:
+        for table, specs in table_specs.items():
+            if table not in table_names:
+                continue
+            existing = {
+                column["name"]
+                for column in inspect(engine).get_columns(table, schema=schema)
+            }
+            table_name = _table_name(engine, table)
+            for column, definition in specs.items():
+                if column not in existing:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {table_name} ADD COLUMN "
+                            f"{column} {definition}"
+                        )
+                    )
+        order_table = _table_name(engine, "report_logistics_order_rows")
+        sku_table = _table_name(engine, "report_logistics_sku_rows")
+        if "report_logistics_order_rows" in table_names:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_report_logistics_orders_product_ref "
+                    f"ON {order_table} (report_run_id, product_ref, financial_date)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_report_logistics_orders_calendar_filter "
+                    f"ON {order_table} (report_run_id, financial_date, "
+                    "wb_cabinet_id, client_company_id, scheme, product_ref)"
+                )
+            )
+        if "report_logistics_sku_rows" in table_names:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_report_logistics_sku_product_ref "
+                    f"ON {sku_table} (report_run_id, product_ref, "
+                    "financial_week_start)"
+                )
             )
 
 

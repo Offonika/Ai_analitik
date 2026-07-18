@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-07-16"
+updated_at: "2026-07-18"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -153,7 +153,7 @@ documents:
     source_of_truth: true
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
-    summary: "Accepted реализация блока фактических логистических затрат, проблемных товаров, факторов, детализации заказов и сценарных калькуляторов."
+    summary: "Accepted staff-ready реализация WB-логистики v4: строгий data gate, фактические затраты, проблемные товары, рекомендации и обезличенные цепочки заказов; калькуляторы вне текущего этапа."
   - path: "docs/specs/client-analytical-report-implementation.md"
     title: "Клиентский аналитический отчёт WB/1С"
     doc_type: "spec"
@@ -382,6 +382,13 @@ documents:
     audience: ["engineering", "agent"]
     source_of_truth: false
     summary: "Безопасный цикл разработки с ИИ: локальные проверки, read-only GitHub CI, commit, push и pre-commit hook."
+  - path: "docs/runbooks/wb-logistics-v4-continuation.md"
+    title: "Продолжение работ по WB-логистике v4"
+    doc_type: "runbook"
+    status: "active"
+    audience: ["engineering", "agent", "operations"]
+    source_of_truth: false
+    summary: "Handoff текущего состояния wb-logistics-v4, проверок, dirty-worktree ограничений и безопасного пути к test-rollout."
   - path: "docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md"
     title: "Ключевые решения Excel MVP"
     doc_type: "decision"

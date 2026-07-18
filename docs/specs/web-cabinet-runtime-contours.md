@@ -9,12 +9,12 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: runtime-contours
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/check_runtime_health.py]
-related_tests: [tests/test_web_app.py]
+related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/runtime_release_lock.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/prune_runtime_releases.py, scripts/check_runtime_health.py]
+related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_release_retention.py]
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-15"
+updated_at: "2026-07-18"
 ---
 
 # Goal
@@ -47,6 +47,10 @@ Linux capabilities и постоянно показывает заметную �
   существования учетной записи;
 - `external_integrations_enabled=false` является master-switch для внешних
   WB/1С проверок и недиагностических source refresh;
+- в `test` при выключенном master-switch статусы `needs_configuration` и
+  `needs_full_refresh` остаются видимыми в source-refresh полях, но не понижают
+  общий health; реальные `failed`, `blocked_low_disk` и другие аварии по-прежнему
+  возвращают `degraded`;
 - `maintenance_message` содержит только безопасный текст до 500 символов;
 - `/api/health` возвращает `runtimeEnvironment` и `maintenanceMessage`, но не
   раскрывает URL БД, секреты или файловые пути.
@@ -82,6 +86,21 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 сборки immutable. Test и production имеют независимые атомарные symlinks
 `current`; production получает ровно проверенный test artifact.
 
+Build, promotion и release retention используют один неблокирующий exclusive
+lock `/run/lock/shumeiko-runtime-release.lock`. Занятый lock завершает любую из
+трех операций без изменений. Retention по умолчанию работает как dry-run,
+всегда защищает цели `prod/current` и `test/current`, последний неактивный
+полный release для rollback и все каталоги моложе 24 часов. `--apply` доступен
+только root; symlink, посторонний entry, невалидный manifest или active target
+за пределами release root блокирует всю операцию. Старые `.runtime-*` staging
+каталоги и неактивные legacy releases с `sourceDirty=true` можно удалять только
+по тем же правилам и под тем же lock; dirty release не считается rollback.
+
+Скопированный runtime `.venv` обязан импортировать пакет только из `src` того
+же immutable release. Editable-ссылка на рабочий репозиторий или другой внешний
+checkout запрещена; bootstrap выбора `release/src` входит отдельным hash в
+manifest и в общий content hash.
+
 Миграции до окончания 24-часового окна rollback только additive и обратно
 совместимы. Rollback меняет production symlink или временно возвращает nginx
 на legacy 8096; клиентская БД не восстанавливается без отдельного решения об
@@ -90,12 +109,16 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 # Acceptance Criteria
 
 - оба local health endpoint отвечают `200`, правильным environment и build ID;
+- test без внешних интеграций имеет общий health `ok`, даже если сохраненный
+  source-refresh status ожидаемо требует настройки;
 - отдельные systemd timers проверяют health production и test не реже раза в
   минуту и падают при несовпадении environment или backend/static build;
 - client-only login отклоняется в test, staff login работает;
 - test mutation не появляется в production database;
 - test не читает production snapshots/backups и не имеет automatic timers;
 - production health `ok`, refresh не активен, current report и Excel доступны;
+- параллельные build/promotion/retention не пересекаются, а cleanup сохраняет
+  оба active target и минимум один полный rollback release;
 - unauthenticated reports/exports остаются закрыты, `.env`, JSON и XLSX не
   раздаются статически;
 - DNS и TLS нового домена готовы до передачи ссылки клиенту;
@@ -103,6 +126,16 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 
 # Changelog
 
+- 2026-07-18: treat missing/full-refresh configuration as expected test state
+  only when external integrations are disabled, while keeping the detailed
+  source status visible and real failures degraded.
+- 2026-07-18: accepted one shared fail-closed lock for runtime build,
+  promotion and dry-run-first release retention with active, rollback, grace,
+  path and manifest guards.
+
+- 2026-07-16: закреплена изоляция Python-импортов внутри immutable release;
+  runtime bootstrap и его hash запрещают copied `.venv` использовать editable
+  checkout рабочего репозитория.
 - 2026-07-15: accepted разделение production/test, DB clone sanitization,
   immutable promotion и zero-downtime cutover.
 - 2026-07-15: зафиксирована безопасная передача URL отдельной PostgreSQL-роли

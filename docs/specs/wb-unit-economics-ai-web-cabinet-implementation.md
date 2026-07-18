@@ -17,7 +17,7 @@ related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cab
 changelog_path: docs/changelogs/web-cabinet.md
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-17"
 ---
 
 # Implementation Status
@@ -26,6 +26,9 @@ updated_at: "2026-07-16"
 существуют, changelog фиксирует production-изменения, но это не заменяет полную
 проверку всех acceptance criteria, browser scenarios и live deployment smoke.
 До отдельной доказательной матрицы spec не переводится в `implemented`.
+Information architecture `Аналитика и таблицы` принята как следующий UI-
+контракт, но текущий runtime еще использует отдельный staff-only fragment
+`#logistics`; принятие spec не означает, что новый маршрут уже развернут.
 
 # Goal
 
@@ -358,14 +361,44 @@ UI readiness behavior:
   controls, а contract regression блокирует новое действие блока
   `source-refresh-actions` без `data-guide-*` пояснения;
 - the authenticated cabinet uses one analyst workspace shell with a persistent
-  navigation rail and four page entries: `Обзор`, `Проверки`, `Таблицы` and
-  `Инструкция`; `Отчёт клиенту` remains a report action, while `Настройки`
-  is shown only to `consultant/admin` and opens the existing integrations
-  widget rather than a new page;
+  navigation rail and four page entries: `Обзор`, `Проверки`,
+  `Аналитика и таблицы` and `Инструкция`; a separate top-level `Логистика`
+  entry is forbidden. `Отчёт клиенту` remains a report action, while
+  `Настройки` is shown only to `consultant/admin` and opens the existing
+  integrations widget rather than a new page;
+- `Аналитика и таблицы` contains one nested scenario navigation with the stable
+  order `Сводка`, `Товары`, `Логистика`, `Возвраты`, `Расходы WB`,
+  `Исходные данные`. A role or feature flag may hide an unavailable scenario,
+  but must not create another sidebar entry or change the order of the
+  remaining scenarios;
 - the browser URL may expose UI-only fragments `#overview`, `#checks`,
-  `#checks/cost`, `#tables` and `#guide`; they do not add server routes or API
-  contracts, invalid fragments fall back to `#overview`, and browser
-  Back/Forward restores the visible workspace without reloading report facts;
+  `#checks/cost`, `#tables`, `#tables/summary`, `#tables/products`,
+  `#tables/logistics`, `#tables/returns`, `#tables/wb-expenses`,
+  `#tables/source` and `#guide`; `#tables` is an alias of
+  `#tables/summary`. These fragments do not add server routes or API contracts,
+  invalid fragments fall back to `#overview`, and browser Back/Forward restores
+  the visible workspace without reloading report facts. A deep-link to a
+  scenario unavailable to the current role or disabled by its feature flag
+  falls back to the first permitted `Аналитика и таблицы` scenario and does not
+  start its API request;
+- the overview WB-expense card exposes the action `Разобрать логистику` only
+  when the logistics scenario is permitted; it opens `#tables/logistics` and
+  preserves the selected client, server-authorized `report_id`, cabinet,
+  company, scheme and period filters. A query-string `report_id` is selected
+  only from the reports already returned for the current role and tenant;
+- the logistics first screen follows the answer-first and state contracts of
+  `docs/specs/wb-logistics-cost-analysis-implementation.md`: total logistics is
+  an accounting cost and profit effect, not an automatically avoidable loss or
+  savings reserve; overlapping action rows cannot be presented as additive;
+- `ready`, `partial`, `needs_rebuild`/`blocked`, an empty permitted slice and a
+  request failure have distinct logistics surfaces. Unavailable values remain
+  null, and stale figures are either cleared or explicitly marked unavailable
+  for the current filter context;
+- at 390 px the complete selected global context remains available: cabinet,
+  company, period and scheme cannot be hidden with responsive CSS. Nested
+  scenario controls are scrollable or reflow safely without page-level
+  horizontal overflow, and focus moves to the scenario heading after a route
+  change;
 - after login, UI shows a client switcher when the user has more than one
   available client;
 - `consultant/admin` can create a new client workspace from the topbar; after
@@ -514,7 +547,21 @@ UI readiness behavior:
   `Юнит-экономика` tab keeps filters for search, status, period start/end,
   month, cabinet, organization, scheme and loss class before loading rows
   through `/api/reports/{id}/rows`, and shows revenue, profit, margin and unit
-  profit for every report row;
+  profit for every report row. The visible table starts with product name,
+  WB/1C articles, barcode and `nmId`, keeps the period and quantity block next,
+  then shows the individual components of profit: cost, commission, logistics,
+  storage, acceptance, promotion, penalties and acquiring without a repeated
+  cumulative `Остаток после ...` column after every component. A separate
+  explicit P&L VAT adjustment reconciles displayed gross WB service amounts
+  with the accepted profit, and report/document lineage is placed at the end.
+  The final row metric is labelled as the result after included taxes, not as
+  full net business profit. The table uses server-side pagination: the counter must say
+  which range is currently visible (`1–100 из 1553`), and previous/next controls
+  must make every filtered row reachable. A preset such as `Убыточные продажи`
+  remains visibly active and its total is never presented as the unfiltered
+  assortment total. Quick presets are session-only: a fresh page load starts
+  from `Все` and must not restore a previously selected loss preset from browser
+  storage;
 - unit-economics filters auto-apply on change/input; the UI does not require a
   separate `Применить` action, while `Сбросить` clears the slice explicitly;
 - `Показатели` is recalculated from the filtered `rows` response, so
@@ -700,10 +747,32 @@ UI readiness behavior:
 - в шапке staff-интерфейса действие называется `Сформировать отчет` и открывает
   отдельный мастер, а не сразу скачивает Excel. Мастер явно показывает клиента,
   контур `WB + 1С` или служебную диагностику `Ozon + 1С`, период по настройкам
-  клиента либо собственные даты, режим `только проверить` и текущий статус
-  сборки. На шаге `Готовый отчёт` уже опубликованный Excel скачивается прямой
-  кнопкой, а `Отчёт клиенту` можно сформировать и скачать в DOCX/PDF на том
-  же экране без поиска в меню `Дополнительные действия`;
+  клиента либо собственные даты и текущий статус запуска. Действия `Создать
+  Excel за …` и `Проверить источники без создания` являются отдельными
+  кнопками; readiness-only проверка передает `dry_run=true`, не создает Excel и
+  не использует чекбокс режима;
+- текущий опубликованный Excel показывается в мастере отдельной нейтральной
+  карточкой с точным периодом и прямой ссылкой по `report_id`. Он определяется
+  из списка отчетов только по одновременным признакам `isCurrent=true` и
+  `publicationStatus=published`, явно помечен как не относящийся к настройкам
+  нового отчета и никогда не считается результатом текущего запуска;
+- состояние мастер-сессии содержит идентификатор source-refresh запуска,
+  выбранные режим и период, статус и `newReportRunId`. Глобальный
+  `latestSourceRefresh`, включая фоновый daily refresh, не переводит новую
+  сессию на следующий шаг и не показывается как результат пользовательского
+  запуска. Настройки блокируются только на время запуска, а действие
+  `Сформировать другой период` очищает сессию;
+- результат мастера существует только при наличии `newReportRunId` и все его
+  скачивания используют этот точный `report_id`: `report_created` показывает
+  зеленую карточку `Excel за … готов`, а `needs_review` с новым отчетом —
+  желтую карточку `Excel создан с замечаниями и пока не опубликован как
+  текущий`. Ошибка или `needs_review` без нового отчета не показывают старый
+  Excel как результат. DOCX/PDF можно подготовить или обновить в той же
+  карточке; при их ошибке UI сообщает `Не удалось подготовить DOCX и PDF.
+  Сформированный Excel остаётся доступен` без HTTP-кода;
+- шаги мастера являются семантическим списком с `aria-current`, после
+  завершения фокус переносится на карточку результата. На мобильном обе кнопки
+  полноширинные, основное действие идет первым;
 - мастер передает выбранные `period_start`/`period_end` в staff-only source
   refresh API, не обещает фильтрацию по одному кабинету, если backend собирает
   все активные подключения клиента, и явно сообщает, что `ozon-only` не
@@ -1236,6 +1305,21 @@ Large-report loading:
 - `#guide` открывает встроенную инструкцию; ее названия разделов и действий
   совпадают с текущими UI controls, а клиентская роль не видит staff-only
   карточки `Настройки` и `Добавить клиента`.
+- Боковая навигация содержит `Аналитика и таблицы`, не содержит отдельный пункт
+  `Логистика`, а вложенная навигация сохраняет порядок `Сводка / Товары /
+  Логистика / Возвраты / Расходы WB / Исходные данные` среди доступных роли
+  сценариев.
+- `#tables/logistics`, browser Back/Forward и действие `Разобрать логистику`
+  открывают один и тот же разрешенный срез без потери фильтров. Недоступный роли
+  или выключенный feature flag сценарий не загружает logistics API и безопасно
+  возвращает пользователя к первому разрешенному сценарию.
+- Логистический first screen не называет всю сумму логистики устранимой потерей
+  или резервом экономии, различает пересекающиеся зоны проверки и имеет разные
+  состояния для `ready`, `partial`, `needs_rebuild`/`blocked`, пустого среза и
+  ошибки запроса без zero/stale fallback.
+- На ширине 390 px все значения глобального среза остаются доступными, вложенная
+  навигация не создает page-level overflow, а после перехода фокус установлен на
+  заголовке выбранного сценария.
 - Для `consultant/admin` инструкция по `Проверкам` различает обычное обновление
   последних данных, Ozon-only витрину и редкую полную пересборку, объясняет
   значения сводки/этапов/карточек источников и заканчивается разбором
@@ -1269,8 +1353,11 @@ Large-report loading:
   not grouped under `Источник не загрузился`; genuine transport, access,
   schema, configuration and partial-load failures retain the error wording.
 - Consultant/admin can open `Сформировать отчет`, choose the report contour and
-  period, run a readiness-only check or start generation, follow its status and
-  download the current protected Excel without leaving the wizard.
+  period, run a readiness-only check or start generation and follow the exact
+  wizard-session status. The current published Excel remains a separate neutral
+  download, while a green or warning result card and its direct download appear
+  only for that session's non-empty `newReportRunId`; background refreshes never
+  advance the wizard.
 - Public URLs for JSON/Excel return 404 or do not exist.
 - Existing Excel MVP tests and no-secrets checks still pass.
 
@@ -1334,6 +1421,16 @@ Large-report loading:
   `data-guide-*` покрытие верхней навигации, фильтров, action menu и всех кнопок
   `source-refresh-actions`; отдельный negative test отклоняет новую кнопку
   `Данные и расчёт` без пользовательского пояснения.
+- Frontend information-architecture contract: единственный sidebar entry
+  `Аналитика и таблицы`, фиксированный порядок вложенных сценариев, alias
+  `#tables -> #tables/summary`, прямой `#tables/logistics`, Back/Forward,
+  сохранение разрешенного draft и глобального среза, а также отсутствие
+  logistics API-вызова для client role при выключенном client flag.
+- Frontend logistics-state contract: semantic guard против трактовки всей
+  логистики как устранимой потери, явная неаддитивность пересекающихся зон,
+  отдельные `ready`/`partial`/`needs_rebuild`/`blocked`/empty/error состояния,
+  отсутствие stale/zero fallback и видимость полного глобального среза на
+  ширине 390 px.
 - Deployment smoke: HTTPS 200, `/api/health`, secure headers, no public data
   artifacts.
 

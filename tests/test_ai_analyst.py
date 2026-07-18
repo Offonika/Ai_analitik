@@ -30,7 +30,9 @@ def test_ai_logistics_digest_excludes_external_ids_and_raw_lineage() -> None:
     digest = analyst._logistics_digest(
         {
             "dataStatus": "ready",
-            "methodologyVersion": "wb-logistics-v1",
+            "sliceStatus": "partial",
+            "financialMetricStatus": "not_available_partial_week",
+            "methodologyVersion": "wb-logistics-v4",
             "coverage": {"keyPct": 100},
             "kpis": {"logisticsTotal": 100},
             "components": {"reverse": 40},
@@ -74,3 +76,4 @@ def test_ai_logistics_digest_excludes_external_ids_and_raw_lineage() -> None:
     assert "nm:123" not in serialized
     assert "external-sku" not in serialized
     assert "must-not-leak" not in serialized
+    assert digest["financial_metric_status"] == "not_available_partial_week"

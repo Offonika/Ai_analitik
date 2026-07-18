@@ -592,6 +592,10 @@ class AiAnalyst:
                             "keyCoveragePct",
                             "productCoveragePct",
                             "crossCabinetCollisions",
+                            "invalidSourcePayloadShapes",
+                            "sourceIdentityErrors",
+                            "sourceRevisionConflicts",
+                            "scopeMismatches",
                             "dataStatus",
                         )
                         if key in evidence
@@ -616,15 +620,20 @@ class AiAnalyst:
             )
         return {
             "data_status": value.get("dataStatus"),
+            "slice_status": value.get("sliceStatus"),
+            "financial_metric_status": value.get("financialMetricStatus"),
             "methodology_version": value.get("methodologyVersion"),
             "coverage": value.get("coverage") or {},
+            "report_coverage": value.get("reportCoverage"),
+            "filter_context": value.get("filterContext") or {},
             "kpis": value.get("kpis") or {},
             "components": value.get("components") or {},
             "top_products": top_products,
             "recommendations": recommendations,
             "boundary": (
                 "Only calculated aggregates and evidence. Return causes are "
-                "not established by this data."
+                "not established by this data. Null financial KPIs are unavailable "
+                "and must not be explained or treated as zero."
             ),
         }
 
