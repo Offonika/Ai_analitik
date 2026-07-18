@@ -199,10 +199,23 @@
 
   function updateHeaderState(table) {
     const state = tableState.get(table);
+    const remote = table.dataset.sortMode === "remote";
     table.querySelectorAll("thead th").forEach((header) => {
+      const disabled =
+        header.dataset.sortDisabled === "true" ||
+        (remote && !header.dataset.sortKey);
+      if (disabled) {
+        header.classList.remove("sortable-table-header");
+        header.removeAttribute("aria-sort");
+        header.removeAttribute("aria-label");
+        header.removeAttribute("tabindex");
+        return;
+      }
       const label = headerLabel(header);
       const indicator = header.querySelector(":scope > .table-sort-indicator");
-      const isActive = state?.columnIndex === logicalColumnIndex(header);
+      const isActive = remote
+        ? Boolean(state?.sortKey && state.sortKey === header.dataset.sortKey)
+        : state?.columnIndex === logicalColumnIndex(header);
       header.classList.add("sortable-table-header");
       header.tabIndex = 0;
       if (isActive) {
@@ -245,10 +258,28 @@
     }
     const columnIndex = logicalColumnIndex(header);
     const current = tableState.get(table);
+    const sortKey = header.dataset.sortKey || "";
+    const sameColumn = table.dataset.sortMode === "remote"
+      ? current?.sortKey === sortKey
+      : current?.columnIndex === columnIndex;
     const direction =
-      current?.columnIndex === columnIndex && current.direction === "ascending"
+      sameColumn && current?.direction === "ascending"
         ? "descending"
         : "ascending";
+    if (table.dataset.sortMode === "remote") {
+      tableState.set(table, { columnIndex, sortKey, direction });
+      updateHeaderState(table);
+      table.dispatchEvent(
+        new CustomEvent("sortable-table-sort", {
+          bubbles: true,
+          detail: {
+            sortKey,
+            direction: direction === "ascending" ? "asc" : "desc",
+          },
+        }),
+      );
+      return;
+    }
     sortTable(table, columnIndex, direction);
   }
 
@@ -264,7 +295,11 @@
   }
 
   function scheduleActiveSort(table) {
-    if (!tableState.has(table) || scheduledTables.has(table)) {
+    if (
+      table.dataset.sortMode === "remote" ||
+      !tableState.has(table) ||
+      scheduledTables.has(table)
+    ) {
       return;
     }
     scheduledTables.add(table);
@@ -331,9 +366,37 @@
     });
   }
 
+  function setSortState(table, sortKey, direction) {
+    if (!(table instanceof HTMLTableElement)) {
+      return;
+    }
+    const normalizedDirection = direction === "desc" || direction === "descending"
+      ? "descending"
+      : "ascending";
+    const header = Array.from(table.querySelectorAll("thead th")).find(
+      (item) => item.dataset.sortKey === sortKey,
+    );
+    tableState.set(table, {
+      columnIndex: header ? logicalColumnIndex(header) : -1,
+      sortKey,
+      direction: normalizedDirection,
+    });
+    updateHeaderState(table);
+  }
+
+  function clearSortState(table) {
+    if (!(table instanceof HTMLTableElement)) {
+      return;
+    }
+    tableState.delete(table);
+    updateHeaderState(table);
+  }
+
   window.SortableTables = Object.freeze({
+    clearSortState,
     compareValues,
     parseSortValue,
+    setSortState,
     sortTable,
   });
 
