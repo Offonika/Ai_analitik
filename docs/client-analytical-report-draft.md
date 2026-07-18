@@ -7,8 +7,8 @@ status: superseded
 source_of_truth: false
 superseded_by: "docs/specs/client-analytical-report-implementation.md"
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-15"
-updated_at: "2026-07-16"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-17"
+updated_at: "2026-07-17"
 ---
 
 > **Superseded 16.07.2026.** Действующий состав и DB-first реализация

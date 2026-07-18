@@ -2178,7 +2178,7 @@ def test_incremental_refresh_reuses_valid_full_daily_facts_base(
                     "status": "materialized",
                     "parity": {"status": "aggregate_only"},
                     "persistedParity": {"status": "matched"},
-                }
+                },
             },
         )
         repository.add_source_refresh_collection(
@@ -2348,9 +2348,7 @@ def test_incremental_materialization_uses_exact_window_and_report_boundaries(
     assert args.report_period_start == expected_period_start
     assert args.report_period_end == expected_period_end
     assert args.wb_sales_report_summary_rows == [current_summary]
-    assert captured["save_kwargs"]["replacement_summary_rows"] == [
-        current_summary
-    ]
+    assert captured["save_kwargs"]["replacement_summary_rows"] == [current_summary]
 
 
 def test_daily_facts_report_selection_includes_opening_partial_week(
@@ -5319,9 +5317,7 @@ def test_incremental_source_loads_keep_only_composed_base_and_overlay_sources(
         )
 
     assert len(loads) == 5
-    assert {
-        (item.source_type, item.lineage_role) for item in loads
-    } == {
+    assert {(item.source_type, item.lineage_role) for item in loads} == {
         ("wb_finance_detail", "base"),
         ("wb_finance_detail", "overlay"),
         ("wb_finance_detail", "current"),

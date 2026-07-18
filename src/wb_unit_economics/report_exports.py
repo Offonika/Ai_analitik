@@ -68,21 +68,16 @@ OZON_EXPORT_SHEETS = {
 
 SHEET_COLUMNS: dict[str, list[str]] = {
     "unitRows": [
-        "week",
-        "accountingPeriodDate",
-        "accountingPeriodSource",
-        "month",
-        "documentReport",
-        "wbReportId",
-        "wbReportDate",
-        "organization",
-        "cabinet",
         "product",
-        "nmId",
         "articleWb",
         "article1c",
         "barcode",
+        "nmId",
         "scheme",
+        "organization",
+        "cabinet",
+        "week",
+        "month",
         "sales",
         "returns",
         "netQty",
@@ -91,6 +86,30 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "spp",
         "sppRate",
         "revenue",
+        "pnlRevenue",
+        "revenueWithoutVat",
+        "cost",
+        "afterCost",
+        "commission",
+        "afterCommission",
+        "logistics",
+        "afterLogistics",
+        "storage",
+        "afterStorage",
+        "acceptance",
+        "afterAcceptance",
+        "promotion",
+        "afterPromotion",
+        "penalties",
+        "afterPenalties",
+        "acquiring",
+        "beforeVatAdjustment",
+        "pnlVatAdjustment",
+        "profitBeforeTax",
+        "includedTaxes",
+        "profit",
+        "margin",
+        "unitProfit",
         "vat",
         "vatOutput",
         "vatInput",
@@ -103,24 +122,11 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "inputVatMode",
         "vatInputConfirmed",
         "vatPayable",
-        "revenueWithoutVat",
-        "cost",
-        "commission",
-        "logistics",
-        "storage",
-        "acceptance",
-        "promotion",
-        "penalties",
-        "acquiring",
         "usn",
         "incomeTaxKind",
         "incomeTaxBase",
         "incomeTax",
         "incomeTaxIncluded",
-        "profitBeforeTax",
-        "profit",
-        "margin",
-        "unitProfit",
         "taxMethod",
         "taxProfileSource",
         "taxCompleteness",
@@ -129,6 +135,11 @@ SHEET_COLUMNS: dict[str, list[str]] = {
         "sppStatus",
         "lossClass",
         "lossDriver",
+        "accountingPeriodDate",
+        "accountingPeriodSource",
+        "documentReport",
+        "wbReportId",
+        "wbReportDate",
     ],
     "liquidityRows": [
         "month",
@@ -482,19 +493,29 @@ COLUMN_LABELS = {
     "vatInputConfirmed": "Входящий НДС подтверждён",
     "vatPayable": "НДС к уплате",
     "revenueWithoutVat": "Выручка без НДС",
+    "pnlRevenue": "Выручка для расчета прибыли",
     "cost": "Себестоимость 1С",
+    "afterCost": "Остаток после себестоимости",
     "md1Markup": "МД1 Наценка",
     "commission": "Комиссия WB",
+    "afterCommission": "Остаток после комиссии",
     "md2AfterCommission": "МД2 после комиссии",
     "logistics": "Логистика WB",
+    "afterLogistics": "Остаток после логистики",
     "storage": "Хранение WB",
+    "afterStorage": "Остаток после хранения",
     "md3AfterStorage": "МД3 после хранения",
     "acceptance": "Приемка WB",
+    "afterAcceptance": "Остаток после приемки",
     "md4AfterLogisticsAcceptance": "МД4 после логистики и приемки",
     "promotion": "Продвижение WB",
+    "afterPromotion": "Остаток после продвижения",
     "md5AfterPromotion": "МД5 после продвижения",
     "penalties": "Штрафы/доплаты WB",
+    "afterPenalties": "Остаток после штрафов/доплат",
     "acquiring": "Эквайринг WB",
+    "beforeVatAdjustment": "Остаток до корректировки НДС услуг",
+    "pnlVatAdjustment": "Корректировка P&L по НДС услуг WB",
     "md6BeforeTax": "МД6 до НДФЛ",
     "usn": "Налог с выручки/НДФЛ",
     "incomeTaxKind": "Вид НДФЛ",
@@ -502,6 +523,7 @@ COLUMN_LABELS = {
     "incomeTax": "НДФЛ",
     "incomeTaxIncluded": "НДФЛ включен",
     "profitBeforeTax": "Управленческая прибыль WB",
+    "includedTaxes": "Налоги, включенные в итог",
     "marginBeforeTax": "Маржа до налогов",
     "profitBeforeIncomeTax": "Управленческая прибыль WB",
     "profitAfterTax": "Прибыль до налогов",
@@ -660,6 +682,10 @@ COLUMN_LABELS = {
 }
 
 SHEET_COLUMN_LABELS = {
+    ("unitRows", "profitBeforeTax"): (
+        "Управленческая прибыль WB до включенных налогов"
+    ),
+    ("unitRows", "profit"): "Итог после включенных налогов",
     ("liquidityRows", "profit"): "Упр. прибыль",
     ("liquidityRows", "status"): "Статус данных",
     ("monthly", "status"): "Статус месяца",
@@ -736,22 +762,33 @@ MONEY_FIELDS = {
     "revenueTax",
     "incomeTax",
     "revenueWithoutVat",
+    "pnlRevenue",
     "cost",
+    "afterCost",
     "md1Markup",
     "commission",
+    "afterCommission",
     "md2AfterCommission",
     "logistics",
+    "afterLogistics",
     "storage",
+    "afterStorage",
     "md3AfterStorage",
     "acceptance",
+    "afterAcceptance",
     "md4AfterLogisticsAcceptance",
     "promotion",
+    "afterPromotion",
     "md5AfterPromotion",
     "penalties",
+    "afterPenalties",
     "acquiring",
+    "beforeVatAdjustment",
+    "pnlVatAdjustment",
     "md6BeforeTax",
     "usn",
     "profitBeforeTax",
+    "includedTaxes",
     "profitBeforeIncomeTax",
     "profitAfterTax",
     "profit",
@@ -894,8 +931,13 @@ def _full_excel_rows(
     sheet_name: str,
     source_key: str,
 ) -> list[dict[str, Any]]:
-    unit_rows = [dict(item) for item in _safe_rows(summary.get("unitRows"))]
-    if source_key in summary:
+    unit_rows = [
+        _ensure_unit_profit_bridge(dict(item))
+        for item in _safe_rows(summary.get("unitRows"))
+    ]
+    if source_key == "unitRows":
+        rows = unit_rows
+    elif source_key in summary:
         rows = [dict(item) for item in _safe_rows(summary.get(source_key))]
     elif source_key in {"dashboard", "summary"}:
         rows = _dashboard_rows(summary)
@@ -967,6 +1009,65 @@ def _full_excel_rows(
                 },
             )
     return rows
+
+
+def _ensure_unit_profit_bridge(row: dict[str, Any]) -> dict[str, Any]:
+    """Add export-only cumulative P&L columns to persisted DB-first rows."""
+    required = (
+        "revenue",
+        "cost",
+        "commission",
+        "logistics",
+        "storage",
+        "acceptance",
+        "promotion",
+        "penalties",
+        "acquiring",
+        "profitBeforeTax",
+        "profit",
+    )
+    if any(row.get(field) in (None, "") for field in required):
+        return row
+    if (
+        row.get("pnlVatMode") == "without_vat_for_osno"
+        and row.get("revenueWithoutVat") in (None, "")
+    ):
+        return row
+
+    def amount(field: str) -> float:
+        return float(row.get(field) or 0)
+
+    pnl_revenue = (
+        amount("revenueWithoutVat")
+        if row.get("pnlVatMode") == "without_vat_for_osno"
+        else amount("revenue")
+    )
+    after_cost = pnl_revenue - amount("cost")
+    after_commission = after_cost - amount("commission")
+    after_logistics = after_commission - amount("logistics")
+    after_storage = after_logistics - amount("storage")
+    after_acceptance = after_storage - amount("acceptance")
+    after_promotion = after_acceptance - amount("promotion")
+    after_penalties = after_promotion - amount("penalties")
+    before_vat_adjustment = after_penalties - amount("acquiring")
+    profit_before_tax = amount("profitBeforeTax")
+    profit = amount("profit")
+    bridge = {
+        "pnlRevenue": pnl_revenue,
+        "afterCost": after_cost,
+        "afterCommission": after_commission,
+        "afterLogistics": after_logistics,
+        "afterStorage": after_storage,
+        "afterAcceptance": after_acceptance,
+        "afterPromotion": after_promotion,
+        "afterPenalties": after_penalties,
+        "beforeVatAdjustment": before_vat_adjustment,
+        "pnlVatAdjustment": profit_before_tax - before_vat_adjustment,
+        "includedTaxes": profit_before_tax - profit,
+    }
+    for field, value in bridge.items():
+        row.setdefault(field, round(value, 2))
+    return row
 
 
 def write_excel_from_marts(summary: dict[str, Any], output_path: Path) -> Path:
@@ -1402,6 +1503,11 @@ def _write_readme(sheet: Any, summary: dict[str, Any]) -> None:
         ("Версия методики", meta.get("methodologyVersion", "")),
         ("Происхождение данных", _localized_status(meta.get("lineageType", ""))),
         ("Строк юнит-экономики", len(summary.get("unitRows", []))),
+        (
+            "Финальный показатель",
+            "Управленческая прибыль WB после включенных налогов; "
+            "это не полная чистая прибыль бизнеса.",
+        ),
         ("Строк упущенных продаж", len(summary.get("lostSales", []))),
     ]
     for index, row in enumerate(rows, start=1):

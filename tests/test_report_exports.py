@@ -38,6 +38,26 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
                     "sales": 1,
                     "returns": 0,
                     "revenue": 1000.0,
+                    "pnlRevenue": 820.0,
+                    "cost": 300.0,
+                    "afterCost": 520.0,
+                    "commission": 100.0,
+                    "afterCommission": 420.0,
+                    "logistics": 50.0,
+                    "afterLogistics": 370.0,
+                    "storage": 20.0,
+                    "afterStorage": 350.0,
+                    "acceptance": 10.0,
+                    "afterAcceptance": 340.0,
+                    "promotion": 40.0,
+                    "afterPromotion": 300.0,
+                    "penalties": 30.0,
+                    "afterPenalties": 270.0,
+                    "acquiring": 20.0,
+                    "beforeVatAdjustment": 250.0,
+                    "pnlVatAdjustment": 10.0,
+                    "profitBeforeTax": 260.0,
+                    "includedTaxes": 140.0,
                     "profit": 120.0,
                     "status": "ОК",
                 }
@@ -112,6 +132,24 @@ def test_db_first_excel_export_uses_client_facing_russian_headers(
     )
     assert readme_rows["Происхождение данных"] == "DB-first витрины отчета"
     assert "Товар" in unit_headers
+    assert unit_headers[:5] == [
+        "Товар",
+        "Артикул WB",
+        "Артикул 1С",
+        "Баркод",
+        "nmId WB",
+    ]
+    assert unit_headers.index("Документ-отчет") > unit_headers.index("Драйвер убытка")
+    assert unit_headers.index("Остаток после себестоимости") == (
+        unit_headers.index("Себестоимость 1С") + 1
+    )
+    assert unit_headers.index("Остаток после комиссии") == (
+        unit_headers.index("Комиссия WB") + 1
+    )
+    assert "Корректировка P&L по НДС услуг WB" in unit_headers
+    assert "Налоги, включенные в итог" in unit_headers
+    assert "Управленческая прибыль WB до включенных налогов" in unit_headers
+    assert "Итог после включенных налогов" in unit_headers
     assert "НДС входящий WB" in unit_headers
     assert "product" not in unit_headers
     assert "НДС входящий 1С" in tax_input_headers
@@ -162,6 +200,53 @@ def test_db_first_excel_explains_incomplete_stock_history(tmp_path: Path) -> Non
         workbook.close()
 
     assert "Не рассчитано: история остатков покрывает 92 из 132 дней" in values
+
+
+def test_db_first_excel_derives_profit_bridge_for_persisted_unit_rows(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "persisted-report.xlsx"
+    write_excel_from_marts(
+        {
+            "meta": {"client": "Клиент", "period": "Март 2026"},
+            "unitRows": [
+                {
+                    "product": "Товар",
+                    "revenue": 1220.0,
+                    "revenueWithoutVat": 1000.0,
+                    "pnlVatMode": "without_vat_for_osno",
+                    "cost": 300.0,
+                    "commission": 122.0,
+                    "logistics": 61.0,
+                    "storage": 24.4,
+                    "acceptance": 12.2,
+                    "promotion": 48.8,
+                    "penalties": 10.0,
+                    "acquiring": 24.4,
+                    "profitBeforeTax": 500.0,
+                    "profit": 480.0,
+                }
+            ],
+        },
+        output,
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        sheet = workbook["Юнит экономика"]
+        headers = [cell.value for cell in sheet[1]]
+        values = [cell.value for cell in sheet[2]]
+    finally:
+        workbook.close()
+
+    row = dict(zip(headers, values, strict=True))
+    assert row["Выручка для расчета прибыли"] == 1000.0
+    assert row["Остаток после себестоимости"] == 700.0
+    assert row["Остаток до корректировки НДС услуг"] == 397.2
+    assert row["Корректировка P&L по НДС услуг WB"] == 102.8
+    assert row["Управленческая прибыль WB до включенных налогов"] == 500.0
+    assert row["Налоги, включенные в итог"] == 20.0
+    assert row["Итог после включенных налогов"] == 480.0
 
 
 def test_db_first_excel_publishes_partial_stock_calculation_window(

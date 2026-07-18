@@ -17,6 +17,8 @@ related_code:
   - src/wb_unit_economics/web/app.py
   - src/wb_unit_economics/web/static/index.html
   - src/wb_unit_economics/web/static/app.js
+  - src/wb_unit_economics/web/static/sortable-tables.js
+  - src/wb_unit_economics/web/static/sortable-tables.css
 related_tests:
   - tests/test_web_database.py
   - tests/test_db_first_publication.py
@@ -47,7 +49,7 @@ related_specs:
   - docs/specs/accounting-reports-smart-process-onepage.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-18"
 ---
 
 # Статус документа
@@ -296,6 +298,14 @@ builder, проверки и Excel builder каждого вида живут в
 - выбранный вид можно сохранять локально отдельно для каждого клиента;
 - URL должен восстанавливать выбранный вид без доступа к отчету другого tenant.
 
+Все HTML-таблицы общей оболочки и report-specific сценариев поддерживают
+локальную сортировку по каждой колонке. Первый выбор сортирует по возрастанию,
+повторный — по убыванию; направление видно в заголовке и доступно через
+`aria-sort`. Числа, денежные суммы, проценты и даты сравниваются по значению,
+строки — с учетом русской локали, пустые значения остаются внизу. Заголовки
+доступны с клавиатуры, а активная сортировка повторно применяется после
+безопасной перерисовки строк без изменения API, исходных данных или расчета.
+
 # Proposed API Compatibility
 
 Предлагаемые интерфейсы:
@@ -442,6 +452,9 @@ note.
   смарт-процесс мог связать одну карточку с двумя раздельными задачами и
   артефактами.
 - Клиентские роли не получают новые виды до отдельного разрешения.
+- Каждая отображаемая таблица сортируется по любой колонке мышью и клавиатурой;
+  индикатор, `aria-sort`, типизированное сравнение и положение пустых значений
+  соответствуют UI-контракту также после динамической перерисовки строк.
 
 # Test Plan
 
@@ -460,6 +473,9 @@ note.
   payload -> Web/Excel, без прямой подстановки `normalizedEvidence`;
 - API permissions и tenant-boundary tests;
 - UI switch, empty state, Back/Forward и сохранение выбора;
+- shared table sorting assets подключены ко всем страницам с таблицами;
+  проверяются оба направления, числа, даты, строки, пустые значения,
+  клавиатурное управление, `aria-sort` и повторная сортировка после рендера;
 - report-specific payload contract tests;
 - Excel artifact smoke для новых видов;
 - advisory warnings не блокируют staff draft/export;
@@ -497,6 +513,10 @@ Rollback убирает новые виды из `enabled_report_kinds` и ск�
 Они не блокируют accepted staff-only advisory v1.
 
 # Changelog
+
+- 2026-07-18: все статические и динамические таблицы кабинета получили единый
+  контракт локальной сортировки по колонкам с типизированным сравнением,
+  клавиатурным управлением и доступным индикатором направления.
 
 - 2026-07-16: уточнена целевая система смарт-процесса: отдельный модуль
   web-кабинета без внешних интеграций; интеграция с FinKoper перенесена на

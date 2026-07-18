@@ -10,13 +10,13 @@ source_of_truth: true
 truth_scope: report-publication
 truth_priority: 100
 related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
-related_tests: [tests/test_report_marts.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
+related_tests: [tests/test_report_marts.py, tests/test_report_exports.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
 contracts: [unit_economics_report, report_marts, report_artifacts]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation]
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-17"
 ---
 
 # Implementation Status
@@ -164,6 +164,13 @@ Legacy recovery import:
   даже если отчет опубликован вручную без нового `source_refresh_run`.
 - Excel export `reports/shumeyko_wb_excel_mvp.xlsx` строится из сохраненного
   `report_id`.
+- Excel export начинает лист `Юнит экономика` с наименования товара, артикулов
+  WB/1С, баркода и `nmId`, переносит поля отчетов и документов в конец и
+  показывает сходящийся до копейки последовательный мост от выручки для P&L
+  через каждую статью расходов до итоговой управленческой прибыли.
+- `unitRows` не дополняется нулевыми строками карточек WB без финансовых фактов
+  периода; полнота каталога и статус `no_operations` требуют отдельной
+  каталоговой витрины.
 - Клиентский Markdown/DOCX/PDF/HTML строится через единый
   `ClientReportModel` из `report_full_payload` того же `report_id`; workbook и
   локальные каталоги `latest` не читаются.
@@ -248,3 +255,6 @@ Parity-решение и источник старого ориентира `188
   relying on the latest refresh run.
 - 2026-07-16: switched the client analytical document from Excel parsing to a
   single DB-first report model and clarified automatic 1C tax-settings input.
+- 2026-07-17: fixed the client Excel column order and added an auditable profit
+  bridge with explicit VAT-for-services P&L adjustment; documented that
+  `unitRows` covers period financial facts rather than the whole WB catalog.

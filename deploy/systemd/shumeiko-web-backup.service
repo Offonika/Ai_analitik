@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/shumeyko-runtime/prod/current
 EnvironmentFile=/etc/shumeiko-web-prod.env
-ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/backup_web_db.py --output-dir /var/backups/shumeiko-web --retention-days 3
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/backup_web_db.py --output-dir /var/backups/shumeiko-web --retention-days 1
 NoNewPrivileges=true
 PrivateTmp=true
