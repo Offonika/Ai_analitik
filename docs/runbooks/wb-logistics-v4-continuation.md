@@ -49,7 +49,7 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
 агрегаты не хранятся в Markdown. Live client-role smoke подтвердил client flag
 false и HTTP 404 для logistics summary и staff orders; временный пользователь и
 сессии удалены. Production и текущую публикацию не менять. Следующий шаг —
-ручная browser-приемка desktop/mobile, затем отдельное разрешение на client flag.
+отдельное явное разрешение на client flag и client-role приемку после включения.
 ```
 
 # Текущее состояние
@@ -99,8 +99,15 @@ false и HTTP 404 для logistics summary и staff orders; временный �
 - Live client-role smoke на merge-release вернул HTTP 200 для `/api/me` и HTTP
   404 для logistics summary и staff-only orders. Frontend содержит явное
   сообщение `Финансовая связь с отчётом отсутствует`; временный client-user и
-  обе smoke-сессии после проверки удалены. Полноценный screenshot-аудит не
-  выполнен: на host нет доступного browser runtime.
+  обе smoke-сессии после проверки удалены.
+- Временный Playwright/Chromium browser runtime использован только вне
+  репозитория для desktop 1440×900 и mobile 390×844 приемки. Deep-link
+  `#tables/logistics`, focus transfer, отсутствие global overflow, именованные
+  controls, `null -> —`, видимая причина недоступности финансов и product rows
+  подтверждены; console/page/network errors отсутствуют. На первом mobile
+  viewport warning находится ниже global filters/navigation, но доступен
+  обычной прокруткой без отдельного раскрытия. Снимки остаются локальным
+  operational evidence и не добавляются в Git или Markdown.
 - Public health test-контура отдает build
   `20260718-logistics-v5-global-table-sorting-v1`, schema
   `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
@@ -151,10 +158,9 @@ criteria. Текущий production/test URL пока использует ра�
   целиком устранимой потерей; пересекающиеся зоны проверки не складываются;
   строки различают `Факт`, `Ограничение` и `Качество данных`; mobile не скрывает
   кабинет, организацию, период или схему.
-- В текущем Codex-сеансе нет доступного in-app browser, поэтому screenshot-
-  приемка desktop/mobile не выполнена и не считается пройденной. Runtime
-  frontend, feature flags, test deployment и production этим этапом не
-  изменялись.
+- На исходном spec-first этапе screenshot-приемка не выполнялась. Для текущего
+  test-rollout она позднее завершена временным browser runtime; frontend,
+  production и feature flags при визуальной проверке не изменялись.
 
 # Причины возвратов: что установлено
 
@@ -263,6 +269,11 @@ PR №16 объединен в `main` merge-коммитом `3773ed5`. Обяз
 `quality` и `tests` успешно завершились как на PR, так и повторно на merge-
 коммите. После test promotion schema v5, runtime health, staff/client API и
 fail-closed KPI smoke успешно повторены.
+
+PR №17 с operational evidence объединен в `main` merge-коммитом `7747a4d`;
+повторный main CI завершился успешно. После этого desktop/mobile visual smoke
+на test также прошел; временная staff-сессия и browser runtime после проверки
+удаляются, клиентские агрегаты в документацию не переносятся.
 
 # Рабочее дерево
 
@@ -400,17 +411,13 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Выполнить ручную browser-приемку test на desktop 1440×900 и mobile 390×844:
-   `null` не выглядит как ноль, причина недоступности финансов видима, нет
-   горизонтального overflow, keyboard/focus и deep-link работают. Текущий host
-   не имеет browser runtime, поэтому этот пункт остается открытым.
-2. Только после визуальной приемки и отдельного разрешения включать client flag
-   на test. Повторить client-role summary/products smoke; staff orders должны
+1. Только по отдельному явному разрешению включать client flag на test.
+   Повторить client-role summary/products и browser smoke; staff orders должны
    остаться недоступными. Production и текущую публикацию не менять.
-3. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
+2. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
-4. До завершения клиентской приемки использовать текущую staff-ссылку вида
+3. До завершения клиентской приемки использовать текущую staff-ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<authorized_draft>#logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода
