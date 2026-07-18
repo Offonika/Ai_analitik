@@ -58,14 +58,22 @@ const state = {
   rowPreset: "",
   rowsOffset: 0,
   rowsTotal: 0,
+  rowsSortBy: "",
+  rowsSortDirection: "",
   taxInputPage: 0,
+  taxInputSortBy: "",
+  taxInputSortDirection: "",
   logisticsSummary: null,
   logisticsProducts: [],
   logisticsProductsTotal: 0,
   logisticsProductsOffset: 0,
+  logisticsProductsSortBy: "logisticsTotal",
+  logisticsProductsSortDirection: "desc",
   logisticsOrders: [],
   logisticsOrdersTotal: 0,
   logisticsOrdersOffset: 0,
+  logisticsOrdersSortBy: "financialDate",
+  logisticsOrdersSortDirection: "desc",
   logisticsRequestKey: "",
   logisticsRequestId: 0,
   logisticsOrdersRequestId: 0,
@@ -164,6 +172,7 @@ const els = {
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
   logisticsProductsCount: document.querySelector("#logistics-products-count"),
+  logisticsProductsTable: document.querySelector("#logistics-products-table"),
   logisticsProductsRows: document.querySelector("#logistics-products-rows"),
   logisticsProductsPagination: document.querySelector(
     "#logistics-products-pagination",
@@ -172,6 +181,7 @@ const els = {
   logisticsProductsPage: document.querySelector("#logistics-products-page"),
   logisticsProductsNext: document.querySelector("#logistics-products-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
+  logisticsOrdersTable: document.querySelector("#logistics-orders-table"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
   logisticsOrdersRows: document.querySelector("#logistics-orders-rows"),
   logisticsOrdersClose: document.querySelector("#logistics-orders-close"),
@@ -501,6 +511,7 @@ const els = {
   filterScheme: document.querySelector("#filter-scheme"),
   filterLossClass: document.querySelector("#filter-loss-class"),
   rowsTitle: document.querySelector("#rows-title"),
+  reportRowsTable: document.querySelector("#report-rows-table"),
   reviewRowsHead: document.querySelector("#review-rows-head"),
   reviewRows: document.querySelector("#review-rows"),
   rowsCount: document.querySelector("#rows-count"),
@@ -547,6 +558,8 @@ const FILTER_STATE_STORAGE_KEY = "wb-unit-economics:cabinet-filters:v1";
 document.addEventListener("DOMContentLoaded", init);
 
 function init() {
+  document.addEventListener("sortable-table-sort", onRemoteTableSort);
+  syncRemoteTableSortState();
   configureWorkspaceFromLocation({ replaceInvalid: true });
   configurePageMode();
   els.workspaceNavButtons.forEach((button) => {
@@ -900,6 +913,64 @@ function init() {
     applyOnecReconciliationFilters();
   });
   boot();
+}
+
+function setRemoteTableSortState(table, sortKey, direction) {
+  if (!table || !window.SortableTables) {
+    return;
+  }
+  if (sortKey) {
+    window.SortableTables.setSortState(table, sortKey, direction);
+  } else {
+    window.SortableTables.clearSortState(table);
+  }
+}
+
+function syncRemoteTableSortState() {
+  setRemoteTableSortState(
+    els.logisticsProductsTable,
+    state.logisticsProductsSortBy,
+    state.logisticsProductsSortDirection,
+  );
+  setRemoteTableSortState(
+    els.logisticsOrdersTable,
+    state.logisticsOrdersSortBy,
+    state.logisticsOrdersSortDirection,
+  );
+  setRemoteTableSortState(
+    els.reportRowsTable,
+    state.rowsSortBy,
+    state.rowsSortDirection,
+  );
+}
+
+function onRemoteTableSort(event) {
+  const table = event.target;
+  const sortKey = String(event.detail?.sortKey || "");
+  const direction = event.detail?.direction === "desc" ? "desc" : "asc";
+  if (!(table instanceof HTMLTableElement) || !sortKey) {
+    return;
+  }
+  if (table === els.reportRowsTable) {
+    state.rowsSortBy = sortKey;
+    state.rowsSortDirection = direction;
+    state.rowsOffset = 0;
+    loadReviewRows();
+    return;
+  }
+  if (table === els.logisticsProductsTable) {
+    state.logisticsProductsSortBy = sortKey;
+    state.logisticsProductsSortDirection = direction;
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+    return;
+  }
+  if (table === els.logisticsOrdersTable) {
+    state.logisticsOrdersSortBy = sortKey;
+    state.logisticsOrdersSortDirection = direction;
+    state.logisticsOrdersOffset = 0;
+    loadLogisticsOrdersPage();
+  }
 }
 
 function bindAutoApplyingFilters() {
@@ -4559,6 +4630,8 @@ async function loadLogisticsAnalysis(options = {}) {
   const reportId = state.reportId;
   const summaryParams = logisticsFilterParams();
   const productParams = logisticsFilterParams({
+    sortBy: state.logisticsProductsSortBy,
+    sortOrder: state.logisticsProductsSortDirection,
     offset: state.logisticsProductsOffset,
     limit: LOGISTICS_PAGE_SIZE,
   });
@@ -5000,6 +5073,8 @@ async function loadLogisticsOrdersPage(options = {}) {
   try {
     const params = logisticsFilterParams({
       productRef,
+      sortBy: state.logisticsOrdersSortBy,
+      sortOrder: state.logisticsOrdersSortDirection,
       offset: state.logisticsOrdersOffset,
       limit: LOGISTICS_PAGE_SIZE,
     });
@@ -12411,7 +12486,7 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
     renderAnalyticsEmpty(target, "Нет выделенного входящего НДС для сверки.");
     return;
   }
-  const sourceRows = allRows;
+  const sourceRows = sortTaxInputRows(allRows);
   const totalCharges = sourceRows.reduce(
     (total, row) => total + Number(row.vatInputFromWbCharges || 0),
     0,
@@ -12461,21 +12536,24 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
   wrap.className = "table-wrap tax-input-table-wrap";
   const table = document.createElement("table");
   table.className = "products-table data-table tax-input-semantic-table";
+  table.dataset.sortMode = "remote";
+  table.dataset.sortScope = "tax-input";
   const thead = table.createTHead();
   const header = thead.insertRow();
   [
-    "Неделя / статус",
-    "Кабинет",
-    "Организация",
-    "Начислено WB",
-    "Сторно WB",
-    "Нетто WB",
-    "Документы 1С",
-    "Разница / вычет",
-  ].forEach((label) => {
+    ["Неделя / статус", "week"],
+    ["Кабинет", "cabinet"],
+    ["Организация", "organization"],
+    ["Начислено WB", "vatInputFromWbCharges"],
+    ["Сторно WB", "vatInputFromWbReversals"],
+    ["Нетто WB", "vatInputFromWb"],
+    ["Документы 1С", "vatInputFrom1c"],
+    ["Разница / вычет", "vatInputDifference"],
+  ].forEach(([label, sortKey]) => {
     const cell = document.createElement("th");
     cell.scope = "col";
     cell.textContent = label;
+    cell.dataset.sortKey = sortKey;
     header.append(cell);
   });
   const tbody = table.createTBody();
@@ -12508,6 +12586,17 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
       cell.textContent = value;
     });
   });
+  table.addEventListener("sortable-table-sort", (event) => {
+    state.taxInputSortBy = String(event.detail?.sortKey || "");
+    state.taxInputSortDirection = event.detail?.direction === "desc" ? "desc" : "asc";
+    state.taxInputPage = 0;
+    renderTaxInputReconciliation(target, allRows, taxContext);
+  });
+  setRemoteTableSortState(
+    table,
+    state.taxInputSortBy,
+    state.taxInputSortDirection,
+  );
   wrap.append(table);
 
   const pagination = document.createElement("div");
@@ -12532,6 +12621,28 @@ function renderTaxInputReconciliation(target, rows, taxContext = {}) {
   });
   pagination.append(previous, pageLabel, next);
   target.replaceChildren(toolbar, summary, wrap, pagination);
+}
+
+function sortTaxInputRows(rows) {
+  if (!state.taxInputSortBy || !window.SortableTables) {
+    return rows;
+  }
+  const direction = state.taxInputSortDirection === "desc"
+    ? "descending"
+    : "ascending";
+  return rows
+    .map((row, originalIndex) => ({ row, originalIndex }))
+    .sort((left, right) => {
+      const leftValue = window.SortableTables.parseSortValue(
+        left.row[state.taxInputSortBy],
+      );
+      const rightValue = window.SortableTables.parseSortValue(
+        right.row[state.taxInputSortBy],
+      );
+      return window.SortableTables.compareValues(leftValue, rightValue, direction)
+        || left.originalIndex - right.originalIndex;
+    })
+    .map((item) => item.row);
 }
 
 function vatDeductionModeLabel(value) {
@@ -13784,6 +13895,49 @@ function ozonRowsCountText(rows, allRows, rowCount) {
 const STATUS_COLUMN_TOOLTIP =
   "Зелёный — строка готова к отчёту. Жёлтый — нужна проверка: сопоставление, документ или неполные данные. Красный — блокирует отправку: нет себестоимости, ошибка или строка исключена.";
 
+const WB_REPORT_ROW_HEADERS = [
+  ["Товар", "product"],
+  ["Артикул WB", "articleWb"],
+  ["Артикул 1С", "article1c"],
+  ["Баркод", "barcode"],
+  ["nmId", "nmId"],
+  ["Кабинет", "cabinet"],
+  ["Организация", "organization"],
+  ["Схема", "scheme"],
+  ["Статус", "status"],
+  ["Месяц 1С", "month"],
+  ["Продажи", "sales"],
+  ["Возвраты", "returns"],
+  ["Чистое кол-во", "netQty"],
+  ["Выручка до СПП", "revenueBeforeSpp"],
+  ["СПП", "spp"],
+  ["Выручка после СПП", "revenue"],
+  ["Выручка для прибыли", "pnlRevenue"],
+  ["Себестоимость", "cost"],
+  ["Комиссия WB", "commission"],
+  ["Логистика", "logistics"],
+  ["Хранение", "storage"],
+  ["Приемка", "acceptance"],
+  ["Продвижение", "promotion"],
+  ["Штрафы/доплаты", "penalties"],
+  ["Эквайринг", "acquiring"],
+  ["НДС-корректировка P&L", "pnlVatAdjustment"],
+  ["Прибыль до включ. налогов", "profitBeforeTax"],
+  ["Исходящий НДС", "vatOutput"],
+  ["Входящий НДС", "vatInput"],
+  ["НДС к уплате", "vatPayable"],
+  ["База НДФЛ", "incomeTaxBase"],
+  ["НДФЛ", "incomeTax"],
+  ["Налоги, включенные в итог", "includedTaxes"],
+  ["Итог после включ. налогов", "profit"],
+  ["Маржа", "margin"],
+  ["На шт", "unitProfit"],
+  ["Учетная дата 1С", "accountingPeriodDate"],
+  ["Документ-отчет", "documentReport"],
+  ["Отчет WB", "wbReportId"],
+  ["Дата отчета", "wbReportDate"],
+];
+
 function renderReportRowsHeader(mode) {
   if (!els.reviewRowsHead) {
     return;
@@ -13805,59 +13959,29 @@ function renderReportRowsHeader(mode) {
           "Номенклатура 1C",
           "Статус",
           "Причина / действие",
-        ]
-      : [
-          "Товар",
-          "Артикул WB",
-          "Артикул 1С",
-          "Баркод",
-          "nmId",
-          "Кабинет",
-          "Организация",
-          "Схема",
-          "Статус",
-          "Месяц 1С",
-          "Продажи",
-          "Возвраты",
-          "Чистое кол-во",
-          "Выручка до СПП",
-          "СПП",
-          "Выручка после СПП",
-          "Выручка для прибыли",
-          "Себестоимость",
-          "Комиссия WB",
-          "Логистика",
-          "Хранение",
-          "Приемка",
-          "Продвижение",
-          "Штрафы/доплаты",
-          "Эквайринг",
-          "НДС-корректировка P&L",
-          "Прибыль до включ. налогов",
-          "Исходящий НДС",
-          "Входящий НДС",
-          "НДС к уплате",
-          "База НДФЛ",
-          "НДФЛ",
-          "Налоги, включенные в итог",
-          "Итог после включ. налогов",
-          "Маржа",
-          "На шт",
-          "Учетная дата 1С",
-          "Документ-отчет",
-          "Отчет WB",
-          "Дата отчета",
-        ];
+        ].map((label) => [label, ""])
+      : WB_REPORT_ROW_HEADERS;
   const row = document.createElement("tr");
-  headers.forEach((label) => {
+  headers.forEach(([label, sortKey]) => {
     const cell = document.createElement("th");
     cell.textContent = label;
+    if (sortKey) {
+      cell.dataset.sortKey = sortKey;
+    }
     if (label === "Статус") {
       cell.dataset.tooltip = STATUS_COLUMN_TOOLTIP;
     }
     row.append(cell);
   });
   els.reviewRowsHead.replaceChildren(row);
+  if (els.reportRowsTable) {
+    els.reportRowsTable.dataset.sortMode = mode === "ozon" ? "local" : "remote";
+    setRemoteTableSortState(
+      els.reportRowsTable,
+      mode === "ozon" ? "" : state.rowsSortBy,
+      state.rowsSortDirection,
+    );
+  }
 }
 
 function reportRowsColumnCount(mode) {
@@ -15151,6 +15275,8 @@ function rowsFilterParams(preset = state.rowPreset) {
     scheme: els.filterScheme.value,
     loss_class: els.filterLossClass.value,
     preset,
+    sort_by: state.rowsSortBy,
+    sort_direction: state.rowsSortDirection,
   };
   Object.entries(values).forEach(([key, value]) => {
     if (value) {
@@ -15185,6 +15311,11 @@ function resetClientScopedState(options = {}) {
   state.rowsRequestKey = "";
   state.rowsOffset = 0;
   state.rowsTotal = 0;
+  state.rowsSortBy = "";
+  state.rowsSortDirection = "";
+  state.taxInputPage = 0;
+  state.taxInputSortBy = "";
+  state.taxInputSortDirection = "";
   state.drilldownRequestKey = "";
   state.drilldownPreset = "review";
   state.cogsReconciliationRequestKey = "";
@@ -15211,9 +15342,13 @@ function resetClientScopedState(options = {}) {
   state.logisticsProducts = [];
   state.logisticsProductsTotal = 0;
   state.logisticsProductsOffset = 0;
+  state.logisticsProductsSortBy = "logisticsTotal";
+  state.logisticsProductsSortDirection = "desc";
   state.logisticsOrders = [];
   state.logisticsOrdersTotal = 0;
   state.logisticsOrdersOffset = 0;
+  state.logisticsOrdersSortBy = "financialDate";
+  state.logisticsOrdersSortDirection = "desc";
   state.logisticsRequestKey = "";
   state.logisticsSelectedProductRef = "";
   state.logisticsSelectedProductLabel = "";
@@ -15227,6 +15362,7 @@ function resetClientScopedState(options = {}) {
   els.onecReconciliationFilterForm.reset();
   els.logisticsFilterForm?.reset();
   resetLogisticsWorkspace();
+  syncRemoteTableSortState();
   syncRowsPresetButtons();
   resetAiPanel();
   els.aiInput.disabled = false;

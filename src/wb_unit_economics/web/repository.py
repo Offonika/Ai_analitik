@@ -162,6 +162,76 @@ DAILY_FACT_MUTATING_SOURCE_REFRESH_MODES = {
 READINESS_REVIEW_RATIO = 0.20
 READINESS_REVIEW_MIN_ROWS = 3
 REPORT_ROWS_MAX_LIMIT = 1000
+LOGISTICS_PRODUCT_SORT_KEYS = frozenset(
+    {
+        "product",
+        "logisticsTotal",
+        "logisticsSharePct",
+        "orderCount",
+        "returnQuantity",
+        "profitEffectAmount",
+        "quality",
+    }
+)
+LOGISTICS_ORDER_SORT_KEYS = frozenset(
+    {
+        "chainRef",
+        "financialDate",
+        "operationDateEnd",
+        "orderDate",
+        "logisticsForward",
+        "logisticsReverse",
+        "logisticsTotal",
+        "salesQuantity",
+        "returnQuantity",
+        "classificationStatus",
+        "product",
+    }
+)
+REPORT_ROW_SORT_KEYS = frozenset(
+    {
+        "product",
+        "articleWb",
+        "article1c",
+        "barcode",
+        "nmId",
+        "cabinet",
+        "organization",
+        "scheme",
+        "status",
+        "month",
+        "sales",
+        "returns",
+        "netQty",
+        "revenueBeforeSpp",
+        "spp",
+        "revenue",
+        "pnlRevenue",
+        "cost",
+        "commission",
+        "logistics",
+        "storage",
+        "acceptance",
+        "promotion",
+        "penalties",
+        "acquiring",
+        "pnlVatAdjustment",
+        "profitBeforeTax",
+        "vatOutput",
+        "vatInput",
+        "vatPayable",
+        "incomeTaxBase",
+        "incomeTax",
+        "includedTaxes",
+        "profit",
+        "margin",
+        "unitProfit",
+        "accountingPeriodDate",
+        "documentReport",
+        "wbReportId",
+        "wbReportDate",
+    }
+)
 MARKETPLACE_EXPENSE_CONTEXT_VERSION = "marketplace-expense-reconciliation-v1"
 MARKETPLACE_EXPENSE_TOLERANCE = Decimal("1")
 MARKETPLACE_EXPENSE_GROUP_LABELS = {
@@ -13416,10 +13486,16 @@ def report_logistics_orders_payload(
         product_ref=product_ref,
     )
     sort_fields = {
+        "chainRef": ReportLogisticsOrderRow.chain_key,
+        "financialDate": ReportLogisticsOrderRow.financial_date,
         "operationDateEnd": ReportLogisticsOrderRow.financial_date,
         "orderDate": ReportLogisticsOrderRow.order_date,
+        "logisticsForward": ReportLogisticsOrderRow.logistics_forward,
+        "logisticsReverse": ReportLogisticsOrderRow.logistics_reverse,
         "logisticsTotal": ReportLogisticsOrderRow.logistics_total,
+        "salesQuantity": ReportLogisticsOrderRow.sales_quantity,
         "returnQuantity": ReportLogisticsOrderRow.return_quantity,
+        "classificationStatus": ReportLogisticsOrderRow.classification_status,
         "product": ReportLogisticsOrderRow.product,
     }
     sort_column = sort_fields.get(sort_by, ReportLogisticsOrderRow.financial_date)
@@ -13436,7 +13512,11 @@ def report_logistics_orders_payload(
         db.scalars(
             select(ReportLogisticsOrderRow)
             .where(*conditions)
-            .order_by(direction, ReportLogisticsOrderRow.id.asc())
+            .order_by(
+                case((sort_column.is_(None), 1), else_=0),
+                direction,
+                ReportLogisticsOrderRow.id.asc(),
+            )
             .offset(offset)
             .limit(limit)
         )
@@ -13912,6 +13992,20 @@ def _query_logistics_products(
         ),
         else_=None,
     )
+    quality_expr = case(
+        (
+            or_(
+                orders.c.classified_row_count != orders.c.logistics_row_count,
+                orders.c.order_quality_issue_count > 0,
+                financials.c.sku_quality_issue_count > 0
+                if financial_status == "ready"
+                else literal(False),
+            ),
+            2,
+        ),
+        (orders.c.order_count < LOW_SAMPLE_THRESHOLD, 1),
+        else_=0,
+    )
     sort_expressions = {
         "logisticsTotal": orders.c.logistics_total,
         "logisticsReverse": orders.c.logistics_reverse,
@@ -13923,6 +14017,7 @@ def _query_logistics_products(
         "orderCount": orders.c.order_count,
         "returnQuantity": orders.c.return_quantity,
         "product": orders.c.product,
+        "quality": quality_expr,
     }
     sort_expression = sort_expressions.get(sort_by, orders.c.logistics_total)
     direction = (
@@ -19607,6 +19702,70 @@ def _filtered_report_analytics_payload(
     }
 
 
+def _report_row_sort_expressions() -> dict[str, Any]:
+    def sortable_text(column: Any) -> Any:
+        return func.nullif(func.lower(func.trim(column)), "")
+
+    pnl_revenue = _pnl_revenue_expression()
+    direct_expenses = (
+        ReportUnitRow.commission
+        + ReportUnitRow.logistics
+        + ReportUnitRow.storage
+        + ReportUnitRow.acceptance
+        + ReportUnitRow.promotion
+        + ReportUnitRow.penalties
+        + ReportUnitRow.acquiring
+    )
+    return {
+        "product": sortable_text(ReportUnitRow.product),
+        "articleWb": sortable_text(ReportUnitRow.article_wb),
+        "article1c": sortable_text(ReportUnitRow.article_1c),
+        "barcode": sortable_text(ReportUnitRow.barcode),
+        "nmId": sortable_text(ReportUnitRow.nm_id),
+        "cabinet": sortable_text(ReportUnitRow.cabinet),
+        "organization": sortable_text(ReportUnitRow.organization),
+        "scheme": sortable_text(ReportUnitRow.scheme),
+        "status": sortable_text(ReportUnitRow.status),
+        "month": func.coalesce(
+            ReportUnitRow.accounting_period_date,
+            ReportUnitRow.week,
+        ),
+        "sales": ReportUnitRow.sales,
+        "returns": ReportUnitRow.returns,
+        "netQty": ReportUnitRow.net_qty,
+        "revenueBeforeSpp": ReportUnitRow.revenue_before_spp,
+        "spp": ReportUnitRow.spp,
+        "revenue": ReportUnitRow.revenue,
+        "pnlRevenue": pnl_revenue,
+        "cost": ReportUnitRow.cost,
+        "commission": ReportUnitRow.commission,
+        "logistics": ReportUnitRow.logistics,
+        "storage": ReportUnitRow.storage,
+        "acceptance": ReportUnitRow.acceptance,
+        "promotion": ReportUnitRow.promotion,
+        "penalties": ReportUnitRow.penalties,
+        "acquiring": ReportUnitRow.acquiring,
+        "pnlVatAdjustment": (
+            ReportUnitRow.profit_before_tax
+            - (pnl_revenue - ReportUnitRow.cost - direct_expenses)
+        ),
+        "profitBeforeTax": ReportUnitRow.profit_before_tax,
+        "vatOutput": ReportUnitRow.vat_output,
+        "vatInput": ReportUnitRow.vat_input,
+        "vatPayable": ReportUnitRow.vat_payable,
+        "incomeTaxBase": ReportUnitRow.income_tax_base,
+        "incomeTax": ReportUnitRow.income_tax,
+        "includedTaxes": ReportUnitRow.profit_before_tax - ReportUnitRow.profit,
+        "profit": ReportUnitRow.profit,
+        "margin": ReportUnitRow.margin,
+        "unitProfit": ReportUnitRow.unit_profit,
+        "accountingPeriodDate": ReportUnitRow.accounting_period_date,
+        "documentReport": sortable_text(ReportUnitRow.document_report),
+        "wbReportId": sortable_text(ReportUnitRow.wb_report_id),
+        "wbReportDate": sortable_text(ReportUnitRow.wb_report_date),
+    }
+
+
 def query_report_rows(
     db: Session,
     report: ReportRun,
@@ -19624,6 +19783,8 @@ def query_report_rows(
     loss_class: str = "",
     document_report: str = "",
     preset: str = "",
+    sort_by: str = "",
+    sort_direction: str = "",
     limit: int = 250,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -19700,14 +19861,29 @@ def query_report_rows(
         )
     statement = select(ReportUnitRow).where(*conditions)
     total = _count_rows(db, *conditions)
-    order_column = (
-        func.abs(ReportUnitRow.revenue).desc()
-        if preset == "missingCost"
-        else ReportUnitRow.profit.asc()
-    )
-    rows = list(
-        db.scalars(statement.order_by(order_column).offset(offset).limit(limit))
-    )
+    if sort_by:
+        sort_expressions = _report_row_sort_expressions()
+        if sort_by not in sort_expressions:
+            raise ValueError(f"unsupported report row sort key: {sort_by}")
+        sort_expression = sort_expressions[sort_by]
+        direction = (
+            sort_expression.desc()
+            if sort_direction.casefold() == "desc"
+            else sort_expression.asc()
+        )
+        ordering = (
+            case((sort_expression.is_(None), 1), else_=0),
+            direction,
+            ReportUnitRow.id.asc(),
+        )
+    else:
+        order_column = (
+            func.abs(ReportUnitRow.revenue).desc()
+            if preset == "missingCost"
+            else ReportUnitRow.profit.asc()
+        )
+        ordering = (order_column, ReportUnitRow.id.asc())
+    rows = list(db.scalars(statement.order_by(*ordering).offset(offset).limit(limit)))
     stats = _row_stats_for_conditions(db, *conditions)
     requested_lost_sales_start = period_start
     requested_lost_sales_end = period_end

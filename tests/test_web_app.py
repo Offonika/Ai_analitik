@@ -2235,6 +2235,18 @@ def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
         db.commit()
 
     login(client)
+    for sort_by in sorted(repository.LOGISTICS_PRODUCT_SORT_KEYS):
+        response = client.get(
+            "/api/reports/report-1/logistics/products",
+            params={
+                "periodStart": "2026-04-06",
+                "periodEnd": "2026-04-12",
+                "sortBy": sort_by,
+                "sortOrder": "asc",
+                "limit": 1,
+            },
+        )
+        assert response.status_code == 200, (sort_by, response.text)
     products = client.get(
         "/api/reports/report-1/logistics/products",
         params={
@@ -2245,7 +2257,44 @@ def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
     ).json()
     assert products["total"] == 2
     assert len(products["items"]) == 1
+    products_ascending = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "sortBy": "logisticsTotal",
+            "sortOrder": "asc",
+            "limit": 1,
+        },
+    ).json()
+    products_descending = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "sortBy": "logisticsTotal",
+            "sortOrder": "desc",
+            "limit": 1,
+        },
+    ).json()
+    assert (
+        products_ascending["items"][0]["logisticsTotal"]
+        < products_descending["items"][0]["logisticsTotal"]
+    )
     product_ref = products["items"][0]["productRef"]
+    for sort_by in sorted(repository.LOGISTICS_ORDER_SORT_KEYS):
+        response = client.get(
+            "/api/reports/report-1/logistics/orders",
+            params={
+                "periodStart": "2026-04-06",
+                "periodEnd": "2026-04-12",
+                "productRef": product_ref,
+                "sortBy": sort_by,
+                "sortOrder": "asc",
+                "limit": 1,
+            },
+        )
+        assert response.status_code == 200, (sort_by, response.text)
     first_order_page = client.get(
         "/api/reports/report-1/logistics/orders",
         params={
@@ -2268,9 +2317,36 @@ def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
     ).json()
     assert first_order_page["total"] == 2
     assert second_order_page["total"] == 2
-    assert first_order_page["items"][0]["chainRef"] != second_order_page["items"][0][
-        "chainRef"
-    ]
+    assert (
+        first_order_page["items"][0]["chainRef"]
+        != second_order_page["items"][0]["chainRef"]
+    )
+    ascending_order = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "productRef": product_ref,
+            "sortBy": "logisticsTotal",
+            "sortOrder": "asc",
+            "limit": 1,
+        },
+    ).json()
+    descending_order = client.get(
+        "/api/reports/report-1/logistics/orders",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+            "productRef": product_ref,
+            "sortBy": "logisticsTotal",
+            "sortOrder": "desc",
+            "limit": 1,
+        },
+    ).json()
+    assert (
+        ascending_order["items"][0]["logisticsTotal"]
+        < descending_order["items"][0]["logisticsTotal"]
+    )
 
     classified = client.get(
         "/api/reports/report-1/logistics/summary",
@@ -3714,10 +3790,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-unit-table-cleanup-logistics-v4"
+        "20260718-global-table-sorting-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260718-unit-table-cleanup-logistics-v4"
+        "20260718-global-table-sorting-v1"
     )
 
     page = client.get("/")
@@ -3868,11 +3944,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260718-unit-table-cleanup-logistics-v4"
+            "styles.css?v=20260718-global-table-sorting-v1"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260718-unit-table-cleanup-logistics-v4"
+            "app.js?v=20260718-global-table-sorting-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -4038,13 +4114,15 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     cabinet = client.get("/cabinet")
     workflow_page = client.get("/static/accounting-workflows.html")
     script = client.get("/static/sortable-tables.js")
+    app_script = client.get("/static/app.js")
     styles = client.get("/static/sortable-tables.css")
 
     assert cabinet.status_code == 200
     assert workflow_page.status_code == 200
     assert script.status_code == 200
+    assert app_script.status_code == 200
     assert styles.status_code == 200
-    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v2"
+    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v3"
     stylesheet_path = "/static/sortable-tables.css?v=20260718-column-sorting-v1"
     assert asset_path in cabinet.text
     assert asset_path in workflow_page.text
@@ -4058,6 +4136,17 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     assert "if (indicator.textContent !== value)" in script.text
     assert 'setIndicatorText(indicator, "↕")' in script.text
     assert 'left.kind === "empty" ? 1 : -1' in script.text
+    assert 'new CustomEvent("sortable-table-sort"' in script.text
+    assert 'table.dataset.sortMode === "remote"' in script.text
+    assert 'id="report-rows-table"' in cabinet.text
+    assert 'data-sort-key="logisticsTotal"' in cabinet.text
+    assert 'data-sort-disabled="true"' in cabinet.text
+    assert "sort_by: state.rowsSortBy" in app_script.text
+    assert "sortBy: state.logisticsProductsSortBy" in app_script.text
+    assert "sortBy: state.logisticsOrdersSortBy" in app_script.text
+    assert 'table.dataset.sortScope = "tax-input"' in app_script.text
+    assert "function sortTaxInputRows(rows)" in app_script.text
+    assert "state.rowsOffset = 0;" in app_script.text
     assert ".sortable-table-header[aria-sort]" in styles.text
 
 
@@ -7998,7 +8087,9 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
                 "id": f"unit-large-{index}",
                 "product": f"{base['product']} {index}",
                 "nmId": f"{base['nmId']}-{index}",
+                "articleWb": "" if index < 2 else f"WB-{index:04d}",
                 "barcode": f"{base['barcode']}-{index}",
+                "sales": index,
             }
         )
     payload["unitRows"] = rows
@@ -8034,6 +8125,67 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
     assert len(second_page_payload["items"]) == 100
     assert second_page_payload["items"][0]["id"] != rows_payload["items"][0]["id"]
 
+    sorted_first_page = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 100,
+            "offset": 0,
+            "sort_by": "sales",
+            "sort_direction": "desc",
+        },
+    ).json()
+    sorted_second_page = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 100,
+            "offset": 100,
+            "sort_by": "sales",
+            "sort_direction": "desc",
+        },
+    ).json()
+    assert [row["sales"] for row in sorted_first_page["items"]] == list(
+        range(1199, 1099, -1)
+    )
+    assert [row["sales"] for row in sorted_second_page["items"]] == list(
+        range(1099, 999, -1)
+    )
+
+    ascending_articles = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 2,
+            "offset": 1198,
+            "sort_by": "articleWb",
+            "sort_direction": "asc",
+        },
+    ).json()
+    descending_articles = client.get(
+        "/api/reports/report-1/rows",
+        params={
+            "limit": 2,
+            "offset": 1198,
+            "sort_by": "articleWb",
+            "sort_direction": "desc",
+        },
+    ).json()
+    assert [row["articleWb"] for row in ascending_articles["items"]] == ["", ""]
+    assert [row["articleWb"] for row in descending_articles["items"]] == ["", ""]
+
+    assert (
+        client.get(
+            "/api/reports/report-1/rows",
+            params={"sort_by": "notAColumn", "sort_direction": "asc"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.get(
+            "/api/reports/report-1/rows",
+            params={"sort_by": "sales", "sort_direction": "sideways"},
+        ).status_code
+        == 400
+    )
+
     capped_rows_response = client.get(
         "/api/reports/report-1/rows",
         params={"limit": 5000},
@@ -8042,6 +8194,22 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
     capped_rows_payload = capped_rows_response.json()
     assert capped_rows_payload["total"] == 1200
     assert len(capped_rows_payload["items"]) == 1000
+
+
+def test_report_rows_accept_every_whitelisted_sort_column(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+
+    for sort_by in sorted(repository.REPORT_ROW_SORT_KEYS):
+        response = client.get(
+            "/api/reports/report-1/rows",
+            params={
+                "limit": 1,
+                "sort_by": sort_by,
+                "sort_direction": "asc",
+            },
+        )
+        assert response.status_code == 200, (sort_by, response.text)
 
 
 def test_missing_cost_drilldown_separates_review_and_absent_cost(
