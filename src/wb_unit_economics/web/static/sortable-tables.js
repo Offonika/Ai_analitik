@@ -191,6 +191,12 @@
     return header.dataset.sortLabel || "Колонка";
   }
 
+  function setIndicatorText(indicator, value) {
+    if (indicator.textContent !== value) {
+      indicator.textContent = value;
+    }
+  }
+
   function updateHeaderState(table) {
     const state = tableState.get(table);
     table.querySelectorAll("thead th").forEach((header) => {
@@ -201,7 +207,10 @@
       header.tabIndex = 0;
       if (isActive) {
         header.setAttribute("aria-sort", state.direction);
-        indicator.textContent = state.direction === "ascending" ? "▲" : "▼";
+        setIndicatorText(
+          indicator,
+          state.direction === "ascending" ? "▲" : "▼",
+        );
         header.setAttribute(
           "aria-label",
           `${label}. Отсортировано ${
@@ -212,7 +221,7 @@
         );
       } else {
         header.removeAttribute("aria-sort");
-        indicator.textContent = "↕";
+        setIndicatorText(indicator, "↕");
         header.setAttribute("aria-label", `${label}. Сортировать по возрастанию`);
       }
     });
