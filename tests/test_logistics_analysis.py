@@ -7,6 +7,7 @@ from decimal import Decimal
 from wb_unit_economics import logistics_analysis
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
+    LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LogisticsInputDiagnostics,
     LogisticsSourceRow,
@@ -102,6 +103,7 @@ def test_chain_key_is_scoped_by_cabinet_and_product() -> None:
     )
 
     assert CHAIN_KEY_VERSION == "wb-order-product-v1"
+    assert LOGISTICS_CLASSIFIER_VERSION == "wb-logistics-classifier-v1"
     assert LOGISTICS_METHODOLOGY_VERSION == "wb-logistics-v5"
     assert first == same
     assert first != other_product
@@ -217,6 +219,7 @@ def test_missing_profit_link_keeps_financial_kpis_null() -> None:
     sku = build_sku_rows([order_row], [])[0]
 
     assert sku.logistics_total == Decimal("10")
+    assert sku.source_revenue == Decimal("125")
     assert sku.revenue is None
     assert sku.profit_before_tax is None
     assert sku.profit_without_logistics is None
@@ -614,6 +617,7 @@ def test_streaming_input_hash_matches_legacy_canonical_payload() -> None:
     legacy_payload = {
         "methodology": LOGISTICS_METHODOLOGY_VERSION,
         "chain": CHAIN_KEY_VERSION,
+        "classifier": LOGISTICS_CLASSIFIER_VERSION,
         "reportPeriodStart": period_start.isoformat(),
         "reportPeriodEnd": period_end.isoformat(),
         "inputDiagnostics": {
@@ -654,6 +658,19 @@ def test_streaming_input_hash_matches_legacy_canonical_payload() -> None:
         report_period_end=period_end,
         input_diagnostics=diagnostics,
     ) == logistics_analysis._hash_payload(legacy_payload)
+
+
+def test_input_hash_changes_with_classifier_version(monkeypatch) -> None:
+    baseline = build_logistics_analysis([_source_row()], [_unit_row()])
+
+    monkeypatch.setattr(
+        logistics_analysis,
+        "LOGISTICS_CLASSIFIER_VERSION",
+        "wb-logistics-classifier-v2-test",
+    )
+    changed = build_logistics_analysis([_source_row()], [_unit_row()])
+
+    assert changed.context.input_hash != baseline.context.input_hash
 
 
 def test_strict_date_and_scheme_parsers_reject_trailing_or_embedded_values() -> None:

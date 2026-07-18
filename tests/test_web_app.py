@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -16,6 +17,7 @@ from sqlalchemy import event, select, text
 
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
+    LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
@@ -1597,10 +1599,22 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="table-scenario-summary-status"' in cabinet.text
     assert 'id="logistics-state-message"' in cabinet.text
     assert 'id="logistics-data-status"' in cabinet.text
+    assert 'id="logistics-trust-freshness"' in cabinet.text
+    assert 'id="logistics-trust-low-sample"' in cabinet.text
+    assert 'id="logistics-state-action"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
+    assert cabinet.text.index('id="logistics-kpi-grid"') < cabinet.text.index(
+        'id="logistics-recommendations"'
+    )
+    assert cabinet.text.index('id="logistics-recommendations"') < cabinet.text.index(
+        'id="logistics-trust-strip"'
+    )
+    assert cabinet.text.index('id="logistics-trust-strip"') < cabinet.text.index(
+        'id="logistics-filter-form"'
+    )
     assert "loadLogisticsAnalysis" in script.text
     assert "function renderTableScenarioSummary" in script.text
     assert "Текущий отчёт собран до появления витрины логистики v5" in script.text
@@ -1615,6 +1629,9 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'dataStatus === "partial" && sliceStatus === "ready"' in script.text
     assert 'normalize(item.dataQualityStatus) === "missing_profit_link"' in script.text
     assert '? "Проверить данные"' in script.text
+    assert '"Основание / ограничение"' in script.text
+    assert '"Что сделать"' in script.text
+    assert 'status === "empty"' in script.text
 
     full_week = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
     summary = client.get("/api/reports/report-1/logistics/summary", params=full_week)
@@ -1627,6 +1644,11 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert summary.json()["dataStatus"] == "ready"
     assert summary.json()["sliceStatus"] == "ready"
     assert summary.json()["financialMetricStatus"] == "ready"
+    assert summary.json()["methodologyVersion"] == LOGISTICS_METHODOLOGY_VERSION
+    assert summary.json()["classifierVersion"] == LOGISTICS_CLASSIFIER_VERSION
+    assert summary.json()["chainKeyVersion"] == CHAIN_KEY_VERSION
+    assert datetime.fromisoformat(summary.json()["generatedAt"])
+    assert summary.json()["coverage"]["lowSampleProductCount"] == 1
     assert summary.json()["filterContext"]["dateGrain"] == "calendar_day"
     assert summary.json()["reportCoverage"]["maxDimensionDelta"] == 0
     assert summary.json()["reportCoverage"]["invalidReportRows"] == 0
@@ -1644,6 +1666,13 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
         "adjustment": 0,
         "unclassified": 0,
     }
+    recommendation = summary.json()["recommendations"][0]
+    assert {
+        "impactAmount",
+        "evidenceType",
+        "actionTarget",
+        "actionLabel",
+    } <= recommendation.keys()
     assert products.status_code == 200
     assert products.json()["limit"] == 1000
     assert products.json()["items"][0]["lowSample"] is True
@@ -1675,6 +1704,16 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     ).json()
     assert partial_products["financialMetricStatus"] == "not_available_partial_week"
     assert partial_products["items"][0]["profitEffectAmount"] is None
+
+    empty = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={**full_week, "product": "товар-которого-нет"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["financialMetricStatus"] == "not_available_empty_slice"
+    assert empty["kpis"]["logisticsTotal"] is None
+    assert empty["components"]["forward"] is None
+    assert empty["recommendations"] == []
 
 
 def test_logistics_correction_segment_does_not_count_as_order(tmp_path: Path) -> None:
@@ -1856,7 +1895,7 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
                 "financial_revenue": None,
                 "profit_before_tax": None,
                 "profit_without_logistics": None,
-                "profit_effect_amount": Decimal("0"),
+                "profit_effect_amount": Decimal("-10"),
                 "logistics_share_pct": None,
                 "data_quality_status": "missing_profit_link",
                 "recommendation_flags": ["restore_profit_link"],
@@ -1882,6 +1921,8 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
         == "not_available_missing_profit_link"
     )
     assert summary["coverage"]["missingProfitLinks"] == 1
+    assert summary["coverage"]["missingProfitLinkAmount"] == 10
+    assert summary["coverage"]["dataQualityIssues"] == 0
     assert summary["kpis"]["logisticsTotal"] == 20
     for key in (
         "revenue",
@@ -1896,7 +1937,15 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
     assert len(summary["rankings"]["byTotal"]) == 2
     assert summary["rankings"]["byRevenueShare"] == []
     assert summary["rankings"]["byProfitEffect"] == []
-    assert "restore_profit_link" in {
+    restore_link = next(
+        item
+        for item in summary["recommendations"]
+        if item["code"] == "restore_profit_link"
+    )
+    assert restore_link["impactAmount"] == 10
+    assert restore_link["evidenceType"] == "data_quality"
+    assert restore_link["actionTarget"] == "source"
+    assert "review_data_quality" not in {
         item["code"] for item in summary["recommendations"]
     }
 
@@ -2115,6 +2164,43 @@ def test_logistics_persistence_rejects_repeat_for_same_report(tmp_path: Path) ->
             repository.replace_report_logistics_analysis(db, report, result)
 
 
+def test_logistics_persistence_keeps_missing_financial_link_without_zero_sentinel(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        source_only_sku = replace(
+            result.sku_rows[0],
+            source_revenue=Decimal("125"),
+            revenue=None,
+            profit_before_tax=None,
+            profit_without_logistics=None,
+            profit_effect_amount=None,
+            logistics_share_pct=None,
+            data_quality_status="missing_profit_link",
+            recommendation_flags=("restore_profit_link",),
+        )
+        repository.replace_report_logistics_analysis(
+            db,
+            report,
+            replace(result, sku_rows=(source_only_sku,)),
+        )
+        db.flush()
+
+        persisted = db.query(ReportLogisticsSkuRow).one()
+        assert persisted.revenue == Decimal("125")
+        assert persisted.financial_revenue is None
+        assert persisted.profit_before_tax is None
+        assert persisted.profit_effect_amount == Decimal("-10")
+
+
 def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten(
     tmp_path: Path,
 ) -> None:
@@ -2202,6 +2288,9 @@ def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten(
         item["product"] != "Product 11" for item in payload["rankings"]["byTotal"]
     )
     assert recommendation["evidence"]["product"] == "Product 11"
+    assert recommendation["evidenceType"] == "limitation"
+    assert recommendation["actionTarget"] == "products"
+    assert "Причина недоступна в Finance" in recommendation["message"]
 
 
 def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
@@ -3823,10 +3912,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-unit-table-cleanup-logistics-v4"
+        "20260718-logistics-v5-answer-first"
     )
     assert health.json()["staticBuildId"] == (
-        "20260718-unit-table-cleanup-logistics-v4"
+        "20260718-logistics-v5-answer-first"
     )
 
     page = client.get("/")
@@ -3977,11 +4066,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260718-unit-table-cleanup-logistics-v4"
+            "styles.css?v=20260718-logistics-v5-answer-first"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260718-unit-table-cleanup-logistics-v4"
+            "app.js?v=20260718-logistics-v5-answer-first"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text

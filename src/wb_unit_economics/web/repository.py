@@ -57,6 +57,7 @@ from wb_unit_economics.liquidity import (
 )
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
+    LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
@@ -13018,16 +13019,16 @@ def replace_report_logistics_analysis(
                 logistics_reverse=row.logistics_reverse,
                 logistics_adjustment=row.logistics_adjustment,
                 logistics_unclassified=row.logistics_unclassified,
-                # `revenue` is a legacy non-null column kept for old immutable
-                # contexts. v5 financial queries use `financial_revenue`.
-                revenue=(row.revenue if row.revenue is not None else Decimal("0")),
+                # Legacy non-null columns keep real logistics-source facts.
+                # v5 financial queries use the nullable report-linked columns.
+                revenue=row.source_revenue,
                 financial_revenue=row.revenue,
                 profit_before_tax=row.profit_before_tax,
                 profit_without_logistics=row.profit_without_logistics,
                 profit_effect_amount=(
                     row.profit_effect_amount
                     if row.profit_effect_amount is not None
-                    else Decimal("0")
+                    else -row.logistics_total
                 ),
                 logistics_share_pct=row.logistics_share_pct,
                 logistics_per_order=row.logistics_per_order,
@@ -13151,6 +13152,21 @@ def report_logistics_summary_payload(
                     _logistics_context_state(report, context),
                     context,
                 ),
+            }
+        )
+    if meta["sliceStatus"] == "empty":
+        return _logistics_json_safe(
+            {
+                **meta,
+                "kpis": _empty_logistics_kpis(),
+                "dynamics": [],
+                "components": _empty_logistics_components(),
+                "rankings": {
+                    "byTotal": [],
+                    "byRevenueShare": [],
+                    "byProfitEffect": [],
+                },
+                "recommendations": [],
             }
         )
     order_conditions = _logistics_order_conditions(
@@ -13310,6 +13326,7 @@ def report_logistics_summary_payload(
             "recommendations": _logistics_recommendations(
                 _logistics_context_state(report, context),
                 context,
+                total_leader=by_total[0] if by_total else None,
                 reverse_leader=(
                     by_reverse[0]
                     if by_reverse
@@ -13319,7 +13336,14 @@ def report_logistics_summary_payload(
                 share_leader=by_share[0] if by_share else None,
                 classification_coverage=meta["coverage"]["classificationPct"],
                 data_quality_issue_count=meta["coverage"]["dataQualityIssues"],
+                data_quality_issue_amount=meta["coverage"][
+                    "dataQualityIssueAmount"
+                ],
                 missing_profit_link_count=meta["coverage"]["missingProfitLinks"],
+                missing_profit_link_amount=meta["coverage"][
+                    "missingProfitLinkAmount"
+                ],
+                unclassified_amount=decimal_value(totals[4]),
             ),
         }
     )
@@ -13479,7 +13503,14 @@ def _report_logistics_meta(
             "dataStatus": "needs_rebuild",
             "sliceStatus": "needs_rebuild",
             "methodologyVersion": LOGISTICS_METHODOLOGY_VERSION,
+            "classifierVersion": LOGISTICS_CLASSIFIER_VERSION,
             "chainKeyVersion": CHAIN_KEY_VERSION,
+            "generatedAt": report.generated_at.isoformat(),
+            "sourceCoverageEnd": (
+                report.source_coverage_end.isoformat()
+                if report.source_coverage_end
+                else None
+            ),
             "financialMetricStatus": "not_available",
             "valueType": "fact",
             "coverage": {
@@ -13489,6 +13520,12 @@ def _report_logistics_meta(
                 "logisticsRows": 0,
                 "keyedRows": 0,
                 "productRows": 0,
+                "classifiedRows": 0,
+                "dataQualityIssues": 0,
+                "dataQualityIssueAmount": None,
+                "missingProfitLinks": 0,
+                "missingProfitLinkAmount": None,
+                "lowSampleProductCount": None,
             },
             "reportCoverage": None,
             "filterContext": {},
@@ -13498,7 +13535,14 @@ def _report_logistics_meta(
         "dataStatus": context_state,
         "sliceStatus": context_state,
         "methodologyVersion": context.methodology_version,
+        "classifierVersion": LOGISTICS_CLASSIFIER_VERSION,
         "chainKeyVersion": context.chain_key_version,
+        "generatedAt": context.created_at.isoformat(),
+        "sourceCoverageEnd": (
+            report.source_coverage_end.isoformat()
+            if report.source_coverage_end
+            else None
+        ),
         "financialMetricStatus": "ready",
         "valueType": "fact",
         "coverage": {
@@ -13509,6 +13553,12 @@ def _report_logistics_meta(
             "keyedRows": context.keyed_logistics_row_count,
             "productRows": context.product_logistics_row_count,
             "crossCabinetCollisions": context.cross_cabinet_collision_count,
+            "classifiedRows": None,
+            "dataQualityIssues": 0,
+            "dataQualityIssueAmount": Decimal("0"),
+            "missingProfitLinks": 0,
+            "missingProfitLinkAmount": Decimal("0"),
+            "lowSampleProductCount": None,
         },
         "reportCoverage": _report_logistics_coverage(context),
         "filterContext": {},
@@ -13593,11 +13643,24 @@ def _report_logistics_slice_meta(
                 ),
                 0,
             ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsOrderRow.data_quality_status != "ready",
+                            ReportLogisticsOrderRow.logistics_total,
+                        ),
+                        else_=Decimal("0"),
+                    )
+                ),
+                0,
+            ),
         ).where(*conditions)
     ).one()
     logistics_rows = int(counts[0] or 0)
     classified_rows = int(counts[1] or 0)
     data_quality_issues = int(counts[2] or 0)
+    data_quality_issue_amount = decimal_value(counts[3])
     sku_conditions = _logistics_sku_conditions(
         report,
         period_start=period_start,
@@ -13609,19 +13672,47 @@ def _report_logistics_slice_meta(
     )
     if product_query.strip() or product_ref:
         sku_conditions.append(_logistics_sku_product_ref_condition(conditions))
-    missing_profit_links = int(
+    missing_profit_metrics = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(ReportLogisticsSkuRow.logistics_total), 0),
+        )
+        .select_from(ReportLogisticsSkuRow)
+        .where(
+            *sku_conditions,
+            ReportLogisticsSkuRow.data_quality_status == "missing_profit_link",
+        )
+    ).one()
+    missing_profit_links = int(missing_profit_metrics[0] or 0)
+    missing_profit_link_amount = decimal_value(missing_profit_metrics[1])
+    product_samples = (
+        select(
+            ReportLogisticsOrderRow.product_ref.label("product_ref"),
+            func.count(
+                func.distinct(
+                    case(
+                        (
+                            ReportLogisticsOrderRow.countable_order.is_(True),
+                            ReportLogisticsOrderRow.chain_key,
+                        ),
+                        else_=None,
+                    )
+                )
+            ).label("order_count"),
+        )
+        .where(*conditions)
+        .group_by(ReportLogisticsOrderRow.product_ref)
+        .having(func.sum(ReportLogisticsOrderRow.logistics_row_count) > 0)
+        .subquery()
+    )
+    low_sample_product_count = int(
         db.scalar(
             select(func.count())
-            .select_from(ReportLogisticsSkuRow)
-            .where(
-                *sku_conditions,
-                ReportLogisticsSkuRow.data_quality_status
-                == "missing_profit_link",
-            )
+            .select_from(product_samples)
+            .where(product_samples.c.order_count < LOW_SAMPLE_THRESHOLD)
         )
         or 0
     )
-    data_quality_issues += missing_profit_links
     meta["coverage"] = {
         "keyPct": Decimal("100") if logistics_rows else None,
         "productPct": Decimal("100") if logistics_rows else None,
@@ -13635,17 +13726,26 @@ def _report_logistics_slice_meta(
         "productRows": logistics_rows,
         "classifiedRows": classified_rows,
         "dataQualityIssues": data_quality_issues,
+        "dataQualityIssueAmount": data_quality_issue_amount,
         "missingProfitLinks": missing_profit_links,
+        "missingProfitLinkAmount": missing_profit_link_amount,
+        "lowSampleProductCount": low_sample_product_count,
     }
     meta["sliceStatus"] = (
         "empty"
         if logistics_rows == 0
         else "partial"
-        if classified_rows != logistics_rows or data_quality_issues
+        if (
+            classified_rows != logistics_rows
+            or data_quality_issues
+            or missing_profit_links
+        )
         else "ready"
     )
     meta["financialMetricStatus"] = (
-        "not_available_missing_profit_link"
+        "not_available_empty_slice"
+        if logistics_rows == 0
+        else "not_available_missing_profit_link"
         if missing_profit_links
         else financial_status
     )
@@ -14376,11 +14476,15 @@ def _logistics_recommendations(
     context_state: str,
     context: ReportLogisticsAnalysisContext | None,
     *,
+    total_leader: dict[str, Any] | None = None,
     reverse_leader: dict[str, Any] | None = None,
     share_leader: dict[str, Any] | None = None,
     classification_coverage: Decimal | None = None,
     data_quality_issue_count: int = 0,
+    data_quality_issue_amount: Decimal = Decimal("0"),
     missing_profit_link_count: int = 0,
+    missing_profit_link_amount: Decimal = Decimal("0"),
+    unclassified_amount: Decimal = Decimal("0"),
 ) -> list[dict[str, Any]]:
     if context_state in {
         "missing",
@@ -14396,6 +14500,10 @@ def _logistics_recommendations(
                 "title": "Пересобрать отчёт на новом снимке",
                 "message": ("Для этого отчёта ещё нет проверенной витрины логистики."),
                 "valueType": "fact",
+                "impactAmount": None,
+                "evidenceType": "data_quality",
+                "actionTarget": None,
+                "actionLabel": "",
                 "evidence": {"dataStatus": "needs_rebuild"},
             }
         ]
@@ -14409,6 +14517,10 @@ def _logistics_recommendations(
                     "Расчёт остановлен: обязательная сверка источника не пройдена."
                 ),
                 "valueType": "fact",
+                "impactAmount": None,
+                "evidenceType": "data_quality",
+                "actionTarget": None,
+                "actionLabel": "",
                 "evidence": {
                     "keyCoveragePct": context.key_coverage_pct,
                     "productCoveragePct": context.product_coverage_pct,
@@ -14447,6 +14559,10 @@ def _logistics_recommendations(
                     "товар логистики не связан со строкой отчёта."
                 ),
                 "valueType": "fact",
+                "impactAmount": missing_profit_link_amount,
+                "evidenceType": "data_quality",
+                "actionTarget": "source",
+                "actionLabel": "Проверить связь с отчётом",
                 "evidence": {"affectedSkuRows": missing_profit_link_count},
             }
         )
@@ -14457,10 +14573,14 @@ def _logistics_recommendations(
                 "priority": 1,
                 "title": "Проверить возвратную логистику",
                 "message": (
-                    "Начните с товара с наибольшей возвратной частью. Причину "
-                    "возврата нужно подтвердить отдельно."
+                    "Начните с товара с наибольшей возвратной частью. "
+                    "Причина недоступна в Finance."
                 ),
                 "valueType": "fact",
+                "impactAmount": reverse_leader["logisticsReverse"],
+                "evidenceType": "limitation",
+                "actionTarget": "products",
+                "actionLabel": "Открыть товары",
                 "evidence": {
                     "productRef": reverse_leader["productRef"],
                     "productKey": reverse_leader["productKey"],
@@ -14481,6 +14601,10 @@ def _logistics_recommendations(
                     "выручке выбранного среза."
                 ),
                 "valueType": "fact",
+                "impactAmount": share_leader["logisticsTotal"],
+                "evidenceType": "fact",
+                "actionTarget": "products",
+                "actionLabel": "Открыть товары",
                 "evidence": {
                     "productRef": share_leader["productRef"],
                     "productKey": share_leader["productKey"],
@@ -14503,6 +14627,10 @@ def _logistics_recommendations(
                     "операции пока не подтверждено."
                 ),
                 "valueType": "fact",
+                "impactAmount": unclassified_amount,
+                "evidenceType": "data_quality",
+                "actionTarget": "source",
+                "actionLabel": "Проверить операции",
                 "evidence": {"classificationCoveragePct": classification_coverage},
             }
         )
@@ -14517,12 +14645,44 @@ def _logistics_recommendations(
                     "противоречивыми исходными данными."
                 ),
                 "valueType": "fact",
+                "impactAmount": data_quality_issue_amount,
+                "evidenceType": "data_quality",
+                "actionTarget": "source",
+                "actionLabel": "Открыть исходные данные",
                 "evidence": {"affectedOrderRows": data_quality_issue_count},
+            }
+        )
+    if not recommendations and total_leader is not None:
+        recommendations.append(
+            {
+                "code": "check_top_logistics",
+                "priority": 2,
+                "title": "Проверить товар с максимальной логистикой",
+                "message": (
+                    "Это крупнейшая сумма логистики в выбранном срезе."
+                ),
+                "valueType": "fact",
+                "impactAmount": total_leader["logisticsTotal"],
+                "evidenceType": "fact",
+                "actionTarget": "products",
+                "actionLabel": "Открыть товары",
+                "evidence": {
+                    "productRef": total_leader["productRef"],
+                    "productKey": total_leader["productKey"],
+                    "product": total_leader["product"],
+                },
             }
         )
     return sorted(
         recommendations,
-        key=lambda item: (item["priority"], item["code"]),
+        key=lambda item: (
+            item["priority"],
+            item["impactAmount"] is None,
+            -abs(decimal_value(item["impactAmount"]))
+            if item["impactAmount"] is not None
+            else Decimal("0"),
+            item["code"],
+        ),
     )
 
 

@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260718-unit-table-cleanup-logistics-v4"
+      content="20260718-logistics-v5-answer-first"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260718-unit-table-cleanup-logistics-v4"
+      href="/static/styles.css?v=20260718-logistics-v5-answer-first"
     />
     <link
       rel="stylesheet"
@@ -381,6 +381,38 @@
             </p>
           </div>
 
+          <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
+
+          <section id="logistics-state-message" class="panel logistics-state-message" hidden>
+            <h3>Для текущего отчёта нет готовой логистической витрины</h3>
+            <p class="muted">
+              Числа не подменяются нулями. Нужна новая ревизия отчёта,
+              собранная на проверенном снимке WB по методике v5.
+            </p>
+            <button id="logistics-state-action" type="button" class="secondary-button" hidden>
+              Повторить загрузку
+            </button>
+          </section>
+
+          <section class="panel logistics-priority-panel" aria-labelledby="logistics-recommendations-title">
+            <p class="eyebrow">Что проверить в первую очередь</p>
+            <h3 id="logistics-recommendations-title">Приоритетные зоны по фактам</h3>
+            <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
+            <p class="logistics-overlap-note">Суммы в зонах не складываются: один товар может одновременно попадать в несколько проверок.</p>
+          </section>
+
+          <div id="logistics-trust-strip" class="logistics-trust-strip" aria-label="Доверие к расчёту">
+            <span><small>Классификация</small><strong id="logistics-trust-classification">—</strong></span>
+            <span><small>Полнота среза</small><strong id="logistics-trust-slice">—</strong></span>
+            <span><small>Свежесть источника</small><strong id="logistics-trust-freshness">—</strong></span>
+            <span><small>Малая выборка</small><strong id="logistics-trust-low-sample">—</strong></span>
+          </div>
+
+          <details class="logistics-technical-details">
+            <summary>Техническое покрытие</summary>
+            <p>Покрытие ключей: <strong id="logistics-trust-keys">—</strong>. Основание: сверенный read-only снимок WB.</p>
+          </details>
+
           <form id="logistics-filter-form" class="panel logistics-filters">
             <label>
               Организация
@@ -406,42 +438,18 @@
             <button type="submit" class="secondary-button">Показать</button>
           </form>
 
-          <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
-
-          <div id="logistics-trust-strip" class="logistics-trust-strip" aria-label="Доверие к расчёту">
-            <span><small>Ключи</small><strong id="logistics-trust-keys">—</strong></span>
-            <span><small>Классификация</small><strong id="logistics-trust-classification">—</strong></span>
-            <span><small>Полнота среза</small><strong id="logistics-trust-slice">—</strong></span>
-            <span><small>Основание</small><strong>Сверенный снимок WB</strong></span>
-          </div>
-
-          <section id="logistics-state-message" class="panel logistics-state-message" hidden>
-            <h3>Для текущего отчёта нет готовой логистической витрины</h3>
-            <p class="muted">
-              Числа не подменяются нулями. Нужна новая ревизия отчёта,
-              собранная на проверенном снимке WB по методике v4.
-            </p>
-          </section>
-
           <div class="logistics-grid-two">
-            <section class="panel" aria-labelledby="logistics-recommendations-title">
-              <p class="eyebrow">Что проверить в первую очередь</p>
-              <h3 id="logistics-recommendations-title">Приоритетные зоны по фактам</h3>
-              <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
-              <p class="logistics-overlap-note">Суммы в зонах не складываются: один товар может одновременно попадать в несколько проверок.</p>
-            </section>
             <section class="panel" aria-labelledby="logistics-components-title">
               <p class="eyebrow">Состав подтверждённого расхода</p>
               <h3 id="logistics-components-title">Прямая и обратная часть</h3>
               <div id="logistics-components" class="logistics-components"></div>
             </section>
+            <section class="panel" aria-labelledby="logistics-dynamics-title">
+              <p class="eyebrow">Динамика</p>
+              <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
+              <div id="logistics-dynamics" class="logistics-dynamics"></div>
+            </section>
           </div>
-
-          <section class="panel" aria-labelledby="logistics-dynamics-title">
-            <p class="eyebrow">Динамика</p>
-            <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
-            <div id="logistics-dynamics" class="logistics-dynamics"></div>
-          </section>
 
           <section class="panel" aria-labelledby="logistics-products-title">
             <div class="logistics-section-heading">
@@ -2622,9 +2630,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v1" defer></script>
-    <script src="/static/report-scenarios.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
-    <script src="/static/month-close-report.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
-    <script src="/static/tax-load-report.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
-    <script src="/static/app.js?v=20260718-unit-table-cleanup-logistics-v4" defer></script>
+    <script src="/static/report-scenarios.js?v=20260718-logistics-v5-answer-first" defer></script>
+    <script src="/static/month-close-report.js?v=20260718-logistics-v5-answer-first" defer></script>
+    <script src="/static/tax-load-report.js?v=20260718-logistics-v5-answer-first" defer></script>
+    <script src="/static/app.js?v=20260718-logistics-v5-answer-first" defer></script>
   </body>
 </html>

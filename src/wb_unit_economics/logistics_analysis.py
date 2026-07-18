@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
+LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
 CHAIN_KEY_VERSION = "wb-order-product-v1"
 RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
@@ -202,6 +203,7 @@ class LogisticsSkuRow:
     logistics_reverse: Decimal
     logistics_adjustment: Decimal
     logistics_unclassified: Decimal
+    source_revenue: Decimal
     revenue: Decimal | None
     profit_before_tax: Decimal | None
     profit_without_logistics: Decimal | None
@@ -990,6 +992,7 @@ def build_sku_rows(
                 logistics_reverse=order["reverse"],
                 logistics_adjustment=order["adjustment"],
                 logistics_unclassified=order["unclassified"],
+                source_revenue=order["source_revenue"],
                 revenue=revenue,
                 profit_before_tax=profit,
                 profit_without_logistics=(
@@ -1391,6 +1394,8 @@ def _input_hash(
     # but never materialize the full multi-hundred-thousand-row object graph.
     write('{"chain":')
     write(_canonical_json(CHAIN_KEY_VERSION))
+    write(',"classifier":')
+    write(_canonical_json(LOGISTICS_CLASSIFIER_VERSION))
     write(',"inputDiagnostics":{"blockingReasons":')
     write(_canonical_json(sorted(input_diagnostics.blocking_reasons)))
     write(',"invalidSourcePayloadShapeCount":')

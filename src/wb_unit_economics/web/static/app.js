@@ -159,7 +159,10 @@ const els = {
     "#logistics-trust-classification",
   ),
   logisticsTrustSlice: document.querySelector("#logistics-trust-slice"),
+  logisticsTrustFreshness: document.querySelector("#logistics-trust-freshness"),
+  logisticsTrustLowSample: document.querySelector("#logistics-trust-low-sample"),
   logisticsStateMessage: document.querySelector("#logistics-state-message"),
+  logisticsStateAction: document.querySelector("#logistics-state-action"),
   logisticsComponents: document.querySelector("#logistics-components"),
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
@@ -597,6 +600,7 @@ function init() {
     state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
+  els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
   els.logisticsProductsPrev?.addEventListener("click", () => {
     if (state.logisticsProductsOffset <= 0) {
       return;
@@ -4628,7 +4632,11 @@ function resetLogisticsWorkspace() {
   els.logisticsTrustKeys.textContent = "—";
   els.logisticsTrustClassification.textContent = "—";
   els.logisticsTrustSlice.textContent = "Нет данных";
+  els.logisticsTrustFreshness.textContent = "—";
+  els.logisticsTrustLowSample.textContent = "—";
   els.logisticsStateMessage.hidden = true;
+  els.logisticsStateAction.hidden = true;
+  els.logisticsStateAction.dataset.action = "";
   renderMetrics(els.logisticsKpiGrid, []);
   renderLogisticsEmpty(els.logisticsComponents, "Нет рассчитанных компонентов.");
   renderLogisticsEmpty(els.logisticsDynamics, "Нет данных для динамики.");
@@ -4656,7 +4664,20 @@ function renderLogisticsLoadError() {
     "Не удалось загрузить логистическую витрину";
   els.logisticsStateMessage.querySelector("p").textContent =
     "Повторите попытку. Ранее показанные числа очищены и не используются как актуальные.";
+  els.logisticsStateAction.hidden = false;
+  els.logisticsStateAction.dataset.action = "retry";
+  els.logisticsStateAction.textContent = "Повторить загрузку";
   renderWorkspaceHeader();
+}
+
+function onLogisticsStateAction() {
+  if (els.logisticsStateAction.dataset.action === "reset-filters") {
+    els.logisticsOrganizationFilter.value = "";
+    els.logisticsSchemeFilter.value = "";
+    els.logisticsProductFilter.value = "";
+    state.logisticsProductsOffset = 0;
+  }
+  loadLogisticsAnalysis({ force: true });
 }
 
 function renderLogisticsWorkspace() {
@@ -4672,6 +4693,7 @@ function renderLogisticsWorkspace() {
   const statusCopy = {
     ready: `Готово · ключи ${logisticsPercent(coverage.keyPct)} · классификация ${logisticsPercent(coverage.classificationPct)}`,
     partial: `Требует проверки · классификация ${logisticsPercent(coverage.classificationPct)}`,
+    empty: "В выбранном срезе нет логистических операций.",
     blocked: "Расчёт остановлен: обязательная сверка данных не пройдена.",
     needs_rebuild: "Нужна пересборка отчёта на новом проверенном снимке WB.",
   }[status];
@@ -4683,24 +4705,44 @@ function renderLogisticsWorkspace() {
   els.logisticsTrustClassification.textContent = logisticsPercent(
     coverage.classificationPct,
   );
+  els.logisticsTrustFreshness.textContent = summary.sourceCoverageEnd
+    ? `по ${formatCompactDate(summary.sourceCoverageEnd)}`
+    : "Дата не указана";
+  els.logisticsTrustLowSample.textContent = coverage.lowSampleProductCount == null
+    ? "Недоступно"
+    : Number(coverage.lowSampleProductCount) === 0
+      ? "Нет"
+      : `${number(coverage.lowSampleProductCount)} товаров (< 10 заказов)`;
   els.logisticsTrustSlice.textContent = financialLinkMissing
     ? "Финансовые KPI скрыты до восстановления связи"
     : ({
     ready: "Полный проверенный срез",
     partial: "Часть операций требует проверки",
+    empty: "Нет операций по фильтрам",
     blocked: "Сверка не пройдена",
     needs_rebuild: "Нужна пересборка",
   }[status] || "Недоступно");
   els.logisticsStateMessage.hidden = new Set(["ready", "partial"]).has(status);
+  els.logisticsStateAction.hidden = true;
+  els.logisticsStateAction.dataset.action = "";
   if (!els.logisticsStateMessage.hidden) {
     els.logisticsStateMessage.querySelector("h3").textContent =
-      status === "needs_rebuild"
+      status === "empty"
+        ? "В выбранном срезе нет логистических операций"
+        : status === "needs_rebuild"
         ? "Текущий отчёт собран до появления витрины логистики v5"
         : "Логистическая витрина пока не готова";
     els.logisticsStateMessage.querySelector("p").textContent =
-      status === "needs_rebuild"
+      status === "empty"
+        ? "Измените или сбросьте фильтры. Пустой срез не подменяется нулевыми KPI."
+        : status === "needs_rebuild"
         ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
         : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
+    if (status === "empty") {
+      els.logisticsStateAction.hidden = false;
+      els.logisticsStateAction.dataset.action = "reset-filters";
+      els.logisticsStateAction.textContent = "Сбросить фильтры";
+    }
   }
   if (!new Set(["ready", "partial"]).has(status)) {
     renderMetrics(els.logisticsKpiGrid, []);
@@ -4849,42 +4891,91 @@ function renderLogisticsRecommendations(items) {
     ...items.map((recommendation) => {
       const item = document.createElement("li");
       item.className = "logistics-recommendation";
-      const title = document.createElement("strong");
-      title.textContent = recommendation.title || "Проверить данные";
       const priority = document.createElement("span");
       priority.className = "logistics-priority-badge";
       priority.textContent = Number(recommendation.priority || 0) === 1
         ? "Высокий приоритет"
         : "Проверить";
-      const message = document.createElement("p");
-      message.textContent = recommendation.message || "";
-      const evidence = document.createElement("small");
       const facts = recommendation.evidence || {};
-      const evidenceParts = [];
-      if (facts.product) {
-        evidenceParts.push(facts.product);
-      }
-      if (facts.logisticsSharePct != null) {
-        evidenceParts.push(`доля ${logisticsPercent(facts.logisticsSharePct)}`);
-      }
-      if (facts.reverseLogistics != null) {
-        evidenceParts.push(`обратная логистика ${signedMoney(facts.reverseLogistics)}`);
-      }
-      if (facts.classificationCoveragePct != null) {
-        evidenceParts.push(
-          `классификация ${logisticsPercent(facts.classificationCoveragePct)}`,
+      const grid = document.createElement("div");
+      grid.className = "logistics-recommendation-grid";
+      const zone = logisticsRecommendationField(
+        "Зона",
+        recommendation.title || "Проверить данные",
+        "is-zone",
+      );
+      const amount = logisticsRecommendationField(
+        "Сумма",
+        recommendation.impactAmount == null
+          ? "—"
+          : signedMoney(recommendation.impactAmount),
+        "is-amount",
+      );
+      const evidenceLabels = {
+        fact: "Факт",
+        limitation: "Ограничение",
+        data_quality: "Качество данных",
+      };
+      const evidenceType = evidenceLabels[recommendation.evidenceType]
+        || "Основание";
+      const basisText = facts.product
+        ? `${evidenceType}: ${facts.product}. ${recommendation.message || ""}`
+        : `${evidenceType}: ${recommendation.message || "Рассчитанная витрина отчёта."}`;
+      const basis = logisticsRecommendationField(
+        "Основание / ограничение",
+        basisText,
+        `is-basis is-${recommendation.evidenceType || "fact"}`,
+      );
+      const action = document.createElement("div");
+      action.className = "logistics-recommendation-field is-action";
+      const actionLabel = document.createElement("small");
+      actionLabel.textContent = "Что сделать";
+      action.append(actionLabel);
+      if (recommendation.actionTarget && recommendation.actionLabel) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary-button";
+        button.textContent = recommendation.actionLabel;
+        button.addEventListener("click", () =>
+          runLogisticsRecommendationAction(recommendation),
         );
+        action.append(button);
+      } else {
+        const noAction = document.createElement("span");
+        noAction.textContent = "Нужна новая ревизия отчёта";
+        action.append(noAction);
       }
-      if (facts.affectedOrderRows != null) {
-        evidenceParts.push(`${number(facts.affectedOrderRows)} цепочек затронуто`);
-      }
-      evidence.textContent = evidenceParts.length
-        ? `Факт: ${evidenceParts.join(" · ")}`
-        : "Основание: рассчитанная витрина отчёта.";
-      item.append(priority, title, message, evidence);
+      grid.append(zone, amount, basis, action);
+      item.append(priority, grid);
       return item;
     }),
   );
+}
+
+function logisticsRecommendationField(labelText, valueText, className = "") {
+  const field = document.createElement("div");
+  field.className = `logistics-recommendation-field ${className}`.trim();
+  const label = document.createElement("small");
+  label.textContent = labelText;
+  const value = document.createElement("span");
+  value.textContent = valueText;
+  field.append(label, value);
+  return field;
+}
+
+function runLogisticsRecommendationAction(recommendation) {
+  if (recommendation.actionTarget === "source") {
+    selectTableScenario("wb-expenses", { updateLocation: true, focus: true });
+    return;
+  }
+  const product = recommendation.evidence?.product || "";
+  if (product) {
+    els.logisticsProductFilter.value = product;
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+  }
+  document.querySelector("[aria-labelledby='logistics-products-title']")
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderLogisticsProducts(items) {
