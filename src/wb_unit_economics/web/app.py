@@ -567,6 +567,12 @@ def create_app(
             "blocked_low_disk",
             "needs_full_refresh",
         }
+        expected_disabled_statuses = (
+            {"needs_configuration", "needs_full_refresh"}
+            if runtime_settings.runtime_environment == "test"
+            and not runtime_settings.external_integrations_enabled
+            else set()
+        )
         health_refresh = (
             latest_completed_refresh
             if latest_completed_refresh is not None
@@ -575,7 +581,9 @@ def create_app(
         )
         health_status = (
             "degraded"
-            if health_refresh is not None and health_refresh.status in degraded_statuses
+            if health_refresh is not None
+            and health_refresh.status in degraded_statuses
+            and health_refresh.status not in expected_disabled_statuses
             else "ok"
         )
         return {

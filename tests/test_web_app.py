@@ -54,6 +54,55 @@ from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh_worker import SourceRefreshWorkerLaunchError
 
 
+@pytest.mark.parametrize(
+    ("runtime_environment", "external_integrations_enabled", "expected_status"),
+    (
+        ("test", False, "ok"),
+        ("test", True, "degraded"),
+        ("production", False, "degraded"),
+    ),
+)
+def test_health_accepts_missing_refresh_configuration_only_for_disabled_test(
+    tmp_path: Path,
+    runtime_environment: str,
+    external_integrations_enabled: bool,
+    expected_status: str,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "runtime_environment": runtime_environment,
+            "external_integrations_enabled": external_integrations_enabled,
+        },
+    )
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        refresh = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-needs-configuration",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 10),
+            reason="health configuration test",
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh,
+            status="needs_configuration",
+            finished_at=datetime(2026, 7, 10, 1, 0),
+        )
+        db.commit()
+
+    payload = client.get("/api/health").json()
+
+    assert payload["status"] == expected_status
+    assert payload["sourceRefreshHealthStatus"] == "needs_configuration"
+
+
 def test_health_is_degraded_while_new_run_follows_failed_completed_run(
     tmp_path: Path,
 ) -> None:
