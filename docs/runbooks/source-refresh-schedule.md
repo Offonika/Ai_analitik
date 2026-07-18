@@ -43,6 +43,14 @@ source_refresh_run_id = :run_id` вернула `9 129` строк; run заве
 повторился; `needs_review` относится к отдельной проверке mapping и не является
 ошибкой PostgreSQL.
 
+Ручной incremental после этого использовал ту же индексированную замену окна и
+завершился без `failure_code`/`error_message`, создав immutable staff-draft.
+Его `needs_review` связан с явными mapping/document reconciliation проверками,
+а не с PostgreSQL. Scheduled worker сохранил logistics flag выключенным в
+`files_only`; разовая сборка logistics-context выполнена отдельно из
+проверенных immutable файлов по процедуре
+`docs/runbooks/wb-logistics-v4-continuation.md`, без автоматической публикации.
+
 # Расписание
 
 - Daily refresh: каждый час в `*:15 MSK`, режим `daily`.

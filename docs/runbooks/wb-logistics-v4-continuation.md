@@ -16,6 +16,30 @@ accepted-спецификацию. При расхождении следова�
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
 
+## Operational evidence 18 июля 2026 года
+
+Production уже содержит staff-интерфейс логистики и автоматический выбор самой
+новой разрешённой `ready`-ревизии без смены текущей публикации. После успешного
+incremental source refresh его первоначальный staff-draft ожидаемо остался без
+logistics-context: scheduled worker работает в `files_only`, а logistics flag у
+него по принятому контракту выключен.
+
+Для разовой безопасной пересборки выполнены dry-run и идемпотентное
+восстановление строк из проверенных immutable WB-файлов штатным
+`scripts/restore_marketplace_raw_rows.py`; внешние WB/1С API повторно не
+читались. Rollback-only preview методики `wb-logistics-v4` вернул `ready`,
+полное покрытие ключей и товаров и нулевые обязательные, revision-, scope- и
+dimension-ошибки. После preview создан новый immutable staff-draft:
+logistics-context и source-quality имеют статус `ready`, отчет остается
+`draft`, `is_current=false`, а прежний published report не переключался.
+
+Период report run имеет неполные граничные недели, поэтому финансовые KPI всего
+периода намеренно остаются `null`. Вложенный `financialComparison` за
+максимальный интервал полных недель имеет статус `ready` и содержит выручку,
+долю логистики в выручке, прибыль до налога и абсолютное влияние логистики на
+прибыль. Локальные report/source identifiers, денежные значения и клиентские
+объёмы в Markdown не фиксируются.
+
 # Текст для нового чата
 
 ```text
