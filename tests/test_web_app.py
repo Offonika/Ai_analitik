@@ -4044,7 +4044,7 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     assert workflow_page.status_code == 200
     assert script.status_code == 200
     assert styles.status_code == 200
-    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v1"
+    asset_path = "/static/sortable-tables.js?v=20260718-column-sorting-v2"
     stylesheet_path = "/static/sortable-tables.css?v=20260718-column-sorting-v1"
     assert asset_path in cabinet.text
     assert asset_path in workflow_page.text
@@ -4055,6 +4055,8 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     assert 'header.setAttribute("aria-sort", state.direction)' in script.text
     assert 'event.key !== "Enter" && event.key !== " "' in script.text
     assert "new MutationObserver(handleMutations)" in script.text
+    assert "if (indicator.textContent !== value)" in script.text
+    assert 'setIndicatorText(indicator, "↕")' in script.text
     assert 'left.kind === "empty" ? 1 : -1' in script.text
     assert ".sortable-table-header[aria-sort]" in styles.text
 
