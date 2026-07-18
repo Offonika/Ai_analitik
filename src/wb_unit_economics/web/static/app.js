@@ -5315,7 +5315,6 @@ function saveFilterState() {
   }
   writeFilterState({
     clientId: state.clientId,
-    rowPreset: state.rowPreset || "",
     ozonUnitStatusFilter: state.ozonUnitStatusFilter || "",
     rows: {
       query: els.filterQuery.value,
@@ -5369,7 +5368,7 @@ function restoreFilterState() {
   setSelectValue(els.onecFilterDocumentType, onec.documentType || "");
   els.onecFilterDeltaOnly.checked = Boolean(onec.deltaOnly);
 
-  state.rowPreset = saved.rowPreset || "";
+  state.rowPreset = "";
   state.ozonUnitStatusFilter = saved.ozonUnitStatusFilter || "";
   if (els.ozonUnitStatusFilter) {
     setSelectValue(els.ozonUnitStatusFilter, state.ozonUnitStatusFilter);
@@ -13826,21 +13825,13 @@ function renderReportRowsHeader(mode) {
           "Выручка после СПП",
           "Выручка для прибыли",
           "Себестоимость",
-          "Остаток после себестоимости",
           "Комиссия WB",
-          "Остаток после комиссии",
           "Логистика",
-          "Остаток после логистики",
           "Хранение",
-          "Остаток после хранения",
           "Приемка",
-          "Остаток после приемки",
           "Продвижение",
-          "Остаток после продвижения",
           "Штрафы/доплаты",
-          "Остаток после штрафов",
           "Эквайринг",
-          "Остаток до НДС-корректировки",
           "НДС-корректировка P&L",
           "Прибыль до включ. налогов",
           "Исходящий НДС",
@@ -13870,7 +13861,7 @@ function renderReportRowsHeader(mode) {
 }
 
 function reportRowsColumnCount(mode) {
-  return mode === "ozon" ? 12 : 48;
+  return mode === "ozon" ? 12 : 40;
 }
 
 function ozonMartReportRowNode(item) {
@@ -14955,21 +14946,13 @@ function reportRowNode(item) {
     { value: optionalMoney(item.revenue), className: "numeric" },
     { value: optionalMoney(bridge.pnlRevenue), className: "numeric" },
     { value: optionalMoney(item.cost), className: "numeric" },
-    { value: optionalMoney(bridge.afterCost), className: "numeric bridge-total" },
     { value: optionalMoney(item.commission), className: "numeric" },
-    { value: optionalMoney(bridge.afterCommission), className: "numeric bridge-total" },
     { value: optionalMoney(item.logistics), className: "numeric" },
-    { value: optionalMoney(bridge.afterLogistics), className: "numeric bridge-total" },
     { value: optionalMoney(item.storage), className: "numeric" },
-    { value: optionalMoney(bridge.afterStorage), className: "numeric bridge-total" },
     { value: optionalMoney(item.acceptance), className: "numeric" },
-    { value: optionalMoney(bridge.afterAcceptance), className: "numeric bridge-total" },
     { value: optionalMoney(item.promotion), className: "numeric" },
-    { value: optionalMoney(bridge.afterPromotion), className: "numeric bridge-total" },
     { value: optionalMoney(item.penalties), className: "numeric" },
-    { value: optionalMoney(bridge.afterPenalties), className: "numeric bridge-total" },
     { value: optionalMoney(item.acquiring), className: "numeric" },
-    { value: optionalMoney(bridge.beforeVatAdjustment), className: "numeric bridge-total" },
     { value: optionalMoney(bridge.pnlVatAdjustment), className: "numeric bridge-adjustment" },
     { value: optionalMoney(item.profitBeforeTax), className: `numeric ${valueTone(item.profitBeforeTax)}` },
     { value: optionalMoney(item.vatOutput), className: "numeric" },
@@ -15026,36 +15009,22 @@ function unitProfitBridge(item) {
   if (required.some((value) => value === null)) {
     return {
       pnlRevenue,
-      afterCost: null,
-      afterCommission: null,
-      afterLogistics: null,
-      afterStorage: null,
-      afterAcceptance: null,
-      afterPromotion: null,
-      afterPenalties: null,
-      beforeVatAdjustment: null,
       pnlVatAdjustment: null,
       includedTaxes: null,
     };
   }
-  const afterCost = pnlRevenue - cost;
-  const afterCommission = afterCost - commission;
-  const afterLogistics = afterCommission - logistics;
-  const afterStorage = afterLogistics - storage;
-  const afterAcceptance = afterStorage - acceptance;
-  const afterPromotion = afterAcceptance - promotion;
-  const afterPenalties = afterPromotion - penalties;
-  const beforeVatAdjustment = afterPenalties - acquiring;
+  const beforeVatAdjustment =
+    pnlRevenue -
+    cost -
+    commission -
+    logistics -
+    storage -
+    acceptance -
+    promotion -
+    penalties -
+    acquiring;
   return {
     pnlRevenue,
-    afterCost,
-    afterCommission,
-    afterLogistics,
-    afterStorage,
-    afterAcceptance,
-    afterPromotion,
-    afterPenalties,
-    beforeVatAdjustment,
     pnlVatAdjustment: profitBeforeTax - beforeVatAdjustment,
     includedTaxes: profitBeforeTax - profit,
   };

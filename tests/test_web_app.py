@@ -3665,10 +3665,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-unit-table-pagination-logistics-v4"
+        "20260718-unit-table-cleanup-logistics-v4"
     )
     assert health.json()["staticBuildId"] == (
-        "20260718-unit-table-pagination-logistics-v4"
+        "20260718-unit-table-cleanup-logistics-v4"
     )
 
     page = client.get("/")
@@ -3765,7 +3765,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="rows-pagination"' in cabinet.text
     assert 'id="rows-page-prev"' in cabinet.text
     assert 'id="rows-page-next"' in cabinet.text
-    assert "Остаток после себестоимости" in cabinet.text
+    assert "Себестоимость" in cabinet.text
+    assert "Остаток после" not in cabinet.text
     assert "НДС-корректировка P&amp;L" in cabinet.text
     assert "Итог после включ. налогов" in cabinet.text
     assert 'class="products-table data-table liquidity-table"' in cabinet.text
@@ -3818,11 +3819,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260718-unit-table-pagination-logistics-v4"
+            "styles.css?v=20260718-unit-table-cleanup-logistics-v4"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260718-unit-table-pagination-logistics-v4"
+            "app.js?v=20260718-unit-table-cleanup-logistics-v4"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -4451,6 +4452,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert 'params.set("offset", String(state.rowsOffset))' in app_js.text
     assert "renderRowsPagination" in app_js.text
     assert "unitProfitBridge" in app_js.text
+    assert 'return mode === "ozon" ? 12 : 40' in app_js.text
+    assert "saved.rowPreset" not in app_js.text
     assert "debounce(applyRowsFilters" in app_js.text
     assert "/api/integrations" in app_js.text
     assert "isIntegrationsPage" in app_js.text
