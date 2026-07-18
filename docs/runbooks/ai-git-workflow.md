@@ -1,17 +1,53 @@
 ---
-title: "AI Git workflow"
+title: "AI development workflow"
 doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "agent"]
 status: active
 source_of_truth: false
-updated_at: "2026-07-13"
+updated_at: "2026-07-18"
 ---
 
-# AI Git workflow
+# AI development workflow
 
-Этот runbook описывает безопасный цикл разработки с ИИ: проверить, закоммитить и
-опубликовать изменения без попадания секретов и клиентских артефактов в Git.
+Этот runbook описывает компактный поиск контекста и безопасный Git-цикл без
+попадания секретов и клиентских артефактов в Git.
+
+# Compact Documentation Route
+
+Перед чтением spec или поиском по всему `src/` получить короткий маршрут:
+
+```bash
+.venv/bin/python scripts/docs_route.py --query "описание задачи"
+```
+
+Точные варианты:
+
+```bash
+.venv/bin/python scripts/docs_route.py --scope source-retention
+.venv/bin/python scripts/docs_route.py --path scripts/prune_report_drafts.py
+.venv/bin/python scripts/docs_route.py --contract unit_economics_report
+```
+
+Если `--path` относится к нескольким контурам, команда печатает короткий список
+scope. Выбрать один из них через `--scope`; `--verbose` использовать только
+когда действительно нужны полные маршруты всех совпадений.
+
+Сначала читать возвращенные `ai_sections` и symbols. Supporting, draft и
+superseded документы включать только при необходимости:
+
+```bash
+.venv/bin/python scripts/docs_route.py --query "старый Power BI" \
+  --include-supporting --include-history
+```
+
+После изменения manifest, routing metadata или anchors обновить и проверить
+generated-карту:
+
+```bash
+.venv/bin/python scripts/docs_route.py --write-generated
+.venv/bin/python scripts/docs_route.py --check-generated
+```
 
 # GitHub CI
 
@@ -21,8 +57,8 @@ secrets и получает только `contents: read`.
 
 Блокирующие job:
 
-- `quality` — Ruff, JavaScript syntax, whitespace, specs, manifest, LLM-docs,
-  DOCX/OpenAPI contracts, no-secrets и Git safety;
+- `quality` — Ruff, JavaScript syntax, whitespace, specs, manifest, AI routing,
+  LLM-docs, DOCX/OpenAPI contracts, no-secrets и Git safety;
 - `tests` — полный `pytest` на Python 3.12.
 
 Проверка внешних URL запускается внутри `quality`, но помечена
@@ -125,7 +161,7 @@ git pull --ff-only
 Для этого проекта полезен не глобальный generic skill, а короткий project-aware
 ритуал:
 
-- сначала читать `AGENTS.md` и актуальный accepted spec;
+- сначала получать route и читать только релевантные разделы accepted spec;
 - не читать и не показывать `.env`;
 - держать Git-коммиты маленькими;
 - запускать `scripts/ai_git_publish.py` после завершенного рабочего шага;

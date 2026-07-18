@@ -26,6 +26,18 @@ contracts:
   - unit_economics_report
   - month_close_control_report
   - tax_load_report
+ai_sections:
+  status: "Статус документа"
+  goal: "Goal"
+  scope: "Scope"
+  registry: "Report Kind Registry"
+  contract: "Shared Data Contract"
+  code_structure: "Code Structure Rule"
+  ui: "UI Contract"
+  api: "Proposed API Compatibility"
+  checks: "Advisory And Enforced Checks"
+  acceptance: "Acceptance Criteria"
+  tests: "Test Plan"
 depends_on:
   - docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
   - docs/specs/wb-unit-economics-db-first-report-marts.md

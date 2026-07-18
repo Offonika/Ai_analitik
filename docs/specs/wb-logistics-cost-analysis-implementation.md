@@ -12,6 +12,23 @@ truth_priority: 100
 related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py]
 related_tests: [tests/test_logistics_analysis.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
+ai_sections:
+  status: "Статус документа"
+  goal: "Цель"
+  terms: "Термины и обязательные трактовки"
+  scope: "Scope"
+  sources: "Источники и границы чтения"
+  data_gate: "Техническая проверка данных перед реализацией"
+  calculation: "Расчетная модель"
+  marts: "Расчетные витрины"
+  api: "API"
+  interface: "Интерфейс"
+  recommendations: "Правила рекомендаций"
+  acceptance: "Acceptance Criteria"
+  tests: "Test Plan"
+code_anchors:
+  - path: src/wb_unit_economics/logistics_analysis.py
+    symbols: ["def build_logistics_analysis", "def build_order_rows", "def build_sku_rows"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
 updated_at: "2026-07-18"

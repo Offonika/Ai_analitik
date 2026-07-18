@@ -1,102 +1,75 @@
 # AGENTS.md
 
-## Project Mission
+## Mission And Non-Negotiables
 
-This repository is a local working area for the "Shumeyko and partners:
-Wildberries unit economics" pilot.
+This repository is the local working area for the "Shumeyko and partners:
+Wildberries unit economics" pilot. It combines read-only Wildberries facts
+with 1C:UNF cost data, calculates reproducible unit economics and publishes an
+Excel MVP before broader product surfaces.
 
-The product goal is a read-only analytics workflow that combines Wildberries API
-facts with 1C:UNF cost data, calculates reproducible unit economics, and produces
-an Excel MVP first. A lightweight consultant/client web cabinet can be specified
-after the Excel methodology is accepted.
+Preserve these invariants:
 
-Work in this repository must preserve three invariants:
+- integrations are read-only by default;
+- real keys, tokens, raw client data and generated reports never enter Git or
+  Markdown;
+- calculations remain reproducible from snapshots, versioned contracts and a
+  versioned methodology;
+- missing, partial or ambiguous data remains explicit and is never silently
+  coerced to zero.
 
-- read-only integrations are the default;
-- real keys, tokens, raw client data, and generated reports never enter Git or
-  Markdown documentation;
-- calculations must be reproducible from snapshots, data contracts, and a
-  versioned methodology.
+## Source Of Truth And Retrieval
 
-## Current Source Of Truth
+`docs/manifest.yml` is the machine registry. Within one `truth_scope`, the
+document with the highest `truth_priority` is canonical. `docs/index.md` is the
+generated human map. An accepted implementation spec overrides product briefs,
+client documents and README only inside its own scope. Supporting ADRs and
+runbooks cannot override a higher-priority canonical document.
 
-`docs/manifest.yml` is the machine-readable registry of documentation scopes.
-For each `truth_scope`, the document with the highest `truth_priority` is the
-canonical source for that scope. `docs/index.md` is the human-readable map and
-must stay synchronized with the manifest.
+For each task, use this token-efficient retrieval protocol:
 
-Core scopes include:
+1. Run `.venv/bin/python scripts/docs_route.py --query "<task>"`, or use
+   `--scope`, `--path` or `--contract` when the key is known.
+2. Read only the returned document frontmatter and its heading list.
+3. Read the relevant `ai_sections`, then search code/tests by returned symbols.
+4. Expand to the full spec or supporting/history documents only for a
+   cross-scope conflict or a task spanning the whole scope.
 
-- project governance: `AGENTS.md`;
-- product scope: `docs/specs/wb-unit-economics-mvp.md`;
-- Excel methodology:
-  `docs/specs/wb-unit-economics-excel-mvp-implementation.md`;
-- web cabinet:
-  `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`;
-- report publication:
-  `docs/specs/wb-unit-economics-db-first-report-marts.md`;
-- multi-report, month-close, tax-load, mapping, source-refresh, retention,
-  runtime and development workflow: the corresponding canonical documents in
-  `docs/manifest.yml`.
+Do not read all of `docs/manifest.yml`, `docs/index.md`, a large spec or a large
+source file when the compact route and a scoped `rg` answer the question. Use
+`--include-supporting --include-history` only when current canonical sources are
+insufficient.
 
-Resolve conflicts as follows:
+If two scopes genuinely conflict, do not choose silently: update the affected
+specs or record an explicit cross-scope decision first. Chat messages, generated
+reports and ad hoc spreadsheets are not sources of truth unless the user asks
+to update a spec from them.
 
-1. identify the behavior's `truth_scope` in `docs/manifest.yml`;
-2. within that scope, follow the document with the highest `truth_priority`;
-3. an accepted implementation spec overrides the general product brief,
-   client-facing documents and README only for behavior inside its own scope;
-4. ADRs and supporting documents cannot override a higher-priority canonical
-   document unless the manifest explicitly gives them precedence;
-5. if two scopes genuinely conflict, do not choose silently: update the
-   affected specs or record an explicit cross-scope decision first.
+## Security And External Boundaries
 
-Do not treat chat messages, generated reports, or ad hoc spreadsheets as the
-source of truth unless the user explicitly asks to update the spec from them.
+- Never print, copy, summarize, transform or otherwise read the contents of
+  `.env`.
+- `.env`, `.env.*`, `data/`, `reports/`, generated Excel/CSV archives and raw
+  client exports are local-only. `.env.example` may contain only empty values
+  and safe placeholders.
+- If a secret appears in a tracked document, report it and recommend rotation.
+- Do not add write-capable WB, 1C, bank, CRM, Telegram, email or Bitrix behavior
+  without a separate accepted spec and explicit user authority.
+- Recheck current official Wildberries, 1C or platform API documentation before
+  implementing an external API change. Use least-privilege read-only access.
 
-## Security And Secrets
+## Spec-First And Contracts
 
-- Never print, copy, commit, summarize, or transform the contents of `.env`.
-- `.env`, `.env.*`, `data/`, `reports/`, generated Excel/CSV archives, and raw
-  client exports are local-only artifacts.
-- `.env.example` may contain only empty variables and safe placeholders.
-- If a secret appears in a document, report it and recommend rotation.
-- Do not add write-capable WB, 1C, bank, CRM, Telegram, email, or Bitrix
-  behavior without a separate accepted spec.
-- When connecting to external APIs, use least-privilege access and read-only
-  scopes wherever the provider supports them.
+For a non-trivial feature, read the relevant accepted spec before code. If the
+behavior is not specified, update or create a spec first. States are `draft`,
+`accepted`, `implemented` and `superseded`; only `implemented` means code and
+tests demonstrably match the spec.
 
-## Spec-First Workflow
+Implementation specs must make goal, scope/out-of-scope, roles, read/write
+boundaries, schemas, formulas/rounding, security/tenant isolation, edge cases,
+acceptance criteria, tests, rollout and rollback testable. Keep full history in
+a registered changelog when the validator requires it.
 
-For any non-trivial feature, start from the relevant spec before editing code.
-If the behavior is not specified, update or create a spec first.
-
-Recommended spec states:
-
-- `draft`: exploratory, not ready for implementation guarantees;
-- `accepted`: approved implementation target;
-- `implemented`: code and tests match the accepted spec;
-- `superseded`: replaced by a newer spec.
-
-Each implementation spec should include:
-
-- goal, scope, and out of scope;
-- user roles and business decisions;
-- data sources and exact read/write boundaries;
-- data contracts and schemas;
-- calculation formulas and rounding rules;
-- security, tenant isolation, audit, and retention rules;
-- errors and edge cases;
-- acceptance criteria;
-- test plan;
-- rollout and rollback notes;
-- changelog with dates.
-
-Keep specs answerable by tests. Avoid vague requirements such as "improve
-analytics" unless they are broken down into measurable outputs.
-
-## Data Contracts
-
-Preserve and evolve these contract names unless a new accepted spec renames them:
+Preserve these contract names unless an accepted spec renames them:
 
 - `wb_api_snapshot`;
 - `onec_unf_cost_snapshot`;
@@ -104,106 +77,53 @@ Preserve and evolve these contract names unless a new accepted spec renames them
 - `unit_economics_report`;
 - `ai_analysis_summary`.
 
-For contract changes:
+Prefer additive changes. Keep `client_id`, period, source document/endpoint,
+load timestamp and snapshot/hash identity visible. Preserve tenant boundaries
+and explicit statuses for missing cost, ambiguous mapping and partial loads.
 
-- prefer additive fields over breaking renames;
-- keep `client_id`, period, source endpoint/document, load timestamp, and raw
-  payload hash or snapshot identifier;
-- make missing cost, ambiguous mapping, and partial loads explicit statuses;
-- never silently coerce unavailable data to zero;
-- keep tenant boundaries visible in schemas, storage, tests, and reports.
+Each spec maps its scope through `related_code`, `related_tests`, optional
+`ai_sections`, `code_anchors` and `test_anchors`. Update these in the same
+change. `scripts/validate_specs.py` verifies paths, headings and symbols.
 
-## Implementation Principles
+## Implementation And Documentation
 
-- Build the Excel MVP before a broad dashboard unless a newer accepted spec says
-  otherwise.
-- Keep connectors, normalization, calculation, report building, and AI summary
-  as separate layers.
-- Persist raw snapshots before normalization so parser or formula changes can be
-  reproduced.
-- Version calculation methodology and include the version in every report.
-- Prefer deterministic calculations in code over formulas hidden inside Excel.
-- Use AI only to summarize already computed facts; AI must not mutate source data
-  or invent missing values.
-- Any external documentation for Wildberries, 1C, or platform APIs must be
-  rechecked against the official current documentation before implementation.
+- Keep connectors, normalization, calculation, report building and AI summary
+  separate. Persist raw snapshots before normalization.
+- Prefer deterministic code over hidden Excel formulas. Include methodology
+  version in each report. AI summarizes computed facts; it does not mutate
+  sources or invent missing values.
+- Build only what the accepted scope requires; do not introduce broad
+  frameworks, queues or dashboards prematurely.
+- Follow the existing `config/`, `data/`, `deploy/`, `docs/`, `reports/`,
+  `scripts/`, `sql/`, `src/` and `tests/` layout unless a spec changes it.
+- Update canonical docs in the same change as behavior, contract, setup or
+  acceptance changes. Keep client docs free of internal secrets/debug details.
+- Put irreversible architecture decisions in `docs/decisions/` and operational
+  procedures in `docs/runbooks/`.
+- Preserve unrelated user changes in a dirty worktree. Explain any new
+  dependency before adding it.
 
-## Expected Future Structure
+## Verification And Handoff
 
-Use this structure unless the accepted spec chooses something else:
+After documentation changes run:
 
-```text
-config/          non-secret project and client configuration
-data/            local raw snapshots and fixtures, not committed
-docs/            client docs, runbooks, decisions, and specs
-docs/specs/      source-of-truth specs
-reports/         generated Excel and report artifacts, not committed
-src/             application code when implementation starts
-tests/           unit, contract, integration, and report smoke tests
-scripts/         validation, import, export, and maintenance scripts
+```bash
+.venv/bin/python scripts/validate_specs.py
+.venv/bin/python scripts/validate_docs_manifest.py
+.venv/bin/python scripts/validate_llm_docs.py
+.venv/bin/python scripts/docs_route.py --check-generated
+.venv/bin/python scripts/validate_documentation_contracts.py
 ```
 
-## Documentation Rules
+After code changes also run Ruff and the relevant tests returned by the route.
+Run broader tests in proportion to risk. GitHub Actions must create and complete
+both blocking jobs, `quality` and `tests`; an absent check is not a passing
+check. If a referenced script does not exist, say so rather than claiming it
+passed.
 
-- Update docs in the same change when behavior, contracts, setup, or acceptance
-  criteria change.
-- Keep client-facing docs free of implementation secrets and internal debug
-  details.
-- Keep technical specs precise enough for another engineer or agent to implement
-  from them.
-- Add ADR-style notes in `docs/decisions/` for irreversible architecture choices
-  once implementation starts.
-- Add runbooks in `docs/runbooks/` for API access, report generation, key
-  rotation, incident handling, and manual reconciliation once those workflows
-  exist.
-
-## Testing And Verification
-
-When validation scripts exist, run the relevant checks before finishing:
-
-- `.venv/bin/python scripts/validate_specs.py docs/specs/wb-unit-economics-mvp.md`;
-- `.venv/bin/python scripts/validate_docs_manifest.py`;
-- `.venv/bin/python scripts/validate_llm_docs.py`.
-
-GitHub Actions runs the blocking `quality` and `tests` jobs for pull requests
-and pushes to `main`. Do not treat an absent check as a passing check; verify
-that both jobs were created and completed successfully before merge.
-
-If the scripts do not exist yet, say so instead of claiming they passed.
-
-For future implementation, prefer these test layers:
-
-- schema validation for every data contract;
-- connector contract tests using anonymized fixtures;
-- formula tests for revenue, returns, WB fees, logistics, storage, penalties,
-  advertising when enabled, COGS, gross profit, margin, and unit profit;
-- edge-case tests for missing costs, ambiguous mappings, partial WB loads, API
-  limits, returns from previous periods, and expenses without SKU attribution;
-- repeatability tests for the same snapshots and methodology version;
-- Excel smoke tests for required sheets, readable file format, and aggregate
-  reconciliation;
-- permission and tenant-boundary tests before any web cabinet work.
-
-## Development Hygiene
-
-- Keep changes small and tied to the current spec.
-- Do not introduce broad frameworks, queues, databases, or dashboards before the
-  MVP needs them.
-- Prefer clear names over clever abstractions.
-- Keep generated artifacts out of commits.
-- If Git is unavailable in this workspace, do not rely on Git-only checks; use
-  direct file inspection and explicit verification notes.
-- Before adding dependencies, explain why the standard library or existing stack
-  is not enough.
-
-## Agent Operating Rules
-
-- Communicate with the user in Russian unless they ask for another language.
-- Before modifying files, inspect the relevant docs and nearby files.
-- When reading project files, prefer fast search tools such as `rg` and scoped
-  file reads.
-- Do not read or display `.env`; only confirm whether required variables appear
-  to be documented in `.env.example` or README.
-- After edits, summarize changed files and verification performed.
-- If requested behavior conflicts with read-only or secret-handling rules, stop
-  and ask for an accepted spec or explicit confirmation.
+Communicate with the user in Russian unless asked otherwise. Before editing,
+inspect the routed spec and nearby files with `rg` and scoped reads. Never read
+`.env`; only confirm safe variable documentation in `.env.example` or README.
+After edits, summarize changed files and verification. If requested behavior
+conflicts with read-only or secret-handling rules, stop and request an accepted
+spec or explicit confirmation.

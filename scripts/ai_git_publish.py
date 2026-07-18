@@ -122,6 +122,7 @@ def main() -> int:
     if docs_changed(staged_paths) and not args.skip_docs:
         python_script("validate_docs_manifest.py")
         python_script("validate_llm_docs.py")
+        python_script("docs_route.py", "--check-generated")
         specs = changed_specs(staged_paths) or [
             "docs/specs/wb-unit-economics-mvp.md"
         ]

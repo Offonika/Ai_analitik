@@ -22,6 +22,18 @@ related_tests:
   - tests/test_accounting_workflow.py
 contracts:
   - accounting_reports_workflow
+ai_sections:
+  status: "Статус документа"
+  goal: "Цель"
+  decision: "Ключевое решение"
+  roles: "Ролевая модель"
+  kanban: "Канбан и статусы"
+  storage: "Контракт хранения"
+  api: "Внутренний API и права"
+  automation: "Автоматизация первой версии"
+  security: "Границы и безопасность"
+  acceptance: "Acceptance Criteria"
+  tests: "Test Plan"
 depends_on:
   - docs/specs/multi-report-cabinet-implementation.md
   - docs/specs/month-close-control-report-implementation.md
