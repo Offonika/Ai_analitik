@@ -12,17 +12,43 @@ truth_priority: 100
 related_code:
   - scripts/prune_source_refresh_database.py
   - scripts/prune_source_refresh.py
+  - scripts/prune_report_drafts.py
   - scripts/create_maintenance_backup.py
+  - scripts/run_source_refresh_retention_maintenance.py
   - src/wb_unit_economics/maintenance_safety.py
   - src/wb_unit_economics/web/models.py
 related_tests:
   - tests/test_source_refresh_database_retention.py
+  - tests/test_report_draft_retention.py
   - tests/test_maintenance_safety.py
+  - tests/test_source_refresh_retention_maintenance.py
+ai_sections:
+  status: "Implementation Status"
+  goal: "Цель"
+  boundaries: "Границы"
+  protected_runs: "Защищенные запуски"
+  deletion: "Удаление"
+  report_drafts: "Retention черновиков отчетов"
+  backup_rollout: "Бэкапы и rollout"
+  automatic_maintenance: "Автоматическое обслуживание"
+  acceptance: "Критерии приемки"
+code_anchors:
+  - path: scripts/prune_report_drafts.py
+    symbols: ["def select_draft_candidates", "def _apply", "def _remove_artifacts"]
+  - path: scripts/prune_source_refresh_database.py
+    symbols: ["def select_protected_run_ids", "def _verify_collection_files"]
+  - path: scripts/run_source_refresh_retention_maintenance.py
+    symbols: ["def maintenance", "def prune_old_maintenance_bundles"]
+test_anchors:
+  - path: tests/test_report_draft_retention.py
+    symbols: ["test_select_draft_candidates_keeps_latest_recent_and_protected", "test_remove_artifacts_rejects_symlink_path"]
+  - path: tests/test_source_refresh_retention_maintenance.py
+    symbols: ["test_dry_run_checks_report_drafts_before_raw_and_filesystem"]
 depends_on:
   - docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-18"
 ---
 
 # Implementation Status
@@ -114,11 +140,14 @@ aggregate-only итог или первые preview-строки. Префикс
   освобожденных страниц.
 - отдельный ежедневный filesystem-retention timer для уже завершённых и не
   защищённых snapshot-каталогов.
+- dry-run-first удаление старых неактуальных report drafts вместе с их
+  расчетными витринами, зарегистрированными файловыми артефактами и
+  `SourceLoad`-связями после проверенного off-host backup;
 
 Не входит:
 
 - автоматический `VACUUM FULL`, `CLUSTER` или переписывание таблицы;
-- удаление опубликованных отчетов, расчетных витрин или audit events;
+- удаление опубликованных, `superseded` или текущих отчетов и audit events;
 - перенос бэкапов на тот же физический диск под видом внешнего бэкапа;
 - дедупликация или изменение raw payload конкретного сохраненного запуска.
 
@@ -157,6 +186,32 @@ snapshot rows. Blocked/dry-run записи без raw строк не влия�
 - После удаления обычный `VACUUM (ANALYZE)` делает место повторно используемым
   PostgreSQL, но не обязан уменьшать файл на файловой системе.
 
+## Retention черновиков отчетов
+
+Отдельная команда `scripts/prune_report_drafts.py` удаляет только
+`publication_status=draft AND is_current=false`. Для каждой области
+`tenant/client/report_kind/organization` она всегда сохраняет последние
+`keep_latest` черновиков, default `1`, и все черновики моложе `grace_hours`,
+default `24`. Текущие, опубликованные и `superseded` отчеты не являются
+кандидатами независимо от возраста.
+
+Черновик дополнительно защищен, если на него ссылаются AI thread/client draft,
+accounting workflow task/revision/delivery, data refresh как на исходный отчет
+или immutable logistics analysis.
+При `--apply` наличие активного source refresh блокирует всю операцию. Ссылки
+завершенных `source_refresh_runs` и `data_refresh_jobs.new_report_run_id` на
+удаляемый технический draft обнуляются, но сами операционные журналы
+сохраняются.
+
+Dry-run печатает только количество кандидатов, зависимых строк и суммарный
+размер зарегистрированных артефактов. `--apply` требует тот же свежий
+проверенный off-host backup, что и DB retention, повторно строит candidate set
+в транзакции и удаляет все зависимые report marts атомарно. Файлы удаляются
+только по зарегистрированным уникальным путям внутри настроенного
+`reports_root`; общий, внешний, отсутствующий или symlink-путь не удаляется и
+блокирует destructive preflight. Ошибка удаления файла после commit оставляет
+только безопасный orphan и завершает команду ошибкой для ручной сверки.
+
 # Индексы
 
 `uq_source_snapshot_row_position` на
@@ -184,6 +239,37 @@ snapshot rows. Blocked/dry-run записи без raw строк не влия�
 6. Выполнить `VACUUM (ANALYZE)` и вернуть расписание.
 7. Проверить PostgreSQL, web health и следующий dry-run refresh.
 
+# Автоматическое обслуживание
+
+Еженедельный `shumeiko-source-refresh-retention-maintenance.timer` запускает
+fail-closed обертку после общей серверной уборки. Она:
+
+1. использует настроенный versioned S3 bucket как основной off-host backup;
+2. временно останавливает только активные refresh timers и блокирует запуск при
+   наличии работающего worker;
+3. потоково создает custom-format maintenance backup в S3, повторно читает
+   зафиксированную version id и проверяет SHA-256 и `pg_restore --list` без
+   локальной полноразмерной копии;
+4. передает verification JSON в report-draft и raw-row DB retention `--apply`;
+5. выполняет обычный `VACUUM (ANALYZE)` report/raw таблиц и filesystem
+   retention;
+6. удаляет старые локальные maintenance bundles после успешной S3-проверки и
+   восстанавливает только те timers, которые были активны до обслуживания.
+
+Filesystem backup остается ручным fallback: при запуске без `--s3-config`
+обертка проверяет минимум 8 GiB свободного места и сохраняет последний локальный
+maintenance bundle.
+
+Runtime releases не удаляются этим контуром: параллельный deploy может сменить
+active symlink между построением списка и удалением. Для release retention нужен
+общий lock с release builder/switcher; до его появления releases остаются вне
+автоматической очистки.
+
+Любая ошибка backup, worker preflight, PostgreSQL или файловой защиты завершает
+контур без продолжения к следующим destructive-шагам. Ежедневный operational
+SQL-backup хранится локально одни сутки; off-host S3 maintenance backup создается
+отдельно непосредственно перед weekly retention.
+
 # Критерии приемки
 
 - Dry-run не меняет количество строк.
@@ -194,11 +280,23 @@ snapshot rows. Blocked/dry-run записи без raw строк не влия�
   для SHA-256 и `pg_restore --list`; повреждение, смена версии или отключенное
   versioning блокируют destructive preflight.
 - После apply опубликованный отчет и текущий source refresh остаются читаемыми.
+- Report-draft dry-run ничего не меняет; apply сохраняет текущие,
+  published/superseded, свежие, последние и связанные с workflow/AI отчеты.
+- Report artifacts удаляются только по уникальным regular-file путям внутри
+  `reports_root`; небезопасный путь блокирует apply до изменения БД.
 - Новый запуск не воссоздает `uq_source_snapshot_row_hash`.
 - Проверки спецификаций, manifest и релевантные pytest проходят.
 
 ## Changelog
 
+- 2026-07-18: accepted automatic dry-run-first retention of stale non-current
+  report drafts with off-host backup, workflow/AI guards, exact artifact paths,
+  atomic mart deletion and weekly maintenance integration.
+- 2026-07-16: добавлен еженедельный fail-closed maintenance timer с проверяемым
+  backup, DB/filesystem retention и VACUUM ANALYZE; operational SQL-backup
+  сокращен до одного дня. Weekly backup переключен на versioned TWC S3 без
+  локальной полноразмерной копии. Release cleanup исключен до общего
+  deployment-lock.
 - 2026-07-12: bound repack free-space preflight to the PostgreSQL data
   filesystem and documented the 30 GiB / 1.5x minimum.
 - 2026-07-12: added a fail-closed daily filesystem-retention timer while keeping
