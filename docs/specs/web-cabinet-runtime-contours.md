@@ -47,6 +47,10 @@ Linux capabilities и постоянно показывает заметную �
   существования учетной записи;
 - `external_integrations_enabled=false` является master-switch для внешних
   WB/1С проверок и недиагностических source refresh;
+- в `test` при выключенном master-switch статусы `needs_configuration` и
+  `needs_full_refresh` остаются видимыми в source-refresh полях, но не понижают
+  общий health; реальные `failed`, `blocked_low_disk` и другие аварии по-прежнему
+  возвращают `degraded`;
 - `maintenance_message` содержит только безопасный текст до 500 символов;
 - `/api/health` возвращает `runtimeEnvironment` и `maintenanceMessage`, но не
   раскрывает URL БД, секреты или файловые пути.
@@ -105,6 +109,8 @@ manifest и в общий content hash.
 # Acceptance Criteria
 
 - оба local health endpoint отвечают `200`, правильным environment и build ID;
+- test без внешних интеграций имеет общий health `ok`, даже если сохраненный
+  source-refresh status ожидаемо требует настройки;
 - отдельные systemd timers проверяют health production и test не реже раза в
   минуту и падают при несовпадении environment или backend/static build;
 - client-only login отклоняется в test, staff login работает;
@@ -120,6 +126,9 @@ manifest и в общий content hash.
 
 # Changelog
 
+- 2026-07-18: treat missing/full-refresh configuration as expected test state
+  only when external integrations are disabled, while keeping the detailed
+  source status visible and real failures degraded.
 - 2026-07-18: accepted one shared fail-closed lock for runtime build,
   promotion and dry-run-first release retention with active, rollback, grace,
   path and manifest guards.
