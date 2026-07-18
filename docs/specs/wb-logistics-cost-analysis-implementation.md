@@ -39,7 +39,7 @@ test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot"]
+    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot"]
   - path: tests/test_web_app.py
     symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
@@ -204,14 +204,22 @@ Excel-экспорт этого блока не входит в первую о�
 3. Сохраненный raw snapshot — доказательная база и возможность повторного
    расчета после изменения классификатора.
 
-Текущая реализация `wb-logistics-v5` выбирает финансовую детализацию из
-`source_snapshot_rows`. Production-режим
-`SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=files_only` не создает эти строки, поэтому
-scheduled logistics build нельзя включать одновременно с `files_only`, пока не
-реализован проверяемый file-authoritative reader. Для разовой staff-приемки
-разрешено восстановить строки из уже проверенных immutable-файлов штатной
-идемпотентной командой recovery и создать только новый immutable draft; старый
-report run не дополняется на месте.
+`wb-logistics-v5` выбирает финансовую детализацию независимо от физического
+способа хранения raw snapshot. Если строки сохранены в `source_snapshot_rows`,
+используется DB-authoritative reader. Если collection явно помечена
+`file_authoritative` или `skipped_large_snapshot` с
+`rawFilesAuthoritative=true`, используется file-authoritative reader: только
+после повторной проверки `rawIntegrity=verified`, manifest/hash/row count и
+границы пути внутри зарегистрированного `raw_path`. Файлы читаются по одной
+странице, без загрузки всего snapshot в память.
+
+Для одного refresh-run допустим ровно один authoritative reader. Одновременное
+наличие DB-строк и file-authoritative статуса, небезопасный путь, отсутствующий
+файл, несовпадение manifest/hash/row count или нераспознанный persistence status
+блокируют gate с обезличенным кодом ошибки. Канонический source row id, row hash,
+revision precedence и input hash не зависят от storage backend: одинаковый
+immutable snapshot обязан давать тот же результат и hash. Старый report run не
+дополняется на месте; recovery или повторный расчет всегда создает новый draft.
 
 Операционные данные о заказах могут использоваться для дополнительного
 контекста, но не должны заменять итоговую финансовую детализацию.
@@ -308,6 +316,10 @@ order/SKU-витрин выполняется автоматически:
 9. после создания logistics-context запрещать любую повторную запись того же
    `report_id`, включая идентичный input hash; повторный расчет выполняется
    только новым report run.
+10. перед чтением file-authoritative WB Finance повторно проверить immutable
+    manifest и все зарегистрированные файлы; при DB/file ambiguity или любой
+    ошибке целостности сохранить только blocked readiness-контекст, не строить
+    пустую logistics-витрину.
 
 Нормализация схемы выполняется до gate. Значения WB `FBW`/`FBO` с техническим
 суффиксом относятся к `fbo`, а `FBS`/`DBS` с техническим суффиксом — к `fbs`.
@@ -848,6 +860,10 @@ immutable v5 draft, staff-only test-rollout и ручная browser-приемк
 34. tenant, client, cabinet, company и product dimensions нормализуются единым
     `strip`, а схема дополнительно `casefold`; различия только в пробелах не
     разрывают связь с `ReportUnitRow`.
+35. verified file-authoritative WB Finance строит те же logistics context,
+    order/SKU marts и input hash, что и DB-authoritative snapshot; отсутствие
+    `SourceSnapshotRow` при `skipped_large_snapshot` не превращается в пустой
+    источник, а ambiguity или нарушение raw integrity блокирует gate.
 
 # Test Plan
 
@@ -884,6 +900,8 @@ immutable v5 draft, staff-only test-rollout и ручная browser-приемк
 - tenant и role boundaries;
 - mixed tenant/client и persistence результата из чужого scope;
 - non-object payload, overlap base/current и конфликт ревизий одного слоя;
+- parity DB-authoritative/file-authoritative snapshot, page-wise чтение,
+  DB/file ambiguity, unsafe path и повторная проверка raw integrity;
 - фильтры, сортировка и пагинация;
 - `needs_rebuild`, `partial`, `missing`, `low_sample`;
 - отсутствие raw payload в клиентском ответе.
@@ -932,11 +950,12 @@ immutable v5 draft, staff-only test-rollout и ручная browser-приемк
 4. После приемки включить клиентским ролям.
 5. Калькуляторы выпускать отдельным feature flag после фактического блока.
 
-На production со включенным `files_only` feature flag web-интерфейса и flag
-scheduled source-refresh worker разделяются. Worker flag остается выключенным
-до появления file-authoritative reader или отдельного принятого решения о
-возврате `legacy`; иначе новый run обязан получить `blocked`, а не пустые
-витрины.
+DB-authoritative и verified file-authoritative refresh являются поддержанными
+входами одного gate. Feature flag web-интерфейса и flag scheduled
+source-refresh worker по-прежнему разделяются: worker включается только после
+отдельного test-rollout с реальным large snapshot, подтвержденной storage
+parity и resource gate. При нарушении file integrity или ambiguity новый run
+обязан получить `blocked`, а не пустые витрины.
 
 Staff-only приемка draft выполняется по прямой ссылке кабинета с
 `report_id=<draft_report_id>`. Frontend может выбрать эту ревизию только из
@@ -974,6 +993,11 @@ rollout и rollback не изменяются.
 
 # Changelog
 
+- 2026-07-18 — large WB Finance snapshot закреплен как поддержанный
+  file-authoritative вход logistics gate: reader повторно проверяет raw
+  integrity, читает страницы в границах зарегистрированного каталога и
+  сохраняет storage-neutral source identity/hash; DB/file ambiguity fail
+  closed вместо пустой витрины.
 - 2026-07-18 — формализован `wb-logistics-classifier-v1` без chain inference и
   включен в input hash; API дополнен временем построения, концом покрытия,
   `lowSampleProductCount` и структурированными рекомендациями. Frontend

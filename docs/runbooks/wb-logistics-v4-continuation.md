@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-17"
+updated_at: "2026-07-18"
 ---
 
 # Назначение
@@ -23,43 +23,35 @@ accepted-спецификацию. При расхождении следова�
 `false/false` описывают только поведение без конфигурации и не подтверждают
 фактическое состояние test или production.
 
-Методика v5 из merge-коммита `834c779` развернута только на test в immutable
-release `runtime-834c779-logistics-v5-20260718`. Additive migration применена
-идемпотентно, новый v5 draft создан без публикации и проверен через live staff
-API. Production и клиентский флаг не включались. Новый full source refresh не
-выполнялся: test-only preflight остановил его до внешних чтений, потому что
-сохраненные WB/1C-интеграции имеют `disabled/hash_only`. До свежего rollout
-нужно ввести отдельные read-only test-ключи и повторить full refresh.
+Исправление чтения больших file-authoritative WB Finance snapshot находится в
+изолированном коммите `d24d356` и развернуто только на test в immutable release
+`runtime-d24d356-logistics-file-reader-20260718`. Свежий full refresh с
+разрешенными клиентом read-only интеграциями выполнен; исходный raw snapshot не
+изменялся и повторно использован для нового immutable recovery-draft без новых
+внешних API-вызовов. Draft не опубликован и проверен через live staff API.
+Production, текущая публикация и клиентский флаг не менялись. Коммит пока не
+отправлен в remote и не включен в `main`.
 
 # Текст для нового чата
 
 ```text
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v5.
-Сначала запусти compact route для scope `logistics-cost-analysis`, затем прочитай
-релевантные секции accepted spec и
-docs/specs/wb-logistics-cost-analysis-implementation.md и
-docs/runbooks/wb-logistics-v4-continuation.md. На test развернут immutable
-release runtime-834c779-logistics-v5-20260718, schema migration v5 применена,
-master-флаг включен только для staff, клиентский флаг выключен. Новый
-immutable v5 draft имеет logistics gate ready и не опубликован как текущий;
-его локальный идентификатор не хранится в Markdown. Из-за отсутствующей связи
-части SKU с финансовыми строками summary корректно возвращает partial и
+Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
+операционное состояние в этом runbook. Исправление file-authoritative snapshot
+находится в изолированной ветке codex/logistics-file-authoritative-snapshot,
+коммит d24d356; remote/main еще не изменены. На test развернут immutable release
+runtime-d24d356-logistics-file-reader-20260718, master-флаг включен только для
+staff, клиентский флаг выключен. Свежий full read-only refresh выполнен с
+клиентскими интеграциями. Из его неизмененного raw snapshot создан отдельный
+immutable recovery-draft без повторных внешних запросов и без публикации.
+Logistics gate ready; summary корректно возвращает partial и
 not_available_missing_profit_link: финансовые KPI/rankings null/empty, точная
-логистика остается доступной. Fresh full refresh еще заблокирован отсутствием
-test-only read-only WB/1C credentials; не обходи preflight и не используй
-production-ключи. Accepted web/logistics specs уже
-закрепляют отсутствие отдельного пункта «Логистика», сценарии «Сводка / Товары
-/ Логистика / Возвраты / Расходы WB / Исходные данные», deep-link
-#tables/logistics, answer-first состояния и mobile/accessibility criteria.
-Синтетический target находится в
-docs/design/wb-logistics-v4-analytics-target.html. Следующий шаг — ввести
-test-only read-only credentials, выполнить свежий full refresh и повторить
-gate/KPI/UI smoke без публикации и клиентского rollout. Также учти:
-WB Finance не содержит причины покупательского возврата, но у WB есть отдельные
-read-only источники goods-return и claims с разной семантикой и покрытием;
-их подключение требует отдельного spec/probe и не должно придумывать причины.
-Рабочее дерево грязное несвязанными retention/systemd и UI-изменениями — не
-откатывай их и не включай в новый commit без ownership-аудита.
+логистика и обезличенные order/product данные доступны. Live staff API smoke
+прошел; инвертированный период отклонен HTTP 400. Идентификаторы и клиентские
+агрегаты не хранятся в Markdown. Production, текущую публикацию и client flag
+не менять без отдельного разрешения. Следующий шаг — review/push/PR изолированного
+коммита только по явному запросу, затем отдельная визуальная и client-role
+приемка перед возможным клиентским rollout.
 ```
 
 # Текущее состояние
@@ -72,41 +64,47 @@ read-only источники goods-return и claims с разной семант
 - Контексты v1-v4 и несовместимая версия ключа возвращают `needs_rebuild`.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
-- Код v5 merged в `main` коммитом `834c779`; test указывает на immutable release
-  `runtime-834c779-logistics-v5-20260718`. Production остался на отдельно
-  проверенном release `runtime-6368dcf-global-table-sorting-20260718`; test
-  promotion не менял production symlink или service.
+- Исправление file-authoritative snapshot находится в изолированном коммите
+  `d24d356`; test указывает на immutable release
+  `runtime-d24d356-logistics-file-reader-20260718`. Production остался на
+  отдельно проверенном release
+  `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
+  production symlink или service.
 - На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true` и master-флаг логистики
   применены через отдельный systemd override; клиентский флаг остается
   `false`. Code defaults по-прежнему `false/false` и не считаются environment
   evidence.
-- На существующем полном test-снимке выполнен read-only preview после адаптации
-  реальных схем и границ периода. Gate получил `ready`: source/order/SKU/report
-  согласованы с допуском accepted spec, обязательных ошибок, конфликтов цепочек
-  и dimension-расхождений нет; preview завершен rollback и не создал report
-  run. Идентификатор снимка и клиентские агрегаты остаются в локальном
-  операционном evidence, а не в Markdown.
-- Создан новый immutable test-draft из уже сохраненного v4 lineage без
-  перезаписи старого report run. Поля финансовой витрины и source hashes
-  сверены до commit; logistics-context имеет `ready`, методику
-  `wb-logistics-v5`, ключ `wb-order-product-v1`, report остается `draft` и не
-  заменяет текущую публикацию. Идентификатор draft и клиентские объемы не
-  фиксируются в Git или Markdown.
+- С разрешенными клиентом read-only интеграциями выполнен новый full refresh в
+  test. Обязательные внешние чтения завершились; raw snapshot и его manifest
+  сохранены до нормализации. Одна 1C-конфигурация из локального environment была
+  неактуальна, поэтому использована уже сохраненная защищенная tenant-интеграция
+  только в памяти процесса; секреты не копировались в Git, Markdown или вывод.
+- Первый свежий draft оказался `blocked`: крупная коллекция WB Finance была
+  корректно сохранена как `skipped_large_snapshot` с авторитетными raw-файлами,
+  но logistics selector читал только строки БД. Это подтвержденный storage gap,
+  а не отсутствие данных источника.
+- Коммит `d24d356` добавил потоковое чтение только для повторно проверенного
+  `file_authoritative`/`skipped_large_snapshot`: путь обязан оставаться внутри
+  run root, manifest/hash/row count перепроверяются, а одновременные DB- и
+  file-строки блокируются как неоднозначность.
+- Из того же неизмененного свежего snapshot создан новый immutable recovery-
+  draft без внешних API-вызовов и перезаписи старого report run. Context имеет
+  `ready`, методику `wb-logistics-v5`, report остается `draft` и не заменяет
+  текущую публикацию. Идентификаторы и клиентские объемы не фиксируются в Git
+  или Markdown.
 - Live staff API вернул `partial` и
   `not_available_missing_profit_link`: точная логистика, products и staff-only
   orders доступны, финансовые KPI равны `null`, финансовые рейтинги пусты.
-  Инвертированный период отклоняется HTTP 400, старый v4 draft возвращает
-  `needs_rebuild`. Активного client-пользователя в test БД для отдельного live
-  session smoke нет; `/api/me` подтверждает client flag `false`, а regression
-  tests покрывают client-role 404.
+  Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
+  smoke удалена; `/api/me` подтверждает master flag `true` и client flag
+  `false`, а regression tests покрывают client-role 404.
 - Public health test-контура отдает build
   `20260718-logistics-v5-global-table-sorting-v1`, schema
   `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
   timer завершился `success`.
-- Fresh full source refresh 18 июля не запускался: preflight подтвердил
-  `disabled/hash_only` для обязательных WB/1C интеграций и завершился blocked до
-  внешних чтений. Нельзя подставлять production credentials или трактовать
-  сохраненный draft как свежий snapshot.
+- Production, текущий опубликованный report и client flag не менялись. Любой
+  последующий rollout требует повторной проверки environment evidence и
+  отдельного разрешения.
 
 # Последнее UX-решение
 
@@ -229,16 +227,21 @@ payload и повторную запись context.
 
 # Проверки
 
-Последний полный прогон ядра после gate-fix:
+Полный прогон изолированного коммита `d24d356`:
 
 ```text
-731 passed, 5 warnings in 860.11s
+773 passed, 5 warnings in 516.10s
 ```
 
 Пять warnings — сторонние deprecation warnings FastAPI/TestClient и ChatKit;
 они не блокируют текущий пакет.
 
-Также успешно выполнены:
+Также успешно выполнены документационные валидаторы, Ruff, целевые
+logistics/routing/database/web tests и проверка real snapshot. Live API smoke
+на test вернул HTTP 200 для `/api/me`, summary, products и staff orders; неверный
+период вернул HTTP 400. Все contract-checks fail-closed прошли.
+
+Команды для воспроизведения статической части на ревизии `d24d356`:
 
 ```bash
 .venv/bin/ruff check .
@@ -247,31 +250,19 @@ node --check src/wb_unit_economics/web/static/app.js
 .venv/bin/python scripts/validate_docs_manifest.py
 .venv/bin/python scripts/validate_llm_docs.py
 .venv/bin/python scripts/validate_specs.py docs/specs/wb-logistics-cost-analysis-implementation.md
+.venv/bin/python scripts/validate_documentation_contracts.py
+.venv/bin/python scripts/docs_route.py --check-generated
 .venv/bin/python scripts/validate_no_secrets.py
 git diff --check
 ```
 
-После staff-link изменения отдельно прошли два точечных API/UI-теста, Ruff,
-`node --check`, spec validation, docs manifest, LLM links и
-`git diff --cached --check`.
-
 # Рабочее дерево
 
-Основной пакет логистики v4, real-snapshot gate-fix и staff-link уже
-закоммичены. Рабочее дерево по-прежнему содержит существовавшие ранее
-несвязанные изменения. Не считать их частью нового UX/returns этапа и не
-откатывать без отдельного запроса:
-
-- изменения retention/source-refresh документации;
-- `deploy/systemd/shumeiko-web-backup.service`;
-- новые source-refresh retention service/timer;
-- `scripts/run_source_refresh_retention_maintenance.py`;
-- `tests/test_source_refresh_retention_maintenance.py`;
-- другие пользовательские изменения web UI, если их происхождение не
-  подтверждено diff-аудитом.
-
-Перед commit/stage сначала отделить логистический diff от посторонних файлов.
-Не использовать destructive Git-команды.
+Исправление подготовлено в отдельном clean worktree на ветке
+`codex/logistics-file-authoritative-snapshot` от `origin/main`, поэтому
+несвязанные изменения основного рабочего дерева в коммит не вошли. Коммит
+`d24d356` пока существует только локально. Не переносить его через dirty
+worktree и не выполнять push/PR без явного запроса пользователя.
 
 # Итог ownership/diff-аудита на 16 июля 2026 года
 
@@ -402,30 +393,23 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Открыть `docs/design/wb-logistics-v4-analytics-target.html` в реальном
-   браузере и принять или скорректировать структуру на desktop 1440×900 и mobile
-   390×844. Проверить первый приоритетный action, полный глобальный срез,
-   горизонтальную nested navigation, focus outline и отсутствие overflow.
-2. После визуальной приемки реализовать изолированно: единый sidebar entry,
-   nested scenarios, `#tables/logistics`, overview-action, focus/Back/Forward и
-   state matrix. Не смешивать эту работу с retention/report-wizard hunks.
-3. Проверить desktop/mobile, keyboard/focus, deep-link к разрешенному draft,
-   отсутствие logistics API-вызова и косвенного раскрытия draft для client role
-   при выключенном client flag.
-4. Выполнить visual regression относительно принятого target, точечные UI/API
-   тесты, `node --check`, Ruff, spec/docs/no-secrets проверки и только затем
-   готовить отдельный commit/dependent PR.
-5. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
+1. По явному запросу провести review локального коммита `d24d356`, отправить
+   ветку и открыть изолированный PR. До этого remote/main не менять.
+2. Перед клиентским rollout выполнить визуальную приемку test на desktop/mobile
+   и отдельный live smoke под client role. Подтвердить, что `null` не выглядит
+   как ноль, причина недоступности финансов видима, а staff orders недоступны.
+3. После merge собрать новый immutable release из точной merge-ревизии,
+   повторить migration/gate/KPI/UI smoke и только по отдельному разрешению
+   включать client flag. Production и текущую публикацию до этого не менять.
+4. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
-6. До завершения UX-приемки использовать текущую staff-ссылку вида
+5. До завершения клиентской приемки использовать текущую staff-ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<authorized_draft>#logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода
    отчета; на неполных границах логистика точная, а недельные финансовые KPI
    намеренно `null`.
-7. Клиентский флаг оставить выключенным; production и текущую публикацию не
-   менять без отдельного согласования.
 
 # Что не входит в текущий этап
 
