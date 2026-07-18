@@ -15410,13 +15410,7 @@ def report_full_payload(
             .order_by(ReportReconciliationMonthly.id)
         )
     )
-    document_reconciliation = list(
-        db.scalars(
-            select(ReportDocumentReconciliationRow)
-            .where(ReportDocumentReconciliationRow.report_run_id == report.id)
-            .order_by(ReportDocumentReconciliationRow.id)
-        )
-    )
+    document_reconciliation = _document_reconciliation_rows_for_report(db, report)
     loads = _source_loads_for_report(db, report)
     source_coverage = _source_coverage_for_report(db, report)
     unit_rows = [_row_payload(row) for row in rows]
@@ -19192,6 +19186,33 @@ def _document_reconciliation_is_informational_adjustment(
     )
 
 
+def _document_reconciliation_is_visible_for_report(
+    row: ReportDocumentReconciliationRow,
+    report: ReportRun,
+) -> bool:
+    unmatched_statuses = {
+        "Лишний документ в 1С".casefold(),
+        "Корректировка 1С".casefold(),
+        "Корректировка себестоимости 1С".casefold(),
+    }
+    if as_text(row.status).strip().casefold() not in unmatched_statuses:
+        return True
+    if any(
+        as_text(value)
+        for value in (
+            row.summary_report_id,
+            row.weekly_sales_report_id,
+            row.weekly_buyout_report_id,
+            row.wb_report_ids,
+        )
+    ):
+        return True
+    document_date = _onec_calendar_document_date(row)
+    if document_date is None:
+        return True
+    return report.period_start <= document_date <= report.period_end
+
+
 def _document_reconciliation_has_issue(
     row: ReportDocumentReconciliationRow,
 ) -> bool:
@@ -19371,13 +19392,18 @@ def _unit_rows_for_report(db: Session, report: ReportRun) -> list[ReportUnitRow]
 def _document_reconciliation_rows_for_report(
     db: Session, report: ReportRun
 ) -> list[ReportDocumentReconciliationRow]:
-    return list(
+    rows = list(
         db.scalars(
             select(ReportDocumentReconciliationRow)
             .where(ReportDocumentReconciliationRow.report_run_id == report.id)
             .order_by(ReportDocumentReconciliationRow.id)
         )
     )
+    return [
+        row
+        for row in rows
+        if _document_reconciliation_is_visible_for_report(row, report)
+    ]
 
 
 def _source_loads_for_report(db: Session, report: ReportRun) -> list[SourceLoad]:
@@ -19936,6 +19962,11 @@ def _filtered_report_analytics_payload(
     document_reconciliation_rows = _document_reconciliation_rows_for_conditions(
         db, *document_reconciliation_conditions
     )
+    document_reconciliation_rows = [
+        row
+        for row in document_reconciliation_rows
+        if _document_reconciliation_is_visible_for_report(row, report)
+    ]
     filtered_rows = list(db.scalars(select(ReportUnitRow).where(*unit_conditions)))
     tax_context = _tax_context_payload(db, report, filtered_rows)
     return {
@@ -20820,6 +20851,11 @@ def query_document_reconciliation_rows(
             )
         )
     )
+    rows = [
+        row
+        for row in rows
+        if _document_reconciliation_is_visible_for_report(row, report)
+    ]
     if delta_only:
         rows = [row for row in rows if _document_reconciliation_has_issue(row)]
     page_rows = rows[offset : offset + limit]

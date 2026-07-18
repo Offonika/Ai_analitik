@@ -7504,6 +7504,76 @@ def test_onec_adjustment_is_informational_for_document_readiness(
     assert delta_only["total"] == 0
 
 
+def test_out_of_period_unmatched_onec_document_is_hidden_fail_closed(
+    tmp_path: Path,
+) -> None:
+    payload = deepcopy(sample_payload())
+    base = payload["documentReconciliation"][0]
+    payload["documentReconciliation"].extend(
+        [
+            {
+                **base,
+                "id": "doc-recon-outside-period",
+                "status": "Лишний документ в 1С",
+                "periodStatus": "период 1С",
+                "salesPeriod": "2026-02-16 - 2026-02-22",
+                "salesPeriodStart": "2026-02-16",
+                "salesPeriodEnd": "2026-02-22",
+                "expectedDocumentDate": "",
+                "summaryReportId": "",
+                "weeklySalesReportId": "",
+                "weeklyBuyoutReportId": "",
+                "wbReportIds": "",
+                "onecDocuments": "OUTSIDE-PERIOD",
+                "onecDocumentDates": "2026-02-22",
+                "quantityDelta": None,
+                "amountDelta": None,
+                "settlementDelta": None,
+            },
+            {
+                **base,
+                "id": "doc-recon-inside-period",
+                "status": "Лишний документ в 1С",
+                "periodStatus": "период 1С",
+                "salesPeriod": "2026-05-11 - 2026-05-17",
+                "salesPeriodStart": "2026-05-11",
+                "salesPeriodEnd": "2026-05-17",
+                "expectedDocumentDate": "",
+                "summaryReportId": "",
+                "weeklySalesReportId": "",
+                "weeklyBuyoutReportId": "",
+                "wbReportIds": "",
+                "onecDocuments": "INSIDE-PERIOD",
+                "onecDocumentDates": "2026-05-17",
+                "quantityDelta": None,
+                "amountDelta": None,
+                "settlementDelta": None,
+            },
+        ]
+    )
+    client = make_client(tmp_path, payload=payload)
+    login(client)
+
+    summary = client.get("/api/reports/report-1/summary").json()
+    rows = client.get("/api/reports/report-1/document-reconciliation").json()
+    delta_only = client.get(
+        "/api/reports/report-1/document-reconciliation",
+        params={"delta_only": "true"},
+    ).json()
+
+    assert summary["quality"]["documentReconciliationRows"] == 2
+    assert summary["quality"]["documentReconciliationIssues"] == 1
+    assert "OUTSIDE-PERIOD" not in {
+        item["onecDocuments"] for item in summary["documentReconciliation"]
+    }
+    assert rows["total"] == 2
+    assert "OUTSIDE-PERIOD" not in {
+        item["onecDocuments"] for item in rows["items"]
+    }
+    assert delta_only["total"] == 1
+    assert delta_only["items"][0]["onecDocuments"] == "INSIDE-PERIOD"
+
+
 def test_buyout_amount_and_return_deltas_are_informational(tmp_path: Path) -> None:
     payload = deepcopy(sample_payload())
     payload["documentReconciliation"] = [
