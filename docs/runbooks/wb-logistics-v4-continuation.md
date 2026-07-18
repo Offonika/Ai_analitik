@@ -16,7 +16,7 @@ accepted-спецификацию. При расхождении следова�
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
 
-Последнее записанное operational evidence датировано **18 июля 2026 года**.
+Последнее записанное operational evidence датировано **19 июля 2026 года**.
 Перед любым утверждением о текущих feature flags, runtime, gate или rollout
 обязательно повторно проверить соответствующую среду; приведенное ниже
 состояние не является доказательством на более позднюю дату. Code defaults
@@ -82,15 +82,17 @@ false и HTTP 404 для logistics summary и staff orders; временный �
 - `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
 - Исправление file-authoritative snapshot включено в `main` merge-коммитом
-  `3773ed5`; test указывает на immutable release
-  `runtime-3773ed5-logistics-file-reader-20260718`. Production остался на
-  отдельно проверенном release
+  `3773ed5`; на 19 июля test указывает на immutable release
+  `runtime-fa020db-logistics-client-ui-20260718`. Production остался на отдельно
+  проверенном release
   `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
   production symlink или service.
-- На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true` и master-флаг логистики
-  применены через отдельный systemd override; клиентский флаг остается
-  `false`. Code defaults по-прежнему `false/false` и не считаются environment
-  evidence.
+- На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`, master-флаг и client-флаг
+  логистики применены через отдельные systemd overrides. Проверка 19 июля
+  обнаружила client-флаг уже установленным в `true`; повторное изменение или
+  restart не потребовались. `/api/me` клиентской роли подтвердил оба
+  логистических флага `true` и `logisticsOrdersEnabled=false`. Code defaults
+  по-прежнему `false/false` и не считаются environment evidence.
 - С разрешенными клиентом read-only интеграциями выполнен новый full refresh в
   test. Обязательные внешние чтения завершились; raw snapshot и его manifest
   сохранены до нормализации. Одна 1C-конфигурация из локального environment была
@@ -109,16 +111,23 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   `ready`, методику `wb-logistics-v5`, report остается `draft` и не заменяет
   текущую публикацию. Идентификаторы и клиентские объемы не фиксируются в Git
   или Markdown.
-- Live staff API вернул `partial` и
+- До включения client-флага live staff API вернул `partial` и
   `not_available_missing_profit_link`: точная логистика, products и staff-only
   orders доступны, финансовые KPI равны `null`, финансовые рейтинги пусты.
   Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
   smoke удалена; `/api/me` подтверждает master flag `true` и client flag
   `false`, а regression tests покрывают client-role 404.
-- Live client-role smoke на merge-release вернул HTTP 200 для `/api/me` и HTTP
+- До включения client-флага live client-role smoke на merge-release вернул HTTP
+  200 для `/api/me` и HTTP
   404 для logistics summary и staff-only orders. Frontend содержит явное
   сообщение `Финансовая связь с отчётом отсутствует`; временный client-user и
   обе smoke-сессии после проверки удалены.
+- После разрешения пользователя 19 июля повторный client-role smoke вернул HTTP
+  200 для `/api/me`, logistics summary и products; товарные строки присутствуют,
+  `dataStatus=ready`, `sliceStatus=partial`, а финансовая часть fail-closed имеет
+  `not_available_missing_profit_link`. Staff-only orders по-прежнему возвращают
+  HTTP 404. Временные client-users и sessions удалены; контрольный остаток равен
+  нулю.
 - Временный Playwright/Chromium browser runtime использован только вне
   репозитория для desktop 1440×900 и mobile 390×844 приемки. Deep-link
   `#tables/logistics`, focus transfer, отсутствие global overflow, именованные
@@ -131,9 +140,16 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   `20260718-logistics-v5-global-table-sorting-v1`, schema
   `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
   timer завершился `success`.
-- Production, текущий опубликованный report и client flag не менялись. Любой
-  последующий rollout требует повторной проверки environment evidence и
-  отдельного разрешения.
+- Browser smoke 19 июля на desktop 1440x900 и mobile 390x844 подтвердил
+  `#tables/logistics`, видимый сценарий и товарные строки, отсутствие client-
+  действий для staff-only order chains, видимое объяснение отсутствующей
+  финансовой связи, отсутствие global overflow и console/page/network errors.
+  Временный Chromium использован вне репозитория; снимки остаются только
+  локальным operational evidence.
+- Production, текущий опубликованный report и production client flag не
+  менялись. Production health после test-приемки остается `ok` на release
+  `runtime-6368dcf-global-table-sorting-20260718`. Любой production rollout
+  требует повторной проверки environment evidence и отдельного разрешения.
 
 # Последнее UX-решение
 
@@ -430,18 +446,18 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Только по отдельному явному разрешению включать client flag на test.
-   Повторить client-role summary/products и browser smoke; staff orders должны
-   остаться недоступными. Production и текущую публикацию не менять.
-2. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
+1. Провести пользовательскую приемку test-сценария по обычной клиентской роли.
+   До отдельного разрешения не менять production, production client flag и
+   текущую публикацию.
+2. Только после явного разрешения подготовить immutable production release,
+   повторить preflight/health/smoke и отдельно согласовать включение
+   production client flag и переключение публикации.
+3. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
-3. До завершения клиентской приемки использовать текущую staff-ссылку вида
-   `/cabinet?client_id=<authorized_client>&report_id=<authorized_draft>#logistics`;
-   конкретные идентификаторы брать из локального разрешенного операционного
-   контекста. Для финансовых KPI выбирать границы полных недель внутри периода
-   отчета; на неполных границах логистика точная, а недельные финансовые KPI
-   намеренно `null`.
+4. Для финансовых KPI выбирать границы полных недель внутри периода отчета; на
+   неполных границах логистика точная, а недельные финансовые KPI намеренно
+   `null`.
 
 # Что не входит в текущий этап
 
