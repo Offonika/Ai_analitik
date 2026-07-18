@@ -11,6 +11,7 @@ const state = {
   scenario: null,
   generationIdempotencyKey: "",
   reports: [],
+  reportsLoaded: false,
   reportId: null,
   clientReportPayload: null,
   clientReportReportId: "",
@@ -3500,6 +3501,7 @@ async function onLogout() {
   state.clients = [];
   state.clientId = null;
   state.reports = [];
+  state.reportsLoaded = false;
   state.reportId = null;
   state.reportWizardRefresh = null;
   state.reportWizardRequest = null;
@@ -3691,6 +3693,7 @@ async function loadReportKinds(context = currentClientLoadContext()) {
 
 function clearReportSelection() {
   state.reports = [];
+  state.reportsLoaded = false;
   state.reportId = null;
   state.clientReportPayload = null;
   state.clientReportReportId = "";
@@ -3812,6 +3815,7 @@ async function loadReports(context = currentClientLoadContext()) {
     syncReportKindSurface();
     return;
   }
+  state.reportsLoaded = false;
   const params = new URLSearchParams({ report_kind: state.reportKind });
   if (state.organizationId) params.set("organization_id", state.organizationId);
   const payload = await api(
@@ -3821,6 +3825,8 @@ async function loadReports(context = currentClientLoadContext()) {
     return;
   }
   state.reports = payload.items || [];
+  state.reportsLoaded = true;
+  syncLogisticsEntryPoint();
   if (!state.reports.length) {
     if (isAccountingReportKind()) {
       clearReportSelection();
@@ -4153,6 +4159,12 @@ async function loadOnecReconciliation(context = {}) {
 async function loadClientDraft(context = {}) {
   const reportId = context.reportId || state.reportId;
   if (!reportId) {
+    return;
+  }
+  if (!isStaffUser()) {
+    els.draftPanel.hidden = false;
+    els.draftStatus.textContent =
+      "Отчёт клиенту готовит консультант. Данные отчета не менялись.";
     return;
   }
   try {
@@ -15447,6 +15459,7 @@ function resetClientScopedState(options = {}) {
     state.clientId = null;
   }
   state.reports = [];
+  state.reportsLoaded = false;
   state.reportId = null;
   state.clientReportPayload = null;
   state.clientReportReportId = "";
@@ -15554,7 +15567,14 @@ function syncLogisticsEntryPoint() {
     !available &&
     state.workspace === "tables" &&
     state.tableScenario === "logistics" &&
-    (Boolean(state.reportId) || Boolean(state.clientId && state.reports.length === 0))
+    (
+      Boolean(state.reportId)
+      || Boolean(
+        state.clientId
+        && state.reportsLoaded
+        && state.reports.length === 0
+      )
+    )
   ) {
     selectWorkspace("tables", {
       tableScenario: "summary",

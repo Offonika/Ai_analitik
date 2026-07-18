@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-18"
+updated_at: "2026-07-19"
 ---
 
 # Назначение
@@ -23,13 +23,13 @@ accepted-спецификацию. При расхождении следова�
 `false/false` описывают только поведение без конфигурации и не подтверждают
 фактическое состояние test или production.
 
-Исправление чтения больших file-authoritative WB Finance snapshot включено в
-`main` merge-коммитом `3773ed5` и развернуто только на test в immutable release
-`runtime-3773ed5-logistics-file-reader-20260718`. Свежий full refresh с
-разрешенными клиентом read-only интеграциями выполнен; исходный raw snapshot не
-изменялся и повторно использован для нового immutable recovery-draft без новых
-внешних API-вызовов. Draft не опубликован и проверен через live staff и
-client-role API. Production, текущая публикация и клиентский флаг не менялись.
+Проверенный immutable recovery-draft из свежего full read-only refresh
+опубликован как текущий test-report после отдельного разрешения. Публикация
+выполнена штатным audited-механизмом; общий blocker
+`monthly_reconciliation_unresolved` сохранен как контрольная задача и не скрыт.
+На test master- и клиентский флаги включены, развернут immutable release
+`runtime-fa020db-logistics-client-ui-20260718`. Production остается на
+`runtime-6368dcf-global-table-sorting-20260718`, клиентский флаг там выключен.
 
 Позднее 18 июля production incremental source refresh успешно создал новый
 immutable staff-draft. Scheduled worker сохранил logistics flag выключенным в
@@ -55,20 +55,18 @@ logistics-context и source-quality имеют статус `ready`, отчет 
 ```text
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v5.
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
-операционное состояние в этом runbook. Исправление file-authoritative snapshot
-включено в main merge-коммитом 3773ed5. На test развернут immutable release
-runtime-3773ed5-logistics-file-reader-20260718, master-флаг включен только для
-staff, клиентский флаг выключен. Свежий full read-only refresh выполнен с
-клиентскими интеграциями. Из его неизмененного raw snapshot создан отдельный
-immutable recovery-draft без повторных внешних запросов и без публикации.
-Logistics gate ready; summary корректно возвращает partial и
+операционное состояние в этом runbook. На test развернут immutable release
+runtime-fa020db-logistics-client-ui-20260718, master- и клиентский флаги
+включены. Проверенный recovery-draft свежего full read-only refresh опубликован
+как current через audited publish-with-tasks; blocker
+monthly_reconciliation_unresolved сохранен. Client-role summary/products
+возвращают HTTP 200, dataStatus ready, sliceStatus partial и
 not_available_missing_profit_link: финансовые KPI/rankings null/empty, точная
-логистика и обезличенные order/product данные доступны. Live staff API smoke
-прошел; инвертированный период отклонен HTTP 400. Идентификаторы и клиентские
-агрегаты не хранятся в Markdown. Live client-role smoke подтвердил client flag
-false и HTTP 404 для logistics summary и staff orders; временный пользователь и
-сессии удалены. Production и текущую публикацию не менять. Следующий шаг —
-отдельное явное разрешение на client flag и client-role приемку после включения.
+логистика и product rows доступны. Staff-only orders и оставшийся старый draft
+возвращают HTTP 404. Desktop/mobile deep-link #tables/logistics прошел без
+дополнительного клика, application console/page/network errors и overflow.
+Временные пользователи и сессии удалены. Production не менять без отдельного
+разрешения; его runtime и client flag остались прежними.
 ```
 
 # Текущее состояние
@@ -82,17 +80,21 @@ false и HTTP 404 для logistics summary и staff orders; временный �
 - `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
 - Исправление file-authoritative snapshot включено в `main` merge-коммитом
-  `3773ed5`; на 19 июля test указывает на immutable release
-  `runtime-fa020db-logistics-client-ui-20260718`. Production остался на отдельно
-  проверенном release
+  `3773ed5`; клиентский deep-link hardening включен merge-коммитом `fa020db`.
+  Test указывает на immutable release
+  `runtime-fa020db-logistics-client-ui-20260718`. Production остался на
+  отдельно проверенном release
   `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
   production symlink или service.
-- На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true`, master-флаг и client-флаг
-  логистики применены через отдельные systemd overrides. Проверка 19 июля
-  обнаружила client-флаг уже установленным в `true`; повторное изменение или
-  restart не потребовались. `/api/me` клиентской роли подтвердил оба
-  логистических флага `true` и `logisticsOrdersEnabled=false`. Code defaults
-  по-прежнему `false/false` и не считаются environment evidence.
+- На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true` и master-флаг логистики
+  применены через отдельный systemd override; после визуальной приемки и
+  отдельного разрешения клиентский флаг переключен в `true`. Code defaults
+  по-прежнему `false/false` и не считаются environment
+  evidence.
+- Повторная проверка 19 июля обнаружила client-флаг уже установленным в `true`;
+  повторное изменение или restart не потребовались. `/api/me` клиентской роли
+  подтвердил оба логистических флага `true` и
+  `logisticsOrdersEnabled=false`.
 - С разрешенными клиентом read-only интеграциями выполнен новый full refresh в
   test. Обязательные внешние чтения завершились; raw snapshot и его manifest
   сохранены до нормализации. Одна 1C-конфигурация из локального environment была
@@ -108,32 +110,36 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   file-строки блокируются как неоднозначность.
 - Из того же неизмененного свежего snapshot создан новый immutable recovery-
   draft без внешних API-вызовов и перезаписи старого report run. Context имеет
-  `ready`, методику `wb-logistics-v5`, report остается `draft` и не заменяет
-  текущую публикацию. Идентификаторы и клиентские объемы не фиксируются в Git
-  или Markdown.
-- До включения client-флага live staff API вернул `partial` и
+  `ready`, методику `wb-logistics-v5`. После отдельного разрешения report
+  опубликован как current через audited publish-with-tasks; blocker
+  `monthly_reconciliation_unresolved` сохранен как контрольная задача.
+  Идентификаторы и клиентские объемы не фиксируются в Git или Markdown.
+- Live staff API вернул `partial` и
   `not_available_missing_profit_link`: точная логистика, products и staff-only
   orders доступны, финансовые KPI равны `null`, финансовые рейтинги пусты.
   Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
-  smoke удалена; `/api/me` подтверждает master flag `true` и client flag
-  `false`, а regression tests покрывают client-role 404.
-- До включения client-флага live client-role smoke на merge-release вернул HTTP
-  200 для `/api/me` и HTTP
-  404 для logistics summary и staff-only orders. Frontend содержит явное
-  сообщение `Финансовая связь с отчётом отсутствует`; временный client-user и
-  обе smoke-сессии после проверки удалены.
-- После разрешения пользователя 19 июля повторный client-role smoke вернул HTTP
-  200 для `/api/me`, logistics summary и products; товарные строки присутствуют,
-  `dataStatus=ready`, `sliceStatus=partial`, а финансовая часть fail-closed имеет
-  `not_available_missing_profit_link`. Staff-only orders по-прежнему возвращают
-  HTTP 404. Временные client-users и sessions удалены; контрольный остаток равен
-  нулю.
+  smoke удалена. После rollout `/api/me` подтверждает master flag `true` и
+  client flag `true`.
+- Live client-role smoke после публикации вернул HTTP 200 для `/api/me`,
+  logistics summary и products текущего v5-report: `dataStatus=ready`,
+  `sliceStatus=partial`, финансовый статус
+  `not_available_missing_profit_link`, финансовые KPI `null`, рейтинги пусты,
+  product rows доступны. Staff-only orders и оставшийся старый draft возвращают
+  HTTP 404. Временный client-user и smoke-сессия удалены.
+- Повторный client-role smoke 19 июля подтвердил HTTP 200 для `/api/me`,
+  logistics summary и products текущего report; товарные строки присутствуют,
+  `dataStatus=ready`, `sliceStatus=partial`, финансовая часть остается
+  fail-closed с `not_available_missing_profit_link`. Staff-only orders
+  по-прежнему возвращают HTTP 404. Временные client-users и sessions удалены;
+  контрольный остаток равен нулю.
 - Временный Playwright/Chromium browser runtime использован только вне
-  репозитория для desktop 1440×900 и mobile 390×844 приемки. Deep-link
-  `#tables/logistics`, focus transfer, отсутствие global overflow, именованные
+  репозитория для desktop 1440×900 и mobile 390×844 приемки. После исправления
+  гонки начальной загрузки deep-link `#tables/logistics` стабилен без
+  дополнительного клика; staff-only `client-draft` из client-role не
+  запрашивается. Focus transfer, отсутствие global overflow, именованные
   controls, `null -> —`, видимая причина недоступности финансов и product rows
-  подтверждены; console/page/network errors отсутствуют. На первом mobile
-  viewport warning находится ниже global filters/navigation, но доступен
+  подтверждены; application console/page/network errors отсутствуют. На первом
+  mobile viewport warning находится ниже global filters/navigation, но доступен
   обычной прокруткой без отдельного раскрытия. Снимки остаются локальным
   operational evidence и не добавляются в Git или Markdown.
 - Public health test-контура отдает build
@@ -146,10 +152,12 @@ false и HTTP 404 для logistics summary и staff orders; временный �
   финансовой связи, отсутствие global overflow и console/page/network errors.
   Временный Chromium использован вне репозитория; снимки остаются только
   локальным operational evidence.
-- Production, текущий опубликованный report и production client flag не
-  менялись. Production health после test-приемки остается `ok` на release
-  `runtime-6368dcf-global-table-sorting-20260718`. Любой production rollout
-  требует повторной проверки environment evidence и отдельного разрешения.
+- Production и текущий опубликованный report не менялись; production client
+  flag остается выключенным. Production rollout требует повторной проверки
+  environment evidence и отдельного разрешения.
+- Production health после повторной test-приемки 19 июля остается `ok` на
+  release `runtime-6368dcf-global-table-sorting-20260718`; production symlink и
+  service не менялись.
 
 # Последнее UX-решение
 
@@ -446,18 +454,18 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. Провести пользовательскую приемку test-сценария по обычной клиентской роли.
-   До отдельного разрешения не менять production, production client flag и
-   текущую публикацию.
-2. Только после явного разрешения подготовить immutable production release,
-   повторить preflight/health/smoke и отдельно согласовать включение
-   production client flag и переключение публикации.
-3. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
+1. Разобрать сохраненную контрольную задачу
+   `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
+   пересобирать текущий immutable report на месте.
+2. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
-4. Для финансовых KPI выбирать границы полных недель внутри периода отчета; на
-   неполных границах логистика точная, а недельные финансовые KPI намеренно
-   `null`.
+3. Для повторной клиентской приемки использовать текущую ссылку вида
+   `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
+   конкретные идентификаторы брать из локального разрешенного операционного
+   контекста. Для финансовых KPI выбирать границы полных недель внутри периода
+   отчета; на неполных границах логистика точная, а недельные финансовые KPI
+   намеренно `null`.
 
 # Что не входит в текущий этап
 
@@ -466,5 +474,5 @@ deployment и без write-операций во внешние системы:
 - маршруты и локализация складов;
 - тарифный калькулятор;
 - калькулятор маржинального дохода;
-- клиентский rollout;
+- production client rollout;
 - любые write-операции во внешние системы.

@@ -5207,6 +5207,25 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "overflow-wrap: anywhere" in css.text
 
 
+def test_client_logistics_deep_link_waits_for_reports_and_skips_staff_draft_api(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+
+    assert app_js.status_code == 200
+    assert "reportsLoaded: false" in app_js.text
+    assert "state.reportsLoaded = true;\n  syncLogisticsEntryPoint();" in app_js.text
+    assert "state.reportsLoaded\n        && state.reports.length === 0" in app_js.text
+    draft_loader = app_js.text.split(
+        "async function loadClientDraft", 1
+    )[1].split("async function loadIntegrations", 1)[0]
+    assert draft_loader.index("if (!isStaffUser())") < draft_loader.index(
+        "/client-draft"
+    )
+
+
 def test_report_wizard_keeps_published_report_and_new_run_separate(
     tmp_path: Path,
 ) -> None:
