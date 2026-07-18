@@ -823,6 +823,161 @@ def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
     assert sku_rows[0].logistics_total == Decimal("50")
 
 
+@pytest.mark.parametrize(
+    ("tamper_after_verify", "add_database_row", "expected_blocker"),
+    [
+        (False, False, None),
+        (True, False, "file_authoritative_snapshot_invalid"),
+        (False, True, "source_storage_ambiguity"),
+    ],
+)
+def test_logistics_analysis_reads_verified_file_authoritative_snapshot(
+    tmp_path: Path,
+    tamper_after_verify: bool,
+    add_database_row: bool,
+    expected_blocker: str | None,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        unit_row = (
+            db.query(repository.ReportUnitRow).filter_by(report_run_id=report.id).one()
+        )
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="file-authoritative-logistics-gate",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="file-authoritative logistics gate test",
+        )
+        run_root = settings.source_refresh_root_path / refresh_run.id
+        raw_dir = run_root / "wb_finance_detail"
+        raw_dir.mkdir(parents=True)
+        refresh_run.root_dir = str(run_root)
+        logistics_payload = {
+            "rrdId": "rrd-file-1",
+            "rrDate": "2026-04-06",
+            "orderDt": "2026-04-05",
+            "orderUid": "order-1",
+            "nmId": "1001",
+            "sku": "BAR-1",
+            "vendorCode": "WB-1",
+            "title": "Товар",
+            "deliveryMethod": "FBO",
+            "docTypeName": "Логистика",
+            "sellerOperName": "Логистика",
+            "deliveryService": "50",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        }
+        page_payload = [logistics_payload]
+        output_path = raw_dir / "page-1.json"
+        output_path.write_text(
+            json.dumps(page_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result_item = {
+            "sellerAccountId": "WB_ACCOUNT_1",
+            "accountName": "Кабинет 1",
+            "wbCabinetId": unit_row.wb_cabinet_id,
+            "pageIndex": 1,
+            "status": "loaded",
+            "sourceStatus": "ok",
+            "ok": True,
+            "rowCount": 1,
+            "rrdIdStart": 0,
+            "rrdIdNext": None,
+            "statusCode": 200,
+            "rawPayloadHash": source_refresh._hash_payload(page_payload),
+            "outputFile": output_path.name,
+            "error": "",
+        }
+        (raw_dir / "manifest.json").write_text(
+            json.dumps({"results": [result_item]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            snapshot_hash=source_refresh._hash_payload([result_item]),
+            row_count=1,
+            raw_path=str(raw_dir),
+            payload={
+                "results": [result_item],
+                "rowPersistence": {
+                    "status": "skipped_large_snapshot",
+                    "limit": 0,
+                    "rawFilesAuthoritative": True,
+                },
+            },
+        )
+        source_refresh._attach_collection_raw_integrity(
+            collection,
+            source_root=settings.source_refresh_root_path,
+        )
+        assert collection.payload["rawIntegrity"]["status"] == "verified"
+        assert (
+            db.query(SourceSnapshotRow)
+            .filter_by(collection_id=collection.id)
+            .count()
+            == 0
+        )
+        if tamper_after_verify:
+            output_path.write_text(
+                json.dumps([{**logistics_payload, "deliveryService": "51"}]),
+                encoding="utf-8",
+            )
+        if add_database_row:
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=1,
+                raw_payload_hash=source_refresh._hash_payload(logistics_payload),
+                source_row_id="rrd-file-1",
+                wb_cabinet_id=unit_row.wb_cabinet_id,
+                row_payload=logistics_payload,
+            )
+
+        source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=refresh_run,
+        )
+        db.commit()
+
+        context = db.get(ReportLogisticsAnalysisContext, report.id)
+        order_rows = db.query(ReportLogisticsOrderRow).all()
+        sku_rows = db.query(ReportLogisticsSkuRow).all()
+
+    assert context is not None
+    if expected_blocker is not None:
+        assert context.data_status == "blocked"
+        assert expected_blocker in context.blocking_reasons
+        assert order_rows == []
+        assert sku_rows == []
+        return
+    assert context.data_status == "ready"
+    assert context.key_coverage_pct == Decimal("100")
+    assert context.order_delta == 0
+    assert context.sku_delta == 0
+    assert len(order_rows) == 1
+    assert len(sku_rows) == 1
+    assert sku_rows[0].logistics_total == Decimal("50")
+
+
 def test_logistics_analysis_blocks_undated_report_row_without_losing_total(
     tmp_path: Path,
 ) -> None:
