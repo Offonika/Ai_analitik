@@ -8,6 +8,11 @@ import json
 import os
 from pathlib import Path
 
+from wb_unit_economics.runtime_release_lock import (
+    DEFAULT_RUNTIME_RELEASE_LOCK,
+    exclusive_runtime_release_lock,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,11 +28,22 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("/opt/shumeyko-releases"),
     )
+    parser.add_argument(
+        "--lock-path", type=Path, default=DEFAULT_RUNTIME_RELEASE_LOCK
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    try:
+        with exclusive_runtime_release_lock(args.lock_path):
+            return _promote_release(args)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _promote_release(args: argparse.Namespace) -> int:
     release = args.release_dir.resolve()
     release_root = args.release_root.resolve()
     if not release.is_relative_to(release_root):

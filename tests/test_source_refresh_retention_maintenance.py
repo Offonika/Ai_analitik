@@ -78,3 +78,4 @@ def test_dry_run_checks_report_drafts_before_raw_and_filesystem(
     assert calls[0][1].endswith("scripts/prune_report_drafts.py")
     assert calls[1][1].endswith("scripts/prune_source_refresh_database.py")
     assert calls[2][1].endswith("scripts/prune_source_refresh.py")
+    assert calls[3][1].endswith("scripts/prune_runtime_releases.py")

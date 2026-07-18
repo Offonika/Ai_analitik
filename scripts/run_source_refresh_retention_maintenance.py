@@ -172,6 +172,18 @@ def maintenance(args: argparse.Namespace) -> None:
         "--protect-snapshot-set",
         args.protect_snapshot_set,
     ]
+    release_prune = [
+        str(python),
+        str(runtime / "scripts/prune_runtime_releases.py"),
+        "--release-root",
+        str(args.release_root),
+        "--runtime-root",
+        str(args.runtime_root),
+        "--keep-latest",
+        str(args.release_keep_latest),
+        "--grace-hours",
+        str(args.release_grace_hours),
+    ]
     if not args.apply:
         print("Dry run: report draft retention")
         run(report_prune)
@@ -179,7 +191,8 @@ def maintenance(args: argparse.Namespace) -> None:
         run(database_prune)
         print("Dry run: filesystem retention")
         run(filesystem_prune)
-        print("Runtime release cleanup is disabled: deployment lock is required")
+        print("Dry run: runtime release retention")
+        run(release_prune)
         return
 
     if os.geteuid() != 0:
@@ -241,6 +254,7 @@ def maintenance(args: argparse.Namespace) -> None:
             keep=local_bundles_to_keep,
         )
         print(f"Old maintenance backup bundles removed: {len(removed)}")
+        run([*release_prune, "--apply"])
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -277,6 +291,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--report-draft-keep", type=int, default=1)
     parser.add_argument("--report-draft-grace-hours", type=int, default=24)
+    parser.add_argument(
+        "--release-root", type=Path, default=Path("/opt/shumeyko-releases")
+    )
+    parser.add_argument(
+        "--runtime-root", type=Path, default=Path("/opt/shumeyko-runtime")
+    )
+    parser.add_argument("--release-keep-latest", type=int, default=1)
+    parser.add_argument("--release-grace-hours", type=int, default=24)
     parser.add_argument("--protect-snapshot-set", default="daily-20260712-065846")
     return parser.parse_args(argv)
 

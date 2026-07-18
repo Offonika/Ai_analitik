@@ -13,13 +13,18 @@ related_code:
   - scripts/prune_source_refresh_database.py
   - scripts/prune_source_refresh.py
   - scripts/prune_report_drafts.py
+  - scripts/prune_runtime_releases.py
   - scripts/create_maintenance_backup.py
   - scripts/run_source_refresh_retention_maintenance.py
+  - scripts/build_runtime_release.py
+  - scripts/promote_runtime_release.py
   - src/wb_unit_economics/maintenance_safety.py
+  - src/wb_unit_economics/runtime_release_lock.py
   - src/wb_unit_economics/web/models.py
 related_tests:
   - tests/test_source_refresh_database_retention.py
   - tests/test_report_draft_retention.py
+  - tests/test_runtime_release_retention.py
   - tests/test_maintenance_safety.py
   - tests/test_source_refresh_retention_maintenance.py
 ai_sections:
@@ -254,16 +259,22 @@ fail-closed обертку после общей серверной уборки
 5. выполняет обычный `VACUUM (ANALYZE)` report/raw таблиц и filesystem
    retention;
 6. удаляет старые локальные maintenance bundles после успешной S3-проверки и
-   восстанавливает только те timers, которые были активны до обслуживания.
+   восстанавливает только те timers, которые были активны до обслуживания;
+7. удаляет старые неактивные runtime releases под общим lock с builder и
+   promoter, сохраняя active targets, последний rollback и 24-часовой grace.
 
 Filesystem backup остается ручным fallback: при запуске без `--s3-config`
 обертка проверяет минимум 8 GiB свободного места и сохраняет последний локальный
 maintenance bundle.
 
-Runtime releases не удаляются этим контуром: параллельный deploy может сменить
-active symlink между построением списка и удалением. Для release retention нужен
-общий lock с release builder/switcher; до его появления releases остаются вне
-автоматической очистки.
+Runtime release cleanup по умолчанию является dry-run и использует общий
+неблокирующий lock `/run/lock/shumeiko-runtime-release.lock` вместе с release
+builder и promoter. Неожиданный path, symlink, невалидный manifest, active
+target вне release root или занятый lock блокирует удаление. Apply сохраняет
+обе active цели, минимум один полный rollback release и каталоги моложе grace;
+старые незавершенные `.runtime-*` и неактивные legacy releases с
+`sourceDirty=true` удаляются только после тех же проверок и не могут считаться
+rollback.
 
 Любая ошибка backup, worker preflight, PostgreSQL или файловой защиты завершает
 контур без продолжения к следующим destructive-шагам. Ежедневный operational
@@ -284,11 +295,16 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
   published/superseded, свежие, последние и связанные с workflow/AI отчеты.
 - Report artifacts удаляются только по уникальным regular-file путям внутри
   `reports_root`; небезопасный путь блокирует apply до изменения БД.
+- Runtime cleanup не удаляет prod/test active targets, последний полный
+  rollback или свежий release и не пересекается с build/promotion.
 - Новый запуск не воссоздает `uq_source_snapshot_row_hash`.
 - Проверки спецификаций, manifest и релевантные pytest проходят.
 
 ## Changelog
 
+- 2026-07-18: enabled runtime release retention after introducing one shared
+  fail-closed lock across build, promotion and cleanup, with active, rollback,
+  grace, manifest and path guards.
 - 2026-07-18: accepted automatic dry-run-first retention of stale non-current
   report drafts with off-host backup, workflow/AI guards, exact artifact paths,
   atomic mart deletion and weekly maintenance integration.

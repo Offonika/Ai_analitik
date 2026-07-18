@@ -9,12 +9,12 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: runtime-contours
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/check_runtime_health.py]
-related_tests: [tests/test_web_app.py]
+related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/runtime_release_lock.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/prune_runtime_releases.py, scripts/check_runtime_health.py]
+related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_release_retention.py]
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-15"
+updated_at: "2026-07-18"
 ---
 
 # Goal
@@ -82,6 +82,16 @@ archive hash, dependency freeze hash и content hash. Каталог release п�
 сборки immutable. Test и production имеют независимые атомарные symlinks
 `current`; production получает ровно проверенный test artifact.
 
+Build, promotion и release retention используют один неблокирующий exclusive
+lock `/run/lock/shumeiko-runtime-release.lock`. Занятый lock завершает любую из
+трех операций без изменений. Retention по умолчанию работает как dry-run,
+всегда защищает цели `prod/current` и `test/current`, последний неактивный
+полный release для rollback и все каталоги моложе 24 часов. `--apply` доступен
+только root; symlink, посторонний entry, невалидный manifest или active target
+за пределами release root блокирует всю операцию. Старые `.runtime-*` staging
+каталоги и неактивные legacy releases с `sourceDirty=true` можно удалять только
+по тем же правилам и под тем же lock; dirty release не считается rollback.
+
 Скопированный runtime `.venv` обязан импортировать пакет только из `src` того
 же immutable release. Editable-ссылка на рабочий репозиторий или другой внешний
 checkout запрещена; bootstrap выбора `release/src` входит отдельным hash в
@@ -101,12 +111,18 @@ manifest и в общий content hash.
 - test mutation не появляется в production database;
 - test не читает production snapshots/backups и не имеет automatic timers;
 - production health `ok`, refresh не активен, current report и Excel доступны;
+- параллельные build/promotion/retention не пересекаются, а cleanup сохраняет
+  оба active target и минимум один полный rollback release;
 - unauthenticated reports/exports остаются закрыты, `.env`, JSON и XLSX не
   раздаются статически;
 - DNS и TLS нового домена готовы до передачи ссылки клиенту;
 - nginx reload атомарен, legacy 8096 сохраняется 24 часа для rollback.
 
 # Changelog
+
+- 2026-07-18: accepted one shared fail-closed lock for runtime build,
+  promotion and dry-run-first release retention with active, rollback, grace,
+  path and manifest guards.
 
 - 2026-07-16: закреплена изоляция Python-импортов внутри immutable release;
   runtime bootstrap и его hash запрещают copied `.venv` использовать editable
