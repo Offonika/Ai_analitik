@@ -416,6 +416,15 @@ WB- и 1С-источником НДС и не пересчитывает COGS �
 Отдельная persisted parity повторно читает рабочую таблицу и сравнивает ее с
 отфильтрованными generated facts.
 
+Все три ветки replacement DELETE обязаны иметь составной индекс после общего
+tenant/client/marketplace prefix: календарное окно использует `fact_date`,
+идемпотентная очистка загрузки — `source_refresh_run_id`, а выходящие за
+календарную границу строки ведомости —
+`seller_account_id + marketplace_report_id`. Индексы создаются аддитивной
+идемпотентной миграцией до повторного production refresh; увеличение
+глобального `statement_timeout` не используется как замена корректному query
+plan.
+
 Incremental материализует заменяемое окно из текущего raw WB и текущего
 report-list overlay. Технический период materialization расширяется до
 полных границ недель, содержащих
@@ -520,6 +529,10 @@ mutual-settlement сохраняет документные строки, а buy
   `full`/`incremental` refresh и возвращает safe payload последнего run;
 - два последовательных incremental run повторяемы, не создают дублей и на
   текущем production объеме завершаются не более чем за `10` минут;
+- атомарная замена окна `marketplace_finance_daily_facts` использует индексы
+  для date, refresh-run и report-key веток и завершается при штатном
+  `statement_timeout`; повторный refresh после миграции не требует ручного
+  DELETE или увеличения глобального таймаута;
 - incremental и full на одинаковых frozen sources совпадают до копейки по KPI,
   строкам, налогам, себестоимости, расходам, сверкам, lost sales и Excel;
 - отсутствие compatible full, разрыв coverage или неподтвержденный parity дает
@@ -568,9 +581,16 @@ mutual-settlement сохраняет документные строки, а buy
    `SOURCE_REFRESH_RAW_DB_MODE=files_only`; сначала перевести reader на
    file-authoritative контракт или явно вернуть `legacy` отдельным rollout-
    решением с оценкой диска и retention.
+7. Миграцию replacement-индексов сначала применить на test, проверить их через
+   inspector/`pg_indexes`, затем применить на production при отсутствии active
+   refresh и повторить штатный `daily`; rollback кода не удаляет безопасные
+   аддитивные индексы.
 
 # Changelog
 
+- 2026-07-18: закреплены составные индексы для `source_refresh_run_id` и
+  `seller_account_id + marketplace_report_id` в атомарном replacement DELETE
+  дневных financial facts; глобальный statement timeout не повышается.
 - 2026-07-18: зафиксирована несовместимость downstream logistics-v4 reader с
   автоматическим build в `files_only`, безопасный verified restore для разовой
   staff-приемки и запрет включать scheduled worker до file-authoritative reader

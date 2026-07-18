@@ -3814,10 +3814,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-wb-logistics-auto-ready-financial-v6"
+        "20260718-daily-facts-replacement-index-v7"
     )
     assert health.json()["staticBuildId"] == (
-        "20260718-wb-logistics-auto-ready-financial-v6"
+        "20260718-daily-facts-replacement-index-v7"
     )
 
     page = client.get("/")
@@ -3968,9 +3968,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260718-wb-logistics-auto-ready-financial-v6" in cabinet.text
+        "styles.css?v=20260718-daily-facts-replacement-index-v7" in cabinet.text
     )
-    assert "app.js?v=20260718-wb-logistics-auto-ready-financial-v6" in cabinet.text
+    assert "app.js?v=20260718-daily-facts-replacement-index-v7" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text

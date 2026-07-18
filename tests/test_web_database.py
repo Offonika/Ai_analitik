@@ -12,6 +12,7 @@ from wb_unit_economics.web.database import (
     _ensure_accounting_evidence_columns_and_indexes,
     _ensure_ai_thread_scope_columns,
     _ensure_marketplace_finance_daily_fact_columns,
+    _ensure_marketplace_finance_daily_fact_indexes,
     _ensure_multi_report_columns_and_indexes,
     _ensure_source_load_columns,
     _ensure_source_refresh_resume_columns,
@@ -191,6 +192,32 @@ def test_daily_fact_preallocated_fields_migration_is_idempotent(
         "accounting_service_input_vat",
         "gross_profit",
     }.issubset(columns)
+
+
+def test_daily_fact_replacement_indexes_are_idempotent(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'daily-fact-indexes.sqlite3'}")
+    init_db(engine)
+
+    _ensure_marketplace_finance_daily_fact_indexes(engine)
+    _ensure_marketplace_finance_daily_fact_indexes(engine)
+
+    indexes = {
+        item["name"]: tuple(item["column_names"])
+        for item in inspect(engine).get_indexes("marketplace_finance_daily_facts")
+    }
+    assert indexes["ix_marketplace_daily_facts_refresh_run"] == (
+        "tenant_id",
+        "client_id",
+        "marketplace",
+        "source_refresh_run_id",
+    )
+    assert indexes["ix_marketplace_daily_facts_report_key"] == (
+        "tenant_id",
+        "client_id",
+        "marketplace",
+        "seller_account_id",
+        "marketplace_report_id",
+    )
 
 
 def test_accounting_evidence_migration_backfills_deduplicates_and_maps_keys(
