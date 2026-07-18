@@ -11,6 +11,7 @@ import validate_docs_manifest  # noqa: E402
 from validate_docs_manifest import (  # noqa: E402
     validate_changelog_registration,
     validate_index_consistency,
+    validate_operational_docs,
     validate_truth_precedence,
 )
 from validate_specs import validate_dependency_graph  # noqa: E402
@@ -117,6 +118,33 @@ def test_truth_precedence_rejects_equal_leaders() -> None:
     assert validate_truth_precedence(records) == [
         "truth_scope 'source-refresh' must have one highest-priority document; "
         "found a.md, b.md"
+    ]
+
+
+def test_operational_docs_require_active_supporting_runbook() -> None:
+    canonical = {
+        "path": "spec.md",
+        "source_of_truth": True,
+        "truth_scope": "scope",
+        "truth_priority": 100,
+        "operational_docs": ["runbook.md"],
+    }
+    runbook = {
+        "path": "runbook.md",
+        "source_of_truth": False,
+        "status": "active",
+        "doc_type": "runbook",
+    }
+
+    assert validate_operational_docs([canonical, runbook]) == []
+
+    runbook["status"] = "draft"
+    runbook["source_of_truth"] = True
+    runbook["doc_type"] = "reference"
+    assert validate_operational_docs([canonical, runbook]) == [
+        "runbook.md: operational doc must have status active",
+        "runbook.md: operational doc must not be source_of_truth",
+        "runbook.md: operational doc must have doc_type runbook",
     ]
 
 

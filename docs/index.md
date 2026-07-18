@@ -113,9 +113,9 @@ Supporting, draft и superseded документы не входят в табл
   timers, отдельного worker и staff incremental source refresh WB/1C.
 - `docs/runbooks/ai-git-workflow.md` — безопасный цикл разработки с ИИ:
   компактный docs route, локальные проверки, GitHub CI, коммит и push.
-- `docs/runbooks/wb-logistics-v4-continuation.md` — handoff текущего состояния
-  WB-логистики v4, проверок, ограничений dirty worktree и следующего безопасного
-  этапа test-rollout.
+- `docs/runbooks/wb-logistics-v4-continuation.md` — последнее записанное
+  состояние WB-логистики по средам, evidence и безопасный test-rollout v5;
+  фактическое состояние нужно повторно проверить перед operational-выводом.
 
 # Решения
 

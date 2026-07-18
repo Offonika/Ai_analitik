@@ -6181,6 +6181,28 @@ td {
   margin: 8px 0 0;
 }
 
+.logistics-state-message button {
+  margin-top: 14px;
+}
+
+.logistics-technical-details {
+  padding: 10px 14px;
+  border: 1px solid #d6e2e5;
+  border-radius: 10px;
+  background: #fbfdfd;
+  color: #5c6e82;
+  font-size: 13px;
+}
+
+.logistics-technical-details summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.logistics-technical-details p {
+  margin: 10px 0 0;
+}
+
 .logistics-grid-two {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6240,6 +6262,49 @@ td {
   border-left: 3px solid #0a747c;
   border-radius: 8px;
   background: #f4f9f9;
+}
+
+.logistics-recommendation-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.6fr) minmax(240px, 1.8fr) minmax(150px, auto);
+  gap: 14px;
+  align-items: start;
+}
+
+.logistics-recommendation-field {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.logistics-recommendation-field > small {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.logistics-recommendation-field > span {
+  overflow-wrap: anywhere;
+}
+
+.logistics-recommendation-field.is-zone > span,
+.logistics-recommendation-field.is-amount > span {
+  color: #122b4b;
+  font-weight: 800;
+}
+
+.logistics-recommendation-field.is-limitation > span {
+  color: #785100;
+}
+
+.logistics-recommendation-field.is-data_quality > span {
+  color: #7d4b10;
+}
+
+.logistics-recommendation-field.is-action .secondary-button {
+  width: 100%;
+  min-height: 38px;
 }
 
 .logistics-priority-badge {
@@ -7219,6 +7284,10 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   .logistics-trust-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .logistics-recommendation-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media screen and (max-width: 760px) {
@@ -7254,5 +7323,9 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   .table-scenario-cards,
   .logistics-trust-strip {
     grid-template-columns: 1fr;
+  }
+
+  .logistics-recommendation-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

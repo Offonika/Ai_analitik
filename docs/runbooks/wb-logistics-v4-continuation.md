@@ -1,5 +1,5 @@
 ---
-title: "Продолжение работ по WB-логистике v4"
+title: "Operational state WB-логистики"
 doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "agent", "operations"]
@@ -15,6 +15,18 @@ updated_at: "2026-07-17"
 accepted-спецификацию. При расхождении следовать `AGENTS.md`,
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
+
+Последнее записанное operational evidence датировано **17 июля 2026 года**.
+Перед любым утверждением о текущих feature flags, runtime, gate или rollout
+обязательно повторно проверить соответствующую среду; приведенное ниже
+состояние не является доказательством на более позднюю дату. Code defaults
+`false/false` описывают только поведение без конфигурации и не подтверждают
+фактическое состояние test или production.
+
+Принятая методика v5 и миграция из текущего change set еще не развернуты этим
+runbook. После merge для них нужен отдельный test-rollout: применить migration,
+создать новый immutable v5 draft и повторно проверить gate/KPI/UI. Production и
+клиентский флаг без отдельного разрешения не включать.
 
 # Текст для нового чата
 

@@ -1031,6 +1031,7 @@ class ReportLogisticsSkuRow(Base):
         Numeric(20, 6), nullable=False, default=0
     )
     revenue: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False, default=0)
+    financial_revenue: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
     profit_before_tax: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
     profit_without_logistics: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
     profit_effect_amount: Mapped[Decimal] = mapped_column(
