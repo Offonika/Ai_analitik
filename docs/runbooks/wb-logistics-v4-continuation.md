@@ -23,14 +23,13 @@ accepted-спецификацию. При расхождении следова�
 `false/false` описывают только поведение без конфигурации и не подтверждают
 фактическое состояние test или production.
 
-Исправление чтения больших file-authoritative WB Finance snapshot находится в
-изолированном коммите `d24d356` и развернуто только на test в immutable release
-`runtime-d24d356-logistics-file-reader-20260718`. Свежий full refresh с
+Исправление чтения больших file-authoritative WB Finance snapshot включено в
+`main` merge-коммитом `3773ed5` и развернуто только на test в immutable release
+`runtime-3773ed5-logistics-file-reader-20260718`. Свежий full refresh с
 разрешенными клиентом read-only интеграциями выполнен; исходный raw snapshot не
 изменялся и повторно использован для нового immutable recovery-draft без новых
-внешних API-вызовов. Draft не опубликован и проверен через live staff API.
-Production, текущая публикация и клиентский флаг не менялись. Коммит пока не
-отправлен в remote и не включен в `main`.
+внешних API-вызовов. Draft не опубликован и проверен через live staff и
+client-role API. Production, текущая публикация и клиентский флаг не менялись.
 
 # Текст для нового чата
 
@@ -38,9 +37,8 @@ Production, текущая публикация и клиентский флаг
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v5.
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
 операционное состояние в этом runbook. Исправление file-authoritative snapshot
-находится в изолированной ветке codex/logistics-file-authoritative-snapshot,
-коммит d24d356; remote/main еще не изменены. На test развернут immutable release
-runtime-d24d356-logistics-file-reader-20260718, master-флаг включен только для
+включено в main merge-коммитом 3773ed5. На test развернут immutable release
+runtime-3773ed5-logistics-file-reader-20260718, master-флаг включен только для
 staff, клиентский флаг выключен. Свежий full read-only refresh выполнен с
 клиентскими интеграциями. Из его неизмененного raw snapshot создан отдельный
 immutable recovery-draft без повторных внешних запросов и без публикации.
@@ -48,10 +46,10 @@ Logistics gate ready; summary корректно возвращает partial и
 not_available_missing_profit_link: финансовые KPI/rankings null/empty, точная
 логистика и обезличенные order/product данные доступны. Live staff API smoke
 прошел; инвертированный период отклонен HTTP 400. Идентификаторы и клиентские
-агрегаты не хранятся в Markdown. Production, текущую публикацию и client flag
-не менять без отдельного разрешения. Следующий шаг — review/push/PR изолированного
-коммита только по явному запросу, затем отдельная визуальная и client-role
-приемка перед возможным клиентским rollout.
+агрегаты не хранятся в Markdown. Live client-role smoke подтвердил client flag
+false и HTTP 404 для logistics summary и staff orders; временный пользователь и
+сессии удалены. Production и текущую публикацию не менять. Следующий шаг —
+ручная browser-приемка desktop/mobile, затем отдельное разрешение на client flag.
 ```
 
 # Текущее состояние
@@ -64,9 +62,9 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
 - Контексты v1-v4 и несовместимая версия ключа возвращают `needs_rebuild`.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
 - `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
-- Исправление file-authoritative snapshot находится в изолированном коммите
-  `d24d356`; test указывает на immutable release
-  `runtime-d24d356-logistics-file-reader-20260718`. Production остался на
+- Исправление file-authoritative snapshot включено в `main` merge-коммитом
+  `3773ed5`; test указывает на immutable release
+  `runtime-3773ed5-logistics-file-reader-20260718`. Production остался на
   отдельно проверенном release
   `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
   production symlink или service.
@@ -98,6 +96,11 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
   Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
   smoke удалена; `/api/me` подтверждает master flag `true` и client flag
   `false`, а regression tests покрывают client-role 404.
+- Live client-role smoke на merge-release вернул HTTP 200 для `/api/me` и HTTP
+  404 для logistics summary и staff-only orders. Frontend содержит явное
+  сообщение `Финансовая связь с отчётом отсутствует`; временный client-user и
+  обе smoke-сессии после проверки удалены. Полноценный screenshot-аудит не
+  выполнен: на host нет доступного browser runtime.
 - Public health test-контура отдает build
   `20260718-logistics-v5-global-table-sorting-v1`, schema
   `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
@@ -227,7 +230,7 @@ payload и повторную запись context.
 
 # Проверки
 
-Полный прогон изолированного коммита `d24d356`:
+Полный прогон исходного исправления `d24d356`:
 
 ```text
 773 passed, 5 warnings in 516.10s
@@ -256,13 +259,17 @@ node --check src/wb_unit_economics/web/static/app.js
 git diff --check
 ```
 
+PR №16 объединен в `main` merge-коммитом `3773ed5`. Обязательные GitHub Actions
+`quality` и `tests` успешно завершились как на PR, так и повторно на merge-
+коммите. После test promotion schema v5, runtime health, staff/client API и
+fail-closed KPI smoke успешно повторены.
+
 # Рабочее дерево
 
-Исправление подготовлено в отдельном clean worktree на ветке
-`codex/logistics-file-authoritative-snapshot` от `origin/main`, поэтому
-несвязанные изменения основного рабочего дерева в коммит не вошли. Коммит
-`d24d356` пока существует только локально. Не переносить его через dirty
-worktree и не выполнять push/PR без явного запроса пользователя.
+Исправление было подготовлено в отдельном clean worktree; несвязанные изменения
+основного рабочего дерева в PR №16 не вошли. PR объединен в `main`. Operational
+evidence test-rollout фиксировать отдельным docs-only change, не перенося его
+через dirty worktree.
 
 # Итог ownership/diff-аудита на 16 июля 2026 года
 
@@ -393,18 +400,17 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-1. По явному запросу провести review локального коммита `d24d356`, отправить
-   ветку и открыть изолированный PR. До этого remote/main не менять.
-2. Перед клиентским rollout выполнить визуальную приемку test на desktop/mobile
-   и отдельный live smoke под client role. Подтвердить, что `null` не выглядит
-   как ноль, причина недоступности финансов видима, а staff orders недоступны.
-3. После merge собрать новый immutable release из точной merge-ревизии,
-   повторить migration/gate/KPI/UI smoke и только по отдельному разрешению
-   включать client flag. Production и текущую публикацию до этого не менять.
-4. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
+1. Выполнить ручную browser-приемку test на desktop 1440×900 и mobile 390×844:
+   `null` не выглядит как ноль, причина недоступности финансов видима, нет
+   горизонтального overflow, keyboard/focus и deep-link работают. Текущий host
+   не имеет browser runtime, поэтому этот пункт остается открытым.
+2. Только после визуальной приемки и отдельного разрешения включать client flag
+   на test. Повторить client-role summary/products smoke; staff orders должны
+   остаться недоступными. Production и текущую публикацию не менять.
+3. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
    доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
    статусы. Не смешивать этот источник с уже готовым Finance gate.
-5. До завершения клиентской приемки использовать текущую staff-ссылку вида
+4. До завершения клиентской приемки использовать текущую staff-ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<authorized_draft>#logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода
