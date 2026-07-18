@@ -6,8 +6,8 @@ audience: ["client", "consultant"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-15"
-updated_at: "2026-07-15"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-17"
+updated_at: "2026-07-17"
 ---
 
 # Методика расчета юнит-экономики Wildberries

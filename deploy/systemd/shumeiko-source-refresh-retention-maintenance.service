@@ -1,0 +1,15 @@
+[Unit]
+Description=Fail-closed Shumeyko source refresh retention maintenance
+After=network-online.target postgresql@16-main.service shumeiko-web-backup.service
+Wants=network-online.target
+ConditionPathIsDirectory=/data/shumeyko/source_refresh
+ConditionPathIsDirectory=/opt/shumeyko-runtime/prod/current
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+ExecStart=/usr/local/sbin/shumeiko-source-refresh-retention-maintenance --apply --s3-config /root/.config/shumeyko/s3-backup.json
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h

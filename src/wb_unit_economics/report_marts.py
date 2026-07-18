@@ -307,6 +307,21 @@ def unit_rows_mart(
         month_start = _row_month_start(row, report.report_period_start)
         status = _data_quality_label(row.data_quality_status)
         loss_class, loss_driver = _loss_details(row, status)
+        pnl_revenue = (
+            row.revenue_without_vat
+            if row.pnl_vat_mode == "without_vat_for_osno"
+            else row.net_revenue
+        )
+        after_cost = pnl_revenue - row.cogs_from_1c_with_extra_costs
+        after_commission = after_cost - row.wb_commission
+        after_logistics = after_commission - row.logistics
+        after_storage = after_logistics - row.storage
+        after_acceptance = after_storage - row.acceptance
+        after_promotion = after_acceptance - row.wb_promotion
+        after_penalties = after_promotion - row.penalties_and_holdbacks
+        before_vat_adjustment = after_penalties - row.acquiring
+        pnl_vat_adjustment = row.gross_profit - before_vat_adjustment
+        included_taxes = row.gross_profit - row.profit_after_taxes
         result.append(
             {
                 "id": f"unit-{index}",
@@ -354,7 +369,9 @@ def unit_rows_mart(
                 "vatInputConfirmed": row.vat_input_confirmed,
                 "vatPayable": _number(row.vat_payable),
                 "revenueWithoutVat": _number(row.revenue_without_vat),
+                "pnlRevenue": _number(pnl_revenue),
                 "cost": _number(row.cogs_from_1c_with_extra_costs),
+                "afterCost": _number(after_cost),
                 "unitCost": _nullable_number(row.unit_cost),
                 "costMethod": row.cost_method,
                 "costMatchStatus": row.cost_match_status,
@@ -371,18 +388,27 @@ def unit_rows_mart(
                 ),
                 "costSourceDocument": row.cost_source_document,
                 "commission": _number(row.wb_commission),
+                "afterCommission": _number(after_commission),
                 "logistics": _number(row.logistics),
+                "afterLogistics": _number(after_logistics),
                 "storage": _number(row.storage),
+                "afterStorage": _number(after_storage),
                 "acceptance": _number(row.acceptance),
+                "afterAcceptance": _number(after_acceptance),
                 "promotion": _number(row.wb_promotion),
+                "afterPromotion": _number(after_promotion),
                 "penalties": _number(row.penalties_and_holdbacks),
+                "afterPenalties": _number(after_penalties),
                 "acquiring": _number(row.acquiring),
+                "beforeVatAdjustment": _number(before_vat_adjustment),
+                "pnlVatAdjustment": _number(pnl_vat_adjustment),
                 "usn": _number(row.usn_1_from_revenue),
                 "incomeTaxKind": row.income_tax_kind,
                 "incomeTaxBase": _number(row.income_tax_base),
                 "incomeTax": _number(row.income_tax),
                 "incomeTaxIncluded": row.income_tax_included,
                 "profitBeforeTax": _number(row.gross_profit),
+                "includedTaxes": _number(included_taxes),
                 "profit": _number(row.profit_after_taxes),
                 "margin": _nullable_number(row.margin_after_taxes),
                 "unitProfit": _nullable_number(row.profit_after_taxes_per_unit),

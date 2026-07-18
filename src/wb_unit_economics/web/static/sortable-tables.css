@@ -1,0 +1,34 @@
+.sortable-table-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-table-header:hover {
+  filter: brightness(0.97);
+}
+
+.sortable-table-header:focus-visible {
+  outline: 3px solid rgb(24 119 242 / 34%);
+  outline-offset: -3px;
+}
+
+.table-sort-indicator {
+  display: inline-block;
+  min-width: 1em;
+  margin-inline-start: 0.45em;
+  color: currentColor;
+  font-size: 0.75em;
+  line-height: 1;
+  opacity: 0.48;
+  vertical-align: 0.08em;
+}
+
+.sortable-table-header[aria-sort] .table-sort-indicator {
+  opacity: 1;
+}
+
+@media (forced-colors: active) {
+  .sortable-table-header:focus-visible {
+    outline-color: Highlight;
+  }
+}
