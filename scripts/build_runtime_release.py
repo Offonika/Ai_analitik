@@ -15,6 +15,11 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from wb_unit_economics.runtime_release_lock import (
+    DEFAULT_RUNTIME_RELEASE_LOCK,
+    exclusive_runtime_release_lock,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 RELEASE_SITE_MODULE = "shumeyko_release_site.py"
@@ -31,6 +36,9 @@ def parse_args() -> argparse.Namespace:
         default=Path("/opt/shumeyko-releases"),
     )
     parser.add_argument("--venv", type=Path, default=ROOT / ".venv")
+    parser.add_argument(
+        "--lock-path", type=Path, default=DEFAULT_RUNTIME_RELEASE_LOCK
+    )
     return parser.parse_args()
 
 
@@ -76,6 +84,14 @@ def _install_release_source_bootstrap(venv: Path) -> str:
 
 def main() -> int:
     args = parse_args()
+    try:
+        with exclusive_runtime_release_lock(args.lock_path):
+            return _build_release(args)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _build_release(args: argparse.Namespace) -> int:
     commit = _run("git", "rev-parse", "--verify", f"{args.commit}^{{commit}}")
     short_commit = commit[:12]
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")

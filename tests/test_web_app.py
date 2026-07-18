@@ -54,6 +54,55 @@ from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh_worker import SourceRefreshWorkerLaunchError
 
 
+@pytest.mark.parametrize(
+    ("runtime_environment", "external_integrations_enabled", "expected_status"),
+    (
+        ("test", False, "ok"),
+        ("test", True, "degraded"),
+        ("production", False, "degraded"),
+    ),
+)
+def test_health_accepts_missing_refresh_configuration_only_for_disabled_test(
+    tmp_path: Path,
+    runtime_environment: str,
+    external_integrations_enabled: bool,
+    expected_status: str,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "runtime_environment": runtime_environment,
+            "external_integrations_enabled": external_integrations_enabled,
+        },
+    )
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        refresh = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-needs-configuration",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 10),
+            reason="health configuration test",
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh,
+            status="needs_configuration",
+            finished_at=datetime(2026, 7, 10, 1, 0),
+        )
+        db.commit()
+
+    payload = client.get("/api/health").json()
+
+    assert payload["status"] == expected_status
+    assert payload["sourceRefreshHealthStatus"] == "needs_configuration"
+
+
 def test_health_is_degraded_while_new_run_follows_failed_completed_run(
     tmp_path: Path,
 ) -> None:
@@ -3820,6 +3869,13 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Дата конца" in cabinet.text
     assert "products-table" in cabinet.text
     assert 'class="products-table data-table report-rows-table"' in cabinet.text
+    assert 'id="rows-pagination"' in cabinet.text
+    assert 'id="rows-page-prev"' in cabinet.text
+    assert 'id="rows-page-next"' in cabinet.text
+    assert "Себестоимость" in cabinet.text
+    assert "Остаток после" not in cabinet.text
+    assert "НДС-корректировка P&amp;L" in cabinet.text
+    assert "Итог после включ. налогов" in cabinet.text
     assert 'class="products-table data-table liquidity-table"' in cabinet.text
     assert 'class="products-table data-table lost-sales-table"' in cabinet.text
     assert 'id="analytics-panel"' in cabinet.text
@@ -4493,6 +4549,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "filteredAnalyticsSummary" in app_js.text
     assert "bindAutoApplyingFilters" in app_js.text
     assert "applyRowsFilters" in app_js.text
+    assert "REPORT_ROWS_PAGE_SIZE = 100" in app_js.text
+    assert 'params.set("offset", String(state.rowsOffset))' in app_js.text
+    assert "renderRowsPagination" in app_js.text
+    assert "unitProfitBridge" in app_js.text
+    assert 'return mode === "ozon" ? 12 : 40' in app_js.text
+    assert "saved.rowPreset" not in app_js.text
     assert "debounce(applyRowsFilters" in app_js.text
     assert "/api/integrations" in app_js.text
     assert "isIntegrationsPage" in app_js.text
@@ -7984,6 +8046,16 @@ def test_report_summary_is_lightweight_for_large_reports(tmp_path: Path) -> None
     assert rows_payload["total"] == 1200
     assert rows_payload["kpis"]["rowCount"] == 1200
     assert len(rows_payload["items"]) == 250
+
+    second_page_response = client.get(
+        "/api/reports/report-1/rows",
+        params={"limit": 100, "offset": 100},
+    )
+    assert second_page_response.status_code == 200
+    second_page_payload = second_page_response.json()
+    assert second_page_payload["total"] == 1200
+    assert len(second_page_payload["items"]) == 100
+    assert second_page_payload["items"][0]["id"] != rows_payload["items"][0]["id"]
 
     capped_rows_response = client.get(
         "/api/reports/report-1/rows",

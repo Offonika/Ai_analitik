@@ -4727,6 +4727,95 @@ table {
   min-width: 1760px;
 }
 
+body:not(.ozon-rows-mode) .report-rows-table {
+  min-width: 6600px;
+}
+
+.rows-table-status {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.rows-pagination {
+  display: flex;
+  gap: 8px;
+}
+
+.rows-pagination[hidden] {
+  display: none;
+}
+
+.rows-pagination button {
+  min-width: 88px;
+  min-height: 36px;
+  padding: 6px 12px;
+}
+
+.rows-table-help {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(1),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 300px;
+  max-width: 420px;
+  background: var(--row-bg, #fff);
+  box-shadow: 1px 0 0 var(--line);
+}
+
+body:not(.ozon-rows-mode) .report-rows-table thead th:nth-child(1) {
+  z-index: 4;
+  background: #f7f9fc;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(2),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(2),
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(3),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(3),
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(4),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(4),
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(5),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(5) {
+  min-width: 150px;
+  max-width: 210px;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(6),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(6),
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(7),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(7) {
+  min-width: 210px;
+  max-width: 300px;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(9),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(9) {
+  min-width: 190px;
+  max-width: 260px;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(n + 14):nth-child(-n + 36),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(n + 14):nth-child(-n + 36) {
+  min-width: 155px;
+  max-width: 190px;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table td.bridge-adjustment {
+  background: color-mix(in srgb, #fff3d9, var(--row-bg, #fff) 52%);
+  font-weight: 760;
+}
+
+body:not(.ozon-rows-mode) .report-rows-table th:nth-child(38),
+body:not(.ozon-rows-mode) .report-rows-table td:nth-child(38) {
+  min-width: 420px;
+  max-width: 520px;
+}
+
 .liquidity-table {
   min-width: 2420px;
 }

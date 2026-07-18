@@ -56,6 +56,8 @@ const state = {
   chatkitEnabled: false,
   onecReconciliationLoaded: false,
   rowPreset: "",
+  rowsOffset: 0,
+  rowsTotal: 0,
   taxInputPage: 0,
   logisticsSummary: null,
   logisticsProducts: [],
@@ -76,6 +78,7 @@ const state = {
 };
 
 const LOGISTICS_PAGE_SIZE = 250;
+const REPORT_ROWS_PAGE_SIZE = 100;
 const LOGISTICS_SCHEME_OPTIONS = [
   { value: "fbo", label: "Склад WB (FBO / FBW)" },
   { value: "fbs", label: "Склад продавца (FBS / DBS)" },
@@ -504,6 +507,9 @@ const els = {
   reviewRowsHead: document.querySelector("#review-rows-head"),
   reviewRows: document.querySelector("#review-rows"),
   rowsCount: document.querySelector("#rows-count"),
+  rowsPagination: document.querySelector("#rows-pagination"),
+  rowsPagePrev: document.querySelector("#rows-page-prev"),
+  rowsPageNext: document.querySelector("#rows-page-next"),
 };
 
 const OZON_UNIT_STATUS_OPTIONS = [
@@ -855,6 +861,8 @@ function init() {
       selectRowsPreset(button.dataset.rowPreset || ""),
     );
   });
+  els.rowsPagePrev?.addEventListener("click", () => changeRowsPage(-1));
+  els.rowsPageNext?.addEventListener("click", () => changeRowsPage(1));
   document.addEventListener("click", onAnalyticsAction);
   document.addEventListener("keydown", onAnalyticsAction);
   els.clientReportGenerateButton.addEventListener(
@@ -917,7 +925,10 @@ function bindAutoApplyingFilters() {
   els.filterQuery.addEventListener("input", debounce(applyRowsFilters, 250));
 }
 
-function applyRowsFilters() {
+function applyRowsFilters(options = {}) {
+  if (options.preserveOffset !== true) {
+    state.rowsOffset = 0;
+  }
   const previousOzonParams = state.ozonDiagnosticsParams || "";
   syncTopbarFiltersFromRows();
   saveFilterState();
@@ -941,11 +952,24 @@ function applyRowsFilters() {
 
 function selectRowsPreset(preset = "", options = {}) {
   state.rowPreset = preset || "";
+  state.rowsOffset = 0;
   saveFilterState();
   syncRowsPresetButtons();
   if (options.load !== false) {
     applyRowsFilters();
   }
+}
+
+function changeRowsPage(direction) {
+  const nextOffset = Math.max(
+    0,
+    state.rowsOffset + direction * REPORT_ROWS_PAGE_SIZE,
+  );
+  if (direction > 0 && nextOffset >= state.rowsTotal) {
+    return;
+  }
+  state.rowsOffset = nextOffset;
+  loadReviewRows();
 }
 
 function syncRowsPresetButtons() {
@@ -5349,7 +5373,6 @@ function saveFilterState() {
   }
   writeFilterState({
     clientId: state.clientId,
-    rowPreset: state.rowPreset || "",
     ozonUnitStatusFilter: state.ozonUnitStatusFilter || "",
     rows: {
       query: els.filterQuery.value,
@@ -5403,7 +5426,7 @@ function restoreFilterState() {
   setSelectValue(els.onecFilterDocumentType, onec.documentType || "");
   els.onecFilterDeltaOnly.checked = Boolean(onec.deltaOnly);
 
-  state.rowPreset = saved.rowPreset || "";
+  state.rowPreset = "";
   state.ozonUnitStatusFilter = saved.ozonUnitStatusFilter || "";
   if (els.ozonUnitStatusFilter) {
     setSelectValue(els.ozonUnitStatusFilter, state.ozonUnitStatusFilter);
@@ -13540,6 +13563,10 @@ function runReasonAction(action) {
 
 function renderRowsLoadingState() {
   const message = "Загружаем строки и показатели по текущим фильтрам.";
+  if (els.rowsPagePrev) {
+    els.rowsPagePrev.disabled = true;
+    els.rowsPageNext.disabled = true;
+  }
   renderRowsAnalyticsStatus(message, "Загрузка", "info");
   renderReviewRowsStatus(message, "Загрузка");
 }
@@ -13568,7 +13595,9 @@ function renderReviewRowsStatus(message, countText) {
   renderReportRowsHeader("wb");
   renderReportRowsControls("wb");
   els.rowsCount.textContent = countText;
-  replaceTableBodyWithMessage(els.reviewRows, 17, message);
+  state.rowsTotal = 0;
+  renderRowsPagination(0, 0);
+  replaceTableBodyWithMessage(els.reviewRows, reportRowsColumnCount("wb"), message);
 }
 
 function renderLiquidityStatus(message, countText) {
@@ -13600,8 +13629,25 @@ function renderReviewRows(rows, total) {
   renderReportRowsHeader("wb");
   renderReportRowsControls("wb");
   const safeRows = asArray(rows);
-  els.rowsCount.textContent = total ? `${total} строк` : "Нет строк";
+  state.rowsTotal = Number(total || 0);
+  renderRowsPagination(state.rowsTotal, safeRows.length);
   renderReportRowsTable(els.reviewRows, safeRows);
+}
+
+function renderRowsPagination(total, visibleCount) {
+  if (!total || !visibleCount) {
+    els.rowsCount.textContent = total ? `${number(total)} строк` : "Нет строк";
+  } else {
+    const start = state.rowsOffset + 1;
+    const end = Math.min(state.rowsOffset + visibleCount, total);
+    els.rowsCount.textContent = `${number(start)}–${number(end)} из ${number(total)} строк`;
+  }
+  if (!els.rowsPagination) {
+    return;
+  }
+  els.rowsPagination.hidden = total <= REPORT_ROWS_PAGE_SIZE;
+  els.rowsPagePrev.disabled = state.rowsOffset <= 0;
+  els.rowsPageNext.disabled = state.rowsOffset + visibleCount >= total;
 }
 
 function shouldRenderOzonMartInReportRows() {
@@ -13677,6 +13723,9 @@ function renderReportRowsControls(mode) {
     els.rowsFilterForm.hidden = false;
   }
   applyRowsFilterMode(ozonMode ? "ozon" : "wb");
+  if (els.rowsPagination) {
+    els.rowsPagination.hidden = ozonMode || state.rowsTotal <= REPORT_ROWS_PAGE_SIZE;
+  }
 }
 
 function applyRowsFilterMode(mode) {
@@ -13816,23 +13865,46 @@ function renderReportRowsHeader(mode) {
           "Причина / действие",
         ]
       : [
-          "Месяц 1С",
-          "Документ-отчет",
-          "Отчет WB",
-          "Дата отчета",
-          "Кабинет",
           "Товар",
           "Артикул WB",
           "Артикул 1С",
           "Баркод",
+          "nmId",
+          "Кабинет",
+          "Организация",
           "Схема",
           "Статус",
+          "Месяц 1С",
           "Продажи",
           "Возвраты",
-          "Выручка",
-          "Прибыль",
+          "Чистое кол-во",
+          "Выручка до СПП",
+          "СПП",
+          "Выручка после СПП",
+          "Выручка для прибыли",
+          "Себестоимость",
+          "Комиссия WB",
+          "Логистика",
+          "Хранение",
+          "Приемка",
+          "Продвижение",
+          "Штрафы/доплаты",
+          "Эквайринг",
+          "НДС-корректировка P&L",
+          "Прибыль до включ. налогов",
+          "Исходящий НДС",
+          "Входящий НДС",
+          "НДС к уплате",
+          "База НДФЛ",
+          "НДФЛ",
+          "Налоги, включенные в итог",
+          "Итог после включ. налогов",
           "Маржа",
           "На шт",
+          "Учетная дата 1С",
+          "Документ-отчет",
+          "Отчет WB",
+          "Дата отчета",
         ];
   const row = document.createElement("tr");
   headers.forEach((label) => {
@@ -13844,6 +13916,10 @@ function renderReportRowsHeader(mode) {
     row.append(cell);
   });
   els.reviewRowsHead.replaceChildren(row);
+}
+
+function reportRowsColumnCount(mode) {
+  return mode === "ozon" ? 12 : 40;
 }
 
 function ozonMartReportRowNode(item) {
@@ -14888,7 +14964,7 @@ function renderReportRowsTable(target, rows) {
   if (!rows.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 17;
+    cell.colSpan = reportRowsColumnCount("wb");
     cell.textContent = "Строки не найдены. Переключите вкладку или измените фильтры периода/кабинета.";
     row.append(cell);
     target.replaceChildren(row);
@@ -14900,16 +14976,15 @@ function renderReportRowsTable(target, rows) {
 function reportRowNode(item) {
   const row = document.createElement("tr");
   row.className = tableRowClass(item);
+  const bridge = unitProfitBridge(item);
   appendTableCells(row, [
-    { value: item.month || "-", className: "text-nowrap" },
-    { value: item.documentReport || "-", className: "text-wide" },
-    { value: item.wbReportId || "-", className: "text-code" },
-    { value: item.wbReportDate || "-", className: "text-nowrap" },
-    { value: item.cabinet || "-", className: "text-wide" },
     { value: item.product || "-", className: "text-wide text-strong" },
     { value: item.articleWb || "-", className: "text-code" },
     { value: item.article1c || "-", className: "text-code" },
     { value: item.barcode || "-", className: "text-code" },
+    { value: item.nmId || "-", className: "text-code" },
+    { value: item.cabinet || "-", className: "text-wide" },
+    { value: item.organization || "-", className: "text-wide" },
     { value: item.scheme || "-", badge: true, tone: "neutral" },
     {
       value: statusLabel(item.status),
@@ -14917,14 +14992,35 @@ function reportRowNode(item) {
       tone: statusTone(item.status, item.statusReason || item.lossDriver),
       title: statusExplanation(item.status, item.statusReason),
     },
+    { value: item.month || "-", className: "text-nowrap" },
     { value: number(item.sales || 0), className: "numeric" },
     {
       value: number(item.returns || 0),
       className: `numeric ${Number(item.returns || 0) > 0 ? "warning" : ""}`.trim(),
     },
-    { value: money(item.revenue || 0), className: "numeric" },
+    { value: number(item.netQty || 0), className: "numeric" },
+    { value: optionalMoney(item.revenueBeforeSpp), className: "numeric" },
+    { value: optionalMoney(item.spp), className: "numeric" },
+    { value: optionalMoney(item.revenue), className: "numeric" },
+    { value: optionalMoney(bridge.pnlRevenue), className: "numeric" },
+    { value: optionalMoney(item.cost), className: "numeric" },
+    { value: optionalMoney(item.commission), className: "numeric" },
+    { value: optionalMoney(item.logistics), className: "numeric" },
+    { value: optionalMoney(item.storage), className: "numeric" },
+    { value: optionalMoney(item.acceptance), className: "numeric" },
+    { value: optionalMoney(item.promotion), className: "numeric" },
+    { value: optionalMoney(item.penalties), className: "numeric" },
+    { value: optionalMoney(item.acquiring), className: "numeric" },
+    { value: optionalMoney(bridge.pnlVatAdjustment), className: "numeric bridge-adjustment" },
+    { value: optionalMoney(item.profitBeforeTax), className: `numeric ${valueTone(item.profitBeforeTax)}` },
+    { value: optionalMoney(item.vatOutput), className: "numeric" },
+    { value: optionalMoney(item.vatInput), className: "numeric" },
+    { value: optionalMoney(item.vatPayable), className: "numeric" },
+    { value: optionalMoney(item.incomeTaxBase), className: "numeric" },
+    { value: optionalMoney(item.incomeTax), className: "numeric" },
+    { value: optionalMoney(bridge.includedTaxes), className: "numeric" },
     {
-      value: signedMoney(item.profit || 0),
+      value: optionalMoney(item.profit),
       className: `numeric ${valueTone(item.profit)}`,
     },
     {
@@ -14941,8 +15037,55 @@ function reportRowNode(item) {
           : "-",
       className: `numeric ${valueTone(item.unitProfit)}`,
     },
+    { value: item.accountingPeriodDate || "-", className: "text-nowrap" },
+    { value: item.documentReport || "-", className: "text-wide" },
+    { value: item.wbReportId || "-", className: "text-code" },
+    { value: item.wbReportDate || "-", className: "text-nowrap" },
   ]);
   return row;
+}
+
+function unitProfitBridge(item) {
+  const revenue = numberOrNull(item.revenue);
+  const revenueWithoutVat = numberOrNull(item.revenueWithoutVat);
+  const cost = numberOrNull(item.cost);
+  const commission = numberOrNull(item.commission);
+  const logistics = numberOrNull(item.logistics);
+  const storage = numberOrNull(item.storage);
+  const acceptance = numberOrNull(item.acceptance);
+  const promotion = numberOrNull(item.promotion);
+  const penalties = numberOrNull(item.penalties);
+  const acquiring = numberOrNull(item.acquiring);
+  const profitBeforeTax = numberOrNull(item.profitBeforeTax);
+  const profit = numberOrNull(item.profit);
+  const pnlRevenue =
+    item.pnlVatMode === "without_vat_for_osno" ? revenueWithoutVat : revenue;
+  const required = [
+    pnlRevenue, cost, commission, logistics, storage, acceptance,
+    promotion, penalties, acquiring, profitBeforeTax, profit,
+  ];
+  if (required.some((value) => value === null)) {
+    return {
+      pnlRevenue,
+      pnlVatAdjustment: null,
+      includedTaxes: null,
+    };
+  }
+  const beforeVatAdjustment =
+    pnlRevenue -
+    cost -
+    commission -
+    logistics -
+    storage -
+    acceptance -
+    promotion -
+    penalties -
+    acquiring;
+  return {
+    pnlRevenue,
+    pnlVatAdjustment: profitBeforeTax - beforeVatAdjustment,
+    includedTaxes: profitBeforeTax - profit,
+  };
 }
 
 function renderLostSales(rows, coverage = {}) {
@@ -15053,7 +15196,8 @@ function hasActiveOnecReconciliationFilters() {
 
 function rowsFilterParams(preset = state.rowPreset) {
   const params = new URLSearchParams();
-  params.set("limit", preset === "missingCost" ? "1000" : "50");
+  params.set("limit", String(REPORT_ROWS_PAGE_SIZE));
+  params.set("offset", String(state.rowsOffset));
   const values = {
     query: els.filterQuery.value.trim(),
     status_filter: els.filterStatus.value,
@@ -15097,6 +15241,8 @@ function resetClientScopedState(options = {}) {
     state.periodMonth = "";
   }
   state.rowsRequestKey = "";
+  state.rowsOffset = 0;
+  state.rowsTotal = 0;
   state.drilldownRequestKey = "";
   state.drilldownPreset = "review";
   state.cogsReconciliationRequestKey = "";

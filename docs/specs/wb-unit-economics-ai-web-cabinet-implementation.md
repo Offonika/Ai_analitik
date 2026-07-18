@@ -552,7 +552,21 @@ UI readiness behavior:
   `Юнит-экономика` tab keeps filters for search, status, period start/end,
   month, cabinet, organization, scheme and loss class before loading rows
   through `/api/reports/{id}/rows`, and shows revenue, profit, margin and unit
-  profit for every report row;
+  profit for every report row. The visible table starts with product name,
+  WB/1C articles, barcode and `nmId`, keeps the period and quantity block next,
+  then shows the individual components of profit: cost, commission, logistics,
+  storage, acceptance, promotion, penalties and acquiring without a repeated
+  cumulative `Остаток после ...` column after every component. A separate
+  explicit P&L VAT adjustment reconciles displayed gross WB service amounts
+  with the accepted profit, and report/document lineage is placed at the end.
+  The final row metric is labelled as the result after included taxes, not as
+  full net business profit. The table uses server-side pagination: the counter must say
+  which range is currently visible (`1–100 из 1553`), and previous/next controls
+  must make every filtered row reachable. A preset such as `Убыточные продажи`
+  remains visibly active and its total is never presented as the unfiltered
+  assortment total. Quick presets are session-only: a fresh page load starts
+  from `Все` and must not restore a previously selected loss preset from browser
+  storage;
 - unit-economics filters auto-apply on change/input; the UI does not require a
   separate `Применить` action, while `Сбросить` clears the slice explicitly;
 - `Показатели` is recalculated from the filtered `rows` response, so
