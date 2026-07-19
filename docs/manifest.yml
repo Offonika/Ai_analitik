@@ -469,6 +469,13 @@ documents:
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
     summary: "Операционный чеклист проверки доступности WB-источников второй/третьей очереди и причин возвратов: токены, эндпоинты, лимиты, шаги, матрица доступности и безопасность прогона."
+  - path: "docs/runbooks/wb-logistics-mvp-production-rollout.md"
+    title: "Production rollout MVP логистики (первая очередь)"
+    doc_type: "runbook"
+    status: "active"
+    audience: ["engineering", "operations"]
+    source_of_truth: false
+    summary: "Пошаговый production rollout MVP логистики v5: проверка состояния, миграция, master-флаг staff, сборка v5-отчёта, staff/client smoke, включение клиентской роли, health, rollback и безопасность."
   - path: "docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md"
     title: "Ключевые решения Excel MVP"
     doc_type: "decision"
