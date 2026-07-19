@@ -16,7 +16,7 @@ depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementat
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-19"
 ---
 
 # Implementation Status
@@ -96,6 +96,14 @@ Read-only WB, 1С и mapping lineage сохраняются как raw/source с
 Web не считает прибыль на лету. Web читает только сохраненные строки и summary
 payload из БД.
 
+`reconciliationMonthly` сохраняет и отдает все рассчитанные стороны сверки и
+дельты независимо от результата контроля. Расхождение, неполный месяц или
+отсутствующий независимый источник обозначаются явным статусом строки; доступные
+значения не скрываются и не подменяются нулем. Незаполненная сторона и зависящая
+от нее дельта остаются `null`. Незакрытая помесячная сверка является
+`reviewReason`, но сама по себе не блокирует расчет, экспорт или публикацию
+отчета.
+
 ## Web Publication
 
 Новый отчет создается как `draft`. После mart validation и успешного artifact
@@ -158,6 +166,10 @@ Legacy recovery import:
 - `lostSales` подтягивает остатки 1С и названия складов.
 - `missing_mapping`, `ambiguous_mapping`, `missing_cost`, `partial_source` не
   становятся reliable.
+- Все строки `reconciliationMonthly` доступны в web и экспортах при любом
+  статусе сверки; доступные значения и дельты рассчитаны, отсутствующие стороны
+  остаются `null`, а `monthly_reconciliation_unresolved` выводится как
+  предупреждение, не как публикационный блокер.
 - Web summary/rows/lostSales читаются из БД.
 - Web summary показывает `reportPeriod`, `sourceCoverage`,
   `sourceCoverageStart`, `sourceCoverageEnd` из опубликованного `report_run`
@@ -186,6 +198,9 @@ Unit:
 - `tests/test_report_marts.py`;
 - `tests/test_db_first_publication.py`;
 - KPI parity с текущей методикой.
+- monthly reconciliation с расхождением или отсутствующим источником сохраняет
+  рассчитанные значения и появляется в `reviewReasons`, но не в
+  `blockingReasons`.
 
 Integration:
 
