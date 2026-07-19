@@ -182,6 +182,15 @@ documents:
     summary: "Accepted staff-ready реализация WB-логистики v5: строгий data gate, fail-closed финансовые KPI, фактические затраты, рекомендации и обезличенные цепочки заказов."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
     search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
+  - path: "docs/specs/wb-logistics-cost-factors-implementation.md"
+    title: "WB: факторы затрат на логистику (вторая очередь)"
+    doc_type: "spec"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Draft-проект второй очереди WP-5: габариты/вес карточки, замеры и штрафы, тарифы box/pallet с периодами, склад и направление, витрины dimensions/routes, факт/оценка/гипотеза и план probe доступности источников."
+    read_when: "Проектируется вторая очередь логистики WB: габариты, замеры/штрафы, тарифы, склады, маршруты, витрины dimensions/routes или probe доступности источников."
+    search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/client-analytical-report-implementation.md"
     title: "Клиентский аналитический отчёт WB/1С"
     doc_type: "spec"
