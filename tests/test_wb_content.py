@@ -10,6 +10,7 @@ from wb_unit_economics.wb_content import (
     WbSellerAccount,
     build_cards_list_request,
     export_product_cards_page,
+    extract_card_dimensions,
     flatten_product_cards,
 )
 
@@ -122,6 +123,13 @@ def test_flatten_product_cards_matches_finmodel_katalog_shape() -> None:
                 "brand": "Brand",
                 "vendorCode": "A-1",
                 "title": "Product",
+                "dimensions": {
+                    "length": 30,
+                    "width": 20,
+                    "height": 10,
+                    "weightBrutto": 1.5,
+                    "isValid": False,
+                },
                 "sizes": [
                     {"techSize": "42", "chrtID": 401, "skus": ["111", "222"]}
                 ],
@@ -137,3 +145,27 @@ def test_flatten_product_cards_matches_finmodel_katalog_shape() -> None:
     assert rows[0]["vendor_code"] == "a-1"
     assert rows[0]["barcode"] == "111"
     assert rows[1]["barcode"] == "222"
+    assert rows[0]["length_cm"] == 30
+    assert rows[0]["width_cm"] == 20
+    assert rows[0]["height_cm"] == 10
+    assert rows[0]["weight_brutto_kg"] == 1.5
+    assert rows[0]["dimensions_valid"] is False
+    assert rows[1]["length_cm"] == 30
+
+
+def test_extract_card_dimensions_keeps_none_when_absent_or_invalid() -> None:
+    assert extract_card_dimensions({}) == {
+        "length_cm": None,
+        "width_cm": None,
+        "height_cm": None,
+        "weight_brutto_kg": None,
+        "dimensions_valid": None,
+    }
+    # Присутствующий, но не булев isValid не превращается в ложное значение.
+    partial = extract_card_dimensions(
+        {"dimensions": {"length": 5, "isValid": "yes"}}
+    )
+    assert partial["length_cm"] == 5
+    assert partial["width_cm"] is None
+    assert partial["weight_brutto_kg"] is None
+    assert partial["dimensions_valid"] is None
