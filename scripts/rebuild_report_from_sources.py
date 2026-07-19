@@ -47,6 +47,7 @@ from wb_unit_economics.onec_cost import (
     load_sales_register_cost_snapshots,
     load_sales_register_rows,
 )
+from wb_unit_economics.onec_opiu import load_onec_opiu_summary
 from wb_unit_economics.postgres_finance import (
     default_postgres_target,
     load_cost_snapshots_from_postgres,
@@ -408,6 +409,12 @@ def build_db_first_payload(
         and (sales_register_dir / "sales_register.raw.json").exists()
         else []
     )
+    onec_opiu_summary = load_onec_opiu_summary(
+        getattr(args, "onec_opiu_dir", None) or onec_dir,
+        period_start=report_period_start,
+        period_end=report_period_end,
+        config_path=getattr(args, "onec_opiu_config", None),
+    )
     generated_at = datetime.now(tz=excel_mvp.MOSCOW_TZ)
     if args.wb_finance_source == "files-stream":
         if prepared_stream is None:
@@ -476,6 +483,7 @@ def build_db_first_payload(
         organization_labels=organization_labels,
         onec_gross_profit_rows=onec_gross_profit_rows,
         onec_marketplace_service_rows=marketplace_service_rows,
+        onec_opiu_summary=onec_opiu_summary,
         wb_sales_report_summary_rows=wb_summary_rows,
         source_run_id=getattr(args, "source_refresh_run_id", ""),
         client_name=args.tenant_name,
@@ -606,6 +614,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sales-register-dir", type=Path, default=None)
     parser.add_argument("--onec-services-dir", type=Path, default=None)
+    parser.add_argument("--onec-opiu-dir", type=Path, default=None)
+    parser.add_argument("--onec-opiu-config", type=Path, default=None)
     parser.add_argument("--wb-report-list-dir", type=Path, default=None)
     parser.add_argument("--wb-paid-storage-dir", type=Path, default=None)
     parser.add_argument("--wb-promotion-stats-dir", type=Path, default=None)

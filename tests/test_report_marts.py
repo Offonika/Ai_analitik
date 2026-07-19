@@ -18,6 +18,7 @@ from wb_unit_economics.contracts import (
     OnecGrossProfitDocumentRow,
     OnecMarketplaceServiceRow,
 )
+from wb_unit_economics.onec_opiu import OnecOpiuSummary
 from wb_unit_economics.report_marts import build_report_marts
 
 
@@ -504,7 +505,7 @@ def test_report_marts_assign_march_april_week_to_april() -> None:
     assert payload["unitRows"][0]["documentReport"].endswith("закрытие 05.04.2026")
 
 
-def test_monthly_reconciliation_uses_independent_onec_sources_and_nulls() -> None:
+def test_monthly_reconciliation_uses_matched_documents_and_opiu() -> None:
     report = build_unit_economics_report(
         client_id=CLIENT_ID,
         wb_snapshots=wb_snapshots(),
@@ -529,7 +530,7 @@ def test_monthly_reconciliation_uses_independent_onec_sources_and_nulls() -> Non
         organization_id="1C_ORG_1",
         counterparty_id="WB",
         document_id="onec-sale-april",
-        document_type="Приходная накладная",
+        document_type="Отчет комиссионера",
         document_date=date(2026, 4, 12),
         week_start=date(2026, 4, 6),
         week_end=date(2026, 4, 12),
@@ -539,6 +540,7 @@ def test_monthly_reconciliation_uses_independent_onec_sources_and_nulls() -> Non
         cogs=Decimal("40854333.46"),
         cogs_without_vat=Decimal("33491253.63"),
         gross_profit=Decimal("66259734.99"),
+        external_report_id="WB-REPORT-1",
         source_row_count=1,
     )
     onec_service = OnecMarketplaceServiceRow(
@@ -557,10 +559,30 @@ def test_monthly_reconciliation_uses_independent_onec_sources_and_nulls() -> Non
         total=Decimal("1220"),
         source_row_hash="onec-service-april-hash",
     )
+    unrelated_onec_sales = onec_sales.model_copy(
+        update={
+            "document_id": "onec-sale-unrelated",
+            "external_report_id": "UNRELATED-REPORT",
+            "quantity": Decimal("900"),
+            "cogs": Decimal("900000"),
+        }
+    )
     reconciled = build_report_marts(
         report,
-        onec_gross_profit_rows=[onec_sales],
+        onec_gross_profit_rows=[onec_sales, unrelated_onec_sales],
         onec_marketplace_service_rows=[onec_service],
+        onec_opiu_summary=OnecOpiuSummary(
+            source_label="test-opiu",
+            source_row_count=1,
+            values={"rwb_total": Decimal("700")},
+            monthly_values={
+                "2026-04": {
+                    "revenue": Decimal("0"),
+                    "cogs": Decimal("0"),
+                    "rwb_total": Decimal("700"),
+                }
+            },
+        ),
         source_run_id="refresh-independent",
     ).to_dashboard_payload()
     april = next(
@@ -569,10 +591,13 @@ def test_monthly_reconciliation_uses_independent_onec_sources_and_nulls() -> Non
         if item["month"].startswith("Апрель")
     )
     assert april["onec_quantity"] == 91.0
-    assert april["onec_cogs"] == 33491253.63
-    assert april["onec_mp_expenses"] == 1000.0
+    assert april["onec_cogs"] == 40854333.46
+    assert april["onec_mp_expenses"] == 700.0
     assert april["quantity_delta"] != 0
     assert april["status"] == "Расхождение"
+    assert april["onecBasis"] == (
+        "сопоставленные WB-документы 1С; расходы МП по ОПиУ"
+    )
     assert april["sourceRunId"] == "refresh-independent"
 
 
