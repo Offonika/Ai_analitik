@@ -35,6 +35,7 @@ from wb_unit_economics.excel import (
     _lost_sales_rows,
     _mapping_article_lookup,
     _match_onec_document_rows,
+    _matched_onec_gross_profit_totals_by_document_month,
     _month_label,
     _onec_article_label,
     _onec_document_actual_key,
@@ -47,6 +48,7 @@ from wb_unit_economics.excel import (
     _weekly_summary_rows_by_type,
 )
 from wb_unit_economics.liquidity import aggregate_liquidity_rows, liquidity_rows_payload
+from wb_unit_economics.onec_opiu import OnecOpiuSummary
 from wb_unit_economics.web.repository import (
     expense_payload,
     monthly_payload,
@@ -107,6 +109,7 @@ def build_report_marts(
     onec_gross_profit_rows: Iterable[OnecGrossProfitDocumentRow] = (),
     onec_marketplace_service_rows: Iterable[OnecMarketplaceServiceRow] = (),
     wb_sales_report_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
+    onec_opiu_summary: OnecOpiuSummary | None = None,
     source_run_id: str = "",
     client_name: str = "Шумейко и Партнеры",
     source_label: str = "DB report marts",
@@ -202,7 +205,8 @@ def build_report_marts(
         reconciliationMonthly=reconciliation_monthly_mart(
             report,
             onec_gross_profit_rows=onec_gross_rows,
-            onec_marketplace_service_rows=onec_service_rows,
+            wb_sales_report_summary_rows=wb_summary_rows,
+            onec_opiu_summary=onec_opiu_summary,
             source_run_id=source_run_id,
         ),
         marketplaceServiceRows=marketplace_service_rows_mart(
@@ -546,7 +550,8 @@ def reconciliation_monthly_mart(
     report: UnitEconomicsReport,
     *,
     onec_gross_profit_rows: Iterable[OnecGrossProfitDocumentRow] = (),
-    onec_marketplace_service_rows: Iterable[OnecMarketplaceServiceRow] = (),
+    wb_sales_report_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
+    onec_opiu_summary: OnecOpiuSummary | None = None,
     source_run_id: str = "",
 ) -> list[dict[str, Any]]:
     buckets: dict[str, dict[str, Decimal | bool]] = {}
@@ -561,8 +566,8 @@ def reconciliation_monthly_mart(
                 "onec_quantity": Decimal("0"),
                 "onec_cogs": Decimal("0"),
                 "onec_mp_expenses": Decimal("0"),
-                "onec_sales_available": False,
-                "onec_services_available": False,
+                "onec_matched_documents_available": False,
+                "onec_opiu_available": False,
             },
         )
         bucket["wb_quantity"] += row.quantity
@@ -573,43 +578,46 @@ def reconciliation_monthly_mart(
             - row.cogs_from_1c_with_extra_costs
         )
 
-    for row in onec_gross_profit_rows:
-        if not (
-            report.report_period_start <= row.document_date <= report.report_period_end
-        ):
-            continue
-        label = _month_label(
-            date(row.document_date.year, row.document_date.month, 1), report
-        )
+    matched_by_month = _matched_onec_gross_profit_totals_by_document_month(
+        report,
+        onec_gross_profit_rows,
+        wb_sales_report_summary_rows,
+        period_start=report.report_period_start,
+        period_end=report.report_period_end,
+    )
+    for month_key, values in matched_by_month.items():
+        month = date.fromisoformat(f"{month_key}-01")
+        label = _month_label(month, report)
         bucket = buckets.setdefault(label, _empty_monthly_reconciliation_bucket())
-        bucket["onec_quantity"] += row.quantity
-        bucket["onec_cogs"] += row.cogs_without_vat
-        bucket["onec_sales_available"] = True
+        bucket["onec_quantity"] += Decimal(values["quantity"])
+        bucket["onec_cogs"] += Decimal(values["cogs"])
+        bucket["onec_matched_documents_available"] = True
 
-    for row in onec_marketplace_service_rows:
-        if not (
-            report.report_period_start <= row.document_date <= report.report_period_end
-        ):
-            continue
-        label = _month_label(
-            date(row.document_date.year, row.document_date.month, 1), report
-        )
+    monthly_opiu_values = (
+        onec_opiu_summary.monthly_values if onec_opiu_summary else {}
+    )
+    for month_key, values in monthly_opiu_values.items():
+        month = date.fromisoformat(f"{month_key}-01")
+        label = _month_label(month, report)
         bucket = buckets.setdefault(label, _empty_monthly_reconciliation_bucket())
-        net_amount = row.amount - row.vat if row.amount_includes_vat else row.amount
-        bucket["onec_mp_expenses"] += net_amount
-        bucket["onec_services_available"] = True
+        bucket["onec_mp_expenses"] += Decimal(values.get("rwb_total", Decimal("0")))
+        bucket["onec_opiu_available"] = True
 
     result = []
     for month, values in buckets.items():
         onec_quantity = (
-            Decimal(values["onec_quantity"]) if values["onec_sales_available"] else None
+            Decimal(values["onec_quantity"])
+            if values["onec_matched_documents_available"]
+            else None
         )
         onec_cogs = (
-            Decimal(values["onec_cogs"]) if values["onec_sales_available"] else None
+            Decimal(values["onec_cogs"])
+            if values["onec_matched_documents_available"]
+            else None
         )
         onec_mp_expenses = (
             Decimal(values["onec_mp_expenses"])
-            if values["onec_services_available"]
+            if values["onec_opiu_available"]
             else None
         )
         quantity_delta = (
@@ -644,7 +652,9 @@ def reconciliation_monthly_mart(
                 "mp_expenses_delta": _nullable_number(mp_expenses_delta),
                 "status": status,
                 "wbBasis": "accounting_period_date; P&L без НДС",
-                "onecBasis": "фактическая дата регистра/документа 1С",
+                "onecBasis": (
+                    "сопоставленные WB-документы 1С; расходы МП по ОПиУ"
+                ),
                 "sourceRunId": source_run_id,
                 "comment": _monthly_reconciliation_comment(status),
             }
@@ -660,8 +670,8 @@ def _empty_monthly_reconciliation_bucket() -> dict[str, Decimal | bool]:
         "onec_quantity": Decimal("0"),
         "onec_cogs": Decimal("0"),
         "onec_mp_expenses": Decimal("0"),
-        "onec_sales_available": False,
-        "onec_services_available": False,
+        "onec_matched_documents_available": False,
+        "onec_opiu_available": False,
     }
 
 

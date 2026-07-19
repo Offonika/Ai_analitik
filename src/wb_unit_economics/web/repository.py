@@ -16178,6 +16178,31 @@ def report_readiness_payload(
             )
         )
         score -= 5
+    monthly_reconciliation_issues = int(
+        db.scalar(
+            select(func.count())
+            .select_from(ReportReconciliationMonthly)
+            .where(
+                ReportReconciliationMonthly.report_run_id == report.id,
+                func.trim(func.coalesce(ReportReconciliationMonthly.status, ""))
+                != "",
+                ReportReconciliationMonthly.status != "Сходится",
+            )
+        )
+        or 0
+    )
+    if source_refresh_backed and monthly_reconciliation_issues:
+        review_reasons.append(
+            _readiness_reason(
+                "monthly_reconciliation_unresolved",
+                (
+                    "Помесячная сверка WB-1С содержит расхождения или "
+                    "неполные данные; рассчитанные значения доступны в отчете."
+                ),
+                monthly_reconciliation_issues,
+            )
+        )
+        score -= 10
     financial_blockers = _financial_integrity_blockers(
         db,
         report,
@@ -19827,26 +19852,6 @@ def _financial_integrity_blockers(
             )
         )
 
-    monthly_reconciliation_issues = int(
-        db.scalar(
-            select(func.count())
-            .select_from(ReportReconciliationMonthly)
-            .where(
-                ReportReconciliationMonthly.report_run_id == report.id,
-                func.trim(func.coalesce(ReportReconciliationMonthly.status, "")) != "",
-                ReportReconciliationMonthly.status != "Сходится",
-            )
-        )
-        or 0
-    )
-    if source_refresh_backed and monthly_reconciliation_issues:
-        blockers.append(
-            _readiness_reason(
-                "monthly_reconciliation_unresolved",
-                "Независимая месячная сверка WB-1С не закрыта.",
-                monthly_reconciliation_issues,
-            )
-        )
     if source_refresh_backed and document_reconciliation_issue_count:
         blockers.append(
             _readiness_reason(

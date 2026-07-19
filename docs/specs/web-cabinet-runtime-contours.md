@@ -9,12 +9,12 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: runtime-contours
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/runtime_release_lock.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/prune_runtime_releases.py, scripts/check_runtime_health.py]
+related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/runtime_release_lock.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/prune_runtime_releases.py, scripts/check_runtime_health.py, deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf]
 related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_release_retention.py]
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-18"
+updated_at: "2026-07-19"
 ---
 
 # Goal
@@ -54,6 +54,11 @@ Linux capabilities и постоянно показывает заметную �
 - `maintenance_message` содержит только безопасный текст до 500 символов;
 - `/api/health` возвращает `runtimeEnvironment` и `maintenanceMessage`, но не
   раскрывает URL БД, секреты или файловые пути.
+- Если production AI использует одобренный корпоративный proxy из root login
+  profile, production unit должен подключать versioned drop-in
+  `deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf`.
+  Он загружает профиль только при запуске uvicorn и не копирует URL или
+  credentials proxy в Git либо runtime EnvironmentFile.
 
 # Test Database Clone
 
@@ -125,6 +130,10 @@ manifest и в общий content hash.
 - nginx reload атомарен, legacy 8096 сохраняется 24 часа для rollback.
 
 # Changelog
+
+- 2026-07-19: production unit подключает versioned corporate-proxy login-shell
+  drop-in, чтобы AI использовал одобренный proxy из root login profile без
+  копирования URL или credentials proxy в Git либо runtime EnvironmentFile.
 
 - 2026-07-18: treat missing/full-refresh configuration as expected test state
   only when external integrations are disabled, while keeping the detailed

@@ -9528,6 +9528,86 @@ def test_management_input_vat_is_review_task_not_publication_blocker(
     assert "vat_input_management_assumption" in review_codes
 
 
+def test_monthly_reconciliation_difference_is_visible_review_not_blocker(
+    tmp_path: Path,
+) -> None:
+    payload = ready_payload()
+    payload["reconciliationMonthly"][0]["status"] = "Расхождение"
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        report = import_dashboard_payload(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="monthly-reconciliation-review-only",
+            publication_status="draft",
+            publish=False,
+        )
+        refresh = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="monthly-reconciliation-source",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            reason="monthly reconciliation readiness test",
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh,
+            status="completed",
+            finished_at=repository.security.utcnow(),
+        )
+        db.add(
+            SourceLoad(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="",
+                report_run_id=report.id,
+                source_refresh_run_id=refresh.id,
+                required=False,
+                publication_required=False,
+                source_type="onec_income_expense_register",
+                source_label="Помесячная сверка 1С",
+                status="loaded",
+                snapshot_hash="monthly-reconciliation-hash",
+                row_count=1,
+                loaded_at=repository.security.utcnow(),
+            )
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        publication_codes = {
+            item["code"] for item in repository.report_publication_blockers(db, report)
+        }
+        reconciliation = repository.report_full_payload(db, report)[
+            "reconciliationMonthly"
+        ][0]
+
+    blocker_codes = {item["code"] for item in readiness["blockingReasons"]}
+    monthly_review = next(
+        item
+        for item in readiness["reviewReasons"]
+        if item["code"] == "monthly_reconciliation_unresolved"
+    )
+    assert "monthly_reconciliation_unresolved" not in blocker_codes
+    assert "monthly_reconciliation_unresolved" not in publication_codes
+    assert monthly_review["count"] == 1
+    assert reconciliation["status"] == "Расхождение"
+    assert reconciliation["wb_quantity"] == 90.0
+    assert reconciliation["onec_quantity"] == 91.0
+    assert reconciliation["quantity_delta"] == -1.0
+    assert reconciliation["cogs_delta"] == -1000.0
+    assert reconciliation["mp_expenses_delta"] == 2000.0
+
+
 def test_source_backed_missing_cost_is_review_only_not_publication_blocker(
     tmp_path: Path,
 ) -> None:
