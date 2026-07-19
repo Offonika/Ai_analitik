@@ -191,6 +191,15 @@ documents:
     summary: "Draft-проект второй очереди WP-5: габариты/вес карточки, замеры и штрафы, тарифы box/pallet с периодами, склад и направление, витрины dimensions/routes, факт/оценка/гипотеза и план probe доступности источников."
     read_when: "Проектируется вторая очередь логистики WB: габариты, замеры/штрафы, тарифы, склады, маршруты, витрины dimensions/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
+  - path: "docs/specs/wb-logistics-return-reasons-implementation.md"
+    title: "WB: причины возвратов (goods-return и claims)"
+    doc_type: "spec"
+    status: "draft"
+    audience: ["engineering", "consultant"]
+    source_of_truth: false
+    summary: "Draft-проект отдельного read-only источника причин возвратов: goods-return (reason) и claims (user_comment), связывание по srid, окна/покрытие, unmatched, факт/гипотеза/недоступно и безопасная обработка персональных данных покупателя."
+    read_when: "Проектируется причина возврата WB: источники goods-return/claims, связывание по srid, покрытие причин, unmatched или обработка персональных данных покупателя."
+    search_terms: ["причина возврата", "goods-return", "claims", "user_comment", "srid", "возвраты покупателей"]
   - path: "docs/specs/client-analytical-report-implementation.md"
     title: "Клиентский аналитический отчёт WB/1С"
     doc_type: "spec"
