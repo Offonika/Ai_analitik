@@ -157,9 +157,6 @@ const els = {
   logisticsWorkspace: document.querySelector("#logistics-workspace"),
   logisticsDataStatus: document.querySelector("#logistics-data-status"),
   logisticsFilterForm: document.querySelector("#logistics-filter-form"),
-  logisticsOrganizationFilter: document.querySelector(
-    "#logistics-organization-filter",
-  ),
   logisticsSchemeFilter: document.querySelector("#logistics-scheme-filter"),
   logisticsProductFilter: document.querySelector("#logistics-product-filter"),
   logisticsKpiGrid: document.querySelector("#logistics-kpi-grid"),
@@ -4621,7 +4618,6 @@ function logisticsFilterParams(extra = {}) {
     periodStart: els.topbarPeriodStart?.value || "",
     periodEnd: els.topbarPeriodEnd?.value || "",
     wbCabinetId: els.topbarCabinetSelect?.value || "",
-    clientCompanyId: els.logisticsOrganizationFilter?.value || "",
     scheme: els.logisticsSchemeFilter?.value || "",
     product: els.logisticsProductFilter?.value.trim() || "",
     ...extra,
@@ -4757,7 +4753,6 @@ function renderLogisticsLoadError() {
 
 function onLogisticsStateAction() {
   if (els.logisticsStateAction.dataset.action === "reset-filters") {
-    els.logisticsOrganizationFilter.value = "";
     els.logisticsSchemeFilter.value = "";
     els.logisticsProductFilter.value = "";
     state.logisticsProductsOffset = 0;
@@ -5366,25 +5361,12 @@ function renderFilters(options) {
   setOptions(els.topbarCabinetSelect, cabinetOptions, "Все кабинеты МП");
   setOptions(els.filterOrganization, organizationOptions, "Все организации");
   setOptions(els.filterScheme, options.schemes || [], "Все схемы");
-  const logisticsOrganization = els.logisticsOrganizationFilter?.value || "";
   const logisticsScheme = els.logisticsSchemeFilter?.value || "";
-  setOptions(
-    els.logisticsOrganizationFilter,
-    organizationOptions,
-    "Все организации",
-  );
   setOptions(
     els.logisticsSchemeFilter,
     LOGISTICS_SCHEME_OPTIONS,
     "Все схемы",
   );
-  if (
-    [...els.logisticsOrganizationFilter.options].some(
-      (option) => option.value === logisticsOrganization,
-    )
-  ) {
-    els.logisticsOrganizationFilter.value = logisticsOrganization;
-  }
   if (
     [...els.logisticsSchemeFilter.options].some(
       (option) => option.value === logisticsScheme,

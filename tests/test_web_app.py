@@ -1615,6 +1615,12 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert cabinet.text.index('id="logistics-trust-strip"') < cabinet.text.index(
         'id="logistics-filter-form"'
     )
+    assert 'id="logistics-scheme-filter"' in cabinet.text
+    assert 'id="logistics-product-filter"' in cabinet.text
+    # Разрез по организации совпадает с выбором кабинета WB наверху
+    # (1 организация = 1 кабинет), поэтому отдельный контрол не выводится.
+    assert 'id="logistics-organization-filter"' not in cabinet.text
+    assert "logisticsOrganizationFilter" not in script.text
     assert "loadLogisticsAnalysis" in script.text
     assert "function renderTableScenarioSummary" in script.text
     assert "Текущий отчёт собран до появления витрины логистики v5" in script.text
