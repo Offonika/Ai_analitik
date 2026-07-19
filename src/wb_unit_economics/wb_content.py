@@ -304,6 +304,34 @@ def extract_cursor(payload: dict[str, Any]) -> dict[str, Any]:
     return cursor if isinstance(cursor, dict) else {}
 
 
+def extract_card_dimensions(card: dict[str, Any]) -> dict[str, Any]:
+    """Read-only WB card dimensions (см) и вес (кг) без подстановки нуля.
+
+    Отсутствующий объект или подполе остаётся ``None``: пустой габарит — это
+    явный признак недоступности, а не ноль. ``isValid`` из карточки — сигнал
+    расхождения с категорией, а не факт замера WB (см. draft-спек второй
+    очереди ``docs/specs/wb-logistics-cost-factors-implementation.md``).
+    """
+
+    dimensions = card.get("dimensions")
+    if not isinstance(dimensions, dict):
+        return {
+            "length_cm": None,
+            "width_cm": None,
+            "height_cm": None,
+            "weight_brutto_kg": None,
+            "dimensions_valid": None,
+        }
+    valid = dimensions.get("isValid")
+    return {
+        "length_cm": dimensions.get("length"),
+        "width_cm": dimensions.get("width"),
+        "height_cm": dimensions.get("height"),
+        "weight_brutto_kg": dimensions.get("weightBrutto"),
+        "dimensions_valid": valid if isinstance(valid, bool) else None,
+    }
+
+
 def flatten_product_cards(
     account: WbSellerAccount,
     cards: list[dict[str, Any]],
@@ -313,6 +341,7 @@ def flatten_product_cards(
     rows: list[dict[str, Any]] = []
     for card in cards:
         vendor_code = str(card.get("vendorCode", "")).lower()
+        card_dimensions = extract_card_dimensions(card)
         sizes = card.get("sizes")
         if not isinstance(sizes, list):
             sizes = []
@@ -341,6 +370,7 @@ def flatten_product_cards(
                         "chrt_id": size.get("chrtID"),
                         "created_at": card.get("createdAt"),
                         "updated_at": card.get("updatedAt"),
+                        **card_dimensions,
                     }
                 )
     return rows
