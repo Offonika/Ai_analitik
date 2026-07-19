@@ -416,6 +416,16 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
+Обновление 2026-07-19: designable роадмап логистики закрыт черновиками (PR №24,
+merge `a6a7618`). Три подчинённых draft-спека в scope `logistics-cost-analysis`:
+`docs/specs/wb-logistics-cost-factors-implementation.md` (вторая очередь),
+`docs/specs/wb-logistics-return-reasons-implementation.md` (причины возвратов),
+`docs/specs/wb-logistics-calculators-implementation.md` (третья очередь). Общий
+операционный чеклист проверки источников — `docs/runbooks/wb-logistics-factors-probe.md`.
+Реализация начинается только после probe на реальном снимке (нужны токены) и
+перевода затронутого draft в `accepted` (spec-first). Задача
+`monthly_reconciliation_unresolved` переведена в advisory (PR №22).
+
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
