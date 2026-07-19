@@ -427,6 +427,27 @@ curl --noproxy '*' -fsS https://analitika.offonika.ru/api/health
 Ключ OpenAI задается только в runtime окружении сервиса, например в
 `/etc/shumeiko-web-prod.env`.
 
+Если для production одобрен корпоративный proxy, установить versioned drop-in
+`deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf`.
+Он запускает uvicorn через root login profile, где хранится proxy, не дублируя
+его URL и credentials в unit или EnvironmentFile. Применение и откат:
+
+```bash
+sudo install -D -m 0644 \
+  deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf \
+  /etc/systemd/system/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf
+sudo systemctl daemon-reload
+sudo systemctl restart shumeiko-web-prod.service
+
+# rollback
+sudo rm /etc/systemd/system/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf
+sudo systemctl daemon-reload
+sudo systemctl restart shumeiko-web-prod.service
+```
+
+После применения проверять HTTP-клиентом Python/SDK OpenAI, а не только
+`curl`: shell profile не наследуется обычным systemd ExecStart.
+
 AI-инструменты работают только поверх расчетной витрины и audit:
 
 - summary;
