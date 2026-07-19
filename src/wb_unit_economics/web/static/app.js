@@ -4639,7 +4639,8 @@ async function loadLogisticsAnalysis(options = {}) {
   ) {
     return;
   }
-  const reportId = state.reportId;
+  const selectedReportId = state.reportId;
+  const reportId = logisticsAnalysisReportId();
   const summaryParams = logisticsFilterParams();
   const productParams = logisticsFilterParams({
     sortBy: state.logisticsProductsSortBy,
@@ -4670,7 +4671,8 @@ async function loadLogisticsAnalysis(options = {}) {
       ),
     ]);
     if (
-      state.reportId !== reportId ||
+      state.reportId !== selectedReportId ||
+      logisticsAnalysisReportId() !== reportId ||
       state.logisticsRequestKey !== requestKey ||
       state.logisticsRequestId !== requestId
     ) {
@@ -4682,7 +4684,8 @@ async function loadLogisticsAnalysis(options = {}) {
     renderLogisticsWorkspace();
   } catch (error) {
     if (
-      state.reportId !== reportId ||
+      state.reportId !== selectedReportId ||
+      logisticsAnalysisReportId() !== reportId ||
       state.logisticsRequestKey !== requestKey ||
       state.logisticsRequestId !== requestId
     ) {
@@ -4695,7 +4698,8 @@ async function loadLogisticsAnalysis(options = {}) {
     renderLogisticsLoadError();
   } finally {
     if (
-      state.reportId === reportId &&
+      state.reportId === selectedReportId &&
+      logisticsAnalysisReportId() === reportId &&
       state.logisticsRequestKey === requestKey &&
       state.logisticsRequestId === requestId
     ) {
@@ -4839,9 +4843,15 @@ function renderLogisticsWorkspace() {
     return;
   }
   const kpis = summary.kpis || {};
-  const profitEffect = Number(kpis.profitEffectAmount || 0);
-  const financialMetricsReady = summary.financialMetricStatus === "ready";
-  const profitEffectReady = financialMetricsReady && kpis.profitEffectAmount !== null;
+  const financialComparison = summary.financialComparison || {};
+  const comparisonReady = normalize(financialComparison.status) === "ready";
+  const financialKpis = comparisonReady ? financialComparison.kpis || {} : kpis;
+  const profitEffect = Number(financialKpis.profitEffectAmount || 0);
+  const financialMetricsReady =
+    summary.financialMetricStatus === "ready" || comparisonReady;
+  const profitEffectReady =
+    financialMetricsReady && financialKpis.profitEffectAmount !== null;
+  const financialPeriod = logisticsFinancialPeriodLabel(financialComparison);
   renderMetrics(els.logisticsKpiGrid, [
     [
       "Общая логистика",
@@ -4852,14 +4862,14 @@ function renderLogisticsWorkspace() {
     ],
     [
       "Доля в выручке",
-      logisticsPercent(kpis.logisticsSharePct),
+      logisticsPercent(financialKpis.logisticsSharePct),
       !financialMetricsReady
-        ? logisticsFinancialUnavailableText(summary.financialMetricStatus)
-        : kpis.revenue > 0
-          ? `Выручка ${money(kpis.revenue)}`
+        ? logisticsFinancialPeriodLabel(financialComparison)
+        : financialKpis.revenue > 0
+          ? `${financialPeriod} · выручка ${money(financialKpis.revenue)}`
           : "Нет положительной выручки",
-      Number(kpis.logisticsSharePct || 0) >= 15 ? "warning" : "",
-      "Логистика / положительная выручка × 100%.",
+      Number(financialKpis.logisticsSharePct || 0) >= 15 ? "warning" : "",
+      "Логистика и выручка берутся за один явно подписанный период полных недель.",
     ],
     [
       profitEffectReady && profitEffect < 0
@@ -4869,12 +4879,12 @@ function renderLogisticsWorkspace() {
           : "Влияние на прибыль",
       profitEffectReady ? money(Math.abs(profitEffect)) : "—",
       !financialMetricsReady
-        ? logisticsFinancialUnavailableText(summary.financialMetricStatus)
-        : kpis.profitBeforeTax === null
+        ? logisticsFinancialPeriodLabel(financialComparison)
+        : financialKpis.profitBeforeTax === null
           ? "Прибыль не связана с витриной"
-          : `Прибыль без логистики ${signedMoney(kpis.profitWithoutLogistics)}`,
+          : `${financialPeriod} · без логистики ${signedMoney(financialKpis.profitWithoutLogistics)}`,
       profitEffectReady && profitEffect < 0 ? "warning" : "",
-      "Показывается абсолютная сумма и направление влияния на прибыль.",
+      "Показывается абсолютная сумма и направление влияния за подписанный период полных недель.",
     ],
   ]);
   renderLogisticsComponents(summary.components || {});
@@ -4882,6 +4892,40 @@ function renderLogisticsWorkspace() {
   renderLogisticsRecommendations(asArray(summary.recommendations));
   renderLogisticsProducts(state.logisticsProducts);
   renderWorkspaceHeader();
+}
+
+function logisticsAnalysisReportId() {
+  if (!isStaffUser()) return state.reportId;
+  const selected = state.reports.find((item) => item.id === state.reportId);
+  const selectedAt = Date.parse(selected?.generatedAt || "") || 0;
+  const requestedStart = els.topbarPeriodStart?.value || selected?.periodStart || "";
+  const requestedEnd = els.topbarPeriodEnd?.value || selected?.periodEnd || "";
+  const readyReport = state.reports
+    .filter((item) => {
+      const generatedAt = Date.parse(item.generatedAt || "") || 0;
+      return item.id !== state.reportId
+        && item.reportKind === selected?.reportKind
+        && normalize(item.logisticsDataStatus) === "ready"
+        && generatedAt > selectedAt
+        && (!requestedStart || item.periodStart <= requestedStart)
+        && (!requestedEnd || item.periodEnd >= requestedEnd);
+    })
+    .sort((left, right) => (
+      (Date.parse(right.generatedAt || "") || 0)
+      - (Date.parse(left.generatedAt || "") || 0)
+    ))[0];
+  return readyReport?.id || state.reportId;
+}
+
+function logisticsFinancialPeriodLabel(comparison) {
+  if (normalize(comparison?.status) === "not_available_no_complete_week") {
+    return "Нет полной недели внутри выбранного периода";
+  }
+  const start = formatCompactDate(comparison?.periodStart);
+  const end = formatCompactDate(comparison?.periodEnd);
+  return start && end
+    ? `За ${start}–${end}`
+    : logisticsFinancialUnavailableText(state.logisticsSummary?.financialMetricStatus);
 }
 
 function renderLogisticsEmpty(target, text) {
@@ -5160,7 +5204,8 @@ async function loadLogisticsOrdersPage(options = {}) {
   if (!isStaffUser() || !state.reportId || !state.logisticsSelectedProductRef) {
     return;
   }
-  const reportId = state.reportId;
+  const selectedReportId = state.reportId;
+  const reportId = logisticsAnalysisReportId();
   const productRef = state.logisticsSelectedProductRef;
   const requestId = ++state.logisticsOrdersRequestId;
   const loadingRow = document.createElement("tr");
@@ -5188,7 +5233,8 @@ async function loadLogisticsOrdersPage(options = {}) {
       `/api/reports/${encodeURIComponent(reportId)}/logistics/orders?${params}`,
     );
     if (
-      state.reportId !== reportId ||
+      state.reportId !== selectedReportId ||
+      logisticsAnalysisReportId() !== reportId ||
       state.logisticsSelectedProductRef !== productRef ||
       state.logisticsOrdersRequestId !== requestId
     ) {

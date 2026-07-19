@@ -8,6 +8,7 @@ from sqlalchemy import inspect, text
 from wb_unit_economics.report_exports import file_sha256
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import (
+    DAILY_FACT_REPLACEMENT_INDEX_SCHEMA_VERSION,
     DB_FIRST_SCHEMA_VERSION,
     LOGISTICS_HARDENING_SCHEMA_VERSION,
     init_db,
@@ -122,6 +123,7 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
             connection.execute(text("SELECT version FROM schema_migrations")).scalars()
         )
     assert LOGISTICS_HARDENING_SCHEMA_VERSION in versions
+    assert DAILY_FACT_REPLACEMENT_INDEX_SCHEMA_VERSION in versions
     sku_columns = {
         column["name"]: column
         for column in inspector.get_columns("report_logistics_sku_rows")
@@ -144,7 +146,7 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
     ):
         assert f"ADD COLUMN IF NOT EXISTS {column}" in postgres_schema
     init_db(engine)
-    assert schema_version(engine) == LOGISTICS_HARDENING_SCHEMA_VERSION
+    assert schema_version(engine) == DB_FIRST_SCHEMA_VERSION
     session_factory = make_session_factory(engine)
     with session_factory() as db:
         user = upsert_user(

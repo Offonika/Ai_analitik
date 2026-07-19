@@ -574,6 +574,17 @@ CREATE INDEX IF NOT EXISTS ix_marketplace_finance_daily_facts_product
         tenant_id, marketplace, nm_id, barcode
     );
 
+CREATE INDEX IF NOT EXISTS ix_marketplace_daily_facts_refresh_run
+    ON wb_unit_economics.marketplace_finance_daily_facts (
+        tenant_id, client_id, marketplace, source_refresh_run_id
+    );
+
+CREATE INDEX IF NOT EXISTS ix_marketplace_daily_facts_report_key
+    ON wb_unit_economics.marketplace_finance_daily_facts (
+        tenant_id, client_id, marketplace,
+        seller_account_id, marketplace_report_id
+    );
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.marketplace_operation_facts (
     id bigserial PRIMARY KEY,
     tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,

@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-18"
+updated_at: "2026-07-19"
 ---
 
 # Назначение
@@ -16,7 +16,7 @@ accepted-спецификацию. При расхождении следова�
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
 
-Последнее записанное operational evidence датировано **18 июля 2026 года**.
+Последнее записанное operational evidence датировано **19 июля 2026 года**.
 Перед любым утверждением о текущих feature flags, runtime, gate или rollout
 обязательно повторно проверить соответствующую среду; приведенное ниже
 состояние не является доказательством на более позднюю дату. Code defaults
@@ -30,6 +30,25 @@ accepted-спецификацию. При расхождении следова�
 На test master- и клиентский флаги включены, развернут immutable release
 `runtime-fa020db-logistics-client-ui-20260718`. Production остается на
 `runtime-6368dcf-global-table-sorting-20260718`, клиентский флаг там выключен.
+
+Позднее 18 июля production incremental source refresh успешно создал новый
+immutable staff-draft. Scheduled worker сохранил logistics flag выключенным в
+`files_only`, поэтому первоначальный draft ожидаемо не содержал
+logistics-context. Для разовой безопасной пересборки выполнены dry-run и
+идемпотентное восстановление строк из проверенных immutable WB-файлов штатным
+`scripts/restore_marketplace_raw_rows.py`; внешние WB/1С API повторно не
+читались. Rollback-only preview методики развернутого production runtime вернул
+`ready`, полное покрытие ключей и товаров и нулевые обязательные, revision-,
+scope- и dimension-ошибки. После preview создан новый immutable staff-draft:
+logistics-context и source-quality имеют статус `ready`, отчет остается
+`draft`, `is_current=false`, а прежний published report не переключался.
+
+Период report run имеет неполные граничные недели, поэтому финансовые KPI всего
+периода намеренно остаются `null`. Вложенный `financialComparison` за
+максимальный интервал полных недель имеет статус `ready` и содержит выручку,
+долю логистики в выручке, прибыль до налога и абсолютное влияние логистики на
+прибыль. Локальные report/source identifiers, денежные значения и клиентские
+объёмы в Markdown не фиксируются.
 
 # Текст для нового чата
 
@@ -72,6 +91,10 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
   отдельного разрешения клиентский флаг переключен в `true`. Code defaults
   по-прежнему `false/false` и не считаются environment
   evidence.
+- Повторная проверка 19 июля обнаружила client-флаг уже установленным в `true`;
+  повторное изменение или restart не потребовались. `/api/me` клиентской роли
+  подтвердил оба логистических флага `true` и
+  `logisticsOrdersEnabled=false`.
 - С разрешенными клиентом read-only интеграциями выполнен новый full refresh в
   test. Обязательные внешние чтения завершились; raw snapshot и его manifest
   сохранены до нормализации. Одна 1C-конфигурация из локального environment была
@@ -103,6 +126,12 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
   `not_available_missing_profit_link`, финансовые KPI `null`, рейтинги пусты,
   product rows доступны. Staff-only orders и оставшийся старый draft возвращают
   HTTP 404. Временный client-user и smoke-сессия удалены.
+- Повторный client-role smoke 19 июля подтвердил HTTP 200 для `/api/me`,
+  logistics summary и products текущего report; товарные строки присутствуют,
+  `dataStatus=ready`, `sliceStatus=partial`, финансовая часть остается
+  fail-closed с `not_available_missing_profit_link`. Staff-only orders
+  по-прежнему возвращают HTTP 404. Временные client-users и sessions удалены;
+  контрольный остаток равен нулю.
 - Временный Playwright/Chromium browser runtime использован только вне
   репозитория для desktop 1440×900 и mobile 390×844 приемки. После исправления
   гонки начальной загрузки deep-link `#tables/logistics` стабилен без
@@ -117,9 +146,18 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
   `20260718-logistics-v5-global-table-sorting-v1`, schema
   `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
   timer завершился `success`.
+- Browser smoke 19 июля на desktop 1440x900 и mobile 390x844 подтвердил
+  `#tables/logistics`, видимый сценарий и товарные строки, отсутствие client-
+  действий для staff-only order chains, видимое объяснение отсутствующей
+  финансовой связи, отсутствие global overflow и console/page/network errors.
+  Временный Chromium использован вне репозитория; снимки остаются только
+  локальным operational evidence.
 - Production и текущий опубликованный report не менялись; production client
-  flag остается выключенным. Публикация v5 draft или production rollout требуют
-  повторной проверки environment evidence и отдельного разрешения.
+  flag остается выключенным. Production rollout требует повторной проверки
+  environment evidence и отдельного разрешения.
+- Production health после повторной test-приемки 19 июля остается `ok` на
+  release `runtime-6368dcf-global-table-sorting-20260718`; production symlink и
+  service не менялись.
 
 # Последнее UX-решение
 

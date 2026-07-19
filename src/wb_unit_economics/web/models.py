@@ -1504,6 +1504,21 @@ class MarketplaceFinanceDailyFact(Base):
             "nm_id",
             "barcode",
         ),
+        Index(
+            "ix_marketplace_daily_facts_refresh_run",
+            "tenant_id",
+            "client_id",
+            "marketplace",
+            "source_refresh_run_id",
+        ),
+        Index(
+            "ix_marketplace_daily_facts_report_key",
+            "tenant_id",
+            "client_id",
+            "marketplace",
+            "seller_account_id",
+            "marketplace_report_id",
+        ),
         {"schema": "wb_unit_economics"},
     )
 

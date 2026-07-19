@@ -30,6 +30,9 @@ from wb_unit_economics.web.models import (
 ACCOUNTING_WORKFLOW_SCHEMA_VERSION = "2026_07_16_accounting_workflow_v1"
 LOGISTICS_HARDENING_V3_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v3"
 LOGISTICS_HARDENING_V4_SCHEMA_VERSION = "2026_07_16_logistics_hardening_v4"
+DAILY_FACT_REPLACEMENT_INDEX_SCHEMA_VERSION = (
+    "2026_07_18_daily_fact_replacement_indexes_v1"
+)
 LOGISTICS_HARDENING_SCHEMA_VERSION = "2026_07_18_logistics_profit_link_v5"
 DB_FIRST_SCHEMA_VERSION = LOGISTICS_HARDENING_SCHEMA_VERSION
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
@@ -106,6 +109,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_source_refresh_resume_columns(engine)
     _ensure_marketplace_operation_fact_columns(engine)
     _ensure_marketplace_finance_daily_fact_columns(engine)
+    _ensure_marketplace_finance_daily_fact_indexes(engine)
     _ensure_tax_profile_columns(engine)
     _ensure_logistics_hardening_columns_and_indexes(engine)
     _ensure_multi_client_columns(engine)
@@ -117,6 +121,9 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
         _record_schema_migration(engine, ACCOUNTING_WORKFLOW_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_HARDENING_V3_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_HARDENING_V4_SCHEMA_VERSION)
+        _record_schema_migration(
+            engine, DAILY_FACT_REPLACEMENT_INDEX_SCHEMA_VERSION
+        )
         _record_schema_migration(engine, LOGISTICS_HARDENING_SCHEMA_VERSION)
 
 
@@ -978,6 +985,57 @@ def _ensure_marketplace_finance_daily_fact_columns(engine: Engine) -> None:
         for column, definition in missing:
             connection.execute(
                 text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}")
+            )
+
+
+def _ensure_marketplace_finance_daily_fact_indexes(engine: Engine) -> None:
+    """Index every branch of the atomic daily-facts replacement scope."""
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    existing_columns = {
+        column["name"]
+        for column in inspector.get_columns(
+            "marketplace_finance_daily_facts", schema=schema
+        )
+    }
+    specs = {
+        "ix_marketplace_daily_facts_refresh_run": (
+            "tenant_id",
+            "client_id",
+            "marketplace",
+            "source_refresh_run_id",
+        ),
+        "ix_marketplace_daily_facts_report_key": (
+            "tenant_id",
+            "client_id",
+            "marketplace",
+            "seller_account_id",
+            "marketplace_report_id",
+        ),
+    }
+    existing_indexes = {
+        str(item.get("name") or "")
+        for item in inspector.get_indexes(
+            "marketplace_finance_daily_facts", schema=schema
+        )
+    }
+    missing = [
+        (name, columns)
+        for name, columns in specs.items()
+        if name not in existing_indexes and set(columns) <= existing_columns
+    ]
+    if not missing:
+        return
+    table_name = _table_name(engine, "marketplace_finance_daily_facts")
+    with engine.begin() as connection:
+        if schema is not None:
+            connection.execute(text("SET LOCAL statement_timeout = 0"))
+        for name, columns in missing:
+            connection.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS {name} ON {table_name} "
+                    f"({', '.join(columns)})"
+                )
             )
 
 

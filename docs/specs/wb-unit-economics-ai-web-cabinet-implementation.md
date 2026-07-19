@@ -9,7 +9,7 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: web-cabinet
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
+related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
 related_tests: [tests/test_web_app.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-18"
 ---
 
 # Implementation Status
@@ -307,6 +307,11 @@ registration is introduced.
 `GET /api/clients/{client_id}/reports` returns report runs only for that client.
 The endpoint must reject a mismatched `client_id`/`tenant_id`/`report_id`
 combination even if the user has access to another client.
+Когда пользователю разрешён логистический сценарий, элементы этого уже
+авторизованного списка аддитивно содержат безопасный `logisticsDataStatus` без
+денежных значений и raw details. UI может предложить сотруднику более новый
+`ready` report run только из этого списка. При выключенном client feature flag
+поле не раскрывает клиентской роли наличие или статус скрытых draft.
 
 `GET /api/reports/{id}/summary` and `GET /api/reports/{id}/freshness` include:
 
@@ -1325,6 +1330,16 @@ Large-report loading:
   открывают один и тот же разрешенный срез без потери фильтров. Недоступный роли
   или выключенный feature flag сценарий не загружает logistics API и безопасно
   возвращает пользователя к первому разрешенному сценарию.
+- Логистический сценарий автоматически использует самый новый `ready` report
+  run из серверно отфильтрованного списка отчётов текущего клиента, если
+  выбранный отчет старее. Техническая ревизия не меняет `report_id` в URL,
+  текущую публикацию и контекст остальных разделов; client role и произвольный
+  идентификатор не могут использовать этот механизм для доступа к draft.
+- При неполных границах периода точная логистика показывается за весь выбранный
+  календарный срез, а доля в выручке и влияние на прибыль — за явно подписанный
+  максимальный вложенный интервал полных недель из `financialComparison`.
+  Финансовые KPI полного периода остаются `null`, без пропорционального
+  восстановления и без смешивания периодов в одной карточке.
 - Логистический first screen не называет всю сумму логистики устранимой потерей
   или резервом экономии, различает пересекающиеся зоны проверки и имеет разные
   состояния для `ready`, `partial`, `needs_rebuild`/`blocked`, пустого среза и
