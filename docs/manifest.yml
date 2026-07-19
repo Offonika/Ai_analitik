@@ -462,6 +462,13 @@ documents:
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
     summary: "Последнее записанное состояние WB-логистики по средам, evidence и безопасный путь к test-rollout v5."
+  - path: "docs/runbooks/wb-logistics-factors-probe.md"
+    title: "Probe доступности источников логистики (F-0 / R-0 / C-0)"
+    doc_type: "runbook"
+    status: "active"
+    audience: ["engineering", "agent", "operations"]
+    source_of_truth: false
+    summary: "Операционный чеклист проверки доступности WB-источников второй/третьей очереди и причин возвратов: токены, эндпоинты, лимиты, шаги, матрица доступности и безопасность прогона."
   - path: "docs/decisions/2026-06-18-excel-mvp-methodology-decisions.md"
     title: "Ключевые решения Excel MVP"
     doc_type: "decision"
