@@ -7,8 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
-related_tests: [tests/test_wb_content.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
+related_tests: [tests/test_wb_content.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -22,9 +22,23 @@ ai_sections:
   interface: "Интерфейс"
   acceptance: "Acceptance Criteria"
   tests: "Test Plan"
+code_anchors:
+  - path: src/wb_unit_economics/logistics_analysis.py
+    symbols: ["def build_dimension_rows"]
+  - path: src/wb_unit_economics/web/source_refresh.py
+    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot"]
+  - path: src/wb_unit_economics/web/repository.py
+    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload"]
+test_anchors:
+  - path: tests/test_logistics_analysis.py
+    symbols: ["def test_build_dimension_rows_links_by_nm_and_marks_unavailable"]
+  - path: tests/test_web_app.py
+    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix"]
+  - path: tests/test_source_refresh.py
+    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
-updated_at: "2026-07-19"
+updated_at: "2026-07-20"
 ---
 
 # Статус документа
@@ -64,12 +78,17 @@ Swagger по фактическим полям нового финансовог
   направление доставки (F-3);
 - `scripts/probe_wb_logistics_factors.py` — read-only probe доступности.
 
-Ещё не реализовано (следующие подпакеты): сохранение снимков тарифов/возвратов/
-продаж, витрины `report_logistics_dimension_rows`/`report_logistics_route_rows`,
-привязка к логистике, API `/dimensions` и `/routes`, блок факторов на экране.
-Фактические замеры/штрафы из финансового отчёта (F-4) — после построчной сверки
-Swagger. Все новые подпакеты реализуются за выключенным флагом и additive-
-миграцией схемы.
+После PR №34–39 в `main` также есть additive schema для dimension/route mart,
+чистая сборка dimension rows, snapshot exporters факторов, optional collectors,
+repository persistence и первичный read-only API `/dimensions`. Эти части ещё
+не образуют завершённый F-1: штатный report build не выбирает авторитетный
+snapshot карточек и не сохраняет dimension context/mart, API не реализует
+полную state matrix, а factor-блок UI отсутствует.
+
+Ближайший принятый implementation slice закрывает только F-1 «Габариты» до
+staff-only test. Сохранение и расчёт тарифов/возвратов/продаж, route mart,
+`/routes`, фактические замеры/штрафы, factor AI digest и клиентский/production
+rollout остаются следующими подпакетами.
 
 # Цель
 
@@ -286,6 +305,34 @@ Probe-чеклист:
 `evidenceType`, `coverage_status`, source hash. Финансовые поля nullable при
 отсутствии подтверждённого источника.
 
+F-1 строит ровно одну строку на
+`tenant/client/cabinet/company/scheme/product_ref` в report run. Недельные SKU-
+строки схлопываются детерминированно. Карточка связывается только по паре
+`(wb_cabinet_id, nm_id)`; совпадение одного `nm_id` между кабинетами не является
+связью. Одинаковые size-строки одной карточки схлопываются, а разные значения
+дают `conflicting_dimensions` без случайного выбора.
+
+Пустые, нечисловые и неположительные размеры/вес сохраняются как `null`.
+Объём в литрах рассчитывается только из трёх положительных размеров как
+`length_cm * width_cm * height_cm / 1000`. `isValid=false` остаётся сигналом
+карточки, а `measured_penalty_amount` в F-1 всегда `null`.
+
+`source_hash_digest` строки включает версию `wb-logistics-factors-v1`, полный
+набор source hashes схлопнутых SKU-строк и hashes выбранных card rows.
+
+## `report_logistics_dimension_contexts`
+
+Один неизменяемый контекст на `report_run_id` хранит tenant/client,
+`factor_methodology_version=wb-logistics-factors-v1`, `data_status`, полный
+`input_hash`, snapshot hash и load timestamp Content, числа source/mart/matched/
+missing/invalid/conflicting строк, а также безопасные blocking/review codes.
+
+При включённом factor master-флаге report run получает
+`logistics_dimensions_required=true`. Отсутствующий, устаревший или `blocked`
+required context создаёт non-overridable publication blocker. Отсутствие
+габаритов у товара создаёт mart row с `data_unavailable` и `partial`, но само по
+себе публикацию не блокирует.
+
 ## `report_logistics_route_rows`
 
 Уже зарезервирована каноническим спеком. Гранулярность — склад и доступное
@@ -309,6 +356,26 @@ Additive read-only методы, зарезервированные канони
 нулевую подстановку. Пустой разрешённый срез — `sliceStatus=empty` без нулей.
 Старый отчёт без новых витрин — `needs_rebuild`.
 
+Контракт F-1 `/dimensions`:
+
+- фильтры `periodStart`, `periodEnd`, `wbCabinetId`, `clientCompanyId`, `scheme`,
+  `product`; период определяет товары, присутствующие в логистическом срезе;
+- SQL-pagination `offset`/`limit` и сортировки `product`, `volumeL`,
+  `weightBruttoKg`, `coverageStatus`;
+- поля `dataStatus`, `sliceStatus`, `methodologyVersion`,
+  `factorMethodologyVersion`, `generatedAt`, `sourceCoverageEnd`,
+  `factorSnapshotAt`, `filterContext`, `coverage`, `rows`, `total`, `offset`,
+  `limit`, `recommendations`;
+- `coverage` и рекомендации рассчитываются по полному фильтрованному срезу, а
+  не по текущей странице;
+- `needs_rebuild` — нет совместимого context; `blocked` — нарушена целостность
+  или scope; `empty` — в разрешённом срезе нет товаров; `partial` — есть
+  missing/invalid/conflicting; иначе `ready`.
+
+Габариты всегда подписываются как текущее состояние карточки на
+`factorSnapshotAt`, а не как исторический замер. Raw payload, source hashes и
+seller account identifiers в ответ не входят.
+
 # Интерфейс
 
 Блок факторов встраивается в существующий answer-first экран логистики
@@ -329,8 +396,20 @@ Additive read-only методы, зарезервированные канони
 - На mobile глобальные фильтры не скрываются; карточки факторов переходят в
   подписанный вертикальный layout.
 
-Согласованный визуальный target факторного блока готовится отдельно перед
-frontend-реализацией (как это сделано для первой очереди).
+Согласованный синтетический visual target F-1 зафиксирован в
+[`docs/design/wb-logistics-f1-dimensions-target.html`](../design/wb-logistics-f1-dimensions-target.html).
+
+Для F-1 target фиксирует секцию `Факторы стоимости -> Габариты в карточке WB`
+после финансовой аналитики и до рейтинга товаров: coverage, размеры, объём,
+вес, сигнал карточки и явное предупреждение, что значения не меняют денежный
+итог. На mobile строки становятся подписанными карточками. Factor API error не
+ломает первую очередь и отображается локальным безопасным состоянием.
+
+Доступ F-1 управляется двумя отдельными defaults-off флагами:
+`SHUMEYKO_LOGISTICS_FACTORS_ENABLED` и
+`SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED`. Staff требует master-флаги первой
+и второй очереди. Client дополнительно требует оба client-флага; при отказе API
+возвращает HTTP 404, UI не делает запрос и не показывает секцию.
 
 # Правила рекомендаций
 
@@ -371,6 +450,13 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
   `sales-reports/detailed`; старый v5-эндпоинт не используется.
 - Новая обязательная витрина со статусом `blocked`/устаревшей методикой →
   publication blocker, как в первой очереди.
+- DB/file ambiguity, изменившийся manifest/hash/row count, выход raw path за
+  разрешённый root, foreign tenant/client/cabinet и две разные ревизии Content
+  одинакового lineage-приоритета → `blocked`; dimension rows не сохраняются.
+- Для Content выбирается один полный snapshot по приоритету
+  `primary -> base -> contributor`. Частичный snapshot не дополняется старыми
+  строками другой ревизии: доступные товары показываются, остальные получают
+  `data_unavailable`.
 
 # Безопасность и tenant isolation
 
@@ -422,6 +508,12 @@ Design-часть draft считается принятой, когда влад
 8. старый отчёт без новых витрин возвращает `needs_rebuild`;
 9. AI не получает raw payload и не выдаёт гипотезу за факт;
 10. ни один сценарий не выполняет запись во внешнюю систему.
+11. dimension context и rows воспроизводимы из одинакового DB- или
+    file-authoritative snapshot с одинаковым `input_hash`;
+12. повторяющиеся недельные SKU и size-строки не дублируют mart, одинаковый
+    `nm_id` другого кабинета не связывается;
+13. factor API и UI закрыты отдельной staff/client role matrix, а ошибка F-1 не
+    скрывает и не меняет денежную аналитику первой очереди.
 
 # Test Plan
 
@@ -437,6 +529,10 @@ Design-часть draft считается принятой, когда влад
 - tenant isolation: недоступность чужих tenant/cabinet во всех новых методах;
 - fixtures обезличенные; реальные идентификаторы и клиентские объёмы в тесты и
   документацию не переносятся.
+- source integration: DB/file parity, lineage precedence, raw integrity/path,
+  storage ambiguity и tenant scope;
+- browser: staff-only deep-link на desktop/mobile, client 404/скрытый блок,
+  отсутствие overflow и console/page/network errors.
 
 Файлы (расширяются существующие): `tests/test_wb_content.py`,
 `tests/test_wb_stocks.py`, `tests/test_logistics_analysis.py`,
@@ -450,6 +546,11 @@ Design-часть draft считается принятой, когда влад
 3. Включить факторный блок consultant/admin за отдельным feature flag без
    клиентской публикации.
 4. После приёмки — отдельное решение о клиентском включении.
+
+Для F-1 на test включается только
+`SHUMEYKO_LOGISTICS_FACTORS_ENABLED=true`; client-флаг остаётся `false` даже
+если клиентская первая очередь уже включена. Требуется новый immutable report
+run из verified snapshot. Production в этот rollout не входит.
 
 Rollback отключает новые API-маршруты и факторный блок, не изменяя существующие
 отчёты и первую очередь. Новые витрины additive и неизменяемы. Внешние источники
@@ -516,3 +617,9 @@ blocker с report run, который обязан был пройти gate, н�
   Не реализованы: сохранение снимков, витрины, API и блок факторов — следующими
   подпакетами за выключенным флагом. F-4 (финансовые замеры/штрафы) — после
   построчной сверки Swagger.
+- 2026-07-20 — синхронизировано состояние после PR №34–39 и принят контракт
+  завершения F-1 до staff-only test: отдельные factor flags, versioned dimension
+  context, DB/file-authoritative selection, строгий join cabinet+nmId,
+  детерминированное схлопывание, полная state matrix `/dimensions`, локальный
+  factor UI и publication/rollout boundaries. Статус всего спека остаётся
+  `accepted`, потому что F-2–F-5 не завершены.

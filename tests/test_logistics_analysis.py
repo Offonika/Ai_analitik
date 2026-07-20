@@ -8,6 +8,7 @@ from wb_unit_economics import logistics_analysis
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
+    LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LogisticsInputDiagnostics,
     LogisticsSourceRow,
@@ -105,6 +106,7 @@ def test_chain_key_is_scoped_by_cabinet_and_product() -> None:
     assert CHAIN_KEY_VERSION == "wb-order-product-v1"
     assert LOGISTICS_CLASSIFIER_VERSION == "wb-logistics-classifier-v1"
     assert LOGISTICS_METHODOLOGY_VERSION == "wb-logistics-v5"
+    assert LOGISTICS_FACTORS_METHODOLOGY_VERSION == "wb-logistics-factors-v1"
     assert first == same
     assert first != other_product
     assert first != other_cabinet
@@ -935,6 +937,7 @@ def test_build_dimension_rows_links_by_nm_and_marks_unavailable() -> None:
 
     card_rows = [
         {
+            "wb_cabinet_id": sku_rows[0].wb_cabinet_id,
             "nm_id": "101",
             "length_cm": 30,
             "width_cm": 20,
@@ -964,3 +967,147 @@ def test_build_dimension_rows_links_by_nm_and_marks_unavailable() -> None:
     assert empty[0]["dimensions_valid"] is None
     assert empty[0]["evidence_type"] == "data_unavailable"
     assert empty[0]["coverage_status"] == "missing_dimensions"
+
+
+def test_dimension_rows_collapse_weekly_skus_and_are_hash_stable() -> None:
+    sku = build_logistics_analysis([_source_row()], [_unit_row()]).sku_rows[0]
+    next_week = replace(
+        sku,
+        financial_week_start=date(2026, 7, 20),
+        financial_week_end=date(2026, 7, 26),
+        source_hash_digest="hash-next-week",
+    )
+    cards = [
+        {
+            "wb_cabinet_id": "cabinet-1",
+            "nm_id": "101",
+            "length_cm": "30",
+            "width_cm": "20",
+            "height_cm": "10",
+            "weight_brutto_kg": "2",
+            "dimensions_valid": True,
+            "source_hash": "card-hash",
+        },
+        {
+            "wb_cabinet_id": "cabinet-1",
+            "nm_id": "101",
+            "length_cm": "30",
+            "width_cm": "20",
+            "height_cm": "10",
+            "weight_brutto_kg": "2",
+            "dimensions_valid": True,
+            "source_hash": "card-size-hash",
+        },
+    ]
+
+    first = logistics_analysis.build_dimension_rows([sku, next_week], cards)
+    second = logistics_analysis.build_dimension_rows(
+        [next_week, sku], list(reversed(cards))
+    )
+
+    assert len(first) == 1
+    assert first == second
+    assert first[0]["coverage_status"] == "ready"
+
+
+def test_dimension_rows_isolate_same_nm_between_cabinets() -> None:
+    first = build_logistics_analysis([_source_row()], [_unit_row()]).sku_rows[0]
+    second = replace(
+        first,
+        wb_cabinet_id="cabinet-2",
+        client_company_id="company-2",
+        product_ref="product:cabinet-2",
+    )
+    rows = logistics_analysis.build_dimension_rows(
+        [first, second],
+        [
+            {
+                "wb_cabinet_id": "cabinet-1",
+                "nm_id": "101",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": 2,
+            },
+            {
+                "wb_cabinet_id": "cabinet-2",
+                "nm_id": "101",
+                "length_cm": 40,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": 3,
+            },
+        ],
+    )
+
+    by_cabinet = {row["wb_cabinet_id"]: row for row in rows}
+    assert by_cabinet["cabinet-1"]["length_cm"] == Decimal("30")
+    assert by_cabinet["cabinet-2"]["length_cm"] == Decimal("40")
+
+
+def test_dimension_rows_mark_conflicts_and_invalid_values_without_zero() -> None:
+    sku = build_logistics_analysis([_source_row()], [_unit_row()]).sku_rows[0]
+    conflict = logistics_analysis.build_dimension_rows(
+        [sku],
+        [
+            {
+                "wb_cabinet_id": "cabinet-1",
+                "nm_id": "101",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": 2,
+            },
+            {
+                "wb_cabinet_id": "cabinet-1",
+                "nm_id": "101",
+                "length_cm": 31,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": 2,
+            },
+        ],
+    )[0]
+    invalid = logistics_analysis.build_dimension_rows(
+        [sku],
+        [
+            {
+                "wb_cabinet_id": "cabinet-1",
+                "nm_id": "101",
+                "length_cm": 0,
+                "width_cm": "bad",
+                "height_cm": -1,
+                "weight_brutto_kg": 0,
+            }
+        ],
+    )[0]
+
+    assert conflict["coverage_status"] == "conflicting_dimensions"
+    assert conflict["length_cm"] is None
+    assert conflict["evidence_type"] == "data_unavailable"
+    assert invalid["coverage_status"] == "invalid_dimensions"
+    assert invalid["volume_l"] is None
+    assert invalid["weight_brutto_kg"] is None
+
+
+def test_dimension_rows_compute_volume_with_valid_dimensions_and_missing_weight(
+) -> None:
+    sku = build_logistics_analysis([_source_row()], [_unit_row()]).sku_rows[0]
+    row = logistics_analysis.build_dimension_rows(
+        [sku],
+        [
+            {
+                "wb_cabinet_id": "cabinet-1",
+                "nm_id": "101",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": None,
+            }
+        ],
+    )[0]
+
+    assert row["coverage_status"] == "missing_dimensions"
+    assert row["volume_l"] == Decimal("6")
+    assert row["weight_brutto_kg"] is None
+    assert row["evidence_type"] == "fact"

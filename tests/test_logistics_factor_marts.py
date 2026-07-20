@@ -6,7 +6,7 @@ from sqlalchemy import inspect
 
 from wb_unit_economics.web.database import (
     DB_FIRST_SCHEMA_VERSION,
-    LOGISTICS_FACTOR_MARTS_SCHEMA_VERSION,
+    LOGISTICS_DIMENSIONS_SCHEMA_VERSION,
     init_db,
     make_engine,
     schema_version,
@@ -17,8 +17,8 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
     engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
     init_db(engine)
 
-    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_FACTOR_MARTS_SCHEMA_VERSION
-    assert schema_version(engine) == LOGISTICS_FACTOR_MARTS_SCHEMA_VERSION
+    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_DIMENSIONS_SCHEMA_VERSION
+    assert schema_version(engine) == LOGISTICS_DIMENSIONS_SCHEMA_VERSION
 
     inspector = inspect(engine)
 
@@ -42,3 +42,21 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
     assert {"warehouse", "destination", "chain_count"} <= set(route_cols)
     assert route_cols["week_coefficient"]["nullable"] is True
     assert route_cols["logistics_total"]["nullable"] is False
+
+    context_cols = {
+        column["name"]
+        for column in inspector.get_columns("report_logistics_dimension_contexts")
+    }
+    assert {
+        "report_run_id",
+        "factor_methodology_version",
+        "data_status",
+        "input_hash",
+        "source_snapshot_hash",
+        "dimension_row_count",
+        "blocking_reasons",
+    } <= context_cols
+    report_columns = {
+        column["name"] for column in inspector.get_columns("report_runs")
+    }
+    assert "logistics_dimensions_required" in report_columns

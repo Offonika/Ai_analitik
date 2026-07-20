@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-18"
+updated_at: "2026-07-20"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -719,6 +719,8 @@ Code defaults остаются выключенными:
 ```text
 SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false
 SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
+SHUMEYKO_LOGISTICS_FACTORS_ENABLED=false
+SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false
 ```
 
 Фактическое состояние test/production перед rollout проверяется по
@@ -753,6 +755,21 @@ SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
    новый publication blocker. Клиентский флаг оставить `false` до отдельного
    согласования.
 
+Для staff-only F-1 «Габариты» поверх готовой первой очереди дополнительно:
+
+1. Применить additive migration
+   `2026_07_20_logistics_dimensions_context_v1` через тот же штатный `init_db`.
+2. Включить на test только `SHUMEYKO_LOGISTICS_FACTORS_ENABLED=true`;
+   `SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED` явно оставить `false`.
+3. Создать новый immutable draft из verified `wb_product_cards` snapshot.
+   Context обязан иметь `factorMethodologyVersion=wb-logistics-factors-v1`;
+   integrity/scope failure даёт non-overridable blocker без dimension rows,
+   а неполные габариты остаются review-состоянием без нулевой подстановки.
+4. Под staff проверить `/logistics/dimensions`, desktop/mobile секцию между
+   финансовой аналитикой и рейтингом товаров и локальное error-состояние.
+   Под client-ролью factor API обязан вернуть HTTP 404, секция не показывается
+   и запрос не выполняется. Production и client factor flag не включать.
+
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
 маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
@@ -760,6 +777,9 @@ Rollback выполняется установкой
 обязан был пройти gate, но не прошел его. Для исправления создается новый report
 run; повторный импорт того же `report_id` запрещен. Raw payload, внешние
 order-id и source hashes не должны появляться в API, UI, AI-контексте или логах.
+Частичный rollback F-1 выполняется отдельно:
+`SHUMEYKO_LOGISTICS_FACTORS_ENABLED=false`; первая очередь логистики при этом
+остаётся доступной.
 
 # Backup
 

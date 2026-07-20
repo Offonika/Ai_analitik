@@ -6209,6 +6209,69 @@ td {
   gap: 16px;
 }
 
+.logistics-dimensions-panel {
+  border-color: #c7dcdf;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbfb 100%);
+}
+
+.logistics-dimensions-note {
+  max-width: 760px;
+  margin: 7px 0 0;
+}
+
+.logistics-dimensions-coverage {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(100px, 1fr));
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.logistics-dimensions-coverage > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid #d7e6e8;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.logistics-dimensions-coverage small {
+  color: #6b7b8e;
+  font-size: 11px;
+}
+
+.logistics-dimensions-coverage strong {
+  color: #24445f;
+  font-size: 15px;
+}
+
+.logistics-factor-recommendations {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.logistics-factor-recommendations li {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-left: 3px solid #b87300;
+  border-radius: 7px;
+  background: #fff8e9;
+}
+
+.logistics-factor-recommendations span {
+  color: #6b5a39;
+  font-size: 13px;
+}
+
+.logistics-dimensions-table td:first-child {
+  min-width: 220px;
+}
+
 .logistics-bar-list {
   display: grid;
   gap: 14px;
@@ -7288,6 +7351,10 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   .logistics-recommendation-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .logistics-dimensions-coverage {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media screen and (max-width: 760px) {
@@ -7327,5 +7394,67 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
 
   .logistics-recommendation-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .logistics-dimensions-coverage {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .logistics-dimensions-table-wrap {
+    overflow: visible;
+  }
+
+  .logistics-dimensions-table,
+  .logistics-dimensions-table tbody {
+    display: grid;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .logistics-dimensions-table thead {
+    display: none;
+  }
+
+  .logistics-dimensions-table tr {
+    display: grid;
+    gap: 0;
+    padding: 7px 12px;
+    border: 1px solid #d7e6e8;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .logistics-dimensions-table td,
+  .logistics-dimensions-table td:first-child {
+    display: grid;
+    grid-template-columns: minmax(104px, 0.8fr) minmax(0, 1.2fr);
+    gap: 10px;
+    min-width: 0;
+    padding: 8px 0;
+    border: 0;
+    border-bottom: 1px solid #edf2f3;
+    white-space: normal;
+    text-align: right;
+  }
+
+  .logistics-dimensions-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .logistics-dimensions-table td::before {
+    color: #6b7b8e;
+    content: attr(data-label);
+    font-size: 11px;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .logistics-dimensions-table td[colspan] {
+    display: block;
+    text-align: left;
+  }
+
+  .logistics-dimensions-table td[colspan]::before {
+    content: none;
   }
 }
