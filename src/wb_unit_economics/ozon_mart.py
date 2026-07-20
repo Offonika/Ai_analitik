@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from wb_unit_economics.calculation import (
+    VAT_INPUT_CONFIRMED,
+    VAT_INPUT_PARTIAL,
     calculate_tax_amounts,
     tax_profile_is_confirmed,
     tax_profile_is_osno,
@@ -352,6 +354,12 @@ def combine_ozon_monthly_marts(
                 if mart_incomplete_periods
                 else _incomplete_period_reasons(summary, cost_quality=cost_quality)
             )
+            if (
+                not reasons
+                and int(mart.get("rowCount") or len(mart_rows)) == 0
+                and mart.get("status") != "ready"
+            ):
+                reasons = ["missing_ozon_realization"]
             if reasons:
                 if mart_incomplete_periods:
                     excluded_incomplete_periods.extend(mart_incomplete_periods)
@@ -627,7 +635,27 @@ def _empty_summary() -> dict[str, int]:
         "missing1cOrganization": 0,
         "buyoutPeriodOnly": 0,
         "partialExpenses": 0,
+        "taxProfileMissing": 0,
+        "taxInputVatReview": 0,
     }
+
+
+_TAX_PROFILE_MISSING_COMPLETENESS = frozenset({"missing_tax_profile"})
+_TAX_INPUT_VAT_REVIEW_COMPLETENESS = frozenset(
+    {
+        "input_vat_missing",
+        "vat_input_partial_ndfl_not_allocated",
+        "vat_input_missing_ndfl_not_allocated",
+        "vat_input_mismatch_ndfl_not_allocated",
+    }
+)
+
+
+def _increment_tax_summary(summary: dict[str, int], tax_completeness: str) -> None:
+    if tax_completeness in _TAX_PROFILE_MISSING_COMPLETENESS:
+        summary["taxProfileMissing"] = int(summary.get("taxProfileMissing") or 0) + 1
+    elif tax_completeness in _TAX_INPUT_VAT_REVIEW_COMPLETENESS:
+        summary["taxInputVatReview"] = int(summary.get("taxInputVatReview") or 0) + 1
 
 
 def _empty_totals() -> dict[str, Any]:
@@ -1256,6 +1284,15 @@ def _apply_tax_profile_to_rows(
             continue
         is_osno = tax_profile_is_osno(tax_profile)
         confirmed_vat_input = _decimal_or_none(row.get("confirmedInputVat"))
+        vat_input_completeness = VAT_INPUT_CONFIRMED
+        if is_osno and confirmed_vat_input is not None:
+            # Расходы услуг Ozon (комиссия, логистика, хранение) несут входящий
+            # НДС внутри, но его вычет не подтвержден отдельным источником 1С.
+            # Подтвержден только товарный входящий НДС из регистра продаж, поэтому
+            # при наличии сервисных расходов входящий НДС неполон -> review.
+            service_expenses = _decimal_or_none(row.get("ozonExpenses"))
+            if service_expenses is not None and service_expenses > 0:
+                vat_input_completeness = VAT_INPUT_PARTIAL
         tax = calculate_tax_amounts(
             revenue,
             profit_before_tax,
@@ -1264,6 +1301,7 @@ def _apply_tax_profile_to_rows(
             vat_input_available=(
                 confirmed_vat_input is not None if is_osno else True
             ),
+            vat_input_completeness=vat_input_completeness,
             profile_required=profile_required,
         )
         row["vatOutput"] = _json_number(tax.vat_output)
@@ -1536,7 +1574,6 @@ def _mart_row_payload(
     cogs = (
         quantity * unit_cost
         if unit_cost is not None
-        and quantity > 0
         and not allocation_conflict
         and has_commissioner
         else None
@@ -1854,6 +1891,7 @@ def _summary_for_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
             str(row.get("qualityStatus") or ""),
             str(row.get("expenseStatus") or ""),
         )
+        _increment_tax_summary(summary, str(row.get("taxCompleteness") or ""))
     return summary
 
 
@@ -1883,53 +1921,34 @@ def _allocate_period_expenses(
     direct_total = sum(direct_article_totals.values(), Decimal("0"))
     tolerance = _expense_attribution_tolerance(amount)
     residual_specs: list[dict[str, Any]] = []
-    over_attributed = Decimal("0")
+    global_residual = amount - direct_total
+    over_attributed = max(-global_residual, Decimal("0"))
     rounding_delta = Decimal("0")
-    matched_direct_total = Decimal("0")
-    if _has_period_expense_article_detail(articles):
-        period_article_ids: set[str] = set()
+    matched_direct_total = min(direct_total, amount)
+    if global_residual > tolerance and _has_period_expense_article_detail(articles):
         for spec in article_specs:
             article_id = str(spec["articleId"])
-            period_article_ids.add(article_id)
             article_amount = Decimal(spec["amount"])
             direct_amount = direct_article_totals.get(article_id, Decimal("0"))
-            matched_direct = min(direct_amount, article_amount)
-            matched_direct_total += matched_direct
-            direct_over = direct_amount - matched_direct
-            if direct_over > tolerance:
-                over_attributed += direct_over
-            residual = article_amount - matched_direct
-            if abs(residual) <= tolerance:
-                rounding_delta += residual
-                continue
+            residual = max(article_amount - direct_amount, Decimal("0"))
             if residual > 0:
                 residual_spec = dict(spec)
                 residual_spec["amount"] = residual
                 residual_specs.append(residual_spec)
-            else:
-                over_attributed += abs(residual)
-        for article_id, direct_amount in direct_article_totals.items():
-            if article_id not in period_article_ids:
-                over_attributed += direct_amount
-    else:
-        matched_direct_total = min(direct_total, amount)
-        global_residual = amount - direct_total
-        if global_residual < -tolerance:
-            over_attributed = abs(global_residual)
-            global_residual = Decimal("0")
-        elif abs(global_residual) <= tolerance:
-            rounding_delta += global_residual
-            global_residual = Decimal("0")
-        if global_residual > 0:
-            residual_specs = [
-                {
-                    "articleId": "services",
-                    "label": _ARTICLE_LABELS["services"],
-                    "group": _ARTICLE_GROUPS["services"],
-                    "amount": global_residual,
-                    "sourceLabel": "Ozon period expenses",
-                }
-            ]
+        residual_specs = _fit_expense_specs_to_total(
+            residual_specs,
+            total=global_residual,
+        )
+    elif global_residual > tolerance:
+        residual_specs = [
+            {
+                "articleId": "services",
+                "label": _ARTICLE_LABELS["services"],
+                "group": _ARTICLE_GROUPS["services"],
+                "amount": global_residual,
+                "sourceLabel": "Ozon period expenses",
+            }
+        ]
 
     residual_total = sum(
         (Decimal(item["amount"]) for item in residual_specs),
@@ -1971,6 +1990,49 @@ def _allocate_period_expenses(
     )
     summary["message"] = _expense_attribution_message(summary)
     return summary
+
+
+def _fit_expense_specs_to_total(
+    specs: Sequence[Mapping[str, Any]],
+    *,
+    total: Decimal,
+) -> list[dict[str, Any]]:
+    positive = [dict(item) for item in specs if Decimal(item["amount"]) > 0]
+    source_total = sum((Decimal(item["amount"]) for item in positive), Decimal("0"))
+    if not positive or source_total <= 0:
+        return [
+            {
+                "articleId": "services",
+                "label": _ARTICLE_LABELS["services"],
+                "group": _ARTICLE_GROUPS["services"],
+                "amount": total,
+                "sourceLabel": "Ozon period expenses",
+            }
+        ]
+    if source_total < total:
+        positive.append(
+            {
+                "articleId": "services",
+                "label": _ARTICLE_LABELS["services"],
+                "group": _ARTICLE_GROUPS["services"],
+                "amount": total - source_total,
+                "sourceLabel": "Ozon period expenses",
+            }
+        )
+        return positive
+    if source_total == total:
+        return positive
+    cents = Decimal("0.01")
+    allocated = Decimal("0")
+    for index, spec in enumerate(positive):
+        amount = (
+            total - allocated
+            if index == len(positive) - 1
+            else (total * Decimal(spec["amount"]) / source_total).quantize(cents)
+        )
+        spec["amount"] = max(amount, Decimal("0"))
+        allocated += Decimal(spec["amount"])
+    return [item for item in positive if Decimal(item["amount"]) > 0]
 
 
 def _has_period_expense_article_detail(
@@ -2666,6 +2728,21 @@ def _mart_issues(summary: Mapping[str, int]) -> list[dict[str, str]]:
             "Выкупы Ozon",
             "Выкуп подтвержден агрегатом периода, но без номера отчета API.",
         ),
+        (
+            "taxProfileMissing",
+            "ozon_mart_tax_profile_missing",
+            "Налоговый профиль не загружен",
+            "Настройки налогообложения из 1С не загружены или не применены.",
+        ),
+        (
+            "taxInputVatReview",
+            "ozon_mart_tax_input_vat_review",
+            "Проверка входящего НДС",
+            (
+                "Входящий НДС по услугам Ozon не подтвержден: "
+                "НДС к уплате требует проверки."
+            ),
+        ),
     ]
     result: list[dict[str, str]] = []
     for summary_key, code, title, detail in specs:
@@ -2892,7 +2969,7 @@ def _realization_quantity(item: dict[str, Any]) -> Decimal:
         "returns_qty",
         "КоличествоВозврат",
     )
-    return abs(quantity - abs(returns))
+    return quantity - abs(returns)
 
 
 def _realization_amount(item: dict[str, Any]) -> Decimal | None:
@@ -3046,14 +3123,15 @@ def _first_decimal_with_presence(
     payload: dict[str, Any],
     *keys: str,
 ) -> tuple[Decimal | None, bool]:
+    found = False
     for key in keys:
         if key not in payload:
             continue
+        found = True
         value = _decimal_or_none(payload.get(key))
         if value is not None:
             return value, True
-        return None, True
-    return None, False
+    return None, found
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:

@@ -5,6 +5,7 @@ from datetime import date
 from io import BytesIO
 
 import httpx
+import pytest
 from openpyxl import Workbook
 
 import wb_unit_economics.ozon as ozon_module
@@ -17,6 +18,7 @@ from wb_unit_economics.ozon import (
     export_ozon_products_report,
     export_ozon_realization,
     export_ozon_realization_posting,
+    export_ozon_stock_on_warehouses,
     ozon_settings_from_secret,
 )
 
@@ -35,6 +37,40 @@ def test_ozon_settings_from_secret_accepts_json_and_key_value() -> None:
         default_seller_account_id="ozon-primary",
     )
     assert kv_settings.accounts[0].seller_account_id == "OZON_PRIMARY"
+
+
+@pytest.mark.parametrize(
+    "secret,error",
+    [
+        ('[{"clientId":"ok","apiKey":"ok"},42]', "ozon_secret_account_2_incomplete"),
+        (
+            '{"accounts":[{"clientId":"ok","apiKey":"ok"},{"clientId":"bad"}]}',
+            "ozon_secret_account_2_incomplete",
+        ),
+    ],
+)
+def test_ozon_settings_from_secret_rejects_entire_invalid_account_list(
+    secret: str,
+    error: str,
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        ozon_settings_from_secret(secret)
+
+
+def test_period_export_rejects_inverted_range_before_io(tmp_path) -> None:
+    settings = ozon_settings_from_secret(
+        '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+    )
+
+    with pytest.raises(ValueError, match="ozon_period_start_after_period_end"):
+        export_ozon_cash_flow(
+            settings,
+            tmp_path,
+            period_start=date(2026, 6, 2),
+            period_end=date(2026, 6, 1),
+        )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_export_ozon_cash_flow_writes_raw_snapshot_without_secrets(tmp_path) -> None:
@@ -98,6 +134,110 @@ def test_export_ozon_cash_flow_writes_raw_snapshot_without_secrets(tmp_path) -> 
     assert "client-secret" not in saved_text
     assert "api-secret" not in saved_text
     assert "A-1" in saved_text
+
+
+def test_export_ozon_cash_flow_counts_cash_flow_periods(tmp_path) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "cash_flows": [
+                        {"period": {"id": 1}, "orders_amount": 100},
+                        {"period": {"id": 2}, "orders_amount": 200},
+                    ],
+                    "details": [
+                        {"period": {"id": 1}, "services": {"total": -10}},
+                        {"period": {"id": 2}, "services": {"total": -20}},
+                    ],
+                }
+            },
+        )
+
+    results = export_ozon_cash_flow(
+        ozon_settings_from_secret(
+            '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+        ),
+        tmp_path,
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        page_size=100,
+        max_pages=1,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert results[0].row_count == 2
+    assert results[0].status == "ok"
+
+
+def test_export_ozon_json_snapshot_preserves_exact_response_bytes(tmp_path) -> None:
+    content = b'{ "result" : { "items" : [{"id":"op-1"}] } }\n'
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=content)
+
+    result = export_ozon_cash_flow(
+        ozon_settings_from_secret(
+            '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+        ),
+        tmp_path,
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        page_size=100,
+        max_pages=1,
+        transport=httpx.MockTransport(handler),
+    )[0]
+
+    assert result.output_path is not None
+    assert result.output_path.read_bytes() == content
+    assert result.raw_content_sha256
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["results"][0]["rawContentSha256"] == result.raw_content_sha256
+
+
+def test_ozon_pagination_marks_all_exhausted_loops(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/finance/cash-flow-statement/list":
+            return httpx.Response(200, json={"result": {"items": [{"id": "1"}]}})
+        if request.url.path == "/v1/finance/realization/posting":
+            return httpx.Response(200, json={"result": {"rows": [{"id": "1"}]}})
+        if request.url.path == "/v2/analytics/stock_on_warehouses":
+            return httpx.Response(200, json={"result": {"rows": [{"id": "1"}]}})
+        raise AssertionError(request.url.path)
+
+    settings = ozon_settings_from_secret(
+        '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+    )
+    transport = httpx.MockTransport(handler)
+    results = [
+        export_ozon_cash_flow(
+            settings,
+            tmp_path / "paged",
+            period_start=date(2026, 6, 1),
+            period_end=date(2026, 6, 30),
+            page_size=1,
+            max_pages=1,
+            transport=transport,
+        )[0],
+        export_ozon_realization_posting(
+            settings,
+            tmp_path / "monthly",
+            period_start=date(2026, 6, 1),
+            period_end=date(2026, 6, 30),
+            max_pages=1,
+            transport=transport,
+        )[0],
+        export_ozon_stock_on_warehouses(
+            settings,
+            tmp_path / "offset",
+            limit=1,
+            max_pages=1,
+            transport=transport,
+        )[0],
+    ]
+
+    assert {item.status for item in results} == {"page_limit_exhausted"}
+    assert all(item.page_limit_exhausted and not item.ok for item in results)
 
 
 def test_export_ozon_cash_flow_flattens_detail_periods(tmp_path) -> None:
@@ -426,6 +566,121 @@ def test_export_ozon_products_report_polls_report_info(
     assert results[1].row_count == 1
     assert results[2].row_count == 1
     assert results[3].row_count == 1
+
+
+@pytest.mark.parametrize(
+    ("info_result", "expected_status"),
+    [
+        (
+            {"status": "failed", "error": {"message": "generation failed"}},
+            "report_failed",
+        ),
+        ({"status": "success", "file": ""}, "report_success_without_file"),
+        ({"status": "waiting", "file": ""}, "report_timeout"),
+    ],
+)
+def test_export_ozon_report_stops_on_terminal_state_or_timeout(
+    tmp_path,
+    monkeypatch,
+    info_result: dict,
+    expected_status: str,
+) -> None:
+    monkeypatch.setattr(ozon_module.time, "sleep", lambda _seconds: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/report/products/create":
+            return httpx.Response(200, json={"result": {"code": "report-code"}})
+        if request.url.path == "/v1/report/info":
+            return httpx.Response(200, json={"result": info_result})
+        raise AssertionError(request.url.path)
+
+    results = export_ozon_products_report(
+        ozon_settings_from_secret(
+            '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+        ),
+        tmp_path,
+        report_poll_timeout_seconds=0.001,
+        report_poll_interval_seconds=0.001,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert results[-1].status == expected_status
+    assert results[-1].ok is False
+
+
+def test_export_ozon_report_create_without_code_fails_closed(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/report/products/create"
+        return httpx.Response(200, json={"result": {"status": "waiting"}})
+
+    results = export_ozon_products_report(
+        ozon_settings_from_secret(
+            '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+        ),
+        tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert results[0].status == "report_failed"
+    assert results[0].error == "report_code_missing"
+    assert results[0].row_count == 0
+
+
+@pytest.mark.parametrize(
+    ("info_result", "expected_status", "expected_polls"),
+    [
+        (
+            {
+                "status": "failed",
+                "error": "generation failed",
+                "file": "https://example.test/stale.csv",
+            },
+            "report_failed",
+            1,
+        ),
+        (
+            {
+                "status": "processing_new_state",
+                "file": "https://example.test/stale.csv",
+            },
+            "report_timeout",
+            2,
+        ),
+    ],
+)
+def test_export_ozon_report_does_not_download_file_before_success(
+    tmp_path,
+    monkeypatch,
+    info_result: dict,
+    expected_status: str,
+    expected_polls: int,
+) -> None:
+    monkeypatch.setattr(ozon_module.time, "sleep", lambda _seconds: None)
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        if request.url.path == "/v1/report/products/create":
+            return httpx.Response(200, json={"result": {"code": "report-code"}})
+        if request.url.path == "/v1/report/info":
+            return httpx.Response(200, json={"result": info_result})
+        raise AssertionError(request.url.path)
+
+    results = export_ozon_products_report(
+        ozon_settings_from_secret(
+            '{"clientId":"client","apiKey":"key","sellerAccountId":"ozon-1"}'
+        ),
+        tmp_path,
+        report_poll_timeout_seconds=0.002,
+        report_poll_interval_seconds=0.001,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert seen_paths.count("/v1/report/info") == expected_polls
+    assert "/stale.csv" not in seen_paths
+    assert results[-1].status == expected_status
 
 
 def test_export_ozon_mutual_settlement_polls_monthly_report_info(

@@ -3,10 +3,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -26,8 +27,11 @@ OZON_REALIZATION_POSTING_ENDPOINT = "/v1/finance/realization/posting"
 OZON_PRODUCTS_BUYOUT_ENDPOINT = "/v1/finance/products/buyout"
 OZON_B2B_SALES_JSON_ENDPOINT = "/v1/finance/document-b2b-sales/json"
 OZON_MUTUAL_SETTLEMENT_ENDPOINT = "/v1/finance/mutual-settlement"
-OZON_REPORT_INFO_MAX_POLLS = 12
-OZON_REPORT_INFO_MIN_DELAY_SECONDS = 2.0
+OZON_REPORT_POLL_TIMEOUT_SECONDS = 300.0
+OZON_REPORT_POLL_INTERVAL_SECONDS = 5.0
+OZON_REPORT_TERMINAL_FAILURES = frozenset(
+    {"failed", "failure", "error", "cancelled", "canceled"}
+)
 
 
 @dataclass(frozen=True)
@@ -99,10 +103,13 @@ class OzonPageResult:
     status: str
     row_count: int
     raw_payload_hash: str = ""
+    raw_content_sha256: str = ""
     output_path: Path | None = None
     status_code: int | None = None
     error: str = ""
     report_code: str = ""
+    report_status: str = ""
+    page_limit_exhausted: bool = False
     source_endpoint: str = ""
 
 
@@ -161,11 +168,11 @@ def ozon_settings_from_secret(
         except json.JSONDecodeError as exc:
             raise OzonConfigError("ozon_secret_json_invalid") from exc
         if isinstance(parsed, list):
-            accounts_payload = [item for item in parsed if isinstance(item, dict)]
+            accounts_payload = _strict_account_objects(parsed)
         elif isinstance(parsed, dict):
             nested = parsed.get("accounts")
             if isinstance(nested, list):
-                accounts_payload = [item for item in nested if isinstance(item, dict)]
+                accounts_payload = _strict_account_objects(nested)
             else:
                 accounts_payload = [parsed]
         else:
@@ -179,7 +186,7 @@ def ozon_settings_from_secret(
         client_id = _first_text(item, "clientId", "client_id", "CLIENT_ID")
         api_key = _first_text(item, "apiKey", "api_key", "token", "API_KEY")
         if not client_id or not api_key:
-            continue
+            raise OzonConfigError(f"ozon_secret_account_{index}_incomplete")
         seller_account_id = _first_text(
             item, "sellerAccountId", "seller_account_id", "id"
         ) or (fallback_id if len(accounts_payload) == 1 else f"{fallback_id}_{index}")
@@ -208,6 +215,7 @@ def export_ozon_cash_flow(
     request_delay_seconds: float = 0.0,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     return _export_paged_endpoint(
         settings,
         output_dir,
@@ -264,6 +272,7 @@ def export_ozon_realization(
     request_delay_seconds: float = 0.0,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     months = _months_between(period_start, period_end)
     return _export_monthly_endpoint(
         settings,
@@ -288,6 +297,7 @@ def export_ozon_realization_posting(
     request_delay_seconds: float = 0.0,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     months = _months_between(period_start, period_end)
     return _export_monthly_paged_endpoint(
         settings,
@@ -312,6 +322,7 @@ def export_ozon_products_buyout(
     request_delay_seconds: float = 0.0,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     return _export_period_chunks_endpoint(
         settings,
         output_dir,
@@ -334,6 +345,7 @@ def export_ozon_b2b_sales_json(
     request_delay_seconds: float = 0.0,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     return _export_monthly_endpoint(
         settings,
         output_dir,
@@ -354,8 +366,11 @@ def export_ozon_mutual_settlement(
     period_start: date,
     period_end: date,
     request_delay_seconds: float = 0.0,
+    report_poll_timeout_seconds: float = OZON_REPORT_POLL_TIMEOUT_SECONDS,
+    report_poll_interval_seconds: float = OZON_REPORT_POLL_INTERVAL_SECONDS,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     return _export_monthly_report_task(
         settings,
         output_dir,
@@ -363,6 +378,8 @@ def export_ozon_mutual_settlement(
         endpoint=OZON_MUTUAL_SETTLEMENT_ENDPOINT,
         months=_months_between(period_start, period_end),
         request_delay_seconds=request_delay_seconds,
+        report_poll_timeout_seconds=report_poll_timeout_seconds,
+        report_poll_interval_seconds=report_poll_interval_seconds,
         transport=transport,
         payload_factory=lambda month: {"date": month},
     )
@@ -373,6 +390,8 @@ def export_ozon_products_report(
     output_dir: Path,
     *,
     request_delay_seconds: float = 0.0,
+    report_poll_timeout_seconds: float = OZON_REPORT_POLL_TIMEOUT_SECONDS,
+    report_poll_interval_seconds: float = OZON_REPORT_POLL_INTERVAL_SECONDS,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
     return _export_report_task(
@@ -382,6 +401,8 @@ def export_ozon_products_report(
         endpoint=OZON_PRODUCT_REPORT_ENDPOINT,
         payload={},
         request_delay_seconds=request_delay_seconds,
+        report_poll_timeout_seconds=report_poll_timeout_seconds,
+        report_poll_interval_seconds=report_poll_interval_seconds,
         transport=transport,
     )
 
@@ -393,8 +414,11 @@ def export_ozon_returns_report(
     period_start: date,
     period_end: date,
     request_delay_seconds: float = 0.0,
+    report_poll_timeout_seconds: float = OZON_REPORT_POLL_TIMEOUT_SECONDS,
+    report_poll_interval_seconds: float = OZON_REPORT_POLL_INTERVAL_SECONDS,
     transport: httpx.BaseTransport | None = None,
 ) -> list[OzonPageResult]:
+    _validate_period(period_start, period_end)
     return _export_report_task(
         settings,
         output_dir,
@@ -409,6 +433,8 @@ def export_ozon_returns_report(
             }
         },
         request_delay_seconds=request_delay_seconds,
+        report_poll_timeout_seconds=report_poll_timeout_seconds,
+        report_poll_interval_seconds=report_poll_interval_seconds,
         transport=transport,
     )
 
@@ -524,6 +550,18 @@ def _export_paged_endpoint(
                     payload=payload_factory(page, page_size),
                     row_extractor=row_extractor,
                 )
+                if (
+                    page == max_pages
+                    and result.ok
+                    and result.row_count >= page_size
+                ):
+                    result = replace(
+                        result,
+                        ok=False,
+                        status="page_limit_exhausted",
+                        page_limit_exhausted=True,
+                        error="page_limit_exhausted",
+                    )
                 results.append(result)
                 if not result.ok or result.row_count < page_size:
                     break
@@ -575,6 +613,14 @@ def _export_monthly_paged_endpoint(
                                 result.output_path.unlink(missing_ok=True)
                             break
                         month_payload_hashes.add(result.raw_payload_hash)
+                    if page == max_pages and result.ok and result.row_count > 0:
+                        result = replace(
+                            result,
+                            ok=False,
+                            status="page_limit_exhausted",
+                            page_limit_exhausted=True,
+                            error="page_limit_exhausted",
+                        )
                     results.append(result)
                     page_index += 1
                     if not result.ok or result.row_count == 0:
@@ -618,6 +664,14 @@ def _export_offset_endpoint(
                     payload=payload_factory(offset, limit),
                     row_extractor=row_extractor,
                 )
+                if page == max_pages and result.ok and result.row_count >= limit:
+                    result = replace(
+                        result,
+                        ok=False,
+                        status="page_limit_exhausted",
+                        page_limit_exhausted=True,
+                        error="page_limit_exhausted",
+                    )
                 results.append(result)
                 if not result.ok or result.row_count < limit:
                     break
@@ -674,6 +728,8 @@ def _export_report_task(
     endpoint: str,
     payload: dict[str, Any],
     request_delay_seconds: float,
+    report_poll_timeout_seconds: float,
+    report_poll_interval_seconds: float,
     transport: httpx.BaseTransport | None,
 ) -> list[OzonPageResult]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -695,13 +751,29 @@ def _export_report_task(
                 payload=payload,
                 row_extractor=lambda item: [item.get("result", item)],
             )
+            created = replace(created, row_count=0)
+            if (
+                created.ok
+                and created.status != "empty_expected"
+                and not created.report_code
+            ):
+                created = replace(
+                    created,
+                    ok=False,
+                    status="report_failed",
+                    error="report_code_missing",
+                )
             results.append(created)
             code = created.report_code
-            if code:
-                for poll_index in range(1, OZON_REPORT_INFO_MAX_POLLS + 1):
+            if code and created.ok:
+                max_polls = _report_max_polls(
+                    report_poll_timeout_seconds,
+                    report_poll_interval_seconds,
+                )
+                for poll_index in range(1, max_polls + 1):
                     _sleep_between_report_info_polls(
-                        poll_index,
                         request_delay_seconds,
+                        report_poll_interval_seconds,
                     )
                     info = _post_and_store(
                         client,
@@ -716,21 +788,36 @@ def _export_report_task(
                     )
                     results.append(info)
                     file_url = _report_file_url(info.output_path)
-                    if file_url:
-                        results.append(
-                            _download_report_file(
-                                account,
-                                output_dir,
-                                source_type=source_type,
-                                file_url=file_url,
-                                report_code=code,
-                                timeout_seconds=settings.timeout_seconds,
-                                transport=transport,
-                            )
-                        )
-                        break
                     if not info.ok:
                         break
+                    if _report_is_success(info.report_status):
+                        if file_url:
+                            results.append(
+                                _download_report_file(
+                                    account,
+                                    output_dir,
+                                    source_type=source_type,
+                                    file_url=file_url,
+                                    report_code=code,
+                                    timeout_seconds=settings.timeout_seconds,
+                                    transport=transport,
+                                )
+                            )
+                        else:
+                            results[-1] = replace(
+                                info,
+                                ok=False,
+                                status="report_success_without_file",
+                                error="report_success_without_file",
+                            )
+                        break
+                    if poll_index == max_polls:
+                        results[-1] = replace(
+                            info,
+                            ok=False,
+                            status="report_timeout",
+                            error="report_timeout",
+                        )
     _write_manifest(output_dir, source_type, endpoint, results)
     return results
 
@@ -743,6 +830,8 @@ def _export_monthly_report_task(
     endpoint: str,
     months: Iterable[str],
     request_delay_seconds: float,
+    report_poll_timeout_seconds: float,
+    report_poll_interval_seconds: float,
     transport: httpx.BaseTransport | None,
     payload_factory: Any,
 ) -> list[OzonPageResult]:
@@ -768,14 +857,30 @@ def _export_monthly_report_task(
                     row_extractor=lambda item: [item.get("result", item)],
                     file_suffix=month,
                 )
+                created = replace(created, row_count=0)
+                if (
+                    created.ok
+                    and created.status != "empty_expected"
+                    and not created.report_code
+                ):
+                    created = replace(
+                        created,
+                        ok=False,
+                        status="report_failed",
+                        error="report_code_missing",
+                    )
                 results.append(created)
                 page_index += 1
                 code = created.report_code
-                if code:
-                    for poll_index in range(1, OZON_REPORT_INFO_MAX_POLLS + 1):
+                if code and created.ok:
+                    max_polls = _report_max_polls(
+                        report_poll_timeout_seconds,
+                        report_poll_interval_seconds,
+                    )
+                    for poll_index in range(1, max_polls + 1):
                         _sleep_between_report_info_polls(
-                            poll_index,
                             request_delay_seconds,
+                            report_poll_interval_seconds,
                         )
                         info = _post_and_store(
                             client,
@@ -791,24 +896,39 @@ def _export_monthly_report_task(
                         results.append(info)
                         page_index += 1
                         file_url = _report_file_url(info.output_path)
-                        if file_url:
-                            results.append(
-                                _download_report_file(
-                                    account,
-                                    output_dir,
-                                    source_type=source_type,
-                                    file_url=file_url,
-                                    report_code=code,
-                                    timeout_seconds=settings.timeout_seconds,
-                                    transport=transport,
-                                    page_index=page_index,
-                                    file_suffix=month,
-                                )
-                            )
-                            page_index += 1
-                            break
                         if not info.ok:
                             break
+                        if _report_is_success(info.report_status):
+                            if file_url:
+                                results.append(
+                                    _download_report_file(
+                                        account,
+                                        output_dir,
+                                        source_type=source_type,
+                                        file_url=file_url,
+                                        report_code=code,
+                                        timeout_seconds=settings.timeout_seconds,
+                                        transport=transport,
+                                        page_index=page_index,
+                                        file_suffix=month,
+                                    )
+                                )
+                                page_index += 1
+                            else:
+                                results[-1] = replace(
+                                    info,
+                                    ok=False,
+                                    status="report_success_without_file",
+                                    error="report_success_without_file",
+                                )
+                            break
+                        if poll_index == max_polls:
+                            results[-1] = replace(
+                                info,
+                                ok=False,
+                                status="report_timeout",
+                                error="report_timeout",
+                            )
                 _sleep_between_requests(request_delay_seconds)
     _write_manifest(output_dir, source_type, endpoint, results)
     return results
@@ -843,6 +963,7 @@ def _post_and_store(
     output_path: Path | None = None
     row_count = 0
     payload_hash = ""
+    content_hash = ""
     report_code = ""
     try:
         body = response.json()
@@ -854,32 +975,42 @@ def _post_and_store(
         payload=body,
     )
     status = "empty_expected" if expected_empty else _status_from_response(response)
+    report_status, report_error = _report_state(body)
+    if response.status_code < 400 and (
+        report_error or _report_is_terminal_failure(report_status)
+    ):
+        status = "report_failed"
     if response.status_code < 400:
         rows = row_extractor(body)
         row_count = len(rows)
         report_code = _report_code(body)
         payload_hash = _hash_payload(body)
+        content_hash = hashlib.sha256(response.content).hexdigest()
         suffix = f"_{file_suffix}" if file_suffix else f"_page_{page_index:04d}"
         output_path = output_dir / (
             f"{account.seller_account_id}_{source_type}{suffix}.raw.json"
         )
-        output_path.write_text(
-            json.dumps(body, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        output_path.write_bytes(response.content)
+    ok = (response.status_code < 400 or expected_empty) and status != "report_failed"
     return OzonPageResult(
         source_type=source_type,
         seller_account_id=account.seller_account_id,
         account_name=account.account_name,
         page_index=page_index,
-        ok=response.status_code < 400 or expected_empty,
+        ok=ok,
         status=status,
         row_count=row_count,
         raw_payload_hash=payload_hash,
+        raw_content_sha256=content_hash,
         output_path=output_path,
         status_code=response.status_code,
-        error="" if response.status_code < 400 else _error_message(body),
+        error=(
+            report_error
+            if status == "report_failed"
+            else "" if response.status_code < 400 else _error_message(body)
+        ),
         report_code=report_code,
+        report_status=report_status,
         source_endpoint=endpoint,
     )
 
@@ -896,6 +1027,42 @@ def _report_file_url(output_path: Path | None) -> str:
         return ""
     file_url = result.get("file")
     return str(file_url).strip() if file_url else ""
+
+
+def _report_state(payload: dict[str, Any]) -> tuple[str, str]:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return "", ""
+    status = str(result.get("status") or "").strip().lower()
+    error = result.get("error")
+    if error in (None, "", {}, []):
+        return status, ""
+    if isinstance(error, dict):
+        for key in ("message", "code", "error"):
+            if error.get(key):
+                return status, str(error[key])[:500]
+        return status, "report_error"
+    return status, str(error)[:500]
+
+
+def _report_is_terminal_failure(status: str) -> bool:
+    return status.strip().lower() in OZON_REPORT_TERMINAL_FAILURES
+
+
+def _report_is_success(status: str) -> bool:
+    return status.strip().lower() in {
+        "success",
+        "succeeded",
+        "done",
+        "completed",
+        "ready",
+    }
+
+
+def _report_max_polls(timeout_seconds: float, interval_seconds: float) -> int:
+    timeout = max(float(timeout_seconds), 0.0)
+    interval = max(float(interval_seconds), 0.001)
+    return max(1, math.ceil(timeout / interval))
 
 
 def _download_report_file(
@@ -958,6 +1125,7 @@ def _download_report_file(
         status=_status_from_response(response),
         row_count=row_count,
         raw_payload_hash=payload_hash,
+        raw_content_sha256=payload_hash,
         output_path=output_path,
         status_code=response.status_code,
         error="" if response.status_code < 400 else response.text[:240],
@@ -987,14 +1155,11 @@ def _report_file_suffix(
 
 
 def _sleep_between_report_info_polls(
-    poll_index: int,
     request_delay_seconds: float,
+    report_poll_interval_seconds: float,
 ) -> None:
-    if poll_index <= 1:
-        _sleep_between_requests(request_delay_seconds)
-        return
     _sleep_between_requests(
-        max(request_delay_seconds, OZON_REPORT_INFO_MIN_DELAY_SECONDS)
+        max(request_delay_seconds, report_poll_interval_seconds)
     )
 
 
@@ -1098,6 +1263,9 @@ def _expected_empty_response(
 def _extract_cash_flow_rows(payload: dict[str, Any]) -> list[Any]:
     result = payload.get("result")
     if isinstance(result, dict):
+        cash_flows = result.get("cash_flows")
+        if isinstance(cash_flows, list):
+            return cash_flows
         items = result.get("items")
         if isinstance(items, list):
             return items
@@ -1194,8 +1362,11 @@ def _write_manifest(
                 "statusCode": item.status_code,
                 "sourceEndpoint": item.source_endpoint,
                 "rawPayloadHash": item.raw_payload_hash,
+                "rawContentSha256": item.raw_content_sha256,
                 "outputFile": item.output_path.name if item.output_path else None,
                 "reportCode": item.report_code,
+                "reportStatus": item.report_status,
+                "pageLimitExhausted": item.page_limit_exhausted,
                 "error": item.error,
             }
             for item in results
@@ -1210,6 +1381,11 @@ def _write_manifest(
 def _sleep_between_requests(seconds: float) -> None:
     if seconds > 0:
         time.sleep(seconds)
+
+
+def _validate_period(period_start: date, period_end: date) -> None:
+    if period_start > period_end:
+        raise OzonConfigError("ozon_period_start_after_period_end")
 
 
 def _months_between(period_start: date, period_end: date) -> list[str]:
@@ -1296,6 +1472,15 @@ def _parse_key_value_secret(raw: str) -> dict[str, Any]:
             raise OzonConfigError("ozon_secret_key_value_expected")
         result[key.strip()] = value.strip()
     return result
+
+
+def _strict_account_objects(items: list[Any]) -> list[dict[str, Any]]:
+    accounts: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise OzonConfigError(f"ozon_secret_account_{index}_incomplete")
+        accounts.append(item)
+    return accounts
 
 
 def _first_text(values: dict[str, Any], *keys: str) -> str:

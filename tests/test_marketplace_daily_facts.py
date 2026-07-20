@@ -23,7 +23,9 @@ from wb_unit_economics.web.models import (
 from wb_unit_economics.web.models import (
     MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactModel,
 )
+from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
+    SourceRefreshService,
     _full_wb_calculation_parity,
     _persisted_daily_facts_parity,
 )
@@ -395,6 +397,87 @@ def test_operation_facts_replace_source_snapshot_without_duplicates() -> None:
     assert adapted[0].row_payload["sale_amount"] == Decimal("125.00")
 
 
+def test_typed_realization_reassembles_service_facts_before_preview_limit() -> None:
+    session_factory, refresh_run = _context()
+    with session_factory() as db:
+        run = db.get(SourceRefreshRun, refresh_run.id)
+        assert run is not None
+        collection = SourceRefreshCollection(
+            refresh_run_id=run.id,
+            tenant_id=run.tenant_id,
+            client_id=run.client_id,
+            source_type="ozon_realization",
+            source_label="Ozon realization",
+            required=False,
+            publication_required=False,
+            status="loaded",
+            snapshot_hash="collection-hash",
+            row_count=1,
+            raw_path="/tmp/fixture",
+            payload={},
+            loaded_at=datetime(2026, 7, 11, tzinfo=UTC),
+        )
+        db.add(collection)
+        db.flush()
+        product = {
+            **_operation("product", "100"),
+            "service_key": "product",
+            "commission": Decimal("0"),
+            "service_amount": Decimal("0"),
+        }
+        commission = {
+            **_operation("commission", "0"),
+            "service_key": "commission",
+            "commission": Decimal("10"),
+            "service_amount": Decimal("0"),
+        }
+        logistics = {
+            **_operation("logistics", "0"),
+            "service_key": "logistics",
+            "commission": Decimal("0"),
+            "service_amount": Decimal("0"),
+            "logistics": Decimal("20"),
+        }
+        repository.replace_marketplace_operation_facts(
+            db,
+            collection,
+            [
+                product,
+                commission,
+                logistics,
+                {
+                    **_operation("product-2", "80"),
+                    "source_row_id": "row-2",
+                    "operation_id": "operation-2",
+                    "posting_number": "posting-2",
+                    "product_id": "product-2",
+                    "service_key": "product",
+                    "commission": Decimal("0"),
+                    "service_amount": Decimal("0"),
+                },
+            ],
+        )
+        adapted = repository._ozon_realization_source_rows(
+            db,
+            tenant_id=run.tenant_id,
+            refresh_run=run,
+            limit=1,
+            prefer_typed=True,
+        )
+        full = repository._ozon_realization_source_rows(
+            db,
+            tenant_id=run.tenant_id,
+            refresh_run=run,
+            limit=None,
+            prefer_typed=True,
+        )
+
+    assert len(adapted) == 1
+    assert adapted[0].row_payload["commission"] == Decimal("10.00")
+    assert adapted[0].row_payload["logistics"] == Decimal("20.00")
+    assert len(full) == 2
+
+
 def test_operation_staging_failure_keeps_current_facts() -> None:
     session_factory, refresh_run = _context()
     with session_factory() as db:
@@ -437,6 +520,129 @@ def test_operation_staging_failure_keeps_current_facts() -> None:
         rows = list(db.scalars(select(MarketplaceOperationFact)))
 
     assert len(rows) == 1
+    assert rows[0].amount == Decimal("100.00")
+
+
+def test_cross_source_ozon_promotion_failure_rolls_back_every_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory, old_run_ref = _context()
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    with session_factory() as db:
+        old_run = db.get(SourceRefreshRun, old_run_ref.id)
+        assert old_run is not None
+        old_collection = SourceRefreshCollection(
+            refresh_run_id=old_run.id,
+            tenant_id=old_run.tenant_id,
+            client_id=old_run.client_id,
+            source_type="ozon_finance_cash_flow",
+            source_label="Ozon cash flow",
+            required=False,
+            publication_required=False,
+            status="loaded",
+            snapshot_hash="old",
+            row_count=1,
+            raw_path="/tmp/old",
+            payload={},
+            loaded_at=now,
+        )
+        db.add(old_collection)
+        db.flush()
+        repository.replace_marketplace_operation_facts(
+            db,
+            old_collection,
+            [_operation("old-current", "100")],
+        )
+        db.commit()
+
+        new_run = SourceRefreshRun(
+            id="refresh-new",
+            tenant_id=old_run.tenant_id,
+            client_id=old_run.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            status="running",
+            snapshot_set_id="snapshot-new",
+            period_start=old_run.period_start,
+            period_end=old_run.period_end,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(new_run)
+        for source_type in ("ozon_finance_cash_flow", "ozon_realization"):
+            db.add(
+                SourceRefreshCollection(
+                    refresh_run_id=new_run.id,
+                    tenant_id=new_run.tenant_id,
+                    client_id=new_run.client_id,
+                    source_type=source_type,
+                    source_label=source_type,
+                    required=False,
+                    publication_required=False,
+                    status="loaded",
+                    snapshot_hash=f"new-{source_type}",
+                    row_count=1,
+                    raw_path=f"/tmp/{source_type}",
+                    payload={"rawIntegrity": {"status": "verified"}},
+                    loaded_at=now,
+                )
+            )
+        db.flush()
+        monkeypatch.setattr(
+            "wb_unit_economics.web.source_refresh._ozon_results_from_collection",
+            lambda *_args, **_kwargs: ([], {}),
+        )
+        calls = 0
+
+        def fake_materialize(
+            db_session,
+            _refresh_run,
+            collection,
+            _results,
+            *,
+            ozon_cabinet_ids,
+        ) -> None:
+            nonlocal calls
+            del ozon_cabinet_ids
+            calls += 1
+            if calls == 2:
+                raise ValueError("staging failed")
+            repository.replace_marketplace_operation_facts(
+                db_session,
+                collection,
+                [_operation("new-candidate", "999")],
+            )
+            collection.payload = {
+                **(collection.payload or {}),
+                "typedParity": {"status": "pending_diagnostics"},
+            }
+
+        monkeypatch.setattr(
+            "wb_unit_economics.web.source_refresh._materialize_ozon_typed_collection",
+            fake_materialize,
+        )
+        settings = WebSettings(
+            marketplace_daily_facts_enabled=True,
+            source_refresh_ozon_typed_facts_enabled=True,
+        )
+        promoted = SourceRefreshService(settings)._promote_ozon_typed_facts(
+            db,
+            new_run,
+            ozon_cabinet_ids={},
+        )
+        rows = list(
+            db.scalars(
+                select(MarketplaceOperationFact).where(
+                    MarketplaceOperationFact.source_type
+                    == "ozon_finance_cash_flow"
+                )
+            )
+        )
+
+    assert promoted is False
+    assert len(rows) == 1
+    assert rows[0].source_key == "old-current"
     assert rows[0].amount == Decimal("100.00")
 
 

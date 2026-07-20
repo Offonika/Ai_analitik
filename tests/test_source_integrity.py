@@ -4,7 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from wb_unit_economics.source_integrity import (
+    RawIntegrityError,
     canonical_payload_hash,
     verify_raw_directory,
 )
@@ -70,3 +73,47 @@ def test_ozon_report_integrity_counts_downloaded_rows_not_control_responses(
 
     assert verified.row_count == 2
     assert verified.file_count == 3
+
+
+def test_new_ozon_snapshot_uses_byte_hash_while_legacy_hash_stays_compatible(
+    tmp_path: Path,
+) -> None:
+    raw_path = tmp_path / "source" / "ozon"
+    raw_path.mkdir(parents=True)
+    output_path = raw_path / "page.raw.json"
+    original = b'{ "result": {"items": [{"id": 1}]} }\n'
+    output_path.write_bytes(original)
+    payload = json.loads(original)
+    result = {
+        "sellerAccountId": "seller",
+        "pageIndex": 1,
+        "rowCount": 1,
+        "statusCode": 200,
+        "sourceEndpoint": "/finance",
+        "rawPayloadHash": hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "rawContentSha256": hashlib.sha256(original).hexdigest(),
+        "outputFile": output_path.name,
+    }
+    (raw_path / "manifest.json").write_text(
+        json.dumps({"results": [result]}),
+        encoding="utf-8",
+    )
+
+    output_path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+    with pytest.raises(RawIntegrityError, match="hash"):
+        verify_raw_directory(
+            raw_path,
+            source_type="ozon_finance_cash_flow",
+            source_root=tmp_path / "source",
+            collection_results=[result],
+            collection_row_count=1,
+            collection_snapshot_hash=canonical_payload_hash([result]),
+        )

@@ -317,7 +317,6 @@ OZON_EXTRA_RECONCILIATION_SOURCES = frozenset(
 )
 OZON_DIAGNOSTIC_PREVIEW_MAX_ROWS = 100
 OZON_PNL_MAX_SOURCE_ROWS = 50000
-OZON_MAPPING_CHECK_MAX_ROWS = 1000
 OZON_ONEC_COUNTERPARTY_LABEL = "ООО Интернет Решения"
 OZON_BUYOUT_REPORT_RE = re.compile(
     r"(?:отчет[а]?\s+о\s+выкуп(?:ленных\s+товаров|е)?|"
@@ -1319,7 +1318,15 @@ def resolve_company_tax_profile(
         )
     )
     if refresh_run is None and source_profiles:
-        latest_profile_run_id = source_profiles[0].source_refresh_run_id
+        # «Текущий снимок 1С» = профиль самого свежего прогона среди действующих
+        # на дату, а не профиль с максимальным valid_from: новый прогон мог
+        # переопределить режим строкой с более ранним valid_from. Старые строки
+        # не деактивируются, поэтому выбираем последний по времени записи прогон.
+        latest_profile = max(
+            source_profiles,
+            key=lambda item: item.created_at,
+        )
+        latest_profile_run_id = latest_profile.source_refresh_run_id
         source_profiles = [
             item
             for item in source_profiles
@@ -5780,7 +5787,7 @@ def _ozon_realization_source_rows(
     tenant_id: str,
     refresh_run: SourceRefreshRun,
     wb_cabinet_id: str = "",
-    limit: int,
+    limit: int | None,
     prefer_typed: bool = False,
 ) -> list[Any]:
     return _ozon_typed_source_rows(
@@ -5801,23 +5808,18 @@ def _ozon_typed_source_rows(
     refresh_run: SourceRefreshRun,
     source_type: str,
     wb_cabinet_id: str = "",
-    limit: int,
+    limit: int | None,
     prefer_typed: bool = False,
 ) -> list[Any]:
-    raw_rows = (
-        []
-        if prefer_typed
-        else list(
-            db.scalars(
-                _source_snapshot_rows_select(
-                    tenant_id=tenant_id,
-                    refresh_run=refresh_run,
-                    source_type=source_type,
-                    wb_cabinet_id=wb_cabinet_id,
-                ).limit(limit)
-            )
-        )
+    raw_select = _source_snapshot_rows_select(
+        tenant_id=tenant_id,
+        refresh_run=refresh_run,
+        source_type=source_type,
+        wb_cabinet_id=wb_cabinet_id,
     )
+    if limit is not None:
+        raw_select = raw_select.limit(limit)
+    raw_rows = [] if prefer_typed else list(db.scalars(raw_select))
     if source_type == OZON_MUTUAL_SETTLEMENT_SOURCE and raw_rows:
         raw_rows = [
             row
@@ -5842,13 +5844,14 @@ def _ozon_typed_source_rows(
                 MarketplaceOperationFact.source_row_number,
                 MarketplaceOperationFact.id,
             )
-            .limit(limit)
         )
     )
     if source_type == OZON_DIAGNOSTIC_FINANCE_SOURCE:
-        return _typed_ozon_cash_flow_rows(typed_rows)
+        rows = _typed_ozon_cash_flow_rows(typed_rows)
+        return rows if limit is None else rows[:limit]
     if source_type != OZON_REALIZATION_SOURCE:
-        return [_typed_ozon_namespace(item) for item in typed_rows]
+        rows = [_typed_ozon_namespace(item) for item in typed_rows]
+        return rows if limit is None else rows[:limit]
     typed_rows.sort(
         key=lambda item: (
             _typed_ozon_source_position(item.source_row_id),
@@ -5892,7 +5895,7 @@ def _ozon_typed_source_rows(
                 row_number=row_number,
             )
         )
-    return result
+    return result if limit is None else result[:limit]
 
 
 def _typed_ozon_source_position(value: str) -> tuple[int, int]:
@@ -6211,7 +6214,7 @@ def latest_ozon_diagnostics_payload(
         refresh_run=refresh_run,
         source_type=OZON_DIAGNOSTIC_FINANCE_SOURCE,
         wb_cabinet_id=wb_cabinet_id,
-        limit=max(row_limit, OZON_PNL_MAX_SOURCE_ROWS),
+        limit=None,
         prefer_typed=prefer_typed,
     )
     finance_rows = [
@@ -6223,7 +6226,7 @@ def latest_ozon_diagnostics_payload(
         refresh_run=refresh_run,
         source_type=OZON_MUTUAL_SETTLEMENT_SOURCE,
         wb_cabinet_id=wb_cabinet_id,
-        limit=OZON_PNL_MAX_SOURCE_ROWS,
+        limit=None,
         prefer_typed=prefer_typed,
     )
     mutual_settlement_pnl_rows = _ozon_rows_matching_period(
@@ -6238,7 +6241,7 @@ def latest_ozon_diagnostics_payload(
         tenant_id=tenant_id,
         refresh_run=refresh_run,
         wb_cabinet_id=wb_cabinet_id,
-        limit=OZON_PNL_MAX_SOURCE_ROWS,
+        limit=None,
         prefer_typed=prefer_typed,
     )
     realization_pnl_rows = _ozon_rows_matching_period(
@@ -6308,7 +6311,7 @@ def latest_ozon_diagnostics_payload(
         refresh_run=refresh_run,
         source_type=OZON_BUYOUT_API_SOURCE,
         wb_cabinet_id=wb_cabinet_id,
-        limit=OZON_PNL_MAX_SOURCE_ROWS,
+        limit=None,
         prefer_typed=prefer_typed,
     )
     ozon_mapping = _ozon_mapping_diagnostics_payload(
@@ -6517,7 +6520,7 @@ def latest_ozon_diagnostics_payload(
             period_expense_basis=str(monthly_expenses.get("basis") or ""),
             period_start=month_start,
             period_end=month_end,
-            preview_limit=OZON_PNL_MAX_SOURCE_ROWS,
+            preview_limit=row_limit,
             tax_profile=tax_profile,
             tax_profile_required=True,
             input_vat_by_item=monthly_input_vat,
@@ -11248,7 +11251,7 @@ def _ozon_mapping_diagnostics_payload(
         refresh_run=refresh_run,
         source_type=OZON_DIAGNOSTIC_PRODUCT_SOURCE,
         wb_cabinet_id=wb_cabinet_id,
-        limit=OZON_MAPPING_CHECK_MAX_ROWS,
+        limit=None,
         prefer_typed=prefer_typed,
     )
     product_row_count = (
@@ -11257,7 +11260,7 @@ def _ozon_mapping_diagnostics_payload(
     candidates = list(
         _iter_ozon_mapping_candidates(
             product_rows,
-            max_rows=OZON_MAPPING_CHECK_MAX_ROWS,
+            max_rows=None,
         )
     )
     if not candidates:
@@ -11554,7 +11557,7 @@ def _append_ozon_mapping_index(
 def _iter_ozon_mapping_candidates(
     rows: list[SourceSnapshotRow],
     *,
-    max_rows: int,
+    max_rows: int | None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for row in rows:
@@ -11562,7 +11565,7 @@ def _iter_ozon_mapping_candidates(
             candidate = _ozon_mapping_candidate(row, payload)
             if candidate:
                 candidates.append(candidate)
-                if len(candidates) >= max_rows:
+                if max_rows is not None and len(candidates) >= max_rows:
                     return candidates
     return candidates
 

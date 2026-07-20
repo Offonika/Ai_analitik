@@ -19,10 +19,18 @@ related_code:
   - src/wb_unit_economics/web/providers.py
   - src/wb_unit_economics/web/static/app.js
   - scripts/rebuild_report_from_sources.py
+  - scripts/materialize_ozon_typed_facts.py
+  - scripts/compare_ozon_legacy_typed.py
+  - scripts/restore_marketplace_raw_rows.py
+  - scripts/migrate_ozon_tax_profiles.py
   - scripts/prune_source_refresh.py
 related_tests:
   - tests/test_calculation.py
   - tests/test_marketplace_daily_facts.py
+  - tests/test_ozon_typed_parity.py
+  - tests/test_restore_marketplace_raw_rows.py
+  - tests/test_migrate_ozon_tax_profiles.py
+  - tests/test_source_integrity.py
   - tests/test_web_database.py
   - tests/test_web_app.py
   - tests/test_source_refresh.py
@@ -46,7 +54,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-18"
+updated_at: "2026-07-20"
 ---
 
 # Implementation Status
@@ -485,11 +493,26 @@ Ozon параллельно материализует текущие типиз
 `SOURCE_REFRESH_RAW_DB_MODE=files_only` без этого флага переключает WB, но не
 прекращает совместимую raw-запись Ozon.
 
-Typed Ozon grain не зависит от позиции строки и включает cabinet/source type,
-operation, posting, product и service key. Service lines и partial-source status
+Автоматическая Ozon materialization имеет отдельный rollout-флаг
+`SOURCE_REFRESH_OZON_TYPED_FACTS_ENABLED`, по умолчанию `false`. Collector не
+меняет current facts: он сохраняет immutable raw и collection metadata. После
+успеха mandatory collectors все Ozon sources проходят normalization/staging, а
+operation и daily facts продвигаются одной транзакцией до terminal run status.
+Failure, partial/auth collection или последующая ошибка сохраняет весь
+предыдущий current set.
+
+Typed Ozon grain не зависит от позиции строки и включает client, cabinet,
+seller, source type, настоящий operation id, posting, product и service key.
+`operation_type` не является operation id. При отсутствии operation/posting
+используется stable raw payload hash с детерминированным duplicate ordinal.
+Service lines и partial-source status
 хранятся типизированно; promotion выполняется атомарно через staging. Raw Ozon
 можно отключить только после typed parity для всех источников, используемых P&L
 и diagnostics.
+
+Product/service facts восстанавливаются в logical source rows до применения
+preview limit. Расчет и parity обходят весь snapshot потоково; фиксированный
+лимит первых 50 000 typed facts не является допустимой полной сверкой.
 
 Поддерживаемый file-authoritative контур включает
 `ozon_finance_cash_flow`, `ozon_realization`, `ozon_realization_posting`,
@@ -504,6 +527,12 @@ Ozon diagnostics/P&L. Последняя выполняется по всем с
 поля сравниваются после рабочего округления, а preview-строки сортируются по
 stable business grain; физический SQL-порядок и технические row ids не являются
 grain. Артефакт сохраняет только digests, статусы секций и пути расхождений.
+
+В legacy mode reference строится из raw DB rows. После files-only cutover
+reference строится из immutable raw files и содержит `qualificationRunId`
+предыдущего полного legacy parity. Отсутствие допустимого reference оставляет
+status pending/mismatch и не может быть записано как matched. Files-only
+preflight требует qualification для каждого поддерживаемого Ozon source type.
 
 Cash-flow сохраняется typed summary и service lines по категориям и операциям;
 mutual-settlement сохраняет документные строки, а buyout/B2B разворачивают
@@ -565,6 +594,10 @@ mutual-settlement сохраняет документные строки, а buy
 - `commissioner_reports=partial_source/failed` блокирует публикацию, а
   optional `stock_movements` не превращается в ноль и не блокирует отчет при
   подтвержденной обязательной себестоимости.
+- Failed run, Ozon 401, staging/persistence error или последующая mandatory 1C
+  failure оставляет предыдущие Ozon operation/daily facts неизменными.
+- Restore читает JSON/CSV/TSV/XLSX data rows, пропускает asynchronous
+  create/info responses и воспроизводит точный collection row count.
 
 # Rollout
 
@@ -582,6 +615,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-20: accepted fail-closed Ozon typed rollout with a dedicated flag,
+  post-collector atomic promotion, stable fallback grain, logical-row limits,
+  full legacy/file parity qualification and verified multi-format restore.
 - 2026-07-18: downstream logistics reader повышен до `wb-logistics-v5`; граница
   `files_only` и требование verified restore не изменились.
 - 2026-07-18: зафиксирована несовместимость downstream logistics-v4 reader с

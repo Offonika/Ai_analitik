@@ -79,10 +79,14 @@ def verify_raw_directory(
             raise RawIntegrityError("manifest and collection results differ")
 
     manifest_outputs = _output_map(manifest_results)
+    manifest_content_outputs = _content_output_map(manifest_results)
     if collection_results is not None:
         collection_outputs = _output_map(list(collection_results))
+        collection_content_outputs = _content_output_map(list(collection_results))
         if set(manifest_outputs) != set(collection_outputs):
             raise RawIntegrityError("manifest output file set is incomplete")
+        if manifest_content_outputs != collection_content_outputs:
+            raise RawIntegrityError("manifest content hashes differ from collection")
 
     row_count = (
         _collection_data_row_count(collection_results)
@@ -102,7 +106,13 @@ def verify_raw_directory(
         output_path = (resolved_raw / output_file).resolve(strict=False)
         if not output_path.is_relative_to(resolved_raw) or not output_path.is_file():
             raise RawIntegrityError("manifest output file is missing or unsafe")
-        if _payload_file_hash(output_path, source_type) != expected_hash:
+        expected_content_hash = manifest_content_outputs.get(output_file)
+        actual_hash = (
+            hashlib.sha256(output_path.read_bytes()).hexdigest()
+            if expected_content_hash
+            else _payload_file_hash(output_path, source_type)
+        )
+        if actual_hash != (expected_content_hash or expected_hash):
             raise RawIntegrityError("raw payload hash mismatch")
         verified_files += 1
     if row_count > 0 and verified_files == 0:
@@ -163,6 +173,11 @@ def _normalized_results(
                 ),
                 "statusCode": _result_int(item, "status_code", "statusCode"),
                 "hash": _result_text(item, "raw_payload_hash", "rawPayloadHash"),
+                "contentHash": _result_text(
+                    item,
+                    "raw_content_sha256",
+                    "rawContentSha256",
+                ),
                 "output": _result_text(item, "output_file", "outputFile"),
                 "flatHash": _result_text(
                     item,
@@ -211,6 +226,24 @@ def _output_map(results: Sequence[Mapping[str, Any]]) -> dict[str, str]:
             outputs[flat_output_file] = flat_payload_hash
         elif flat_payload_hash:
             raise RawIntegrityError("flat payload hash has no output file")
+    return outputs
+
+
+def _content_output_map(results: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    for item in results:
+        output_file = _result_text(item, "output_file", "outputFile")
+        content_hash = _result_text(
+            item,
+            "raw_content_sha256",
+            "rawContentSha256",
+        )
+        if content_hash and not output_file:
+            raise RawIntegrityError("content hash has no output file")
+        if content_hash:
+            if output_file in outputs:
+                raise RawIntegrityError("duplicate content hash output file")
+            outputs[output_file] = content_hash
     return outputs
 
 

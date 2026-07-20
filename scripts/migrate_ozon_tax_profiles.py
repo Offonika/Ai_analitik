@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
-from wb_unit_economics.web.models import SourceRefreshRun, SourceSnapshotRow
+from wb_unit_economics.web.models import SourceRefreshRun
 
 
 DEFAULT_LOCAL_POSTGRES_URL = (
@@ -42,6 +42,8 @@ def main() -> int:
     args = parse_args()
     engine = make_engine(args.database_url, statement_timeout_ms=120000)
     summary = _dry_run_summary(engine)
+    target_run_ids = _target_run_ids(engine)
+    summary["targetRuns"] = len(target_run_ids)
     _print_summary("DRY RUN", summary)
     if not args.apply:
         return 0
@@ -57,21 +59,62 @@ def main() -> int:
     session_factory = make_session_factory(engine)
     applied = defaultdict(int)
     with session_factory() as db:
-        latest_runs: dict[str, SourceRefreshRun] = {}
+        prefix = (
+            ""
+            if db.get_bind().dialect.name == "sqlite"
+            else "wb_unit_economics."
+        )
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(
+                text(
+                    "LOCK TABLE wb_unit_economics.source_refresh_runs, "
+                    "wb_unit_economics.source_snapshot_rows "
+                    "IN SHARE ROW EXCLUSIVE MODE"
+                )
+            )
+        active_refreshes = int(
+            db.execute(
+                text(
+                    f"SELECT count(*) FROM {prefix}source_refresh_runs "
+                    "WHERE status IN ('queued', 'running', 'rebuilding')"
+                )
+            ).scalar_one()
+        )
+        if active_refreshes:
+            db.rollback()
+            print("APPLY BLOCKED: source refresh became active before mutation.")
+            return 3
+        locked_target_run_ids = list(
+            db.execute(text(_target_runs_sql(prefix))).scalars()
+        )
+        if set(locked_target_run_ids) != set(target_run_ids):
+            db.rollback()
+            print("APPLY BLOCKED: target runs changed after dry-run.")
+            return 3
+        position_duplicates = int(
+            db.execute(
+                text(
+                    "SELECT count(*) FROM ("
+                    "SELECT refresh_run_id, collection_id, row_number "
+                    f"FROM {prefix}source_snapshot_rows "
+                    "GROUP BY refresh_run_id, collection_id, row_number "
+                    "HAVING count(*) > 1"
+                    ") duplicate_positions"
+                )
+            ).scalar_one()
+        )
+        if position_duplicates:
+            db.rollback()
+            print("APPLY BLOCKED: duplicate source row positions must be reviewed.")
+            return 2
         runs = list(
             db.scalars(
                 select(SourceRefreshRun)
-                .join(
-                    SourceSnapshotRow,
-                    SourceSnapshotRow.refresh_run_id == SourceRefreshRun.id,
-                )
-                .where(SourceSnapshotRow.source_type == "onec_organizations")
+                .where(SourceRefreshRun.id.in_(target_run_ids))
                 .order_by(SourceRefreshRun.created_at.desc())
-            ).unique()
+            )
         )
         for run in runs:
-            latest_runs.setdefault(run.client_id, run)
-        for run in latest_runs.values():
             if not any(
                 item.source_type == "onec_tax_profiles" for item in run.collections
             ):
@@ -109,18 +152,10 @@ def _dry_run_summary(engine) -> dict[str, int]:  # type: ignore[no-untyped-def]
             "ozonCabinetLinkCandidates": 0,
             "positionDuplicateGroups": 0,
             "payloadDuplicateGroups": 0,
+            "targetRuns": 0,
         }
     prefix = "" if schema is None else f"{schema}."
-    target_runs = (
-        "SELECT id FROM ("
-        "SELECT r.id, row_number() OVER ("
-        "PARTITION BY r.client_id ORDER BY r.created_at DESC"
-        ") AS rank "
-        f"FROM {prefix}source_refresh_runs r "
-        f"JOIN {prefix}clients c ON c.id = r.client_id "
-        "WHERE c.status = 'active'"
-        ") ranked_runs WHERE rank = 1"
-    )
+    target_runs = _target_runs_sql(prefix)
     company_columns = {
         item["name"]
         for item in inspector.get_columns("client_companies", schema=schema)
@@ -178,7 +213,6 @@ def _dry_run_summary(engine) -> dict[str, int]:  # type: ignore[no-untyped-def]
                     "SELECT count(*) FROM ("
                     "SELECT refresh_run_id, collection_id, row_number "
                     f"FROM {prefix}source_snapshot_rows "
-                    f"WHERE refresh_run_id IN ({target_runs}) "
                     "GROUP BY refresh_run_id, collection_id, row_number "
                     "HAVING count(*) > 1"
                     ") duplicate_positions"
@@ -200,6 +234,11 @@ def _dry_run_summary(engine) -> dict[str, int]:  # type: ignore[no-untyped-def]
                 )
             ).scalar_one()
         )
+        target_run_count = int(
+            connection.execute(
+                text(f"SELECT count(*) FROM ({target_runs}) target_runs")
+            ).scalar_one()
+        )
     return {
         "activeClients": active_clients,
         "activeRefreshes": active_refreshes,
@@ -208,7 +247,36 @@ def _dry_run_summary(engine) -> dict[str, int]:  # type: ignore[no-untyped-def]
         "ozonCabinetLinkCandidates": cabinet_links,
         "positionDuplicateGroups": position_duplicates,
         "payloadDuplicateGroups": payload_duplicates,
+        "targetRuns": target_run_count,
     }
+
+
+def _target_runs_sql(prefix: str) -> str:
+    return (
+        "SELECT id FROM ("
+        "SELECT r.id, row_number() OVER ("
+        "PARTITION BY r.client_id ORDER BY r.created_at DESC"
+        ") AS rank "
+        f"FROM {prefix}source_refresh_runs r "
+        f"JOIN {prefix}clients c ON c.id = r.client_id "
+        "WHERE c.status = 'active' AND EXISTS ("
+        "SELECT 1 "
+        f"FROM {prefix}source_snapshot_rows s "
+        "WHERE s.refresh_run_id = r.id "
+        "AND s.source_type = 'onec_organizations'"
+        ")"
+        ") ranked_runs WHERE rank = 1"
+    )
+
+
+def _target_run_ids(engine) -> list[str]:  # type: ignore[no-untyped-def]
+    sqlite = str(engine.url).startswith("sqlite")
+    schema = None if sqlite else "wb_unit_economics"
+    if not inspect(engine).has_table("source_snapshot_rows", schema=schema):
+        return []
+    prefix = "" if sqlite else "wb_unit_economics."
+    with engine.connect() as connection:
+        return list(connection.execute(text(_target_runs_sql(prefix))).scalars())
 
 
 def _organization_link_candidates(
