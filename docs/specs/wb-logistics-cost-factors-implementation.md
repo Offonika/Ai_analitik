@@ -78,17 +78,19 @@ Swagger по фактическим полям нового финансовог
   направление доставки (F-3);
 - `scripts/probe_wb_logistics_factors.py` — read-only probe доступности.
 
-После PR №34–39 в `main` также есть additive schema для dimension/route mart,
+После PR №34–39 в `main` появились additive schema для dimension/route mart,
 чистая сборка dimension rows, snapshot exporters факторов, optional collectors,
-repository persistence и первичный read-only API `/dimensions`. Эти части ещё
-не образуют завершённый F-1: штатный report build не выбирает авторитетный
-snapshot карточек и не сохраняет dimension context/mart, API не реализует
-полную state matrix, а factor-блок UI отсутствует.
+repository persistence и первичный read-only API `/dimensions`.
 
-Ближайший принятый implementation slice закрывает только F-1 «Габариты» до
-staff-only test. Сохранение и расчёт тарифов/возвратов/продаж, route mart,
-`/routes`, фактические замеры/штрафы, factor AI digest и клиентский/production
-rollout остаются следующими подпакетами.
+F-1 «Габариты» собран сквозным пакетом и принят на staff-only test 20 июля
+2026 года: штатный report build выбирает и повторно проверяет авторитетный
+snapshot карточек, атомарно сохраняет dimension context/mart, API реализует
+state matrix, фильтры, SQL-pagination и coverage полного среза, а factor-блок
+встроен в `#tables/logistics`. Operational evidence находится в
+[`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
+Статус всего factor-spec остаётся `accepted`: сохранение и расчёт тарифов,
+возвратов и продаж, route mart, `/routes`, фактические замеры/штрафы, factor AI
+digest и клиентский/production rollout остаются следующими подпакетами.
 
 # Цель
 
@@ -592,6 +594,15 @@ blocker с report run, который обязан был пройти gate, н�
 данные уже есть, остальные подпакеты после живого probe.
 
 # Changelog
+
+- 2026-07-20 — F-1 «Габариты» доведён до staff-only test: добавлены flags и
+  role matrix, авторитетный Content snapshot selector с DB/file parity и
+  fail-closed integrity gate, нормализация карточек и dimension mart,
+  атомарный immutable context+rows, полная state matrix API, coverage полного
+  среза, детерминированные рекомендации и responsive UI. На test применена
+  additive migration, создан новый draft из verified snapshot и выполнена
+  desktop/mobile staff/client приёмка. Factor-spec остаётся `accepted`,
+  production и клиентское включение не выполнялись.
 
 - 2026-07-19 — создан draft второй очереди (`WP-5 Факторы`) по запросу
   продолжить план разработки: зафиксированы источники и их read-only границы с
