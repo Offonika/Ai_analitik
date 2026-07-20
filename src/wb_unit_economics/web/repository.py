@@ -96,6 +96,7 @@ from wb_unit_economics.web.models import (
     ReportDocumentReconciliationRow,
     ReportGenerationRequest,
     ReportLogisticsAnalysisContext,
+    ReportLogisticsDimensionRow,
     ReportLogisticsOrderRow,
     ReportLogisticsSkuRow,
     ReportLostSalesRow,
@@ -13133,6 +13134,68 @@ def replace_report_logistics_analysis(
     )
     db.flush()
     return persisted
+
+
+def replace_report_logistics_dimension_rows(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> int:
+    """Additive persist витрины габаритов (F-2); перезаписывает срез report_run.
+
+    Габариты/вес/объём/штраф сохраняются как есть, включая ``None`` — пропуск
+    остаётся явным, а не нулём.
+    """
+    db.execute(
+        delete(ReportLogisticsDimensionRow).where(
+            ReportLogisticsDimensionRow.report_run_id == report.id
+        )
+    )
+    count = 0
+    for row in rows:
+        db.add(
+            ReportLogisticsDimensionRow(
+                report_run_id=report.id,
+                tenant_id=str(row.get("tenant_id") or report.tenant_id),
+                client_id=str(row.get("client_id") or report.client_id),
+                row_uid=str(row["row_uid"]),
+                wb_cabinet_id=str(row.get("wb_cabinet_id", "")),
+                client_company_id=str(row.get("client_company_id", "")),
+                scheme=str(row.get("scheme", "")),
+                product_ref=str(row.get("product_ref", "")),
+                product_key=str(row.get("product_key", "")),
+                nm_id=str(row.get("nm_id", "")),
+                sku=str(row.get("sku", "")),
+                vendor_code=str(row.get("vendor_code", "")),
+                product=str(row.get("product", "")),
+                length_cm=row.get("length_cm"),
+                width_cm=row.get("width_cm"),
+                height_cm=row.get("height_cm"),
+                weight_brutto_kg=row.get("weight_brutto_kg"),
+                volume_l=row.get("volume_l"),
+                dimensions_valid=row.get("dimensions_valid"),
+                measured_penalty_amount=row.get("measured_penalty_amount"),
+                evidence_type=str(row.get("evidence_type", "")),
+                coverage_status=str(row.get("coverage_status", "")),
+                data_quality_status=str(row.get("data_quality_status", "")),
+                source_hash_digest=str(row.get("source_hash_digest", "")),
+            )
+        )
+        count += 1
+    db.flush()
+    return count
+
+
+def report_logistics_dimension_rows(
+    db: Session, report_run_id: str
+) -> list[ReportLogisticsDimensionRow]:
+    return list(
+        db.scalars(
+            select(ReportLogisticsDimensionRow)
+            .where(ReportLogisticsDimensionRow.report_run_id == report_run_id)
+            .order_by(ReportLogisticsDimensionRow.product_ref)
+        )
+    )
 
 
 def _validate_logistics_result_scope(
