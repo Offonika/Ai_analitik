@@ -2379,6 +2379,9 @@ def test_incremental_materialization_uses_exact_window_and_report_boundaries(
     assert args.report_period_start == expected_period_start
     assert args.report_period_end == expected_period_end
     assert args.wb_sales_report_summary_rows == [current_summary]
+    assert args.stream_cache_dir == (
+        Path(refresh_run.root_dir) / ".cache" / "source_refresh_stream"
+    )
     assert captured["save_kwargs"]["replacement_summary_rows"] == [current_summary]
 
 
@@ -3461,6 +3464,7 @@ def test_source_refresh_db_first_branch_keeps_staff_draft_and_artifact(
         assert args.onec_dir is not None
         assert args.wb_finance_source == "files-stream"
         assert args.keep_stream_cache is False
+        assert args.stream_cache_dir.is_relative_to(settings.source_refresh_root_path)
         assert args.sku_mappings is not None
         assert tax_profiles is not None
         assert len(tax_profiles) == 1

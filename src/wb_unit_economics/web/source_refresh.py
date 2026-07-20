@@ -3244,7 +3244,7 @@ class SourceRefreshService:
             wb_finance_source="files-stream",
             wb_sales_report_summary_rows=replacement_summary_rows,
             stream_cache_dir=(
-                Path("data/.cache/source_refresh_stream") / refresh_run.id
+                Path(refresh_run.root_dir) / ".cache" / "source_refresh_stream"
             ),
             keep_stream_cache=False,
             marketplace_daily_facts_enabled=True,
@@ -3614,7 +3614,9 @@ class SourceRefreshService:
             ),
             wb_daily_facts=wb_daily_facts,
             wb_sales_report_summary_rows=wb_summary_rows,
-            stream_cache_dir=Path("data/.cache/source_refresh_stream") / refresh_run.id,
+            stream_cache_dir=(
+                Path(refresh_run.root_dir) / ".cache" / "source_refresh_stream"
+            ),
             keep_stream_cache=False,
             marketplace_daily_facts_enabled=(
                 self.settings.marketplace_daily_facts_enabled and wb_daily_facts is None

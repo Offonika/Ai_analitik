@@ -100,6 +100,10 @@ production refresh, watchdog и recovery. Для `implemented` требуетс�
 устаревший локальный `ONEC_ODATA_BASE_URL` за настройку клиента из личного
 кабинета.
 
+Временный streaming-cache расчета создается только внутри `root_dir` текущего
+`source_refresh_run`. Относительный `data/.cache` внутри working directory
+запрещен: immutable runtime не должен требовать записи в каталог релиза.
+
 `source_refresh` обязан завершаться без внешних API-вызовов:
 
 - `blocked_low_disk`, если на файловой системе `source_refresh_root` меньше
@@ -592,6 +596,8 @@ mutual-settlement сохраняет документные строки, а buy
 
 - 2026-07-20: запретили legacy `credential_source=env` в test/production;
   runtime-контуры используют только encrypted tenant integrations.
+- 2026-07-20: streaming-cache source refresh перенесен из относительного
+  `data/.cache` внутрь writable snapshot root текущего immutable run.
 
 - 2026-07-18: downstream logistics reader повышен до `wb-logistics-v5`; граница
   `files_only` и требование verified restore не изменились.
