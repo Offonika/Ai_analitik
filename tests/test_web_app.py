@@ -21,6 +21,7 @@ from wb_unit_economics.logistics_analysis import (
     LOGISTICS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
+    build_dimension_rows,
     build_logistics_analysis,
 )
 from wb_unit_economics.web import dashboard_payload, integrations, repository
@@ -1544,6 +1545,45 @@ def persist_logistics_fixture(client: TestClient) -> None:
             _logistics_fixture_result(report),
         )
         db.commit()
+
+
+def test_dimension_mart_persist_round_trip(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        result = _logistics_fixture_result(report)
+        card_rows = [
+            {
+                "nm_id": "101",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": 2,
+                "dimensions_valid": False,
+            }
+        ]
+        rows = build_dimension_rows(result.sku_rows, card_rows)
+
+        count = repository.replace_report_logistics_dimension_rows(db, report, rows)
+        db.commit()
+        assert count == len(rows)
+
+        stored = repository.report_logistics_dimension_rows(db, report.id)
+        by_nm = {row.nm_id: row for row in stored}
+        assert "101" in by_nm
+        assert by_nm["101"].length_cm == Decimal("30")
+        assert by_nm["101"].volume_l == Decimal("6")
+        assert by_nm["101"].dimensions_valid is False
+        assert by_nm["101"].evidence_type == "fact"
+        assert by_nm["101"].measured_penalty_amount is None
+
+        # повторная запись перезаписывает срез (delete + insert)
+        repository.replace_report_logistics_dimension_rows(db, report, rows)
+        db.commit()
+        assert len(repository.report_logistics_dimension_rows(db, report.id)) == len(
+            rows
+        )
 
 
 def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
