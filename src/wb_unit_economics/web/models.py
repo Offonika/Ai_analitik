@@ -521,6 +521,14 @@ class ReportRun(Base):
         back_populates="report",
         cascade="all, delete-orphan",
     )
+    logistics_dimension_rows: Mapped[list[ReportLogisticsDimensionRow]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+    )
+    logistics_route_rows: Mapped[list[ReportLogisticsRouteRow]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+    )
 
 
 class MonthCloseControlReport(Base):
@@ -1061,6 +1069,140 @@ class ReportLogisticsSkuRow(Base):
     source_hash_digest: Mapped[str] = mapped_column(String, nullable=False)
 
     report: Mapped[ReportRun] = relationship(back_populates="logistics_sku_rows")
+
+
+class ReportLogisticsDimensionRow(Base):
+    """Витрина габаритов/веса товара (F-2 факторы), additive и неизменяемая.
+
+    Габариты/вес/объём и штраф nullable: отсутствие остаётся явным, а не нулём.
+    `dimensions_valid` — сигнал расхождения карточки, не факт замера WB.
+    """
+
+    __tablename__ = "report_logistics_dimension_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "row_uid",
+            name="uq_report_logistics_dimension_row",
+        ),
+        Index(
+            "ix_report_logistics_dimension_filter",
+            "report_run_id",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+        ),
+        Index(
+            "ix_report_logistics_dimension_product",
+            "report_run_id",
+            "product_ref",
+            "nm_id",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False, default=""
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False, default=""
+    )
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product_ref: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    nm_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sku: Mapped[str] = mapped_column(String, nullable=False, default="")
+    vendor_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    product: Mapped[str] = mapped_column(String, nullable=False, default="")
+    length_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    width_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    height_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    weight_brutto_kg: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    volume_l: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    dimensions_valid: Mapped[bool | None] = mapped_column(Boolean)
+    measured_penalty_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    evidence_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    coverage_status: Mapped[str] = mapped_column(String, nullable=False, default="")
+    data_quality_status: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_dimension_rows"
+    )
+
+
+class ReportLogisticsRouteRow(Base):
+    """Витрина склад/направление (F-3 факторы), additive и неизменяемая.
+
+    Создаётся при достаточном покрытии полей склада/направления. Коэффициент
+    недели nullable; несколько значений в цепочке дают `mixed`, а не первое.
+    """
+
+    __tablename__ = "report_logistics_route_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "row_uid",
+            name="uq_report_logistics_route_row",
+        ),
+        Index(
+            "ix_report_logistics_route_filter",
+            "report_run_id",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+        ),
+        Index(
+            "ix_report_logistics_route_place",
+            "report_run_id",
+            "warehouse",
+            "destination",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False, default=""
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False, default=""
+    )
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
+    warehouse: Mapped[str] = mapped_column(String, nullable=False, default="")
+    warehouse_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="missing"
+    )
+    destination: Mapped[str] = mapped_column(String, nullable=False, default="")
+    destination_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="missing"
+    )
+    logistics_total: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=0
+    )
+    chain_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    low_sample: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    week_coefficient: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    evidence_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    coverage_status: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    report: Mapped[ReportRun] = relationship(back_populates="logistics_route_rows")
 
 
 class ReportLostSalesRow(Base):
