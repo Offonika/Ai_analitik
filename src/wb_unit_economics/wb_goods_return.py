@@ -16,13 +16,23 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from wb_unit_economics.wb_finance import raw_payload_hash
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 GOODS_RETURN_ENDPOINT = (
     "https://seller-analytics-api.wildberries.ru/api/v1/analytics/goods-return"
@@ -99,3 +109,40 @@ def flatten_goods_return(payload: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+@dataclass(frozen=True)
+class WbGoodsReturnExportResult:
+    ok: bool
+    row_count: int = 0
+    raw_output_path: Path | None = None
+    flat_output_path: Path | None = None
+    raw_payload_hash: str = ""
+    error: str = ""
+
+
+def export_wb_goods_return(
+    client: WbGoodsReturnClient,
+    output_dir: Path,
+    *,
+    date_from: date,
+    date_to: date,
+) -> WbGoodsReturnExportResult:
+    """Read-only снимок причин возврата за окно до 31 дня: raw + flat."""
+    try:
+        payload = client.fetch_goods_return(date_from, date_to)
+    except (httpx.HTTPError, ValueError) as exc:
+        return WbGoodsReturnExportResult(ok=False, error=exc.__class__.__name__)
+    rows = flatten_goods_return(payload)
+    stamp = f"{date_from.isoformat()}_{date_to.isoformat()}"
+    raw_path = output_dir / f"wb_goods_return_{stamp}.raw.json"
+    flat_path = output_dir / f"wb_goods_return_{stamp}.flat.json"
+    _write_json(raw_path, payload)
+    _write_json(flat_path, rows)
+    return WbGoodsReturnExportResult(
+        ok=True,
+        row_count=len(rows),
+        raw_output_path=raw_path,
+        flat_output_path=flat_path,
+        raw_payload_hash=raw_payload_hash(payload),
+    )

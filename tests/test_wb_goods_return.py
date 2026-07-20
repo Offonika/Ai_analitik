@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from wb_unit_economics.wb_goods_return import (
     GOODS_RETURN_ENDPOINT,
     WbGoodsReturnClient,
+    export_wb_goods_return,
     flatten_goods_return,
 )
 
@@ -69,3 +72,21 @@ def test_client_rejects_window_over_31_days() -> None:
     client = WbGoodsReturnClient(api_key="test-key")
     with pytest.raises(ValueError, match="31 days"):
         client.fetch_goods_return(date(2026, 6, 1), date(2026, 7, 20))
+
+
+def test_export_wb_goods_return_writes_raw_and_flat(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_PAYLOAD)
+
+    client = WbGoodsReturnClient(
+        api_key="test-key", _transport=httpx.MockTransport(handler)
+    )
+    result = export_wb_goods_return(
+        client, tmp_path, date_from=date(2026, 7, 1), date_to=date(2026, 7, 20)
+    )
+
+    assert result.ok is True
+    assert result.row_count == 2
+    assert result.flat_output_path is not None and result.flat_output_path.exists()
+    flat = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+    assert flat[0]["reason"] == "Цвет"

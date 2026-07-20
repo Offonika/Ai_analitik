@@ -15,8 +15,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -30,10 +32,20 @@ __all__ = [
     "TARIFFS_BOX_ENDPOINT",
     "TARIFFS_PALLET_ENDPOINT",
     "WbTariffsClient",
+    "WbTariffsExportResult",
+    "export_wb_tariffs",
     "flatten_box_tariffs",
     "flatten_pallet_tariffs",
     "raw_payload_hash",
 ]
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 @dataclass(frozen=True)
@@ -144,3 +156,48 @@ def flatten_pallet_tariffs(
             }
         )
     return rows
+
+
+@dataclass(frozen=True)
+class WbTariffsExportResult:
+    ok: bool
+    box_row_count: int = 0
+    pallet_row_count: int = 0
+    raw_output_path: Path | None = None
+    flat_output_path: Path | None = None
+    raw_payload_hash: str = ""
+    error: str = ""
+
+
+def export_wb_tariffs(
+    client: WbTariffsClient,
+    output_dir: Path,
+    *,
+    target_date: date,
+) -> WbTariffsExportResult:
+    """Read-only снимок тарифов box/pallet: raw + flat в ``output_dir``."""
+    try:
+        box_payload = client.fetch_box_tariffs(target_date)
+        pallet_payload = client.fetch_pallet_tariffs(target_date)
+    except (httpx.HTTPError, ValueError) as exc:
+        return WbTariffsExportResult(ok=False, error=exc.__class__.__name__)
+    box_rows = flatten_box_tariffs(box_payload, target_date)
+    pallet_rows = flatten_pallet_tariffs(pallet_payload, target_date)
+    raw = {
+        "date": target_date.isoformat(),
+        "box": box_payload,
+        "pallet": pallet_payload,
+    }
+    flat = {"box": box_rows, "pallet": pallet_rows}
+    raw_path = output_dir / f"wb_tariffs_{target_date.isoformat()}.raw.json"
+    flat_path = output_dir / f"wb_tariffs_{target_date.isoformat()}.flat.json"
+    _write_json(raw_path, raw)
+    _write_json(flat_path, flat)
+    return WbTariffsExportResult(
+        ok=True,
+        box_row_count=len(box_rows),
+        pallet_row_count=len(pallet_rows),
+        raw_output_path=raw_path,
+        flat_output_path=flat_path,
+        raw_payload_hash=raw_payload_hash(raw),
+    )
