@@ -107,9 +107,24 @@ from wb_unit_economics.wb_finance import (
     resume_wb_finance_export,
     wb_finance_export_is_complete,
 )
+from wb_unit_economics.wb_goods_return import (
+    WbGoodsReturnClient,
+    WbGoodsReturnExportResult,
+    export_wb_goods_return,
+)
 from wb_unit_economics.wb_stocks import (
     WbStockExportResult,
     export_wb_stock_history_daily,
+)
+from wb_unit_economics.wb_supplier_sales import (
+    WbSupplierSalesClient,
+    WbSupplierSalesExportResult,
+    export_wb_supplier_sales,
+)
+from wb_unit_economics.wb_tariffs import (
+    WbTariffsClient,
+    WbTariffsExportResult,
+    export_wb_tariffs,
 )
 from wb_unit_economics.web import integrations, mapping_service, repository, security
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
@@ -206,6 +221,63 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 WB_FINANCE_MAX_PAGES_ISSUE = "max_pages_reached_with_next_rrd_id"
 WB_REPORT_LIST_MAX_PAGES_ISSUE = "max_pages_reached_with_full_report_list_page"
 WB_PRODUCT_CARDS_MAX_PAGES_ISSUE = "max_pages_reached_with_full_cards_page"
+WB_GOODS_RETURN_MAX_DAYS = 31
+
+
+def _default_wb_tariffs_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbTariffsExportResult]:
+    results: list[WbTariffsExportResult] = []
+    for account in accounts:
+        client = WbTariffsClient(api_key=account.api_key)
+        account_dir = output_dir / str(account.seller_account_id).lower()
+        results.append(
+            export_wb_tariffs(client, account_dir, target_date=period_end)
+        )
+    return results
+
+
+def _default_wb_goods_return_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbGoodsReturnExportResult]:
+    date_from = max(
+        period_start, period_end - timedelta(days=WB_GOODS_RETURN_MAX_DAYS)
+    )
+    results: list[WbGoodsReturnExportResult] = []
+    for account in accounts:
+        client = WbGoodsReturnClient(api_key=account.api_key)
+        account_dir = output_dir / str(account.seller_account_id).lower()
+        results.append(
+            export_wb_goods_return(
+                client, account_dir, date_from=date_from, date_to=period_end
+            )
+        )
+    return results
+
+
+def _default_wb_supplier_sales_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbSupplierSalesExportResult]:
+    results: list[WbSupplierSalesExportResult] = []
+    for account in accounts:
+        client = WbSupplierSalesClient(api_key=account.api_key)
+        account_dir = output_dir / str(account.seller_account_id).lower()
+        results.append(
+            export_wb_supplier_sales(client, account_dir, date_from=period_start)
+        )
+    return results
 
 
 class SourceRefreshDisabledError(RuntimeError):
@@ -287,6 +359,15 @@ class SourceRefreshService:
         wb_stock_history_exporter: Callable[
             ..., list[WbStockExportResult]
         ] = export_wb_stock_history_daily,
+        wb_tariffs_exporter: Callable[
+            ..., list[WbTariffsExportResult]
+        ] = _default_wb_tariffs_exporter,
+        wb_goods_return_exporter: Callable[
+            ..., list[WbGoodsReturnExportResult]
+        ] = _default_wb_goods_return_exporter,
+        wb_supplier_sales_exporter: Callable[
+            ..., list[WbSupplierSalesExportResult]
+        ] = _default_wb_supplier_sales_exporter,
         ozon_cash_flow_exporter: Callable[..., list[OzonPageResult]] = (
             export_ozon_cash_flow
         ),
@@ -340,6 +421,9 @@ class SourceRefreshService:
         self._wb_documents_exporter = wb_documents_exporter
         self._wb_product_cards_exporter = wb_product_cards_exporter
         self._wb_stock_history_exporter = wb_stock_history_exporter
+        self._wb_tariffs_exporter = wb_tariffs_exporter
+        self._wb_goods_return_exporter = wb_goods_return_exporter
+        self._wb_supplier_sales_exporter = wb_supplier_sales_exporter
         self._ozon_cash_flow_exporter = ozon_cash_flow_exporter
         self._ozon_realization_exporter = ozon_realization_exporter
         self._ozon_realization_posting_exporter = ozon_realization_posting_exporter
@@ -1923,6 +2007,30 @@ class SourceRefreshService:
                 modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_STOCK_HISTORY_REFRESH_ROLES),
                 collect=_collect_wb_stock_history,
+            ),
+            SourceCollector(
+                source_type="wb_tariffs",
+                label="WB box/pallet tariffs",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_tariffs,
+            ),
+            SourceCollector(
+                source_type="wb_goods_return",
+                label="WB goods return reasons",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_goods_return,
+            ),
+            SourceCollector(
+                source_type="wb_supplier_sales",
+                label="WB supplier sales (warehouse & direction)",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_supplier_sales,
             ),
             SourceCollector(
                 source_type="ozon_finance_cash_flow",
@@ -4284,6 +4392,54 @@ def _collect_wb_stock_history(
         actual_period_end=provider_period_end,
     )
     return CollectorResult(collection=collection, output_dir=output_dir)
+
+
+def _collect_wb_tariffs(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_tariffs"
+    service._wb_tariffs_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_wb_goods_return(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_goods_return"
+    service._wb_goods_return_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_wb_supplier_sales(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_supplier_sales"
+    service._wb_supplier_sales_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(output_dir=output_dir)
 
 
 def _collect_ozon_cash_flow(
