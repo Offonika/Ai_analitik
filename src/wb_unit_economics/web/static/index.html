@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260718-logistics-v5-global-table-sorting-v1"
+      content="20260720-logistics-f1-dimensions-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260718-logistics-v5-global-table-sorting-v1"
+      href="/static/styles.css?v=20260720-logistics-f1-dimensions-v1"
     />
     <link
       rel="stylesheet"
@@ -444,6 +444,66 @@
               <div id="logistics-dynamics" class="logistics-dynamics"></div>
             </section>
           </div>
+
+          <section
+            id="logistics-dimensions"
+            class="panel logistics-dimensions-panel"
+            aria-labelledby="logistics-dimensions-title"
+            hidden
+          >
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Факторы стоимости</p>
+                <h3 id="logistics-dimensions-title">Габариты в карточке WB</h3>
+                <p class="muted logistics-dimensions-note">
+                  Текущее состояние карточки на дату снимка WB — не исторический
+                  замер и не подтверждённый штраф.
+                </p>
+              </div>
+              <span id="logistics-dimensions-status" class="logistics-data-status"></span>
+            </div>
+            <div
+              id="logistics-dimensions-coverage"
+              class="logistics-dimensions-coverage"
+              aria-label="Покрытие габаритов"
+            ></div>
+            <ul
+              id="logistics-dimensions-recommendations"
+              class="logistics-factor-recommendations"
+            ></ul>
+            <div class="table-wrap logistics-dimensions-table-wrap">
+              <table
+                id="logistics-dimensions-table"
+                class="logistics-table logistics-dimensions-table"
+                data-sort-mode="remote"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" data-sort-key="product">Товар</th>
+                    <th scope="col" data-sort-disabled="true">Размеры, см</th>
+                    <th scope="col" data-sort-key="volumeL">Объём, л</th>
+                    <th scope="col" data-sort-key="weightBruttoKg">Вес брутто, кг</th>
+                    <th scope="col" data-sort-key="coverageStatus">Сигнал карточки</th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-dimensions-rows"></tbody>
+              </table>
+            </div>
+            <div
+              id="logistics-dimensions-pagination"
+              class="logistics-pagination"
+              aria-label="Страницы габаритов товаров"
+              hidden
+            >
+              <button id="logistics-dimensions-prev" type="button" class="secondary-button">
+                Назад
+              </button>
+              <span id="logistics-dimensions-page" class="muted"></span>
+              <button id="logistics-dimensions-next" type="button" class="secondary-button">
+                Далее
+              </button>
+            </div>
+          </section>
 
           <section class="panel" aria-labelledby="logistics-products-title">
             <div class="logistics-section-heading">
@@ -2636,9 +2696,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260718-logistics-v5-global-table-sorting-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260718-logistics-v5-global-table-sorting-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260718-logistics-v5-global-table-sorting-v1" defer></script>
-    <script src="/static/app.js?v=20260718-logistics-v5-global-table-sorting-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
+    <script src="/static/app.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
   </body>
 </html>

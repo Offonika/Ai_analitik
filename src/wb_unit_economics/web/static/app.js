@@ -70,6 +70,12 @@ const state = {
   logisticsProductsOffset: 0,
   logisticsProductsSortBy: "logisticsTotal",
   logisticsProductsSortDirection: "desc",
+  logisticsDimensions: null,
+  logisticsDimensionsOffset: 0,
+  logisticsDimensionsSortBy: "product",
+  logisticsDimensionsSortDirection: "asc",
+  logisticsDimensionsRequestKey: "",
+  logisticsDimensionsRequestId: 0,
   logisticsOrders: [],
   logisticsOrdersTotal: 0,
   logisticsOrdersOffset: 0,
@@ -181,6 +187,26 @@ const els = {
   logisticsProductsPrev: document.querySelector("#logistics-products-prev"),
   logisticsProductsPage: document.querySelector("#logistics-products-page"),
   logisticsProductsNext: document.querySelector("#logistics-products-next"),
+  logisticsDimensionsSection: document.querySelector("#logistics-dimensions"),
+  logisticsDimensionsStatus: document.querySelector(
+    "#logistics-dimensions-status",
+  ),
+  logisticsDimensionsCoverage: document.querySelector(
+    "#logistics-dimensions-coverage",
+  ),
+  logisticsDimensionsRecommendations: document.querySelector(
+    "#logistics-dimensions-recommendations",
+  ),
+  logisticsDimensionsTable: document.querySelector(
+    "#logistics-dimensions-table",
+  ),
+  logisticsDimensionsRows: document.querySelector("#logistics-dimensions-rows"),
+  logisticsDimensionsPagination: document.querySelector(
+    "#logistics-dimensions-pagination",
+  ),
+  logisticsDimensionsPrev: document.querySelector("#logistics-dimensions-prev"),
+  logisticsDimensionsPage: document.querySelector("#logistics-dimensions-page"),
+  logisticsDimensionsNext: document.querySelector("#logistics-dimensions-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
   logisticsOrdersTable: document.querySelector("#logistics-orders-table"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
@@ -609,6 +635,7 @@ function init() {
   els.logisticsFilterForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     state.logisticsProductsOffset = 0;
+    state.logisticsDimensionsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
@@ -631,6 +658,25 @@ function init() {
     }
     state.logisticsProductsOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsDimensionsPrev?.addEventListener("click", () => {
+    if (state.logisticsDimensionsOffset <= 0) {
+      return;
+    }
+    state.logisticsDimensionsOffset = Math.max(
+      0,
+      state.logisticsDimensionsOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsDimensions({ force: true });
+  });
+  els.logisticsDimensionsNext?.addEventListener("click", () => {
+    const payload = state.logisticsDimensions || {};
+    const itemCount = asArray(payload.rows).length;
+    if (state.logisticsDimensionsOffset + itemCount >= Number(payload.total || 0)) {
+      return;
+    }
+    state.logisticsDimensionsOffset += LOGISTICS_PAGE_SIZE;
+    loadLogisticsDimensions({ force: true });
   });
   els.logisticsOrdersClose?.addEventListener("click", closeLogisticsOrders);
   els.logisticsOrdersPrev?.addEventListener("click", () => {
@@ -940,6 +986,11 @@ function syncRemoteTableSortState() {
     state.logisticsOrdersSortDirection,
   );
   setRemoteTableSortState(
+    els.logisticsDimensionsTable,
+    state.logisticsDimensionsSortBy,
+    state.logisticsDimensionsSortDirection,
+  );
+  setRemoteTableSortState(
     els.reportRowsTable,
     state.rowsSortBy,
     state.rowsSortDirection,
@@ -965,6 +1016,13 @@ function onRemoteTableSort(event) {
     state.logisticsProductsSortDirection = direction;
     state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
+    return;
+  }
+  if (table === els.logisticsDimensionsTable) {
+    state.logisticsDimensionsSortBy = sortKey;
+    state.logisticsDimensionsSortDirection = direction;
+    state.logisticsDimensionsOffset = 0;
+    loadLogisticsDimensions({ force: true });
     return;
   }
   if (table === els.logisticsOrdersTable) {
@@ -4659,6 +4717,11 @@ async function loadLogisticsAnalysis(options = {}) {
   state.logisticsBusy = true;
   state.logisticsSelectedProductRef = "";
   closeLogisticsOrders();
+  if (logisticsFactorsAvailable()) {
+    loadLogisticsDimensions({ force: options.force });
+  } else {
+    resetLogisticsDimensions({ hide: true });
+  }
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
     const [summary, products] = await Promise.all([
@@ -4704,6 +4767,60 @@ async function loadLogisticsAnalysis(options = {}) {
   }
 }
 
+async function loadLogisticsDimensions(options = {}) {
+  if (
+    !logisticsFactorsAvailable() ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
+    !state.reportId
+  ) {
+    resetLogisticsDimensions({ hide: true });
+    return;
+  }
+  const reportId = state.reportId;
+  const params = logisticsFilterParams({
+    sortBy: state.logisticsDimensionsSortBy,
+    sortOrder: state.logisticsDimensionsSortDirection,
+    offset: state.logisticsDimensionsOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${params}`;
+  if (!options.force && requestKey === state.logisticsDimensionsRequestKey) {
+    renderLogisticsDimensions();
+    return;
+  }
+  state.logisticsDimensionsRequestKey = requestKey;
+  const requestId = ++state.logisticsDimensionsRequestId;
+  els.logisticsDimensionsSection.hidden = false;
+  els.logisticsDimensionsStatus.textContent = "Загружаем габариты…";
+  els.logisticsDimensionsStatus.dataset.status = "loading";
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/dimensions?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.logisticsDimensionsRequestKey !== requestKey ||
+      state.logisticsDimensionsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsDimensions = payload;
+    renderLogisticsDimensions();
+  } catch (error) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsDimensionsRequestKey !== requestKey ||
+      state.logisticsDimensionsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsDimensions = { error: true, rows: [], total: 0 };
+    state.logisticsDimensionsRequestKey = "";
+    renderLogisticsDimensions();
+  }
+}
+
 function resetLogisticsWorkspace() {
   if (!els.logisticsDataStatus) {
     return;
@@ -4731,7 +4848,30 @@ function resetLogisticsWorkspace() {
     els.logisticsProductsNext,
     { offset: 0, itemCount: 0, total: 0 },
   );
+  resetLogisticsDimensions({ hide: !logisticsFactorsAvailable() });
   closeLogisticsOrders();
+}
+
+function resetLogisticsDimensions(options = {}) {
+  state.logisticsDimensions = null;
+  state.logisticsDimensionsRequestKey = "";
+  state.logisticsDimensionsRequestId += 1;
+  if (!els.logisticsDimensionsSection) {
+    return;
+  }
+  els.logisticsDimensionsSection.hidden = Boolean(options.hide);
+  els.logisticsDimensionsStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsDimensionsStatus.dataset.status = "empty";
+  els.logisticsDimensionsCoverage.replaceChildren();
+  els.logisticsDimensionsRecommendations.replaceChildren();
+  els.logisticsDimensionsRows.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsDimensionsPagination,
+    els.logisticsDimensionsPrev,
+    els.logisticsDimensionsPage,
+    els.logisticsDimensionsNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
 }
 
 function renderLogisticsLoadError() {
@@ -5056,6 +5196,149 @@ function runLogisticsRecommendationAction(recommendation) {
   }
   document.querySelector("[aria-labelledby='logistics-products-title']")
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderLogisticsDimensions() {
+  if (!logisticsFactorsAvailable()) {
+    resetLogisticsDimensions({ hide: true });
+    return;
+  }
+  const payload = state.logisticsDimensions || {};
+  els.logisticsDimensionsSection.hidden = false;
+  if (payload.error) {
+    els.logisticsDimensionsStatus.textContent =
+      "Габариты временно недоступны. Основная логистика продолжает работать.";
+    els.logisticsDimensionsStatus.dataset.status = "error";
+    renderLogisticsDimensionCoverage({});
+    renderLogisticsDimensionRecommendations([]);
+    renderLogisticsDimensionRows([], "Не удалось загрузить факторный срез.");
+    return;
+  }
+  const status = normalize(payload.sliceStatus || payload.dataStatus);
+  const statusCopy = {
+    ready: "Покрытие полное",
+    partial: "Часть данных требует проверки",
+    empty: "В выбранном срезе нет товаров",
+    needs_rebuild: "Нужна новая ревизия отчёта",
+    blocked: "Проверка снимка не пройдена",
+  }[status] || "Габариты ещё не загружены";
+  const snapshot = payload.factorSnapshotAt
+    ? ` · снимок ${formatCompactDate(payload.factorSnapshotAt)}`
+    : "";
+  els.logisticsDimensionsStatus.textContent = `${statusCopy}${snapshot}`;
+  els.logisticsDimensionsStatus.dataset.status = status || "empty";
+  renderLogisticsDimensionCoverage(payload.coverage || {});
+  renderLogisticsDimensionRecommendations(asArray(payload.recommendations));
+  const emptyText = {
+    empty: "В выбранном периоде и фильтрах нет товаров.",
+    needs_rebuild: "Старый отчёт не содержит контекст габаритов F‑1.",
+    blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
+  }[status] || "Нет строк габаритов для выбранного среза.";
+  renderLogisticsDimensionRows(asArray(payload.rows), emptyText);
+  renderLogisticsPagination(
+    els.logisticsDimensionsPagination,
+    els.logisticsDimensionsPrev,
+    els.logisticsDimensionsPage,
+    els.logisticsDimensionsNext,
+    {
+      offset: state.logisticsDimensionsOffset,
+      itemCount: asArray(payload.rows).length,
+      total: Number(payload.total || 0),
+    },
+  );
+}
+
+function renderLogisticsDimensionCoverage(coverage) {
+  const cards = [
+    ["Товаров", coverage.total],
+    ["С габаритами", coverage.withDimensions],
+    ["Без габаритов", coverage.missingDimensions],
+    ["Невалидные", coverage.invalidDimensions],
+    ["Конфликты", coverage.conflictingDimensions],
+    ["Сигнал WB", coverage.signalCount],
+    ["Покрытие", coverage.coveragePct],
+  ];
+  els.logisticsDimensionsCoverage.replaceChildren(
+    ...cards.map(([labelText, value]) => {
+      const card = document.createElement("span");
+      const label = document.createElement("small");
+      const strong = document.createElement("strong");
+      label.textContent = labelText;
+      strong.textContent = value === null || value === undefined
+        ? "—"
+        : labelText === "Покрытие"
+          ? logisticsPercent(value)
+          : number(value);
+      card.append(label, strong);
+      return card;
+    }),
+  );
+}
+
+function renderLogisticsDimensionRecommendations(items) {
+  if (!items.length) {
+    els.logisticsDimensionsRecommendations.replaceChildren();
+    return;
+  }
+  els.logisticsDimensionsRecommendations.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("li");
+      const title = document.createElement("strong");
+      const message = document.createElement("span");
+      title.textContent = item.title || "Проверить данные";
+      message.textContent = item.message || "";
+      row.append(title, message);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsDimensionRows(items, emptyText) {
+  if (!items.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.className = "muted";
+    cell.textContent = emptyText;
+    row.append(cell);
+    els.logisticsDimensionsRows.replaceChildren(row);
+    return;
+  }
+  els.logisticsDimensionsRows.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("tr");
+      const dimensions = [item.lengthCm, item.widthCm, item.heightCm]
+        .map((value) => value === null || value === undefined ? "—" : number(value))
+        .join(" × ");
+      const signal = item.dimensionsValid === false
+        ? "Проверить упаковку и карточку"
+        : normalize(item.coverageStatus) === "ready"
+          ? "Сигналов нет"
+          : "Проверить источник";
+      const cells = [
+        ["Товар", item.product || item.vendorCode || "—"],
+        ["Размеры, см", dimensions],
+        ["Объём, л", item.volumeL == null ? "—" : number(item.volumeL)],
+        [
+          "Вес брутто, кг",
+          item.weightBruttoKg == null ? "—" : number(item.weightBruttoKg),
+        ],
+        ["Сигнал карточки", signal],
+      ].map(([label, value]) => {
+        const cell = logisticsTableCell(value);
+        cell.dataset.label = label;
+        return cell;
+      });
+      const badge = document.createElement("span");
+      badge.className = signal === "Сигналов нет"
+        ? "logistics-quality-badge"
+        : "logistics-quality-badge is-warning";
+      badge.textContent = signal;
+      cells[4].replaceChildren(badge);
+      row.append(...cells);
+      return row;
+    }),
+  );
 }
 
 function renderLogisticsProducts(items) {
@@ -15448,6 +15731,12 @@ function resetClientScopedState(options = {}) {
   state.logisticsProductsOffset = 0;
   state.logisticsProductsSortBy = "logisticsTotal";
   state.logisticsProductsSortDirection = "desc";
+  state.logisticsDimensions = null;
+  state.logisticsDimensionsOffset = 0;
+  state.logisticsDimensionsSortBy = "product";
+  state.logisticsDimensionsSortDirection = "asc";
+  state.logisticsDimensionsRequestKey = "";
+  state.logisticsDimensionsRequestId += 1;
   state.logisticsOrders = [];
   state.logisticsOrdersTotal = 0;
   state.logisticsOrdersOffset = 0;
@@ -15531,6 +15820,12 @@ function logisticsScenarioAvailable() {
   );
   return Boolean(
     state.user?.logisticsAnalysisEnabled && supportedReport && roleAllowed,
+  );
+}
+
+function logisticsFactorsAvailable() {
+  return Boolean(
+    logisticsScenarioAvailable() && state.user?.logisticsFactorsEnabled,
   );
 }
 

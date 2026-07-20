@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-18"
+updated_at: "2026-07-20"
 ---
 
 # Назначение
@@ -120,6 +120,55 @@ not_available_missing_profit_link: финансовые KPI/rankings null/empty,
 - Production и текущий опубликованный report не менялись; production client
   flag остается выключенным. Публикация v5 draft или production rollout требуют
   повторной проверки environment evidence и отдельного разрешения.
+
+# Operational evidence F-1 «Габариты» на test — 20 июля 2026 года
+
+Проверка выполнена только на test-контуре из отдельной ветки
+`codex/logistics-dimensions-end-to-end`. Финальная визуальная ревизия runtime —
+`7b4d013`, immutable release —
+`runtime-logistics-f1-dimensions-20260720-r2`. Public health подтвердил
+`runtimeEnvironment=test`, build `20260720-logistics-f1-dimensions-v1`, schema
+`2026_07_20_logistics_dimensions_context_v1` и status `ok`.
+
+Environment evidence после restart:
+
+- первая очередь логистики и factor master включены для staff;
+- `SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false`;
+- code defaults обоих factor-флагов остаются `false`;
+- production service, production symlink и клиентское factor-включение не
+  менялись.
+
+Из уже сохранённого verified full snapshot без повторных внешних API-вызовов
+создан новый immutable draft. Dimension context записан с методикой
+`wb-logistics-factors-v1`, имеет `partial`, а фактическое число mart rows
+согласовано с context. `partial` вызван явными недоступными данными карточек и
+не является publication blocker; draft не публиковался. Идентификаторы,
+клиентские объёмы и значения карточек в evidence не перенесены.
+
+Live API smoke подтвердил:
+
+- staff `/api/me` разрешает F-1, `/logistics/dimensions` возвращает HTTP 200,
+  `partial`, факторную методику, период и filter context, SQL-pagination и
+  coverage полного фильтрованного среза;
+- hash/raw поля отсутствуют, `measuredPenaltyAmount=null`, рекомендации не
+  содержат денежного эффекта и используют только `limitation` и
+  `data_unavailable`;
+- client-role сохраняет HTTP 200 для основной логистики, но `/api/me` не
+  разрешает factors, а factor API возвращает HTTP 404.
+
+Browser smoke выполнен по прямому `#tables/logistics` на desktop 1440×900 и
+mobile 390×844. Блок расположен после финансовой аналитики и перед рейтингом
+товаров, показывает current-card snapshot как неисторический замер и не штраф;
+на mobile строки преобразуются в подписанные карточки. Первый visual pass
+выявил внутренний overflow последней колонки; CSS исправлен в `7b4d013`, runtime
+пересобран, а повторный pass подтвердил отсутствие page/table overflow и
+console/page/network errors. Под client-role блок скрыт и запрос dimensions не
+выполняется. Временные acceptance users/sessions, credential-файл и локальные
+screenshots после проверки удалены; в Git и Markdown они не попадали.
+
+Rollback F-1: вернуть factor master в `false`, перезапустить только test web и
+при необходимости repoint test symlink на предыдущий immutable release.
+Additive schema и immutable draft при этом не удаляются и не меняются.
 
 # Последнее UX-решение
 
@@ -416,15 +465,13 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-Обновление 2026-07-19: designable роадмап логистики закрыт черновиками (PR №24,
-merge `a6a7618`). Три подчинённых draft-спека в scope `logistics-cost-analysis`:
-`docs/specs/wb-logistics-cost-factors-implementation.md` (вторая очередь),
-`docs/specs/wb-logistics-return-reasons-implementation.md` (причины возвратов),
-`docs/specs/wb-logistics-calculators-implementation.md` (третья очередь). Общий
-операционный чеклист проверки источников — `docs/runbooks/wb-logistics-factors-probe.md`.
-Реализация начинается только после probe на реальном снимке (нужны токены) и
-перевода затронутого draft в `accepted` (spec-first). Задача
-`monthly_reconciliation_unresolved` переведена в advisory (PR №22).
+Обновление 2026-07-20: F-1 «Габариты» принят на staff-only test. Factor-spec
+остаётся `accepted`, потому что вторая очередь ещё не завершена. Следующие
+отдельные implementation slices — F-2 тарифы, F-3 маршруты и F-4 фактические
+замеры/штрафы; каждый требует собственного source gate и test-rollout. Общий
+операционный чеклист проверки источников —
+`docs/runbooks/wb-logistics-factors-probe.md`. Задача
+`monthly_reconciliation_unresolved` остаётся advisory (PR №22).
 
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
@@ -442,7 +489,7 @@ merge `a6a7618`). Три подчинённых draft-спека в scope `logis
 # Что не входит в текущий этап
 
 - Excel-экспорт анализа логистики;
-- габариты и контрольные замеры;
+- фактические контрольные замеры и штрафы;
 - маршруты и локализация складов;
 - тарифный калькулятор;
 - калькулятор маржинального дохода;
