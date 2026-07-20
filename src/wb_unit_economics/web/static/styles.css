@@ -6268,8 +6268,42 @@ td {
   font-size: 13px;
 }
 
+.logistics-dimensions-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.logistics-dimensions-table th,
+.logistics-dimensions-table td,
 .logistics-dimensions-table td:first-child {
-  min-width: 220px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.logistics-dimensions-table th:nth-child(1) {
+  width: 36%;
+}
+
+.logistics-dimensions-table th:nth-child(2) {
+  width: 16%;
+}
+
+.logistics-dimensions-table th:nth-child(3) {
+  width: 11%;
+}
+
+.logistics-dimensions-table th:nth-child(4) {
+  width: 15%;
+}
+
+.logistics-dimensions-table th:nth-child(5) {
+  width: 22%;
+}
+
+.logistics-dimensions-table .logistics-quality-badge {
+  max-width: 100%;
+  white-space: normal;
 }
 
 .logistics-bar-list {

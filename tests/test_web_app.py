@@ -1905,6 +1905,7 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
 
     cabinet = client.get("/cabinet")
     script = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
     assert 'data-workspace-nav="logistics"' not in cabinet.text
     assert 'data-workspace-nav="tables"' in cabinet.text
     assert 'id="logistics-scenario-nav"' in cabinet.text
@@ -1927,6 +1928,9 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-dimensions-pagination"' in cabinet.text
     assert "Габариты в карточке WB" in cabinet.text
     assert "не исторический" in cabinet.text
+    assert ".logistics-dimensions-table {" in styles.text
+    assert "table-layout: fixed;" in styles.text
+    assert ".logistics-dimensions-table th:nth-child(5)" in styles.text
     assert cabinet.text.index('id="logistics-dimensions"') < cabinet.text.index(
         'aria-labelledby="logistics-products-title"'
     )
