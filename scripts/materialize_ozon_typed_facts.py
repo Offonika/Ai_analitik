@@ -18,11 +18,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from wb_unit_economics.ozon import OzonPageResult
 from wb_unit_economics.source_integrity import RawIntegrityError, verify_raw_directory
+from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshCollection, SourceRefreshRun
 from wb_unit_economics.web.source_refresh import (
+    MANDATORY_OK_STATUSES,
     OZON_TYPED_FILE_AUTHORITATIVE_TYPES,
     _materialize_ozon_typed_collection,
+    _ozon_daily_facts_for_run,
 )
 
 
@@ -53,6 +56,10 @@ def main() -> int:
         if not collections:
             print("No supported Ozon collections were found.", file=sys.stderr)
             return 2
+        preflight_error = _promotion_preflight_error(refresh_run, collections)
+        if preflight_error:
+            print(f"Promotion preflight failed: {preflight_error}", file=sys.stderr)
+            return 3
 
         verified: list[
             tuple[SourceRefreshCollection, list[OzonPageResult], dict[str, str]]
@@ -78,7 +85,9 @@ def main() -> int:
             return 0
 
         try:
+            all_cabinet_ids: dict[str, str] = {}
             for collection, results, cabinet_ids in verified:
+                all_cabinet_ids.update(cabinet_ids)
                 raw_integrity = verify_raw_directory(
                     Path(collection.raw_path),
                     source_type=collection.source_type,
@@ -101,10 +110,26 @@ def main() -> int:
                 parity = ((collection.payload or {}).get("typedParity") or {}).get(
                     "status"
                 )
-                if parity != "matched":
+                if parity != "pending_diagnostics":
                     raise ValueError(
                         f"typed parity mismatch for {collection.source_type}"
                     )
+            daily_count = repository.replace_marketplace_finance_daily_facts(
+                db,
+                refresh_run,
+                _ozon_daily_facts_for_run(db, refresh_run),
+                marketplace="ozon",
+                cabinet_ids=all_cabinet_ids,
+            )
+            for collection, _results, _cabinet_ids in verified:
+                collection.payload = {
+                    **(collection.payload or {}),
+                    "operationFacts": {
+                        **((collection.payload or {}).get("operationFacts") or {}),
+                        "dailyRowCount": daily_count,
+                        "promotionScope": "all_ozon_sources",
+                    },
+                }
             db.commit()
         except Exception as exc:
             db.rollback()
@@ -118,6 +143,26 @@ def main() -> int:
                 f"facts={collection.payload['operationFacts']['rowCount']}"
             )
     return 0
+
+
+def _promotion_preflight_error(
+    refresh_run: SourceRefreshRun,
+    collections: list[SourceRefreshCollection],
+) -> str:
+    if refresh_run.dry_run:
+        return "dry_run_is_not_promotable"
+    if refresh_run.finished_at is None:
+        return "refresh_run_is_not_finished"
+    if refresh_run.status not in repository.CALCULABLE_OZON_REFRESH_STATUSES:
+        return f"refresh_run_status_{refresh_run.status}_is_not_promotable"
+    invalid_sources = sorted(
+        item.source_type
+        for item in collections
+        if item.status not in MANDATORY_OK_STATUSES
+    )
+    if invalid_sources:
+        return "source_collection_not_promotable:" + ",".join(invalid_sources)
+    return ""
 
 
 def _verified_results(
@@ -163,6 +208,7 @@ def _verified_results(
                 status=str(item.get("sourceStatus") or item.get("status") or ""),
                 row_count=int(item.get("rowCount") or 0),
                 raw_payload_hash=str(item.get("rawPayloadHash") or ""),
+                raw_content_sha256=str(item.get("rawContentSha256") or ""),
                 output_path=(raw_dir / output_name) if output_name else None,
                 status_code=(
                     int(item["statusCode"])
@@ -171,6 +217,8 @@ def _verified_results(
                 ),
                 error=str(item.get("error") or ""),
                 report_code=str(item.get("reportCode") or ""),
+                report_status=str(item.get("reportStatus") or ""),
+                page_limit_exhausted=bool(item.get("pageLimitExhausted")),
                 source_endpoint=source_endpoint,
             )
         )

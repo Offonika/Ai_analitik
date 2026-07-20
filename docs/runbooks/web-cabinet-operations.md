@@ -832,8 +832,14 @@ SHUMEYKO_SOURCE_REFRESH_RAW_DB_MODE=legacy
 После WB parity-check включается `files_only`. В этом режиме raw WB остаются в
 `source_refresh_root`, а PostgreSQL получает только collection metadata и
 дневную WB-витрину. Ozon параллельно строит типизированные текущие operations,
-но продолжает совместимую raw-запись до отдельного parity-check. Только после
-него дополнительно включается:
+но продолжает совместимую raw-запись до отдельного parity-check. После
+безопасного deploy сначала включается typed shadow:
+
+```bash
+SHUMEYKO_SOURCE_REFRESH_OZON_TYPED_FACTS_ENABLED=true
+```
+
+После полной legacy parity qualification дополнительно включается:
 
 ```bash
 SHUMEYKO_SOURCE_REFRESH_OZON_FILES_ONLY_ENABLED=true

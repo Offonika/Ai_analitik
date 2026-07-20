@@ -14,7 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -23,8 +23,18 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from wb_unit_economics.source_integrity import canonical_payload_hash
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import make_engine, make_session_factory
-from wb_unit_economics.web.models import SourceRefreshCollection, SourceRefreshRun
-from wb_unit_economics.web.source_refresh import OZON_TYPED_FILE_AUTHORITATIVE_TYPES
+from wb_unit_economics.web.models import (
+    MarketplaceOperationFact,
+    SourceRefreshCollection,
+    SourceRefreshRun,
+    SourceSnapshotRow,
+)
+from wb_unit_economics.web.source_refresh import (
+    MANDATORY_OK_STATUSES,
+    OZON_TYPED_FILE_AUTHORITATIVE_TYPES,
+    _iter_ozon_snapshot_row_values,
+    _ozon_results_from_collection,
+)
 
 PARITY_SECTIONS = (
     "finance",
@@ -39,6 +49,174 @@ PARITY_SECTIONS = (
 )
 
 
+def _reference_mode(
+    db: Any,
+    collections: list[SourceRefreshCollection],
+) -> tuple[str, list[SourceRefreshCollection]]:
+    if not collections:
+        return "unavailable", []
+    file_collections: list[SourceRefreshCollection] = []
+    for collection in collections:
+        if collection.status not in MANDATORY_OK_STATUSES:
+            return "unavailable", []
+        payload = dict(collection.payload or {})
+        if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+            return "unavailable", []
+        persisted_rows = int(
+            db.scalar(
+                select(func.count())
+                .select_from(SourceSnapshotRow)
+                .where(SourceSnapshotRow.collection_id == collection.id)
+            )
+            or 0
+        )
+        if persisted_rows == collection.row_count:
+            continue
+        row_persistence = dict(payload.get("rowPersistence") or {})
+        if (
+            persisted_rows == 0
+            and row_persistence.get("status") == "file_authoritative"
+            and row_persistence.get("qualificationRunId")
+            and _valid_file_qualification(
+                db,
+                collection,
+                qualification_run_id=str(row_persistence["qualificationRunId"]),
+            )
+        ):
+            file_collections.append(collection)
+            continue
+        return "unavailable", []
+    if file_collections and len(file_collections) == len(collections):
+        return "immutable_files", file_collections
+    if file_collections:
+        return "legacy_db_and_immutable_files", file_collections
+    return "legacy_db_rows", []
+
+
+def _valid_file_qualification(
+    db: Any,
+    collection: SourceRefreshCollection,
+    *,
+    qualification_run_id: str,
+) -> bool:
+    if qualification_run_id == collection.refresh_run_id:
+        return False
+    candidate = db.scalar(
+        select(SourceRefreshCollection)
+        .where(
+            SourceRefreshCollection.refresh_run_id == qualification_run_id,
+            SourceRefreshCollection.tenant_id == collection.tenant_id,
+            SourceRefreshCollection.client_id == collection.client_id,
+            SourceRefreshCollection.source_type == collection.source_type,
+        )
+        .order_by(SourceRefreshCollection.loaded_at.desc())
+        .limit(1)
+    )
+    if (
+        candidate is None
+        or candidate.status not in MANDATORY_OK_STATUSES
+        or candidate.refresh_run.finished_at is None
+        or candidate.refresh_run.status
+        not in repository.CALCULABLE_OZON_REFRESH_STATUSES
+        or candidate.refresh_run.created_at >= collection.refresh_run.created_at
+    ):
+        return False
+    payload = dict(candidate.payload or {})
+    if (payload.get("rowPersistence") or {}).get("status") == "file_authoritative":
+        return False
+    typed_parity = dict(payload.get("typedParity") or {})
+    if not (
+        (payload.get("rawIntegrity") or {}).get("status") == "verified"
+        and typed_parity.get("status") == "matched"
+        and (typed_parity.get("diagnosticsParity") or {}).get("status")
+        == "matched"
+        and (typed_parity.get("persistenceParity") or {}).get("status")
+        == "matched"
+        and (typed_parity.get("legacyFileParity") or {}).get("status") == "matched"
+        and (typed_parity.get("sourceCoverage") or {}).get("status") == "matched"
+    ):
+        return False
+    return _seller_account_ids(payload) == _seller_account_ids(
+        dict(collection.payload or {})
+    )
+
+
+def _seller_account_ids(payload: dict[str, Any]) -> set[str]:
+    return {
+        str(item.get("sellerAccountId") or "")
+        for item in payload.get("results", [])
+        if isinstance(item, dict) and item.get("sellerAccountId")
+    }
+
+
+def _insert_temporary_file_reference(
+    db: Any,
+    collections: list[SourceRefreshCollection],
+    *,
+    source_root: Path,
+) -> None:
+    for collection in collections:
+        results, cabinet_ids = _ozon_results_from_collection(
+            collection,
+            source_root=source_root,
+        )
+        values = list(
+            _iter_ozon_snapshot_row_values(
+                collection,
+                results,
+                ozon_cabinet_ids=cabinet_ids,
+            )
+        )
+        if len(values) != collection.row_count:
+            raise ValueError("immutable file reference row count mismatch")
+        for start in range(0, len(values), 1000):
+            repository.add_source_snapshot_rows(
+                db,
+                collection,
+                values[start : start + 1000],
+            )
+
+
+def _record_parity(
+    collections: list[SourceRefreshCollection],
+    *,
+    artifact: dict[str, Any],
+    artifact_path: Path,
+) -> None:
+    normalized_status = (artifact.get("normalizedRealization") or {}).get("status")
+    diagnostics_status = (
+        "matched"
+        if artifact.get("status") == "matched" and normalized_status == "matched"
+        else "mismatch"
+    )
+    for collection in collections:
+        payload = dict(collection.payload or {})
+        typed_parity = dict(payload.get("typedParity") or {})
+        typed_parity["diagnosticsParity"] = {
+            "status": diagnostics_status,
+            "legacyDigest": artifact["legacyDigest"],
+            "typedDigest": artifact["typedDigest"],
+            "mismatches": artifact["mismatches"],
+            "normalizedRealization": artifact.get("normalizedRealization"),
+            "referenceMode": artifact.get("referenceMode"),
+            "artifactPath": str(artifact_path),
+        }
+        checks_matched = (
+            diagnostics_status == "matched"
+            and collection.status in MANDATORY_OK_STATUSES
+            and (payload.get("rawIntegrity") or {}).get("status") == "verified"
+            and (typed_parity.get("persistenceParity") or {}).get("status")
+            == "matched"
+            and (typed_parity.get("legacyFileParity") or {}).get("status")
+            in {"matched", "qualified_file_reference", "not_run_no_legacy_rows"}
+            and (typed_parity.get("sourceCoverage") or {}).get("status") == "matched"
+        )
+        typed_parity["status"] = "matched" if checks_matched else "mismatch"
+        if checks_matched:
+            typed_parity["qualificationRunId"] = collection.refresh_run_id
+        collection.payload = {**payload, "typedParity": typed_parity}
+
+
 def main() -> int:
     args = _parse_args()
     database_url = args.database_url or os.getenv("SHUMEYKO_DATABASE_URL") or ""
@@ -51,7 +229,23 @@ def main() -> int:
         if refresh_run is None:
             print("Source refresh run was not found.", file=sys.stderr)
             return 2
-        parity_limit = max(args.limit, repository.OZON_PNL_MAX_SOURCE_ROWS)
+        collections = list(
+            db.scalars(
+                select(SourceRefreshCollection).where(
+                    SourceRefreshCollection.refresh_run_id == refresh_run.id,
+                    SourceRefreshCollection.source_type.in_(
+                        OZON_TYPED_FILE_AUTHORITATIVE_TYPES
+                    ),
+                )
+            )
+        )
+        parity_limit = _parity_row_limit(
+            db,
+            collections,
+            refresh_run_id=refresh_run.id,
+            requested_limit=args.limit,
+            record=args.record,
+        )
         kwargs = {
             "tenant_id": refresh_run.tenant_id,
             "client_id": refresh_run.client_id,
@@ -61,21 +255,51 @@ def main() -> int:
             "period_end": refresh_run.period_end,
             "refresh_run_id": refresh_run.id,
         }
-        legacy = repository.latest_ozon_diagnostics_payload(
-            db,
-            **kwargs,
-            prefer_typed=False,
-        )
+        reference_mode, file_reference_collections = _reference_mode(db, collections)
+        normalized_realization: dict[str, Any]
+        if reference_mode == "unavailable":
+            legacy = {}
+            normalized_realization = {"status": "reference_unavailable"}
+        elif file_reference_collections:
+            nested = db.begin_nested()
+            try:
+                _insert_temporary_file_reference(
+                    db,
+                    file_reference_collections,
+                    source_root=Path(args.source_root),
+                )
+                legacy = repository.latest_ozon_diagnostics_payload(
+                    db,
+                    **kwargs,
+                    prefer_typed=False,
+                )
+                normalized_realization = _normalized_realization_parity(
+                    db,
+                    refresh_run,
+                )
+            finally:
+                nested.rollback()
+        else:
+            legacy = repository.latest_ozon_diagnostics_payload(
+                db,
+                **kwargs,
+                prefer_typed=False,
+            )
+            normalized_realization = _normalized_realization_parity(
+                db,
+                refresh_run,
+            )
         typed = repository.latest_ozon_diagnostics_payload(
             db,
             **kwargs,
             prefer_typed=True,
         )
         artifact = _parity_artifact(legacy, typed, refresh_run_id=refresh_run.id)
-        artifact["normalizedRealization"] = _normalized_realization_parity(
-            db,
-            refresh_run,
-        )
+        artifact["referenceMode"] = reference_mode
+        artifact["normalizedRealization"] = normalized_realization
+        if reference_mode == "unavailable":
+            artifact["status"] = "reference_unavailable"
+            artifact["mismatches"] = ["reference"]
         artifact_path = Path(refresh_run.root_dir) / "parity" / "ozon-legacy-typed.json"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(
@@ -83,43 +307,58 @@ def main() -> int:
             encoding="utf-8",
         )
         if args.record:
-            collections = list(
-                db.scalars(
-                    select(SourceRefreshCollection).where(
-                        SourceRefreshCollection.refresh_run_id == refresh_run.id,
-                        SourceRefreshCollection.source_type.in_(
-                            OZON_TYPED_FILE_AUTHORITATIVE_TYPES
-                        ),
-                    )
+            if reference_mode != "unavailable":
+                _record_parity(
+                    collections,
+                    artifact=artifact,
+                    artifact_path=artifact_path,
                 )
-            )
-            for collection in collections:
-                payload = dict(collection.payload or {})
-                typed_parity = dict(payload.get("typedParity") or {})
-                typed_parity["diagnosticsParity"] = {
-                    "status": artifact["status"],
-                    "legacyDigest": artifact["legacyDigest"],
-                    "typedDigest": artifact["typedDigest"],
-                    "mismatches": artifact["mismatches"],
-                    "artifactPath": str(artifact_path),
-                }
-                typed_parity["status"] = (
-                    "matched"
-                    if artifact["status"] == "matched"
-                    and (typed_parity.get("persistenceParity") or {}).get("status")
-                    == "matched"
-                    and (typed_parity.get("legacyFileParity") or {}).get("status")
-                    == "matched"
-                    else "mismatch"
-                )
-                collection.payload = {**payload, "typedParity": typed_parity}
-            db.commit()
+                db.commit()
+            else:
+                print("record_skipped=reference_unavailable")
         print(f"status={artifact['status']}")
         print(f"legacyDigest={artifact['legacyDigest']}")
         print(f"typedDigest={artifact['typedDigest']}")
         print(f"mismatches={','.join(artifact['mismatches']) or '-'}")
         print(f"artifact={artifact_path}")
+        if artifact["status"] == "reference_unavailable":
+            return 4
         return 0 if artifact["status"] == "matched" else 3
+
+
+def _parity_row_limit(
+    db: Any,
+    collections: list[SourceRefreshCollection],
+    *,
+    refresh_run_id: str,
+    requested_limit: int,
+    record: bool,
+) -> int:
+    raw_collection_rows = sum(max(0, int(item.row_count)) for item in collections)
+    if not record:
+        return max(1, int(requested_limit), raw_collection_rows)
+    collection_ids = [item.id for item in collections]
+    legacy_rows = (
+        int(
+            db.scalar(
+                select(func.count())
+                .select_from(SourceSnapshotRow)
+                .where(SourceSnapshotRow.collection_id.in_(collection_ids))
+            )
+            or 0
+        )
+        if collection_ids
+        else 0
+    )
+    typed_rows = int(
+        db.scalar(
+            select(func.count())
+            .select_from(MarketplaceOperationFact)
+            .where(MarketplaceOperationFact.source_refresh_run_id == refresh_run_id)
+        )
+        or 0
+    )
+    return max(1, raw_collection_rows, legacy_rows, typed_rows)
 
 
 def _parity_artifact(
@@ -232,12 +471,15 @@ def _difference_paths(
 
 
 def _normalized_realization_parity(
-    db: Any, refresh_run: SourceRefreshRun
+    db: Any,
+    refresh_run: SourceRefreshRun,
+    *,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     kwargs = {
         "tenant_id": refresh_run.tenant_id,
         "refresh_run": refresh_run,
-        "limit": repository.OZON_PNL_MAX_SOURCE_ROWS,
+        "limit": None if limit is None else max(1, int(limit)),
     }
     legacy_rows = repository._ozon_realization_source_rows(
         db,
@@ -371,6 +613,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit", type=int, default=repository.OZON_PNL_MAX_SOURCE_ROWS
     )
+    parser.add_argument("--source-root", default="data/source_refresh")
     parser.add_argument("--record", action="store_true")
     return parser.parse_args()
 

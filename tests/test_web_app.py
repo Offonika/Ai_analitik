@@ -6058,7 +6058,7 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "ready"
+    assert payload["status"] == "needs_review"
     assert payload["latestRun"]["mode"] == "ozon-only"
     assert payload["latestAttempt"]["dryRun"] is True
     assert payload["readiness"] == {
@@ -6236,14 +6236,33 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
     assert payload["ozonMart"]["totals"]["onecRevenue"] == 900.0
     assert payload["ozonMart"]["totals"]["cogs"] == 1500.0
     assert payload["ozonMart"]["totals"]["ozonExpenses"] == 100.0
-    assert payload["ozonMart"]["totals"]["profitBeforeTax"] == -700.0
+    assert payload["ozonMart"]["totals"]["profitBeforeTax"] is None
     assert payload["ozonMart"]["totals"]["profitAfterTax"] is None
     assert payload["ozonMart"]["pnlScope"] == (
         "onec_sales_register_including_additional_documents"
     )
     assert payload["ozonMart"]["costQuality"]["status"] == "warning"
     assert payload["ozonMart"]["costQuality"]["quantityCoveragePct"] == 1.0
-    assert payload["ozonMart"]["excludedIncompletePeriods"] == []
+    assert payload["ozonMart"]["excludedIncompletePeriods"] == [
+        {
+            "periodStart": "2026-03-01",
+            "periodEnd": "2026-03-31",
+            "reason": "missing_ozon_realization",
+            "reasons": ["missing_ozon_realization"],
+        },
+        {
+            "periodStart": "2026-04-01",
+            "periodEnd": "2026-04-30",
+            "reason": "missing_ozon_realization",
+            "reasons": ["missing_ozon_realization"],
+        },
+        {
+            "periodStart": "2026-06-01",
+            "periodEnd": "2026-06-17",
+            "reason": "missing_ozon_realization",
+            "reasons": ["missing_ozon_realization"],
+        },
+    ]
     assert payload["ozonMart"]["profitAliasDeprecated"] is True
     assert payload["pnl"]["deprecated"] is True
     assert payload["pnl"]["replacement"] == "ozonMart"
@@ -6379,16 +6398,18 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
     assert filtered_payload["pnl"]["onecOzon"]["status"] == "missing"
     assert filtered_payload["pnl"]["status"] == "partial_source"
     assert filtered_payload["unitRows"]["rows"] == []
-    assert filtered_payload["ozonMart"]["status"] == "not_started"
-    assert filtered_payload["ozonMart"]["totals"]["profitBeforeTax"] == 0.0
+    assert filtered_payload["ozonMart"]["status"] == "partial_source"
+    assert filtered_payload["ozonMart"]["totals"]["profitBeforeTax"] is None
     assert filtered_payload["pnl"]["periods"] == []
     assert payload["issues"]["blockingCount"] == 0
-    assert payload["issues"]["reviewCount"] == 2
+    # Профиль 1С не загружен -> витрина экономически готова, но налоговый KPI
+    # требует проверки: вместо all-clear карточки выходит tax-review.
+    assert payload["issues"]["reviewCount"] == 3
     issue_codes = {item["code"] for item in payload["issues"]["items"]}
     assert issue_codes == {
         "ozon_buyout_matched_without_report_number",
         "ozon_mart_cost_quality_warning",
-        "ozon_mart_ready",
+        "ozon_mart_tax_profile_missing",
     }
     assert "must-not-leak" not in str(payload)
     assert "raw_payload_hash" not in str(payload)
@@ -9209,6 +9230,110 @@ def test_tax_profile_resolution_detects_conflict_and_keeps_organizations_separat
     assert status_b["status"] == "ready"
     assert expired_b is None
     assert expired_status_b["status"] == "missing"
+
+
+def test_tax_profile_resolution_without_run_prefers_latest_run(
+    tmp_path: Path,
+) -> None:
+    # Старый прогон вывел ОСНО с более поздним valid_from, новый прогон после
+    # обновления 1С вывел УСН с более ранним valid_from. Старые строки не
+    # деактивируются, поэтому при refresh_run=None (карточка компании, налоговый
+    # контекст отчёта) должен выбираться профиль самого свежего прогона (УСН),
+    # а не профиль с максимальным valid_from (устаревший ОСНО).
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .order_by(repository.ClientCompany.id)
+            .first()
+        )
+        assert company is not None
+        company.onec_organization_id = "ORG-A"
+        old_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="tax-old-run",
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 12, 31),
+            reason="old run",
+        )
+        new_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="tax-new-run",
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 12, 31),
+            reason="new run",
+            enforce_active_check=False,
+        )
+        db.add_all(
+            [
+                OrganizationTaxProfile(
+                    id="profile-old-osno",
+                    tenant_id="shumeyko",
+                    client_id="shumeyko",
+                    source_refresh_run_id=old_run.id,
+                    client_company_id=company.id,
+                    organization_id="ORG-A",
+                    tax_system="ОСНО",
+                    vat_rate=Decimal("22"),
+                    vat_mode="included",
+                    vat_deduction_mode="allowed",
+                    revenue_tax_rate=Decimal("0"),
+                    income_tax_kind="ip_ndfl_progressive",
+                    valid_from=date(2026, 3, 1),
+                    valid_to=None,
+                    source="Document_УведомлениеОСпецрежимахНалогообложения",
+                    source_snapshot_hash="hash-old",
+                    methodology_version="ozon-tax-profile-v2",
+                    status="active",
+                    created_at=datetime(2026, 7, 1, 10, 0, 0),
+                ),
+                OrganizationTaxProfile(
+                    id="profile-new-usn",
+                    tenant_id="shumeyko",
+                    client_id="shumeyko",
+                    source_refresh_run_id=new_run.id,
+                    client_company_id=company.id,
+                    organization_id="ORG-A",
+                    tax_system="УСН Доходы",
+                    vat_rate=Decimal("0"),
+                    vat_mode="none",
+                    vat_deduction_mode="not_applicable",
+                    revenue_tax_rate=Decimal("0.06"),
+                    income_tax_kind="",
+                    valid_from=date(2026, 1, 1),
+                    valid_to=None,
+                    source="Catalog_Организации",
+                    source_snapshot_hash="hash-new",
+                    methodology_version="ozon-tax-profile-v2",
+                    status="active",
+                    created_at=datetime(2026, 7, 2, 10, 0, 0),
+                ),
+            ]
+        )
+        db.flush()
+
+        profile, status = repository.resolve_company_tax_profile(
+            db,
+            company=company,
+            calculation_date=date(2026, 7, 10),
+            refresh_run=None,
+        )
+
+    assert profile is not None
+    assert profile.tax_system == "УСН Доходы"
+    assert status["status"] == "ready"
+    assert status["profileId"] == "profile-new-usn"
 
 
 def test_wb_cabinet_save_reuses_existing_provider_key_cabinet(

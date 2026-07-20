@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -26,6 +25,7 @@ from wb_unit_economics.source_integrity import (
 from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshCollection, SourceSnapshotRow
+from wb_unit_economics.web.source_refresh import _read_ozon_rows
 
 SUPPORTED_TYPES = {
     "wb_finance_detail",
@@ -38,6 +38,13 @@ SUPPORTED_TYPES = {
     "ozon_products_buyout",
     "ozon_b2b_sales_json",
     "ozon_products_report",
+    "ozon_stock_on_warehouses",
+    "ozon_returns_report",
+}
+OZON_REPORT_FILE_TYPES = {
+    "ozon_mutual_settlement",
+    "ozon_products_report",
+    "ozon_returns_report",
 }
 
 
@@ -163,7 +170,13 @@ def _verified_collection_rows(
             )
         if not output_name:
             continue
-        source_rows = _json_rows(Path(collection.raw_path) / output_name)
+        source_endpoint = _result_text(result, "sourceEndpoint", "source_endpoint")
+        if (
+            collection.source_type in OZON_REPORT_FILE_TYPES
+            and source_endpoint != "report_file"
+        ):
+            continue
+        source_rows = _read_ozon_rows(Path(collection.raw_path) / output_name)
         cabinet_id = _result_text(result, "wbCabinetId", "wb_cabinet_id")
         seller_id = _result_text(
             result,
@@ -171,7 +184,6 @@ def _verified_collection_rows(
             "seller_account_id",
         )
         page_index = _result_int(result, "pageIndex", "page_index")
-        source_endpoint = _result_text(result, "sourceEndpoint", "source_endpoint")
         for local_index, source_row in enumerate(source_rows, 1):
             row_payload = dict(source_row)
             if collection.source_type == "wb_product_cards":
@@ -213,19 +225,6 @@ def _verified_collection_rows(
     if len(rows) != collection.row_count:
         raise RawIntegrityError("reconstructed row count differs from collection")
     return rows
-
-
-def _json_rows(path: Path) -> list[dict[str, Any]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if isinstance(payload, dict):
-        for key in ("rows", "items", "result", "data"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-        return [payload]
-    raise RawIntegrityError("raw payload has no rows")
 
 
 def _source_row_id(

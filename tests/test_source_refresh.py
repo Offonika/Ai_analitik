@@ -1398,8 +1398,10 @@ def test_source_refresh_enqueue_accepts_explicit_business_period(
     assert payload["periodEnd"] == "2026-04-30"
 
 
+@pytest.mark.parametrize("resume_mode", ["onec-only", "ozon-only"])
 def test_source_refresh_auto_resume_creates_new_immutable_lineage(
     tmp_path: Path,
+    resume_mode: str,
 ) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
@@ -1453,7 +1455,7 @@ def test_source_refresh_auto_resume_creates_new_immutable_lineage(
             db,
             tenant_id="shumeyko",
             client_id=report.client_id,
-            mode="onec-only",
+            mode=resume_mode,
             user=user,
             source_report=report,
             period_start=period_start,
@@ -1469,8 +1471,14 @@ def test_source_refresh_auto_resume_creates_new_immutable_lineage(
     assert (previous_root / "onec").is_dir()
 
 
-def test_source_refresh_auto_resume_accepts_wb_finance_checkpoint(
+@pytest.mark.parametrize(
+    ("requested_mode", "should_resume"),
+    [("full", True), ("ozon-only", False)],
+)
+def test_source_refresh_auto_resume_uses_wb_checkpoint_only_outside_ozon_mode(
     tmp_path: Path,
+    requested_mode: str,
+    should_resume: bool,
 ) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
@@ -1523,7 +1531,7 @@ def test_source_refresh_auto_resume_accepts_wb_finance_checkpoint(
             db,
             tenant_id="shumeyko",
             client_id=report.client_id,
-            mode="full",
+            mode=requested_mode,
             user=user,
             source_report=report,
             period_start=period_start,
@@ -1532,10 +1540,62 @@ def test_source_refresh_auto_resume_accepts_wb_finance_checkpoint(
         current = db.get(source_refresh.SourceRefreshRun, payload["id"])
 
     assert payload["id"] != previous.id
-    assert payload["resumedFromRunId"] == previous.id
+    assert payload["resumedFromRunId"] == (previous.id if should_resume else None)
     assert current is not None
-    assert current.resumed_from_run_id == previous.id
+    assert current.resumed_from_run_id == (previous.id if should_resume else None)
     assert (previous_root / "wb_finance" / "manifest.json").is_file()
+
+
+def test_ozon_only_explicit_resume_rejects_empty_onec_directory(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    period_start = date(2026, 4, 1)
+    period_end = date(2026, 4, 30)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        previous = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-empty-onec-april",
+            period_start=period_start,
+            period_end=period_end,
+            user=user,
+            source_report=report,
+        )
+        previous_root = settings.source_refresh_root_path / previous.snapshot_set_id
+        (previous_root / "onec").mkdir(parents=True)
+        repository.update_source_refresh_run(
+            db,
+            previous,
+            status="failed",
+            root_dir=str(previous_root),
+            finished_at=datetime(2026, 7, 10, 10, 5),
+        )
+        db.commit()
+
+        with pytest.raises(
+            source_refresh.SourceRefreshConfigError,
+            match="incompatible or has no safe checkpoint",
+        ):
+            SourceRefreshService(settings).enqueue(
+                db,
+                tenant_id="shumeyko",
+                client_id=report.client_id,
+                mode="ozon-only",
+                user=user,
+                source_report=report,
+                period_start=period_start,
+                period_end=period_end,
+                resume_from_run_id=previous.id,
+            )
 
 
 def test_copy_resume_directory_preserves_nested_document_tree(tmp_path: Path) -> None:
@@ -2778,15 +2838,15 @@ def test_source_refresh_collects_optional_ozon_finance_without_blocking_wb(
     assert ozon_rows[0].row_payload["offer_id"] == "A-1"
 
 
-def test_ozon_realization_files_only_uses_typed_operation_facts(
+def test_ozon_realization_defers_and_atomically_promotes_typed_operation_facts(
     tmp_path: Path,
 ) -> None:
     settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
     )
-    settings.source_refresh_raw_db_mode = "files_only"
+    settings.source_refresh_raw_db_mode = "legacy"
     settings.marketplace_daily_facts_enabled = True
-    settings.source_refresh_ozon_files_only_enabled = True
+    settings.source_refresh_ozon_typed_facts_enabled = True
     output_dir = Path(settings.source_refresh_root) / "run" / "ozon_realization"
     output_dir.mkdir(parents=True)
     output_path = output_dir / "realization.raw.json"
@@ -2887,6 +2947,17 @@ def test_ozon_realization_files_only_uses_typed_operation_facts(
             source_label="Ozon realization",
             ozon_cabinet_ids={"OZON_ACCOUNT_1": "ozon-cabinet"},
         )
+        assert (
+            db.query(MarketplaceOperationFact)
+            .filter_by(source_refresh_run_id=refresh_run.id)
+            .count()
+            == 0
+        )
+        assert service._promote_ozon_typed_facts(
+            db,
+            refresh_run,
+            ozon_cabinet_ids={"OZON_ACCOUNT_1": "ozon-cabinet"},
+        )
         db.commit()
         collection = (
             db.query(SourceRefreshCollection)
@@ -2909,11 +2980,11 @@ def test_ozon_realization_files_only_uses_typed_operation_facts(
             tenant_id=refresh_run.tenant_id,
             refresh_run=refresh_run,
             limit=50,
+            prefer_typed=True,
         )
 
-    assert collection.payload["rowPersistence"]["status"] == "file_authoritative"
-    assert collection.payload["typedParity"]["status"] == "matched"
-    assert raw_count == 0
+    assert collection.payload["typedParity"]["status"] == "pending_diagnostics"
+    assert raw_count == 1
     assert len(facts) == 3
     assert {item.service_key for item in facts} == {
         "product",
@@ -2925,6 +2996,137 @@ def test_ozon_realization_files_only_uses_typed_operation_facts(
     assert adapted[0].row_payload["commission"] == Decimal("50.00")
     assert adapted[0].row_payload["logistics"] == Decimal("20.00")
     assert adapted[0].row_payload["offer_id"] == "offer-1"
+
+
+def test_ozon_files_only_is_blocked_without_full_legacy_qualification(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_raw_db_mode = "files_only"
+    settings.marketplace_daily_facts_enabled = True
+    settings.source_refresh_ozon_typed_facts_enabled = True
+    settings.source_refresh_ozon_files_only_enabled = True
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="unqualified-files-only",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 31),
+            user=user,
+            source_report=report,
+            reason="test",
+        )
+
+        with pytest.raises(
+            source_refresh.SourceRefreshConfigError,
+            match="full legacy qualification",
+        ):
+            SourceRefreshService(settings)._record_ozon_results(
+                db,
+                refresh_run,
+                tmp_path,
+                [],
+                source_type="ozon_realization",
+                source_label="Ozon realization",
+                ozon_cabinet_ids={},
+            )
+
+
+def test_ozon_qualification_requires_promotable_run_and_same_sellers(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        previous = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="qualified-legacy",
+            period_start=date(2026, 6, 1),
+            period_end=date(2026, 6, 30),
+            user=user,
+            source_report=report,
+            reason="qualification",
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            previous,
+            source_type="ozon_realization",
+            source_label="Ozon realization",
+            required=False,
+            status="loaded",
+            row_count=1,
+            payload={
+                "results": [{"sellerAccountId": "seller-1"}],
+                "rawIntegrity": {"status": "verified"},
+                "typedParity": {
+                    "status": "matched",
+                    "diagnosticsParity": {"status": "matched"},
+                    "persistenceParity": {"status": "matched"},
+                    "legacyFileParity": {"status": "matched"},
+                    "sourceCoverage": {"status": "matched"},
+                },
+            },
+        )
+        repository.update_source_refresh_run(
+            db,
+            previous,
+            status="needs_review",
+            finished_at=datetime(2026, 7, 20, 12, 0),
+        )
+        current = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id=report.client_id,
+            mode="ozon-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="files-only-current",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 31),
+            user=user,
+            source_report=report,
+            reason="files only",
+        )
+        service = SourceRefreshService(settings)
+
+        matched = service._ozon_qualification_run_id(
+            db,
+            current,
+            source_type="ozon_realization",
+            seller_account_ids={"seller-1"},
+        )
+        changed_seller = service._ozon_qualification_run_id(
+            db,
+            current,
+            source_type="ozon_realization",
+            seller_account_ids={"seller-2"},
+        )
+        collection.status = "partial_source"
+        partial = service._ozon_qualification_run_id(
+            db,
+            current,
+            source_type="ozon_realization",
+            seller_account_ids={"seller-1"},
+        )
+
+    assert matched == previous.id
+    assert changed_seller == ""
+    assert partial == ""
 
 
 def test_ozon_typed_keys_do_not_depend_on_source_row_order(tmp_path: Path) -> None:
@@ -3013,6 +3215,61 @@ def test_ozon_typed_fallback_keys_use_payload_not_row_position(
     assert first_keys == second_keys
 
 
+def test_ozon_typed_fallback_preserves_dates_duplicates_and_client_scope(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "anonymous-operations.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"operation_type": "service", "date": "2026-06-01", "amount": 10},
+                {"operation_type": "service", "date": "2026-06-02", "amount": 10},
+                {"operation_type": "service", "date": "2026-06-02", "amount": 10},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = OzonPageResult(
+        source_type="ozon_b2b_sales_json",
+        seller_account_id="seller",
+        account_name="Ozon",
+        page_index=1,
+        ok=True,
+        status="ok",
+        row_count=3,
+        output_path=path,
+        source_endpoint="/v1/finance/document-b2b-sales/json",
+    )
+    first_client = source_refresh._merge_ozon_operation_facts(
+        list(
+            source_refresh._iter_ozon_operation_facts(
+                [result],
+                ozon_cabinet_ids={"seller": "cabinet"},
+                client_id="client-1",
+            )
+        )
+    )
+    second_client = source_refresh._merge_ozon_operation_facts(
+        list(
+            source_refresh._iter_ozon_operation_facts(
+                [result],
+                ozon_cabinet_ids={"seller": "cabinet"},
+                client_id="client-2",
+            )
+        )
+    )
+
+    assert len(first_client) == 3
+    assert len({item["source_key"] for item in first_client}) == 3
+    assert {item["operation_date"] for item in first_client} == {
+        date(2026, 6, 1),
+        date(2026, 6, 2),
+    }
+    assert {item["source_key"] for item in first_client}.isdisjoint(
+        item["source_key"] for item in second_client
+    )
+
+
 def test_ozon_typed_cash_flow_flattens_period_rows(tmp_path: Path) -> None:
     path = tmp_path / "cash-flow.json"
     path.write_text(
@@ -3051,6 +3308,8 @@ def test_ozon_typed_cash_flow_flattens_period_rows(tmp_path: Path) -> None:
         output_path=path,
         source_endpoint="/v1/finance/cash-flow-statement/list",
     )
+
+    assert len(_read_ozon_rows(path)) == 2
 
     facts = list(
         source_refresh._iter_ozon_operation_facts(
@@ -3341,6 +3600,62 @@ def test_ozon_report_without_file_needs_review() -> None:
     )
 
     assert status == "needs_review"
+
+
+def test_ozon_report_collection_marks_one_lost_month_partial() -> None:
+    base = {
+        "seller_account_id": "OZON_ACCOUNT_1",
+        "account_name": "Ozon",
+        "page_index": 1,
+        "status_code": 200,
+    }
+    results = [
+        OzonPageResult(
+            source_type="ozon_mutual_settlement_info",
+            source_endpoint="/v1/report/info",
+            ok=True,
+            status="ok",
+            row_count=0,
+            **base,
+        ),
+        OzonPageResult(
+            source_type="ozon_mutual_settlement_file",
+            source_endpoint="report_file",
+            ok=True,
+            status="ok",
+            row_count=10,
+            **base,
+        ),
+        OzonPageResult(
+            source_type="ozon_mutual_settlement_info",
+            source_endpoint="/v1/report/info",
+            ok=False,
+            status="report_timeout",
+            row_count=0,
+            **base,
+        ),
+    ]
+    payload_items = [
+        {"status": "empty_expected"},
+        {"status": "loaded"},
+        {"status": "partial_source"},
+    ]
+
+    optional_status = _ozon_collection_status(
+        results,
+        payload_items,
+        row_count=10,
+        required=False,
+    )
+    required_status = _ozon_collection_status(
+        results,
+        payload_items,
+        row_count=10,
+        required=True,
+    )
+
+    assert optional_status == "needs_review"
+    assert required_status == "partial_source"
 
 
 def test_source_refresh_uses_all_finance_role_wb_integrations(

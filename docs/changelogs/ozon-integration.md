@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/marketplace-unit-economics-ozon-integration.md"
-updated_at: "2026-07-15"
+updated_at: "2026-07-20"
 ---
 
 # Ozon integration changelog
@@ -15,6 +15,11 @@ updated_at: "2026-07-15"
 требования остаются в
 `docs/specs/marketplace-unit-economics-ozon-integration.md`; этот файл хранит
 только хронологию изменений.
+
+- 2026-07-20: accepted the pre-pilot correction set: exact raw response bytes
+  with dual hashes, explicit report/pagination failures, signed quantity/COGS,
+  missing-month blocking, global-only period expense fallback, fail-closed
+  multi-account secrets and ozon-only 1C checkpoint resume.
 
 - 2026-07-15: replaced production client names, report totals and snapshot ids
   with anonymized acceptance invariants; exact live evidence remains outside

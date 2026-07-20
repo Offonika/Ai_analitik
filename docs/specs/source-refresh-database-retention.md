@@ -16,6 +16,7 @@ related_code:
   - scripts/prune_runtime_releases.py
   - scripts/create_maintenance_backup.py
   - scripts/run_source_refresh_retention_maintenance.py
+  - scripts/restore_marketplace_raw_rows.py
   - scripts/build_runtime_release.py
   - scripts/promote_runtime_release.py
   - src/wb_unit_economics/maintenance_safety.py
@@ -27,6 +28,7 @@ related_tests:
   - tests/test_runtime_release_retention.py
   - tests/test_maintenance_safety.py
   - tests/test_source_refresh_retention_maintenance.py
+  - tests/test_restore_marketplace_raw_rows.py
 ai_sections:
   status: "Implementation Status"
   goal: "Цель"
@@ -53,7 +55,7 @@ depends_on:
   - docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-18"
+updated_at: "2026-07-20"
 ---
 
 # Implementation Status
@@ -129,6 +131,13 @@ Ozon collection допускается к file-authoritative удалению т
 полный legacy/typed Ozon P&L и web diagnostics по stable business grain, а не
 aggregate-only итог или первые preview-строки. Префикс
 `ozon_` сам по себе не дает права удалять raw DB rows.
+
+Для post-cutover files-only run дополнительно обязателен
+`typedParity.qualificationRunId`, указывающий на предыдущий полный legacy parity
+того же tenant/client/source. Текущий run сверяется с immutable raw files. Ни
+preview-limit, ни отсутствие legacy rows сами по себе не могут дать `matched`.
+Restore preflight обязан прочитать JSON/CSV/TSV/XLSX data files, исключить
+create/info control responses и восстановить ровно collection row count.
 
 # Границы
 
@@ -302,6 +311,8 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
 
 ## Changelog
 
+- 2026-07-20: added Ozon files-only qualification lineage, full-snapshot parity
+  and multi-format restore requirements before raw DB deletion.
 - 2026-07-18: enabled runtime release retention after introducing one shared
   fail-closed lock across build, promotion and cleanup, with active, rollback,
   grace, manifest and path guards.

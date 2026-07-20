@@ -9,8 +9,8 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: ozon
 truth_priority: 100
-related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py, src/wb_unit_economics/marketplace.py, src/wb_unit_economics/contracts.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/providers.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/app.js]
-related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_contracts.py, tests/test_provider_registry.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py, src/wb_unit_economics/source_integrity.py, src/wb_unit_economics/marketplace.py, src/wb_unit_economics/contracts.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/providers.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/app.js, scripts/materialize_ozon_typed_facts.py, scripts/compare_ozon_legacy_typed.py, scripts/restore_marketplace_raw_rows.py, scripts/migrate_ozon_tax_profiles.py]
+related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_ozon_typed_parity.py, tests/test_source_integrity.py, tests/test_restore_marketplace_raw_rows.py, tests/test_migrate_ozon_tax_profiles.py, tests/test_marketplace_daily_facts.py, tests/test_contracts.py, tests/test_provider_registry.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_sku_mapping, marketplace_api_snapshot, unit_economics_report]
 depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
 changelog_path: docs/changelogs/ozon-integration.md
@@ -33,7 +33,7 @@ code_anchors:
     symbols: ["def build_ozon_unit_economics_mart", "def combine_ozon_monthly_marts"]
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-15"
+updated_at: "2026-07-20"
 ---
 
 # Implementation Status
@@ -160,6 +160,21 @@ deprecated alias для `profitBeforeTax`. Для ОСНО P&L без НДС д�
 годовой базы НДФЛ `profitAfterTax` не публикуется; UI показывает
 «Управленческая прибыль до налогов».
 
+Для ОСНО подтверждается только товарный входящий НДС из регистра продаж 1С.
+Входящий НДС по услугам Ozon (комиссия, логистика, хранение, прочие сборы)
+несет НДС внутри, но его вычет отдельным источником 1С не подтвержден и в
+`vatInput`/`vatPayable` не включается. Если у строки ОСНО есть сервисные
+расходы Ozon, `taxCompleteness` строки равен
+`vat_input_partial_ndfl_not_allocated` (review), а не
+`vat_confirmed_ndfl_not_allocated`: `НДС к уплате` помечается как требующий
+проверки и не занижается недоказанным сервисным вычетом.
+
+Налоговая неполнота выходит в `issues` отдельными карточками и попадает в
+очередь аналитика, не искажая неналоговые показатели: отсутствие профиля дает
+`ozon_mart_tax_profile_missing`, неполный или отсутствующий входящий НДС (в том
+числе `input_vat_missing` и `vat_input_*_ndfl_not_allocated`) дает
+`ozon_mart_tax_input_vat_review`.
+
 В Excel и статье P&L `vatPayable`, `revenueTax` и `incomeTax` имеют отрицательное
 `effectAmount`. `vatOutput` и `vatInput` являются строками налогового моста с
 `effectAmount = null` и не складываются повторно с `vatPayable`.
@@ -282,6 +297,10 @@ Provider `ozon_api`:
 - JSON object with accounts: `{"accounts":[...]}`;
 - key-value string: `clientId=...;apiKey=...`.
 
+Для multi-account JSON каждый элемент `accounts` обязан быть object и содержать
+полную пару `clientId`/`apiKey`. Один невалидный элемент отклоняет весь secret с
+безопасным индексом элемента; молчаливое исключение отдельного кабинета запрещено.
+
 Секреты не выводятся в API payload, logs, Markdown, Git или validation errors.
 
 # Source Refresh
@@ -310,6 +329,13 @@ finance cash-flow может сохраняться как технически�
 безопасным лимитом строк и должна показывать, сколько realization-строк
 использовано из общего числа загруженных.
 Завершение режима не создает и не публикует отчет.
+
+Все period-based exporters отклоняют `period_start > period_end` до записи
+файлов и сетевых запросов. Асинхронный report polling проверяет `result.status`,
+`result.error` и наличие file URL. По умолчанию он выполняется не дольше 300
+секунд с интервалом 5 секунд; terminal failure, success без файла и timeout
+остаются явными partial-source статусами. Исчерпание `max_pages` при непустой
+последней странице также является partial source, а не успешным окончанием.
 
 Диагностическая витрина `ozon-only`:
 
@@ -341,9 +367,17 @@ Raw snapshots сохраняются под `data/source_refresh/<snapshot_set>/
 - `rowCount`;
 - `statusCode`;
 - `rawPayloadHash`;
+- `rawContentSha256` для новых snapshot;
+- `reportStatus`;
+- `pageLimitExhausted`;
 - `outputFile`;
 - `reportCode`;
 - `error`.
+
+Новые JSON snapshots сохраняют точные байты успешного HTTP response body.
+`rawPayloadHash` остается совместимым semantic hash, а `rawContentSha256`
+проверяет byte-exact immutable файл. Старые snapshots без byte hash продолжают
+проверяться по legacy semantic hash.
 
 # Data Contracts
 
@@ -582,6 +616,8 @@ source refresh. Он возвращается только в
   `*_period_financials`; если таких кандидатов ноль или больше одного, строка
   остается `ambiguous_mapping`;
 - COGS считается по 1C cost index только для однозначно сопоставленных строк;
+- quantity и COGS являются знаковыми: `quantity = sales - returns`, возврат
+  восстанавливает COGS, а нулевое net quantity с валидной unit cost дает COGS 0;
 - расходы Ozon по SKU из Ozon realization/detail полей являются первичной базой
   товарной прибыли, если источник явно отдает сумму по конкретной SKU-строке;
 - для Ozon realization/detail комиссия SKU берется только из явных flat-полей
@@ -598,6 +634,9 @@ source refresh. Он возвращается только в
 - если SKU-level расходы больше mutual settlement, отрицательный остаток не
   распределяется и показывается контрольной строкой `Ozon detail больше mutual
   settlement`;
+- fallback всегда ограничен глобальным положительным остатком периода. Остатки
+  отдельных статей могут задавать веса распределения, но не могут увеличить
+  общую SKU-атрибуцию сверх `periodExpenseAmount - skuAttributedExpenseAmount`;
 - 1C используется для контроля полноты разнесения расходов, но 1C-only услуги
   без пары в Ozon API не добавляются в SKU-profit;
 - cash-flow `services`, `return`, `rfbs`, `others`, `delivery` показывается
@@ -616,6 +655,12 @@ source refresh. Он возвращается только в
   calculations to raw nested Ozon realization totals;
 - partner/rebilled services are exposed separately as `ozonPartnerServices` and
   `partner_services`, not hidden inside generic Ozon services;
+- каждый запрошенный месяц без realization rows явно попадает в
+  `excludedIncompletePeriods`; только доказанный незакрытый месяц может быть
+  отнесен к `excludedOpenPeriods`;
+- decimal fallback продолжает поиск после null/empty/unparseable primary key.
+  Если присутствующие aliases не содержат ни одного числа, строка остается
+  partial source, а значение не превращается в ноль;
 - 1C услуги Ozon без пары в API за выбранный месяц показываются отдельными
   строками `1C без пары в Ozon`. Такие строки не считаются ошибкой SKU-profit
   автоматически: консультант проверяет соседний месяц mutual settlement или
@@ -757,6 +802,8 @@ Web/Excel должен показывать разрез `Маркетплейс
    transaction with unknown outcome inside the same run.
    `ozon-only` preflight requires Ozon + 1C and does not block on an unrelated
    WB integration status.
+   `ozon-only` resume creates a new run, reuses only the verified 1C checkpoint
+   and recollects every Ozon source.
 5. Reload the first pilot client in `ozon-only`, validate one closed month, then
    inspect an incomplete and an open month. Keep `taxProfile.status = missing`
    when 1C has no explicit regime; do not add an override without accountant
@@ -778,6 +825,10 @@ Unit:
 - parse Ozon JSON/key-value secret without leaking credentials;
 - Ozon finance/products/stocks/returns exporters store raw JSON and manifests;
 - Ozon contracts parse decimals and reject invalid periods;
+- report polling covers waiting, success, terminal failure, success without a
+  file and timeout; pagination exhaustion is explicit;
+- raw JSON round-trips byte-exact with a content hash while legacy manifests
+  remain verifiable;
 - WB and Ozon normalize into `marketplace_api_snapshot`;
 - provider registry accepts `ozon_api` roles.
 
@@ -815,8 +866,19 @@ Integration:
 - tax profile tests cover explicit 1C USN, OSNO with confirmed input VAT,
   missing profile, missing annual NDFL base, overlapping profiles and multiple
   organizations of one client;
+- OSNO rows with Ozon service expenses expose `taxCompleteness`
+  `vat_input_partial_ndfl_not_allocated` and an `ozon_mart_tax_input_vat_review`
+  issue instead of a confirmed label; missing profile and unconfirmed input VAT
+  reach the analyst queue as `ozon_mart_tax_profile_missing` /
+  `ozon_mart_tax_input_vat_review` issues without distorting non-tax figures;
+- resolution without a refresh run picks the tax profile of the most recent 1C
+  run valid on the date, never a stale prior run whose profile only has a later
+  `valid_from`;
 - exact repeated payload blocks mart; legitimate different rows are never
   removed merely because a technical source identifier repeats;
+- pure returns keep negative quantity/COGS, zero-net rows with valid cost are
+  complete, and a missing middle month blocks range totals;
+- period expense allocation never exceeds the positive global residual;
 - missing/ambiguous mapping, missing cost, missing 1C commissioner and missing
   SKU-level expense fields remain explicit review statuses, not zeros;
 - one 1C item mapped to multiple Ozon SKU is not auto-allocated and does not

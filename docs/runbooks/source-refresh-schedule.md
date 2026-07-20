@@ -311,9 +311,10 @@ protection: ошибка чтения lineage завершает запуск б
   а PostgreSQL получает дневные/типизированные facts без полного raw payload.
   1С и mapping пока используют прежние правила и лимит 25 MiB.
 - Для Ozon дополнительно требуется
-  `SHUMEYKO_SOURCE_REFRESH_OZON_FILES_ONLY_ENABLED=true`. До отдельной сверки
-  Ozon этот флаг не включается: типизированные operations строятся в тени, а
-  raw-строки продолжают сохраняться для совместимости работающего web-процесса.
+  `SHUMEYKO_SOURCE_REFRESH_OZON_TYPED_FACTS_ENABLED=true` после безопасного
+  deploy и затем `SHUMEYKO_SOURCE_REFRESH_OZON_FILES_ONLY_ENABLED=true` только
+  после полной legacy parity qualification. До отдельной сверки оба флага
+  остаются `false`, а raw-строки Ozon продолжают сохраняться.
 - Интервал WB Finance задается
   `SHUMEYKO_SOURCE_REFRESH_WB_REQUEST_DELAY_SECONDS`, а отдельный интервал
   Content API для карточек —

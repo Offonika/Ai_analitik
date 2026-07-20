@@ -114,6 +114,8 @@ def test_ozon_mart_closed_month_calculates_profit_and_keeps_buyout_separate() ->
         "missing1cOrganization": 0,
         "buyoutPeriodOnly": 1,
         "partialExpenses": 0,
+        "taxProfileMissing": 1,
+        "taxInputVatReview": 0,
     }
     ready_row = payload["rows"][0]
     assert ready_row["qualityStatus"] == "ready"
@@ -174,6 +176,47 @@ def test_ozon_mart_closed_month_calculates_profit_and_keeps_buyout_separate() ->
     assert payload["costQuality"]["unmappedRevenueRowCount"] == 0
     assert payload["costQuality"]["ambiguousRevenueRowCount"] == 0
     assert payload["profitAliasDeprecated"] is True
+
+
+def test_ozon_mart_keeps_return_quantity_and_cogs_signed() -> None:
+    returned = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row(sale_qty="0", return_qty="2")],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+    )
+    zero_net = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row(sale_qty="2", return_qty="2")],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+    )
+
+    assert returned["rows"][0]["quantity"] == -2.0
+    assert returned["rows"][0]["cogs"] == -600.0
+    assert zero_net["rows"][0]["quantity"] == 0.0
+    assert zero_net["rows"][0]["cogs"] == 0.0
+    assert zero_net["rows"][0]["qualityStatus"] == "ready"
+
+
+def test_ozon_mart_decimal_fallback_skips_invalid_primary_value() -> None:
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[
+            _realization_row(commission_amount="invalid", commissionAmount="25")
+        ],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+    )
+
+    assert payload["rows"][0]["ozonCommission"] == 25.0
+    assert payload["rows"][0]["expenseStatus"] == "loaded"
 
 
 def test_ozon_mart_keeps_sku_detail_expenses_when_period_matches() -> None:
@@ -378,6 +421,93 @@ def test_ozon_mart_applies_confirmed_usn_profile() -> None:
     assert payload["totals"]["taxCompleteness"] == "profile_complete"
 
 
+def test_ozon_usn_special_vat_rate_keeps_revenue_tax_and_no_review() -> None:
+    # Профиль вида «Мухамедова»: УСН Доходы со спец-ставкой НДС 5% внутри цены.
+    profile = TaxProfile(
+        client_id="client-1",
+        organization_id="org-1",
+        tax_system="УСН Доходы",
+        vat_rate=Decimal("5"),
+        vat_mode=VatMode.INCLUDED,
+        vat_deduction_mode=VatDeductionMode.NOT_APPLICABLE,
+        revenue_tax_rate=Decimal("0.06"),
+        source="Catalog_Организации",
+    )
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+        tax_profile=profile,
+        input_vat_by_item={"ITEM-1": Decimal("50")},
+    )
+
+    # НДС 5/105 выделяется, но входящий НДС при УСН не вычитается; сервисные
+    # расходы Ozon не переводят строку в review — это ветка ОСНО.
+    assert payload["totals"]["vatOutput"] == 42.86
+    assert payload["totals"]["vatInput"] == 0.0
+    assert payload["totals"]["vatPayable"] == 42.86
+    assert payload["totals"]["revenueTax"] == 54.0
+    assert payload["totals"]["profitAfterTax"] == 103.14
+    assert payload["totals"]["taxCompleteness"] == "profile_complete"
+    assert payload["summary"]["taxInputVatReview"] == 0
+    assert payload["summary"]["taxProfileMissing"] == 0
+    assert "ozon_mart_tax_input_vat_review" not in [
+        item["code"] for item in payload["issues"]
+    ]
+
+
+def test_ozon_missing_profile_surfaces_tax_issue() -> None:
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+    )
+
+    assert payload["totals"]["taxCompleteness"] == "missing_tax_profile"
+    assert payload["summary"]["taxProfileMissing"] == 1
+    assert "ozon_mart_tax_profile_missing" in [
+        item["code"] for item in payload["issues"]
+    ]
+
+
+def test_ozon_unconfirmed_profile_collapses_to_missing_and_surfaces_issue() -> None:
+    profile = TaxProfile(
+        client_id="client-1",
+        organization_id="org-1",
+        tax_system="УСН Доходы",
+        vat_rate=Decimal("0"),
+        vat_mode=VatMode.NONE,
+        vat_deduction_mode=VatDeductionMode.UNKNOWN,
+        revenue_tax_rate=Decimal("0.06"),
+        source="Catalog_Организации",
+    )
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+        tax_profile=profile,
+    )
+
+    # Неподтвержденный профиль (unknown vat deduction) схлопывается в missing.
+    assert payload["totals"]["taxCompleteness"] == "missing_tax_profile"
+    assert payload["summary"]["taxProfileMissing"] == 1
+    assert "ozon_mart_tax_profile_missing" in [
+        item["code"] for item in payload["issues"]
+    ]
+
+
 def test_ozon_monthly_range_hides_profit_when_open_month_is_included() -> None:
     closed = build_ozon_unit_economics_mart(
         realization_rows=[_realization_row()],
@@ -416,6 +546,46 @@ def test_ozon_monthly_range_hides_profit_when_open_month_is_included() -> None:
     assert open_row["cogs"] is None
     assert open_row["ozonExpenses"] is None
     assert open_row["qualityStatus"] == "missing_1c_commissioner"
+
+
+def test_ozon_monthly_range_marks_empty_middle_month_incomplete() -> None:
+    may = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+    )
+    june_commissioner = SourceRow(
+        row_number=2,
+        source_row_id="commissioner-june",
+        row_payload={
+            **_commissioner_row().row_payload,
+            "Date": "2026-06-30T01:00:00",
+        },
+    )
+    june = build_ozon_unit_economics_mart(
+        realization_rows=[],
+        commissioner_rows=[june_commissioner],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+    )
+
+    combined = combine_ozon_monthly_marts([may, june])
+
+    assert combined["status"] == "partial_source"
+    assert combined["excludedOpenPeriods"] == []
+    assert combined["excludedIncompletePeriods"] == [
+        {
+            "periodStart": "2026-06-01",
+            "periodEnd": "2026-06-30",
+            "reason": "missing_ozon_realization",
+            "reasons": ["missing_ozon_realization"],
+        }
+    ]
 
 
 def test_ozon_monthly_range_totals_do_not_depend_on_preview_rows() -> None:
@@ -580,7 +750,7 @@ def test_ozon_osno_keeps_after_tax_empty_without_confirmed_input_vat() -> None:
     assert payload["totals"]["taxCompleteness"] == "input_vat_missing"
 
 
-def test_ozon_osno_calculates_no_vat_pnl_with_confirmed_input_vat() -> None:
+def test_ozon_osno_flags_partial_input_vat_with_service_expenses() -> None:
     profile = TaxProfile(
         client_id="client-1",
         organization_id="org-1",
@@ -604,14 +774,68 @@ def test_ozon_osno_calculates_no_vat_pnl_with_confirmed_input_vat() -> None:
         input_vat_by_item={"ITEM-1": Decimal("50")},
     )
 
+    # Товарный входящий НДС подтвержден (50), но у строки есть сервисные расходы
+    # Ozon (100) с невыделенным входящим НДС: суммы не меняются, но статус
+    # понижается до partial и появляется карточка проверки в очереди аналитика.
     assert payload["totals"]["vatOutput"] == 162.3
     assert payload["totals"]["vatInput"] == 50.0
     assert payload["totals"]["vatPayable"] == 112.3
     assert payload["totals"]["profitBeforeIncomeTax"] == 87.7
     assert payload["totals"]["profitAfterTax"] is None
     assert payload["totals"]["taxCompleteness"] == (
+        "vat_input_partial_ndfl_not_allocated"
+    )
+    assert payload["summary"]["taxInputVatReview"] == 1
+    assert payload["summary"]["taxProfileMissing"] == 0
+    assert "ozon_mart_tax_input_vat_review" in [
+        item["code"] for item in payload["issues"]
+    ]
+
+
+def test_ozon_osno_confirms_input_vat_without_service_expenses() -> None:
+    profile = TaxProfile(
+        client_id="client-1",
+        organization_id="org-1",
+        tax_system="ОСНО",
+        vat_rate=Decimal("22"),
+        vat_mode=VatMode.INCLUDED,
+        vat_deduction_mode=VatDeductionMode.ALLOWED,
+        revenue_tax_rate=Decimal("0"),
+        income_tax_kind="ip_ndfl_progressive",
+        source="Catalog_Организации",
+    )
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[
+            _realization_row(
+                commission_amount="0",
+                services_amount="0",
+                logistics_amount="0",
+                storage_amount="0",
+                other_amount="0",
+            )
+        ],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+        tax_profile=profile,
+        input_vat_by_item={"ITEM-1": Decimal("50")},
+    )
+
+    # Без сервисных расходов Ozon весь входящий НДС товарный и подтвержден.
+    assert payload["totals"]["vatOutput"] == 162.3
+    assert payload["totals"]["vatInput"] == 50.0
+    assert payload["totals"]["vatPayable"] == 112.3
+    assert payload["totals"]["profitBeforeIncomeTax"] == 187.7
+    assert payload["totals"]["taxCompleteness"] == (
         "vat_confirmed_ndfl_not_allocated"
     )
+    assert payload["summary"]["taxInputVatReview"] == 0
+    assert "ozon_mart_tax_input_vat_review" not in [
+        item["code"] for item in payload["issues"]
+    ]
 
 
 def test_sabura_april_control_and_incomplete_period_exclusions() -> None:
@@ -943,18 +1167,16 @@ def test_ozon_mart_allocates_service_residual_with_higher_direct_commission() ->
     )
 
     row = payload["rows"][0]
-    assert row["expenseStatus"] == "mixed_sku_and_period_unattributed"
+    assert row["expenseStatus"] == "loaded"
     assert row["ozonCommission"] == 200.0
-    assert row["ozonServices"] == 100.0
-    assert row["ozonExpenses"] == 300.0
-    assert row["profit"] == 0.0
-    assert payload["expenseAttribution"]["status"] == (
-        "mixed_sku_and_period_unattributed"
-    )
+    assert row["ozonServices"] is None
+    assert row["ozonExpenses"] == 200.0
+    assert row["profit"] == 100.0
+    assert payload["expenseAttribution"]["status"] == "sku_detail_above_period"
     assert payload["expenseAttribution"]["skuAttributedExpenseAmount"] == 200.0
-    assert payload["expenseAttribution"]["unattributedExpenseAmount"] == 100.0
-    assert payload["expenseAttribution"]["allocatedUnattributedExpenseAmount"] == 100.0
-    assert payload["expenseAttribution"]["overAttributedExpenseAmount"] == 150.0
+    assert payload["expenseAttribution"]["unattributedExpenseAmount"] == 0.0
+    assert payload["expenseAttribution"]["allocatedUnattributedExpenseAmount"] == 0.0
+    assert payload["expenseAttribution"]["overAttributedExpenseAmount"] == 50.0
     assert payload["expenseAttribution"]["periodExpenseDeltaAmount"] == 0.0
 
 

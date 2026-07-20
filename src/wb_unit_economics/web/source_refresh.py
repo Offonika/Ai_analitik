@@ -155,7 +155,14 @@ def _incremental_yesterday() -> date:
 
 
 SOURCE_REFRESH_RESUME_MODES = {"auto", "never"}
-ONEC_RESUME_MODES = {"daily", "incremental", "weekly", "full", "onec-only"}
+ONEC_RESUME_MODES = {
+    "daily",
+    "incremental",
+    "weekly",
+    "full",
+    "onec-only",
+    "ozon-only",
+}
 WB_REQUIRED_MODES = {"daily", "incremental", "weekly", "full"}
 OZON_REQUIRED_MODES = {"ozon-only"}
 OZON_OPTIONAL_MODES = {"daily", "weekly", "full"}
@@ -167,6 +174,8 @@ OZON_TYPED_FILE_AUTHORITATIVE_TYPES = {
     "ozon_products_buyout",
     "ozon_b2b_sales_json",
     "ozon_products_report",
+    "ozon_stock_on_warehouses",
+    "ozon_returns_report",
 }
 CREDENTIAL_SOURCES = {"tenant", "env"}
 SOURCE_SNAPSHOT_ROW_CHUNK_SIZE = 1000
@@ -1448,6 +1457,28 @@ class SourceRefreshService:
                 ),
                 include_external=True,
             )
+            if self._mandatory_failed(refresh_run):
+                return self._finish_without_report(
+                    db,
+                    refresh_run,
+                    status="failed",
+                    error_message="Mandatory source refresh collection failed.",
+                )
+            ozon_promotion_succeeded = self._promote_ozon_typed_facts(
+                db,
+                refresh_run,
+                ozon_cabinet_ids=credentials.ozon_cabinet_ids,
+            )
+            if not ozon_promotion_succeeded and mode == "ozon-only":
+                return self._finish_without_report(
+                    db,
+                    refresh_run,
+                    status="failed",
+                    error_message=(
+                        "Ozon typed-facts promotion failed; previous facts "
+                        "were preserved."
+                    ),
+                )
             self._rebuild_mapping_service(db, refresh_run, mapping_collection, user)
             repository.sync_organization_tax_profiles(
                 db,
@@ -1490,13 +1521,6 @@ class SourceRefreshService:
                 status="source_loaded",
             )
             _commit_source_refresh_progress(db)
-            if self._mandatory_failed(refresh_run):
-                return self._finish_without_report(
-                    db,
-                    refresh_run,
-                    status="failed",
-                    error_message="Mandatory source refresh collection failed.",
-                )
             if (
                 mode in {"daily", "incremental"}
                 and self.settings.marketplace_daily_facts_enabled
@@ -2887,9 +2911,37 @@ class SourceRefreshService:
         files_only = (
             self.settings.source_refresh_raw_db_mode == "files_only"
             and self.settings.marketplace_daily_facts_enabled
+            and self.settings.source_refresh_ozon_typed_facts_enabled
             and self.settings.source_refresh_ozon_files_only_enabled
             and source_type in OZON_TYPED_FILE_AUTHORITATIVE_TYPES
         )
+        qualification_run_id = ""
+        if files_only:
+            seller_account_ids = {
+                item.seller_account_id
+                for item in result_items
+                if item.seller_account_id
+            }
+            qualification_run_ids = {
+                qualified_source_type: self._ozon_qualification_run_id(
+                    db,
+                    refresh_run,
+                    source_type=qualified_source_type,
+                    seller_account_ids=seller_account_ids,
+                )
+                for qualified_source_type in OZON_TYPED_FILE_AUTHORITATIVE_TYPES
+            }
+            missing_qualifications = sorted(
+                item
+                for item, run_id in qualification_run_ids.items()
+                if not run_id
+            )
+            if missing_qualifications:
+                raise SourceRefreshConfigError(
+                    "full legacy qualification is required for "
+                    + ", ".join(missing_qualifications)
+                )
+            qualification_run_id = qualification_run_ids[source_type]
         collection_payload: dict[str, Any] = {
             "marketplace": "ozon",
             "results": payload_items,
@@ -2898,6 +2950,7 @@ class SourceRefreshService:
             collection_payload["rowPersistence"] = {
                 "status": "file_authoritative",
                 "rawFilesAuthoritative": True,
+                "qualificationRunId": qualification_run_id,
             }
         collection = repository.add_source_refresh_collection(
             db,
@@ -2920,14 +2973,6 @@ class SourceRefreshService:
             collection,
             source_root=self.settings.source_refresh_root_path,
         )
-        if self.settings.marketplace_daily_facts_enabled:
-            _materialize_ozon_typed_collection(
-                db,
-                refresh_run,
-                collection,
-                result_items,
-                ozon_cabinet_ids=ozon_cabinet_ids,
-            )
         if files_only and (
             ((collection.payload or {}).get("rawIntegrity") or {}).get("status")
             != "verified"
@@ -2942,6 +2987,172 @@ class SourceRefreshService:
                 result_items,
                 ozon_cabinet_ids=ozon_cabinet_ids,
             )
+
+    def _ozon_qualification_run_id(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        *,
+        source_type: str,
+        seller_account_ids: set[str] | None = None,
+    ) -> str:
+        candidates = list(
+            db.scalars(
+                select(SourceRefreshCollection)
+                .where(
+                    SourceRefreshCollection.tenant_id == refresh_run.tenant_id,
+                    SourceRefreshCollection.client_id == refresh_run.client_id,
+                    SourceRefreshCollection.source_type == source_type,
+                    SourceRefreshCollection.refresh_run_id != refresh_run.id,
+                )
+                .order_by(SourceRefreshCollection.loaded_at.desc())
+            )
+        )
+        for candidate in candidates:
+            if (
+                candidate.status not in MANDATORY_OK_STATUSES
+                or candidate.refresh_run.finished_at is None
+                or candidate.refresh_run.status
+                not in repository.CALCULABLE_OZON_REFRESH_STATUSES
+                or candidate.refresh_run.created_at >= refresh_run.created_at
+            ):
+                continue
+            payload = dict(candidate.payload or {})
+            if (payload.get("rowPersistence") or {}).get("status") == (
+                "file_authoritative"
+            ):
+                continue
+            candidate_sellers = {
+                str(item.get("sellerAccountId") or "")
+                for item in payload.get("results", [])
+                if isinstance(item, dict) and item.get("sellerAccountId")
+            }
+            if (
+                seller_account_ids is not None
+                and candidate_sellers != seller_account_ids
+            ):
+                continue
+            typed_parity = dict(payload.get("typedParity") or {})
+            if (
+                typed_parity.get("status") == "matched"
+                and (typed_parity.get("diagnosticsParity") or {}).get("status")
+                == "matched"
+                and (typed_parity.get("persistenceParity") or {}).get("status")
+                == "matched"
+                and (typed_parity.get("legacyFileParity") or {}).get("status")
+                == "matched"
+                and (typed_parity.get("sourceCoverage") or {}).get("status")
+                == "matched"
+                and (payload.get("rawIntegrity") or {}).get("status") == "verified"
+            ):
+                return candidate.refresh_run_id
+        return ""
+
+    def _promote_ozon_typed_facts(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        *,
+        ozon_cabinet_ids: dict[str, str],
+    ) -> bool:
+        if not (
+            self.settings.marketplace_daily_facts_enabled
+            and self.settings.source_refresh_ozon_typed_facts_enabled
+        ):
+            return True
+        collections = [
+            item
+            for item in refresh_run.collections
+            if item.source_type in OZON_TYPED_FILE_AUTHORITATIVE_TYPES
+        ]
+        if not collections:
+            return True
+        invalid = [
+            item
+            for item in collections
+            if item.status not in MANDATORY_OK_STATUSES
+            or ((item.payload or {}).get("rawIntegrity") or {}).get("status")
+            != "verified"
+        ]
+        if invalid:
+            self._mark_ozon_promotion_failed(
+                db,
+                collections,
+                reason="source_collection_not_promotable",
+            )
+            return False
+
+        collection_ids = [item.id for item in collections]
+        try:
+            with db.begin_nested():
+                for collection in collections:
+                    results, collection_cabinet_ids = _ozon_results_from_collection(
+                        collection,
+                        source_root=self.settings.source_refresh_root_path,
+                    )
+                    _materialize_ozon_typed_collection(
+                        db,
+                        refresh_run,
+                        collection,
+                        results,
+                        ozon_cabinet_ids={
+                            **ozon_cabinet_ids,
+                            **collection_cabinet_ids,
+                        },
+                    )
+                    typed_parity = (collection.payload or {}).get("typedParity") or {}
+                    if typed_parity.get("status") != "pending_diagnostics":
+                        raise ValueError("ozon_typed_staging_parity_failed")
+                daily_facts = _ozon_daily_facts_for_run(db, refresh_run)
+                daily_count = repository.replace_marketplace_finance_daily_facts(
+                    db,
+                    refresh_run,
+                    daily_facts,
+                    marketplace="ozon",
+                    cabinet_ids=ozon_cabinet_ids,
+                )
+                for collection in collections:
+                    collection.payload = {
+                        **(collection.payload or {}),
+                        "operationFacts": {
+                            **((collection.payload or {}).get("operationFacts") or {}),
+                            "dailyRowCount": daily_count,
+                            "promotionScope": "all_ozon_sources",
+                        },
+                    }
+                db.flush()
+        except Exception as exc:
+            current_collections = [
+                item
+                for collection_id in collection_ids
+                if (item := db.get(SourceRefreshCollection, collection_id)) is not None
+            ]
+            self._mark_ozon_promotion_failed(
+                db,
+                current_collections,
+                reason=f"promotion_rolled_back:{exc.__class__.__name__}",
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _mark_ozon_promotion_failed(
+        db: Session,
+        collections: Iterable[SourceRefreshCollection],
+        *,
+        reason: str,
+    ) -> None:
+        for collection in collections:
+            collection.status = "needs_review"
+            collection.payload = {
+                **(collection.payload or {}),
+                "typedParity": {
+                    "status": "promotion_failed",
+                    "reason": reason,
+                    "previousFactsPreserved": True,
+                },
+            }
+        db.flush()
 
     def _record_onec(
         self,
@@ -3884,6 +4095,11 @@ class SourceRefreshService:
                     "explicit resume is available only for modes with 1C OData"
                 )
             return None
+        checkpoint_available = (
+            self._run_has_onec_checkpoint
+            if mode == "ozon-only"
+            else self._run_has_resume_checkpoint
+        )
 
         candidate: SourceRefreshRun | None
         if resume_from_run_id:
@@ -3911,7 +4127,7 @@ class SourceRefreshService:
                 )
             )
             candidate = next(
-                (item for item in candidates if self._run_has_resume_checkpoint(item)),
+                (item for item in candidates if checkpoint_available(item)),
                 None,
             )
             if candidate is None:
@@ -3925,6 +4141,7 @@ class SourceRefreshService:
             and candidate.period_end == period_end
             and candidate.mode in ONEC_RESUME_MODES
             and candidate.finished_at is not None
+            and checkpoint_available(candidate)
         )
         root_dir = Path(candidate.root_dir).resolve() if candidate.root_dir else None
         allowed_root = self.settings.source_refresh_root_path.resolve()
@@ -3933,7 +4150,11 @@ class SourceRefreshService:
             and root_dir.is_relative_to(allowed_root)
             and (
                 (root_dir / "onec").is_dir()
-                or (root_dir / "wb_finance" / "manifest.json").is_file()
+                if mode == "ozon-only"
+                else (
+                    (root_dir / "onec").is_dir()
+                    or (root_dir / "wb_finance" / "manifest.json").is_file()
+                )
             )
         )
         if not compatible or not has_safe_resume_dir:
@@ -4034,6 +4255,18 @@ class SourceRefreshService:
 
     def _ozon_delay_seconds(self) -> float:
         return max(0.0, float(self.settings.source_refresh_ozon_request_delay_seconds))
+
+    def _ozon_report_poll_timeout_seconds(self) -> float:
+        return max(
+            0.001,
+            float(self.settings.source_refresh_ozon_report_poll_timeout_seconds),
+        )
+
+    def _ozon_report_poll_interval_seconds(self) -> float:
+        return max(
+            0.001,
+            float(self.settings.source_refresh_ozon_report_poll_interval_seconds),
+        )
 
     def _mapping_stale_days(self) -> int:
         return max(1, int(self.settings.source_refresh_mapping_stale_days))
@@ -4354,6 +4587,8 @@ def _collect_ozon_mutual_settlement(
         period_start=context.period_start,
         period_end=context.period_end,
         request_delay_seconds=service._ozon_delay_seconds(),
+        report_poll_timeout_seconds=service._ozon_report_poll_timeout_seconds(),
+        report_poll_interval_seconds=service._ozon_report_poll_interval_seconds(),
     )
     service._record_ozon_results(
         context.db,
@@ -4379,7 +4614,7 @@ def _collect_ozon_realization_posting(
         output_dir,
         period_start=context.period_start,
         period_end=context.period_end,
-        max_pages=min(service._ozon_max_pages(), 3),
+        max_pages=service._ozon_max_pages(),
         request_delay_seconds=service._ozon_delay_seconds(),
     )
     service._record_ozon_results(
@@ -4457,6 +4692,8 @@ def _collect_ozon_products(
         context.credentials.ozon_settings,
         output_dir,
         request_delay_seconds=service._ozon_delay_seconds(),
+        report_poll_timeout_seconds=service._ozon_report_poll_timeout_seconds(),
+        report_poll_interval_seconds=service._ozon_report_poll_interval_seconds(),
     )
     service._record_ozon_results(
         context.db,
@@ -4509,6 +4746,8 @@ def _collect_ozon_returns(
         period_start=context.period_start,
         period_end=context.period_end,
         request_delay_seconds=service._ozon_delay_seconds(),
+        report_poll_timeout_seconds=service._ozon_report_poll_timeout_seconds(),
+        report_poll_interval_seconds=service._ozon_report_poll_interval_seconds(),
     )
     service._record_ozon_results(
         context.db,
@@ -5062,8 +5301,11 @@ def _ozon_result_payload(
         "statusCode": item.status_code,
         "sourceEndpoint": item.source_endpoint,
         "rawPayloadHash": item.raw_payload_hash,
+        "rawContentSha256": item.raw_content_sha256,
         "outputFile": item.output_path.name if item.output_path else None,
         "reportCode": item.report_code,
+        "reportStatus": item.report_status,
+        "pageLimitExhausted": item.page_limit_exhausted,
         "error": item.error,
     }
 
@@ -5383,6 +5625,13 @@ def _ozon_status(item: OzonPageResult) -> str:
         return "rate_limited"
     if item.status == "transport_error":
         return "schema_error"
+    if item.status in {
+        "page_limit_exhausted",
+        "report_failed",
+        "report_success_without_file",
+        "report_timeout",
+    }:
+        return "partial_source"
     return "failed" if not item.ok else "loaded"
 
 
@@ -6483,61 +6732,136 @@ def _persist_ozon_rows(
     ozon_cabinet_ids: dict[str, str],
 ) -> None:
     try:
-        row_number = 1
         batch: list[dict[str, Any]] = []
-        for result in results:
-            if _is_ozon_report_control_result(result):
-                continue
-            for local_index, row in enumerate(_read_ozon_rows(result.output_path), 1):
-                source_row_id = _first_row_id(
-                    row,
-                    "id",
-                    "operation_id",
-                    "posting_number",
-                    "product_id",
-                    "offer_id",
-                    "sku",
-                    "code",
-                    "ID товара",
-                    "Идентификатор товара",
-                    "Артикул",
-                    "Артикул продавца",
-                    "SKU",
-                    "Штрихкод",
-                    "Баркод",
-                )
-                if not source_row_id:
-                    source_row_id = (
-                        f"{result.source_type}:{result.page_index}:{local_index}"
-                    )
-                row_payload = {
-                    **row,
-                    "marketplace": "ozon",
-                    "seller_account_id": result.seller_account_id,
-                    "source_endpoint": result.source_endpoint,
-                    "source_page_index": result.page_index,
-                    "source_output_file": (
-                        result.output_path.name if result.output_path else ""
-                    ),
-                }
-                batch.append(
-                    {
-                        "row_number": row_number,
-                        "raw_payload_hash": _hash_payload(row_payload),
-                        "row_payload": row_payload,
-                        "source_row_id": source_row_id,
-                        "wb_cabinet_id": ozon_cabinet_ids.get(
-                            result.seller_account_id,
-                            "",
-                        ),
-                        "loaded_at": collection.loaded_at,
-                    }
-                )
-                row_number += 1
-                _flush_snapshot_batch(db, collection, batch)
+        for value in _iter_ozon_snapshot_row_values(
+            collection,
+            results,
+            ozon_cabinet_ids=ozon_cabinet_ids,
+        ):
+            batch.append(value)
+            _flush_snapshot_batch(db, collection, batch)
         _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _iter_ozon_snapshot_row_values(
+    collection: SourceRefreshCollection,
+    results: Iterable[OzonPageResult],
+    *,
+    ozon_cabinet_ids: dict[str, str],
+) -> Iterable[dict[str, Any]]:
+    row_number = 1
+    for result in results:
+        if _is_ozon_report_control_result(result):
+            continue
+        for local_index, row in enumerate(_read_ozon_rows(result.output_path), 1):
+            source_row_id = _first_row_id(
+                row,
+                "id",
+                "operation_id",
+                "posting_number",
+                "product_id",
+                "offer_id",
+                "sku",
+                "code",
+                "ID товара",
+                "Идентификатор товара",
+                "Артикул",
+                "Артикул продавца",
+                "SKU",
+                "Штрихкод",
+                "Баркод",
+            ) or f"{result.source_type}:{result.page_index}:{local_index}"
+            row_payload = {
+                **row,
+                "marketplace": "ozon",
+                "seller_account_id": result.seller_account_id,
+                "source_endpoint": result.source_endpoint,
+                "source_page_index": result.page_index,
+                "source_output_file": (
+                    result.output_path.name if result.output_path else ""
+                ),
+            }
+            yield {
+                "row_number": row_number,
+                "raw_payload_hash": _hash_payload(row_payload),
+                "row_payload": row_payload,
+                "source_row_id": source_row_id,
+                "wb_cabinet_id": ozon_cabinet_ids.get(
+                    result.seller_account_id,
+                    "",
+                ),
+                "loaded_at": collection.loaded_at,
+            }
+            row_number += 1
+
+
+def _ozon_results_from_collection(
+    collection: SourceRefreshCollection,
+    *,
+    source_root: Path,
+) -> tuple[list[OzonPageResult], dict[str, str]]:
+    payload = dict(collection.payload or {})
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        raise RawIntegrityError("collection results are missing")
+    verified = verify_raw_directory(
+        Path(collection.raw_path),
+        source_type=collection.source_type,
+        source_root=source_root,
+        collection_results=raw_results,
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    collection.payload = {**payload, "rawIntegrity": verified.as_payload()}
+    raw_dir = Path(collection.raw_path).resolve()
+    results: list[OzonPageResult] = []
+    cabinet_ids: dict[str, str] = {}
+    for item in raw_results:
+        if not isinstance(item, dict):
+            raise RawIntegrityError("collection result is invalid")
+        seller_account_id = str(item.get("sellerAccountId") or "")
+        cabinet_id = str(item.get("wbCabinetId") or "")
+        if seller_account_id:
+            cabinet_ids[seller_account_id] = cabinet_id
+        output_name = str(item.get("outputFile") or "")
+        if output_name and Path(output_name).name != output_name:
+            raise RawIntegrityError("collection output path is unsafe")
+        source_endpoint = str(item.get("sourceEndpoint") or "")
+        source_type = str(item.get("sourceType") or "")
+        if not source_type:
+            if source_endpoint == "/v1/report/info":
+                source_type = f"{collection.source_type}_info"
+            elif source_endpoint == "report_file":
+                source_type = f"{collection.source_type}_file"
+            else:
+                source_type = collection.source_type
+        results.append(
+            OzonPageResult(
+                source_type=source_type,
+                seller_account_id=seller_account_id,
+                account_name=str(item.get("accountName") or ""),
+                page_index=int(item.get("pageIndex") or 0),
+                ok=bool(item.get("ok")),
+                status=str(item.get("sourceStatus") or item.get("status") or ""),
+                row_count=int(item.get("rowCount") or 0),
+                raw_payload_hash=str(item.get("rawPayloadHash") or ""),
+                raw_content_sha256=str(item.get("rawContentSha256") or ""),
+                output_path=(raw_dir / output_name) if output_name else None,
+                status_code=(
+                    int(item["statusCode"])
+                    if item.get("statusCode") is not None
+                    else None
+                ),
+                error=str(item.get("error") or ""),
+                report_code=str(item.get("reportCode") or ""),
+                report_status=str(item.get("reportStatus") or ""),
+                page_limit_exhausted=bool(item.get("pageLimitExhausted")),
+                source_endpoint=source_endpoint,
+            )
+        )
+    return results, cabinet_ids
 
 
 def _materialize_ozon_typed_collection(
@@ -6559,12 +6883,13 @@ def _materialize_ozon_typed_collection(
             },
         }
         db.flush()
-        return
+        raise ValueError("ozon_raw_integrity_not_verified")
     result_items = list(results)
     file_operation_rows = list(
         _iter_ozon_operation_facts(
             result_items,
             ozon_cabinet_ids=ozon_cabinet_ids,
+            client_id=refresh_run.client_id,
         )
     )
     operation_rows = _merge_ozon_operation_facts(file_operation_rows)
@@ -6573,12 +6898,26 @@ def _materialize_ozon_typed_collection(
             db,
             collection,
             ozon_cabinet_ids=ozon_cabinet_ids,
+            client_id=refresh_run.client_id,
         )
     )
     legacy_parity = _ozon_legacy_file_parity(
         file_operation_rows,
         legacy_operation_rows,
     )
+    qualification_run_id = str(
+        (payload.get("rowPersistence") or {}).get("qualificationRunId") or ""
+    )
+    if (
+        legacy_parity.get("status") == "not_run_no_legacy_rows"
+        and qualification_run_id
+    ):
+        legacy_parity = {
+            "status": "qualified_file_reference",
+            "legacyRows": 0,
+            "qualificationRunId": qualification_run_id,
+            "fileDigest": _ozon_operation_rows_digest(operation_rows),
+        }
     operation_count = repository.replace_marketplace_operation_facts(
         db,
         collection,
@@ -6589,44 +6928,48 @@ def _materialize_ozon_typed_collection(
         collection,
         operation_rows,
     )
-    typed_parity = {
-        **persistence_parity,
+    reconstructed_source_rows = sum(
+        1
+        for _value in _iter_ozon_snapshot_row_values(
+            collection,
+            result_items,
+            ozon_cabinet_ids=ozon_cabinet_ids,
+        )
+    )
+    source_coverage = {
         "status": (
             "matched"
-            if persistence_parity.get("status") == "matched"
-            and legacy_parity.get("status") in {"matched", "not_run_no_legacy_rows"}
-            and len(file_operation_rows) >= collection.row_count
+            if collection.status in MANDATORY_OK_STATUSES
+            and reconstructed_source_rows == collection.row_count
+            and len(file_operation_rows) >= reconstructed_source_rows
             else "mismatch"
         ),
+        "expectedRows": collection.row_count,
+        "reconstructedRows": reconstructed_source_rows,
+        "normalizedRows": len(file_operation_rows),
+        "collectionStatus": collection.status,
+    }
+    parity_ready = (
+        persistence_parity.get("status") == "matched"
+        and legacy_parity.get("status")
+        in {"matched", "not_run_no_legacy_rows", "qualified_file_reference"}
+        and source_coverage["status"] == "matched"
+    )
+    typed_parity = {
+        **persistence_parity,
+        "status": "pending_diagnostics" if parity_ready else "mismatch",
         "sourceRows": collection.row_count,
         "operationRowsBeforeMerge": len(file_operation_rows),
         "operationRowsAfterMerge": len(operation_rows),
         "persistenceParity": persistence_parity,
         "legacyFileParity": legacy_parity,
-        "sourceCoverage": {
-            "status": (
-                "matched"
-                if len(file_operation_rows) >= collection.row_count
-                else "mismatch"
-            ),
-            "expectedRows": collection.row_count,
-            "normalizedRows": len(file_operation_rows),
-        },
+        "sourceCoverage": source_coverage,
     }
-    ozon_daily_facts = _ozon_daily_facts_for_run(db, refresh_run)
-    ozon_daily_count = repository.replace_marketplace_finance_daily_facts(
-        db,
-        refresh_run,
-        ozon_daily_facts,
-        marketplace="ozon",
-        cabinet_ids=ozon_cabinet_ids,
-    )
     collection.payload = {
         **(collection.payload or {}),
         "operationFacts": {
             "status": "materialized",
             "rowCount": operation_count,
-            "dailyRowCount": ozon_daily_count,
         },
         "typedParity": typed_parity,
     }
@@ -6637,6 +6980,7 @@ def _iter_ozon_operation_facts(
     results: Iterable[OzonPageResult],
     *,
     ozon_cabinet_ids: dict[str, str],
+    client_id: str = "",
 ) -> Iterable[dict[str, Any]]:
     for result in results:
         if _is_ozon_report_control_result(result):
@@ -6647,6 +6991,7 @@ def _iter_ozon_operation_facts(
                 row,
                 local_index=local_index,
                 ozon_cabinet_ids=ozon_cabinet_ids,
+                client_id=client_id,
             )
 
 
@@ -6655,6 +7000,7 @@ def _iter_legacy_ozon_operation_facts(
     collection: SourceRefreshCollection,
     *,
     ozon_cabinet_ids: dict[str, str],
+    client_id: str = "",
 ) -> Iterable[dict[str, Any]]:
     rows = db.scalars(
         select(SourceSnapshotRow)
@@ -6696,6 +7042,7 @@ def _iter_legacy_ozon_operation_facts(
             source_payload,
             local_index=row.row_number,
             ozon_cabinet_ids=ozon_cabinet_ids,
+            client_id=client_id,
         )
 
 
@@ -6705,6 +7052,7 @@ def _ozon_operation_facts_for_row(
     *,
     local_index: int,
     ozon_cabinet_ids: dict[str, str],
+    client_id: str = "",
 ) -> Iterable[dict[str, Any]]:
     items = _ozon_operation_items(result, row)
     for item in items:
@@ -6714,6 +7062,7 @@ def _ozon_operation_facts_for_row(
             item=item,
             local_index=local_index,
             ozon_cabinet_ids=ozon_cabinet_ids,
+            client_id=client_id,
         )
         if result.source_type.removesuffix("_file") == "ozon_finance_cash_flow":
             yield from _ozon_cash_flow_operation_facts(fact, item)
@@ -7089,7 +7438,7 @@ def _merge_ozon_operation_facts(
 
 def _ozon_fact_uses_fallback(row: dict[str, Any]) -> bool:
     return bool(row.get("_preserve_occurrences")) or not (
-        str(row.get("operation_id") or row.get("operation_type") or "")
+        str(row.get("operation_id") or "")
         or str(row.get("posting_number") or "")
     )
 
@@ -7101,6 +7450,7 @@ def _ozon_operation_fact(
     item: dict[str, Any],
     local_index: int,
     ozon_cabinet_ids: dict[str, str],
+    client_id: str = "",
 ) -> dict[str, Any]:
     source_row_id = _first_row_id(
         row,
@@ -7215,6 +7565,7 @@ def _ozon_operation_fact(
         else _decimal_value(item, "amount", "accruals_for_sale", "Итого", "Сумма")
     )
     fact = {
+        "client_id": client_id,
         "wb_cabinet_id": ozon_cabinet_ids.get(result.seller_account_id, ""),
         "seller_account_id": result.seller_account_id,
         "source_type": source_type,
@@ -7317,7 +7668,9 @@ def _ozon_operation_fact(
         "currency": _text_value(item, "currency", "currency_code", "Валюта") or "RUB",
         "source_endpoint": result.source_endpoint,
         "raw_payload_hash": _hash_payload(item),
-        "_stable_payload_hash": _ozon_stable_payload_hash(item),
+        "_stable_payload_hash": _ozon_stable_payload_hash(
+            {"row": row, "item": item}
+        ),
         "_preserve_occurrences": preserve_occurrences,
     }
     fact["source_key"] = _ozon_fact_source_key(fact)
@@ -7325,10 +7678,12 @@ def _ozon_operation_fact(
 
 
 def _ozon_fact_source_key(fact: dict[str, Any]) -> str:
-    operation_id = str(fact.get("operation_id") or fact.get("operation_type") or "")
+    operation_id = str(fact.get("operation_id") or "")
     posting_number = str(fact.get("posting_number") or "")
     return _hash_payload(
         {
+            "clientId": str(fact.get("client_id") or ""),
+            "cabinetId": str(fact.get("wb_cabinet_id") or ""),
             "sellerAccountId": str(fact.get("seller_account_id") or ""),
             "sourceType": str(fact.get("source_type") or ""),
             "operationId": operation_id,
@@ -7337,6 +7692,11 @@ def _ozon_fact_source_key(fact: dict[str, Any]) -> str:
             "offerId": str(fact.get("offer_id") or ""),
             "sku": str(fact.get("sku") or ""),
             "serviceKey": str(fact.get("service_key") or ""),
+            "operationDate": (
+                fact["operation_date"].isoformat()
+                if isinstance(fact.get("operation_date"), date)
+                else str(fact.get("operation_date") or "")
+            ),
             "fallbackRawPayloadHash": (
                 str(fact.get("_stable_payload_hash") or "")
                 if not operation_id and not posting_number
@@ -7619,6 +7979,27 @@ def _read_ozon_rows(path: Path | None) -> list[dict[str, Any]]:
     if isinstance(result, list):
         return [item for item in result if isinstance(item, dict)]
     if isinstance(result, dict):
+        cash_flows = result.get("cash_flows")
+        if isinstance(cash_flows, list):
+            details = result.get("details")
+            detail_rows = (
+                [item for item in details if isinstance(item, dict)]
+                if isinstance(details, list)
+                else [details]
+                if isinstance(details, dict)
+                else []
+            )
+            details_by_period = {
+                _hash_payload(item.get("period")): item for item in detail_rows
+            }
+            return [
+                {
+                    **item,
+                    **details_by_period.get(_hash_payload(item.get("period")), {}),
+                }
+                for item in cash_flows
+                if isinstance(item, dict)
+            ]
         for key in ("items", "rows", "data"):
             value = result.get(key)
             if isinstance(value, list):
