@@ -32,6 +32,11 @@ Runtime разделен на два процесса:
 Legacy `shumeiko-web.service` на `8096` сохраняется только на 24-часовое окно
 rollback и после cutover не имеет публичного nginx-маршрута.
 
+После истечения rollback-окна legacy unit должен быть остановлен и исключен из
+автозапуска: `systemctl disable --now shumeiko-web.service`. Штатное состояние
+после cutover — активны только `shumeiko-web-prod.service` и
+`shumeiko-web-test.service`.
+
 Оба локальных процесса контролируются отдельными timers:
 
 ```bash

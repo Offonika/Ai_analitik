@@ -1,9 +1,9 @@
 [Unit]
-Description=Daily retention for Shumeyko source refresh snapshots
+Description=Hourly retention for Shumeyko source refresh snapshots
 
 [Timer]
-OnCalendar=*-*-* 03:45:00
-RandomizedDelaySec=10m
+OnCalendar=*-*-* *:45:00
+RandomizedDelaySec=5m
 Persistent=true
 Unit=shumeiko-source-refresh-prune.service
 

@@ -2,6 +2,7 @@
 Description=Shumeyko WB/1C weekly full source refresh
 After=network-online.target postgresql@16-main.service shumeiko-web-prod.service
 Wants=network-online.target
+RequiresMountsFor=/data/shumeyko/source_refresh /opt/shumeyko-partners-wb-unit-economics/reports
 
 [Service]
 Type=oneshot

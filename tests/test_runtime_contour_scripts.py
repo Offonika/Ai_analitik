@@ -66,6 +66,41 @@ def test_nginx_templates_proxy_accounting_workflow_route() -> None:
     assert "proxy_pass http://127.0.0.1:8097;" in production_config
 
 
+def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
+    systemd_root = ROOT / "deploy/systemd"
+    prune_timer = (systemd_root / "shumeiko-source-refresh-prune.timer").read_text(
+        encoding="utf-8"
+    )
+    prune_service = (
+        systemd_root / "shumeiko-source-refresh-prune.service"
+    ).read_text(encoding="utf-8")
+    release_timer = (
+        systemd_root / "shumeiko-runtime-release-prune.timer"
+    ).read_text(encoding="utf-8")
+    release_service = (
+        systemd_root / "shumeiko-runtime-release-prune.service"
+    ).read_text(encoding="utf-8")
+
+    assert "OnCalendar=*-*-* *:45:00" in prune_timer
+    assert "--daily-keep 3 --full-keep 2 --apply" in prune_service
+    assert "daily-20260712-065846" not in prune_service
+    assert "RequiresMountsFor=/data/shumeyko/source_refresh" in prune_service
+    assert "OnCalendar=*-*-* 04:35:00" in release_timer
+    assert "--keep-latest 2 --grace-hours 24 --apply" in release_service
+
+    required_mounts = {
+        "shumeiko-web-prod.service": "/data/shumeyko/source_refresh",
+        "shumeiko-web-test.service": "/data/shumeyko/test",
+        "shumeiko-web-backup.service": "/var/backups",
+        "shumeiko-source-refresh-daily.service": "/data/shumeyko/source_refresh",
+        "shumeiko-source-refresh-weekly.service": "/data/shumeyko/source_refresh",
+        "shumeiko-source-refresh-worker@.service": "/data/shumeyko/source_refresh",
+    }
+    for unit_name, mount_path in required_mounts.items():
+        unit = (systemd_root / unit_name).read_text(encoding="utf-8")
+        assert f"RequiresMountsFor={mount_path}" in unit
+
+
 def test_runtime_release_bootstrap_prefers_its_own_source(tmp_path: Path) -> None:
     release = tmp_path / "runtime-release"
     site_packages = release / ".venv/lib/python3.12/site-packages"

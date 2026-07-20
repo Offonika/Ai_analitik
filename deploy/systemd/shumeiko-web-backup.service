@@ -2,6 +2,7 @@
 Description=Backup Shumeyko Web Cabinet PostgreSQL database
 After=network-online.target postgresql@16-main.service
 Wants=network-online.target
+RequiresMountsFor=/var/backups
 
 [Service]
 Type=oneshot

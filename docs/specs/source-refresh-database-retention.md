@@ -19,6 +19,8 @@ related_code:
   - scripts/restore_marketplace_raw_rows.py
   - scripts/build_runtime_release.py
   - scripts/promote_runtime_release.py
+  - deploy/systemd/shumeiko-runtime-release-prune.service
+  - deploy/systemd/shumeiko-runtime-release-prune.timer
   - src/wb_unit_economics/maintenance_safety.py
   - src/wb_unit_economics/runtime_release_lock.py
   - src/wb_unit_economics/web/models.py
@@ -285,6 +287,13 @@ target вне release root или занятый lock блокирует уда�
 `sourceDirty=true` удаляются только после тех же проверок и не могут считаться
 rollback.
 
+Отдельный ежедневный `shumeiko-runtime-release-prune.timer` применяет только
+fail-closed filesystem retention релизов: сохраняет обе active цели, два
+последних полноценных rollback-релиза и 24-часовой grace. Тяжелый контур с S3
+backup, DB retention и `VACUUM (ANALYZE)` остается еженедельным. Filesystem
+snapshot prune запускается каждый час после rolling refresh и использует
+DB-lineage protection, поэтому активные и опубликованные наборы не удаляются.
+
 Любая ошибка backup, worker preflight, PostgreSQL или файловой защиты завершает
 контур без продолжения к следующим destructive-шагам. Ежедневный operational
 SQL-backup хранится локально одни сутки; off-host S3 maintenance backup создается
@@ -310,6 +319,10 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
 - Проверки спецификаций, manifest и релевантные pytest проходят.
 
 ## Changelog
+
+- 2026-07-20: filesystem snapshot prune переведен на hourly cadence, добавлен
+  отдельный ежедневный fail-closed runtime release retention и обязательные
+  mount dependencies для `/data`.
 
 - 2026-07-20: added Ozon files-only qualification lineage, full-snapshot parity
   and multi-format restore requirements before raw DB deletion.
