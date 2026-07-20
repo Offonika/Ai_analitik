@@ -1677,3 +1677,95 @@ def _raw_first(row: Mapping[str, Any], *names: str) -> Any:
 
 def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _dimension_decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    parsed, _error = _parse_decimal(value, required=False)
+    return parsed
+
+
+def _volume_liters(
+    length: Decimal | None, width: Decimal | None, height: Decimal | None
+) -> Decimal | None:
+    if length is None or width is None or height is None:
+        return None
+    return (length * width * height) / Decimal("1000")
+
+
+def _dimension_row_uid(row: LogisticsSkuRow) -> str:
+    identity = "\x1f".join(
+        _text(part)
+        for part in (
+            row.tenant_id,
+            row.client_id,
+            row.wb_cabinet_id,
+            row.client_company_id,
+            row.scheme,
+            row.product_ref,
+            row.nm_id,
+        )
+    )
+    return "dim:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def build_dimension_rows(
+    sku_rows: Sequence[LogisticsSkuRow],
+    card_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Витрина габаритов (F-2): привязка `dimensions` карточки к SKU по `nm_id`.
+
+    Отсутствие габаритов -> ``evidence_type=data_unavailable`` и поля ``None``
+    (пропуск остаётся явным, а не нулём). ``dimensions_valid`` — сигнал
+    расхождения карточки, а не факт замера WB. Фактический штраф (F-4) пока не
+    подключён и остаётся ``None``.
+    """
+
+    dims_by_nm: dict[str, Mapping[str, Any]] = {}
+    for card in card_rows:
+        nm = _text(card.get("nm_id"))
+        if not nm or nm in dims_by_nm:
+            continue
+        has_dimension = _dimension_decimal(card.get("length_cm")) is not None
+        has_weight = _dimension_decimal(card.get("weight_brutto_kg")) is not None
+        if not has_dimension and not has_weight:
+            continue
+        dims_by_nm[nm] = card
+
+    result: list[dict[str, Any]] = []
+    for sku in sku_rows:
+        dims = dims_by_nm.get(_text(sku.nm_id))
+        length = _dimension_decimal(dims.get("length_cm")) if dims else None
+        width = _dimension_decimal(dims.get("width_cm")) if dims else None
+        height = _dimension_decimal(dims.get("height_cm")) if dims else None
+        weight = _dimension_decimal(dims.get("weight_brutto_kg")) if dims else None
+        raw_valid = dims.get("dimensions_valid") if dims else None
+        valid = raw_valid if isinstance(raw_valid, bool) else None
+        result.append(
+            {
+                "tenant_id": sku.tenant_id,
+                "client_id": sku.client_id,
+                "wb_cabinet_id": sku.wb_cabinet_id,
+                "client_company_id": sku.client_company_id,
+                "scheme": sku.scheme,
+                "product_ref": sku.product_ref,
+                "product_key": sku.product_key,
+                "nm_id": sku.nm_id,
+                "sku": sku.sku,
+                "vendor_code": sku.vendor_code,
+                "product": sku.product,
+                "length_cm": length,
+                "width_cm": width,
+                "height_cm": height,
+                "weight_brutto_kg": weight,
+                "volume_l": _volume_liters(length, width, height),
+                "dimensions_valid": valid,
+                "measured_penalty_amount": None,
+                "evidence_type": "fact" if dims else "data_unavailable",
+                "coverage_status": "ready" if dims else "missing_dimensions",
+                "row_uid": _dimension_row_uid(sku),
+                "source_hash_digest": sku.source_hash_digest,
+            }
+        )
+    return result

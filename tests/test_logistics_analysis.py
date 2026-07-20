@@ -926,3 +926,41 @@ def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report() -> 
     )
     assert mismatch.context.data_status == "blocked"
     assert "dimension_logistics_mismatch" in mismatch.context.blocking_reasons
+
+
+def test_build_dimension_rows_links_by_nm_and_marks_unavailable() -> None:
+    result = build_logistics_analysis([_source_row()], [_unit_row()])
+    sku_rows = result.sku_rows
+    assert sku_rows
+
+    card_rows = [
+        {
+            "nm_id": "101",
+            "length_cm": 30,
+            "width_cm": 20,
+            "height_cm": 10,
+            "weight_brutto_kg": 2,
+            "dimensions_valid": False,
+        }
+    ]
+    rows = logistics_analysis.build_dimension_rows(sku_rows, card_rows)
+
+    assert len(rows) == len(sku_rows)
+    row = rows[0]
+    assert row["nm_id"] == "101"
+    assert row["length_cm"] == Decimal("30")
+    assert row["weight_brutto_kg"] == Decimal("2")
+    assert row["volume_l"] == Decimal("6")
+    assert row["dimensions_valid"] is False
+    assert row["evidence_type"] == "fact"
+    assert row["coverage_status"] == "ready"
+    # штраф (F-4) пока не подключён
+    assert row["measured_penalty_amount"] is None
+
+    # без карточки габаритов -> data_unavailable, поля None (не ноль)
+    empty = logistics_analysis.build_dimension_rows(sku_rows, [])
+    assert empty[0]["length_cm"] is None
+    assert empty[0]["volume_l"] is None
+    assert empty[0]["dimensions_valid"] is None
+    assert empty[0]["evidence_type"] == "data_unavailable"
+    assert empty[0]["coverage_status"] == "missing_dimensions"
