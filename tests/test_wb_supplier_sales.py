@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 
 import httpx
 
 from wb_unit_economics.wb_supplier_sales import (
     SUPPLIER_SALES_ENDPOINT,
     WbSupplierSalesClient,
+    export_wb_supplier_sales,
     flatten_supplier_sales,
 )
 
@@ -76,3 +79,19 @@ def test_client_rejects_non_list_payload() -> None:
         assert "supplier sales" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ValueError for non-list payload")
+
+
+def test_export_wb_supplier_sales_writes_raw_and_flat(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_ROWS)
+
+    client = WbSupplierSalesClient(
+        api_key="test-key", _transport=httpx.MockTransport(handler)
+    )
+    result = export_wb_supplier_sales(client, tmp_path, date_from=date(2026, 7, 1))
+
+    assert result.ok is True
+    assert result.row_count == 2
+    assert result.flat_output_path is not None and result.flat_output_path.exists()
+    flat = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+    assert flat[0]["warehouse_name"] == "Коледино"

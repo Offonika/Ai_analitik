@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 
 import httpx
 
 from wb_unit_economics.wb_tariffs import (
     TARIFFS_BOX_ENDPOINT,
     WbTariffsClient,
+    export_wb_tariffs,
     flatten_box_tariffs,
     flatten_pallet_tariffs,
 )
@@ -96,3 +99,36 @@ def test_client_fetch_box_tariffs_is_read_only_get_with_date() -> None:
     assert str(seen[0].url).startswith(TARIFFS_BOX_ENDPOINT)
     assert seen[0].url.params["date"] == "2026-07-19"
     assert seen[0].headers["Authorization"] == "test-key"
+
+
+def test_export_wb_tariffs_writes_raw_and_flat(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = _BOX_PAYLOAD if "box" in str(request.url) else _PALLET_PAYLOAD
+        return httpx.Response(200, json=payload)
+
+    client = WbTariffsClient(
+        api_key="test-key", _transport=httpx.MockTransport(handler)
+    )
+    result = export_wb_tariffs(client, tmp_path, target_date=date(2026, 7, 19))
+
+    assert result.ok is True
+    assert result.box_row_count == 2
+    assert result.pallet_row_count == 1
+    assert result.raw_output_path is not None and result.raw_output_path.exists()
+    assert result.flat_output_path is not None and result.flat_output_path.exists()
+    flat = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+    assert flat["box"][0]["dt_next_box"] == "2026-07-21"
+
+
+def test_export_wb_tariffs_reports_error_without_writing(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401)
+
+    client = WbTariffsClient(
+        api_key="bad", _transport=httpx.MockTransport(handler)
+    )
+    result = export_wb_tariffs(client, tmp_path, target_date=date(2026, 7, 19))
+
+    assert result.ok is False
+    assert result.error
+    assert list(tmp_path.iterdir()) == []
