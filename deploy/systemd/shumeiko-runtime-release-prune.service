@@ -1,0 +1,14 @@
+[Unit]
+Description=Prune inactive Shumeyko runtime releases
+ConditionPathIsDirectory=/opt/shumeyko-releases
+ConditionPathIsDirectory=/opt/shumeyko-runtime/prod/current
+ConditionPathIsDirectory=/opt/shumeyko-runtime/test/current
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/prune_runtime_releases.py --keep-latest 2 --grace-hours 24 --apply
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true

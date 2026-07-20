@@ -3,6 +3,7 @@ Description=Shumeyko Analytics Production Web API
 After=network-online.target postgresql@16-main.service
 Wants=network-online.target
 Requires=postgresql@16-main.service
+RequiresMountsFor=/data/shumeyko/source_refresh /opt/shumeyko-partners-wb-unit-economics/reports
 
 [Service]
 Type=simple
