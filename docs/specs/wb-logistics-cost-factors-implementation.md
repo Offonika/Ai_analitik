@@ -3,12 +3,12 @@ spec_id: "workspace-shumeyko-partners-wb-logistics-cost-factors-implementation"
 title: "WB: факторы затрат на логистику (вторая очередь)"
 doc_type: spec
 domain: "marketplace-analytics"
-status: draft
+status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
-related_tests: [tests/test_wb_content.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
+related_tests: [tests/test_wb_content.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -29,45 +29,47 @@ updated_at: "2026-07-19"
 
 # Статус документа
 
-Статус — `draft`. Это подчинённый design-спек второй очереди (`WP-5 Факторы`)
-внутри truth_scope `logistics-cost-analysis`. Канонический документ scope —
-accepted
+Статус — `accepted`. Это подчинённый accepted-спек второй очереди
+(`WP-5 Факторы`) внутри truth_scope `logistics-cost-analysis`. Канонический
+документ scope — accepted
 [`docs/specs/wb-logistics-cost-analysis-implementation.md`](wb-logistics-cost-analysis-implementation.md)
-(`truth_priority: 100`); при любом расхождении действует он. Этот draft не
+(`truth_priority: 100`); при любом расхождении действует он. Этот спек не
 является источником истины (`source_of_truth: false`) и не меняет формулы,
 четыре категории классификации, порог `low_sample`, состав первой очереди или
-границу факт/оценка/гипотеза.
+границу факт/оценка/гипотеза. `accepted` означает согласованный дизайн; код и
+тесты помечаются `implemented` только когда демонстрируемо соответствуют спеку.
 
-Назначение draft — зафиксировать проектирование второй очереди ДО кода:
-источники и их read-only границы, обязательную проверку доступности (probe),
-предлагаемые витрины и API, модель расчёта факторов и открытые вопросы. Перед
-переводом в `accepted` необходимы: результаты probe на реальном авторизованном
-снимке (без публикации raw), построчная сверка контрактов WB по Swagger и
-подтверждение владельцем состава MVP факторов.
-
-Живой probe в этом изменении не выполнялся: он требует авторизованных read-only
-токенов и обращения к внешним WB API. Здесь зафиксирован только план probe и
-проектные решения.
+Дизайн принят после живого read-only probe источников (2026-07-19, см.
+[`docs/runbooks/wb-logistics-factors-probe.md`](../runbooks/wb-logistics-factors-probe.md)):
+подтверждены тарифы box/pallet с периодами, goods-return с `reason`, а также
+статистика склад/направление (по кабинету с полным scope). Построчная сверка
+Swagger по фактическим полям нового финансового метода остаётся открытым
+пунктом и не блокирует принятый дизайн.
 
 # Текущее состояние реализации
 
-Первая очередь (`wb-logistics-v5`, фактический MVP) реализована и на test
-проходит staff/клиентскую приёмку; см. канонический спек и
+Первая очередь (`wb-logistics-v5`, фактический MVP) реализована; см. канонический
+спек и
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Вторая очередь по спеку начинается только ПОСЛЕ приёмки фактического MVP.
 
-Часть источников-факторов уже подключена read-only и их достаточно дочитать, а
-не строить с нуля:
+Реализованный читающий слой второй очереди:
 
-- `src/wb_unit_economics/wb_content.py` — WB Content
-  `content/v2/get/cards/list`: карточки уже загружаются, но объект `dimensions`
-  (габариты и вес) сейчас не извлекается;
-- `src/wb_unit_economics/wb_stocks.py` — WB
-  `seller-analytics-api /api/v1/warehouse_remains`: склад уже читается.
+- `src/wb_unit_economics/wb_content.py` — извлечение `dimensions` (габариты, вес,
+  `isValid`) из карточек (F-1);
+- `src/wb_unit_economics/wb_tariffs.py` — read-only тарифы box/pallet с периодами
+  действия (F-2);
+- `src/wb_unit_economics/wb_goods_return.py` — read-only причины возврата
+  продавцу (goods-return);
+- `src/wb_unit_economics/wb_supplier_sales.py` — read-only склад отгрузки и
+  направление доставки (F-3);
+- `scripts/probe_wb_logistics_factors.py` — read-only probe доступности.
 
-Новое, чего сейчас нет: коннектор тарифов (`common-api` box/pallet с периодами
-действия), чтение направления доставки из отчёта продаж и отдельная сборка
-фактических габаритов/штрафов из финансового отчёта.
+Ещё не реализовано (следующие подпакеты): сохранение снимков тарифов/возвратов/
+продаж, витрины `report_logistics_dimension_rows`/`report_logistics_route_rows`,
+привязка к логистике, API `/dimensions` и `/routes`, блок факторов на экране.
+Фактические замеры/штрафы из финансового отчёта (F-4) — после построчной сверки
+Swagger. Все новые подпакеты реализуются за выключенным флагом и additive-
+миграцией схемы.
 
 # Цель
 
@@ -454,10 +456,9 @@ Rollback отключает новые API-маршруты и факторны�
 при rollout и rollback не изменяются. Отключение флага не снимает publication
 blocker с report run, который обязан был пройти gate, но не прошёл.
 
-# Предлагаемые решения (на утверждение)
+# Согласованные решения
 
-Ниже проектные решения draft; фиксируются в `accepted` после probe и
-подтверждения владельцем:
+Решения приняты после живого probe (2026-07-19):
 
 1. Заявленные габариты и `isValid` — это значение продавца и сигнал; фактом
    замера считается только подтверждённый финансовый источник.
@@ -506,3 +507,12 @@ blocker с report run, который обязан был пройти gate, н�
   начат — извлечение `dimensions` в плоскую карточку реализовано; склад/
   направление, тарифы и причины возвратов в сохранённых данных отсутствуют и
   требуют живого read-only probe с ключами клиента. Обновлены открытые вопросы.
+- 2026-07-19 — статус изменён на `accepted` после живого read-only probe
+  источников: подтверждены тарифы box/pallet с периодами, goods-return с
+  `reason` и статистика склад/направление (по кабинету с полным scope).
+  Реализован читающий слой: извлечение `dimensions`, коннекторы
+  `wb_tariffs`/`wb_goods_return`/`wb_supplier_sales` и probe-скрипт; они внесены
+  в `related_code`/`related_tests`. Проектные решения переведены в согласованные.
+  Не реализованы: сохранение снимков, витрины, API и блок факторов — следующими
+  подпакетами за выключенным флагом. F-4 (финансовые замеры/штрафы) — после
+  построчной сверки Swagger.
