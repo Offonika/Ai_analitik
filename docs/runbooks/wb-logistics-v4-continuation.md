@@ -166,6 +166,23 @@ console/page/network errors. Под client-role блок скрыт и запр�
 выполняется. Временные acceptance users/sessions, credential-файл и локальные
 screenshots после проверки удалены; в Git и Markdown они не попадали.
 
+## Закрытие F-1 из `main`
+
+PR №41 объединён обычным merge commit `834f818`. На push этого commit в
+`main` оба обязательных GitHub Actions job созданы и завершены успешно:
+`quality` и `tests`. Из точного merge commit собран immutable release
+`runtime-logistics-f1-main-834f818-20260720` с `sourceDirty=false`, после чего
+атомарно обновлён только test symlink и перезапущен только test web service.
+
+После promotion public health повторно подтвердил `status=ok`, test contour,
+совпадающие backend/static build
+`20260720-logistics-f1-dimensions-v1` и schema
+`2026_07_20_logistics_dimensions_context_v1`. Короткий live role smoke на
+main-runtime подтвердил staff HTTP 200/`partial`, доступность основной
+логистики для client-role и HTTP 404 factor API для client-role. Временные
+пользователи и сессии удалены. Новый draft остался неопубликованным;
+production и клиентское factor-включение не выполнялись.
+
 Rollback F-1: вернуть factor master в `false`, перезапустить только test web и
 при необходимости repoint test symlink на предыдущий immutable release.
 Additive schema и immutable draft при этом не удаляются и не меняются.
