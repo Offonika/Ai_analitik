@@ -110,6 +110,7 @@ updated_at: "2026-07-17"
 | `POST` | `/api/reports/{report_id}/live-checks/onec-cost` | `live_check_onec_cost_api_reports__report_id__live_checks_onec_cost_post` | Live Check Onec Cost |
 | `POST` | `/api/reports/{report_id}/live-checks/wb-card` | `live_check_wb_card_api_reports__report_id__live_checks_wb_card_post` | Live Check Wb Card |
 | `POST` | `/api/reports/{report_id}/live-checks/wb-stock` | `live_check_wb_stock_api_reports__report_id__live_checks_wb_stock_post` | Live Check Wb Stock |
+| `GET` | `/api/reports/{report_id}/logistics/dimensions` | `report_logistics_dimensions_api_reports__report_id__logistics_dimensions_get` | Report Logistics Dimensions |
 | `GET` | `/api/reports/{report_id}/logistics/orders` | `report_logistics_orders_api_reports__report_id__logistics_orders_get` | Report Logistics Orders |
 | `GET` | `/api/reports/{report_id}/logistics/products` | `report_logistics_products_api_reports__report_id__logistics_products_get` | Report Logistics Products |
 | `GET` | `/api/reports/{report_id}/logistics/summary` | `report_logistics_summary_api_reports__report_id__logistics_summary_get` | Report Logistics Summary |
@@ -127,4 +128,4 @@ updated_at: "2026-07-17"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **106**.
+Всего маршрутов: **107**.

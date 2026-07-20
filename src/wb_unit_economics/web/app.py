@@ -2761,6 +2761,72 @@ def create_app(
             limit=min(max(limit, 1), 1000),
         )
 
+    @app.get("/api/reports/{report_id}/logistics/dimensions")
+    def report_logistics_dimensions(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+
+        def _num(value: Any) -> Any:
+            return str(value) if isinstance(value, Decimal) else value
+
+        product_query = product.strip().lower()
+        items: list[dict[str, Any]] = []
+        for row in repository.report_logistics_dimension_rows(db, report.id):
+            if wbCabinetId and row.wb_cabinet_id != wbCabinetId:
+                continue
+            if clientCompanyId and row.client_company_id != clientCompanyId:
+                continue
+            if scheme and row.scheme != scheme:
+                continue
+            if (
+                product_query
+                and product_query not in (row.product or "").lower()
+                and product_query not in (row.nm_id or "").lower()
+            ):
+                continue
+            items.append(
+                {
+                    "productRef": row.product_ref,
+                    "nmId": row.nm_id,
+                    "product": row.product,
+                    "vendorCode": row.vendor_code,
+                    "scheme": row.scheme,
+                    "lengthCm": _num(row.length_cm),
+                    "widthCm": _num(row.width_cm),
+                    "heightCm": _num(row.height_cm),
+                    "weightBruttoKg": _num(row.weight_brutto_kg),
+                    "volumeL": _num(row.volume_l),
+                    "dimensionsValid": row.dimensions_valid,
+                    "measuredPenaltyAmount": _num(row.measured_penalty_amount),
+                    "evidenceType": row.evidence_type,
+                    "coverageStatus": row.coverage_status,
+                }
+            )
+        with_dimensions = sum(
+            1 for item in items if item["evidenceType"] == "fact"
+        )
+        return {
+            "reportId": report.id,
+            "rows": items,
+            "coverage": {
+                "total": len(items),
+                "withDimensions": with_dimensions,
+                "missing": len(items) - with_dimensions,
+            },
+        }
+
     @app.get(
         "/api/reports/{report_id}/logistics/orders",
         responses=LOGISTICS_PERIOD_ERROR_OPENAPI,

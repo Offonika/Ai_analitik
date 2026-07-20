@@ -1586,6 +1586,52 @@ def test_dimension_mart_persist_round_trip(tmp_path: Path) -> None:
         )
 
 
+def test_logistics_dimensions_api_returns_persisted_mart(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    login(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        result = _logistics_fixture_result(report)
+        rows = build_dimension_rows(
+            result.sku_rows,
+            [
+                {
+                    "nm_id": "101",
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_brutto_kg": 2,
+                    "dimensions_valid": False,
+                }
+            ],
+        )
+        repository.replace_report_logistics_dimension_rows(db, report, rows)
+        db.commit()
+
+    response = client.get("/api/reports/report-1/logistics/dimensions")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reportId"] == "report-1"
+    assert body["coverage"]["total"] >= 1
+    row = next(item for item in body["rows"] if item["nmId"] == "101")
+    assert Decimal(row["lengthCm"]) == Decimal("30")
+    assert Decimal(row["volumeL"]) == Decimal("6")
+    assert row["dimensionsValid"] is False
+    assert row["evidenceType"] == "fact"
+    assert row["measuredPenaltyAmount"] is None
+
+
+def test_logistics_dimensions_api_is_feature_gated(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    response = client.get("/api/reports/report-1/logistics/dimensions")
+    assert response.status_code == 404
+
+
 def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
     tmp_path: Path,
 ) -> None:
