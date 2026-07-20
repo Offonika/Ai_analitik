@@ -757,6 +757,14 @@ class SourceRefreshService:
             raise SourceRefreshConfigError(
                 f"unsupported credential source: {credential_source}"
             )
+        if (
+            credential_source == "env"
+            and self.settings.runtime_environment != "development"
+        ):
+            raise SourceRefreshConfigError(
+                "credential source env is allowed only in development runtime; "
+                "configure encrypted tenant integrations"
+            )
         if resume_mode not in SOURCE_REFRESH_RESUME_MODES:
             raise SourceRefreshConfigError(
                 f"unsupported source refresh resume mode: {resume_mode}"

@@ -94,6 +94,37 @@ def test_onec_commissioner_headers_without_financial_tables_are_partial(
     }
 
 
+@pytest.mark.parametrize("runtime_environment", ["test", "production"])
+def test_non_development_runtime_rejects_env_credentials_before_run_creation(
+    tmp_path: Path,
+    runtime_environment: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.runtime_environment = runtime_environment
+    service = SourceRefreshService(settings)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        with pytest.raises(
+            source_refresh.SourceRefreshConfigError,
+            match="credential source env is allowed only in development runtime",
+        ):
+            service.run(
+                db,
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                mode="full",
+                credential_source="env",
+                dry_run=True,
+                user=user,
+                source_report=report,
+            )
+
+        assert db.query(SourceRefreshRun).count() == 0
+
+
 def test_onec_commissioner_financial_tables_are_loaded(tmp_path: Path) -> None:
     output_path = tmp_path / "commissioner_reports.raw.json"
     output_path.write_text(

@@ -658,9 +658,10 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
 
 Правила:
 
-- production scheduler использует encrypted tenant integrations; `.env`
-  разрешен только для ручного локального backfill через
-  `--credential-source env`;
+- production и test используют encrypted tenant integrations;
+  `--credential-source env` разрешен только для ручного локального backfill при
+  `SHUMEYKO_RUNTIME_ENVIRONMENT=development` и отклоняется runtime-контуром до
+  создания run;
 - production CLI и health helper не читают локальный `.env`; runtime settings
   берутся из systemd environment или явного `SHUMEYKO_DATABASE_URL`, а WB/1C
   секреты — из encrypted tenant integrations;

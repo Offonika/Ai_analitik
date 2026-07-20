@@ -46,7 +46,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-18"
+updated_at: "2026-07-20"
 ---
 
 # Implementation Status
@@ -91,6 +91,14 @@ production refresh, watchdog и recovery. Для `implemented` требуетс�
   опубликованными отчетами.
 
 # Runtime Guards
+
+`credential_source=env` разрешен только при
+`SHUMEYKO_RUNTIME_ENVIRONMENT=development`. Контуры `test` и `production`
+обязаны использовать `credential_source=tenant` и зашифрованные настройки из
+`tenant_integrations`; CLI отклоняет env-источник до создания
+`source_refresh_run` и до внешних API-вызовов. Это не позволяет принять
+устаревший локальный `ONEC_ODATA_BASE_URL` за настройку клиента из личного
+кабинета.
 
 `source_refresh` обязан завершаться без внешних API-вызовов:
 
@@ -581,6 +589,9 @@ mutual-settlement сохраняет документные строки, а buy
    решением с оценкой диска и retention.
 
 # Changelog
+
+- 2026-07-20: запретили legacy `credential_source=env` в test/production;
+  runtime-контуры используют только encrypted tenant integrations.
 
 - 2026-07-18: downstream logistics reader повышен до `wb-logistics-v5`; граница
   `files_only` и требование verified restore не изменились.

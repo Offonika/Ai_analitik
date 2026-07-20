@@ -182,7 +182,10 @@ def _parse_args() -> argparse.Namespace:
         "--credential-source",
         choices=sorted(CREDENTIAL_SOURCES),
         default="tenant",
-        help="Use encrypted tenant integrations by default; env is local fallback.",
+        help=(
+            "Use encrypted tenant integrations by default; env is allowed only "
+            "when SHUMEYKO_RUNTIME_ENVIRONMENT=development."
+        ),
     )
     parser.add_argument(
         "--source-report-id",
