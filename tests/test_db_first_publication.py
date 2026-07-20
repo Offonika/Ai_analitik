@@ -144,7 +144,7 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
     ):
         assert f"ADD COLUMN IF NOT EXISTS {column}" in postgres_schema
     init_db(engine)
-    assert schema_version(engine) == LOGISTICS_HARDENING_SCHEMA_VERSION
+    assert schema_version(engine) == DB_FIRST_SCHEMA_VERSION
     session_factory = make_session_factory(engine)
     with session_factory() as db:
         user = upsert_user(
