@@ -60,9 +60,11 @@ updated_at: "2026-07-21"
 Дизайн принят после живого read-only probe источников (2026-07-19, см.
 [`docs/runbooks/wb-logistics-factors-probe.md`](../runbooks/wb-logistics-factors-probe.md)):
 подтверждены тарифы box/pallet с периодами, goods-return с `reason`, а также
-статистика склад/направление (по кабинету с полным scope). Построчная сверка
-Swagger по фактическим полям нового финансового метода остаётся открытым
-пунктом и не блокирует принятый дизайн.
+статистика склад/направление (по кабинету с полным scope). На 21.07.2026
+официальный Reports contract повторно проверен для F-4: авторитетные read-only
+источники — Analytics `measurement-penalties` и `warehouse-measurements`, а не
+общий штраф Finance. Live-доступ этих двух методов конкретным токенам остаётся
+обязательным source gate перед реализацией F-4.
 
 # Текущее состояние реализации
 
@@ -92,8 +94,8 @@ snapshot карточек, атомарно сохраняет dimension context
 state matrix, фильтры, SQL-pagination и coverage полного среза, а factor-блок
 встроен в `#tables/logistics`. Operational evidence находится в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Статус всего factor-spec остаётся `accepted`: причины возвратов, фактические
-замеры/штрафы, factor AI digest и клиентский/production rollout остаются
+Статус всего factor-spec остаётся `accepted`: причины возвратов, реализация
+замеров/удержаний F-4, factor AI digest и клиентский/production rollout остаются
 следующими подпакетами.
 
 F-2 «Тарифы» реализован сквозным пакетом и принят на staff-only test 21 июля
@@ -101,11 +103,15 @@ F-2 «Тарифы» реализован сквозным пакетом и п�
 `/tariffs` и локальный UI-блок работают за отдельными defaults-off флагами.
 Production и client enable не выполнялись.
 
-F-3 собран локально отдельным пакетом: verified `supplier/sales` snapshot ->
-точная связка цепочки -> route context/mart -> read-only `/routes` ->
-staff-only блок в `#tables/logistics`. Route-флаг не меняет финансовый итог и
-не включает F-4. До merge и dated test evidence этот абзац не является
-утверждением о состоянии среды.
+F-3 «Склады и направления» принят на staff-only test 21 июля 2026 года:
+verified `supplier/sales` snapshot, exact chain join, route context/mart,
+read-only `/routes` и локальный UI-блок работают за отдельными defaults-off
+флагами. Production и client enable не выполнялись.
+
+F-4 пока не реализован. Этим spec-first изменением принят отдельный точный
+контракт источников, нормализации, immutable context/mart, read-only API,
+интерфейса и rollout gate. Никакие F-4 миграции, collectors, API routes,
+feature flags в runtime или изменения среды в этот этап не входят.
 
 # Цель
 
@@ -118,7 +124,8 @@ staff-only блок в `#tables/logistics`. Route-флаг не меняет ф�
 Вторая очередь добавляет к готовому фактическому блоку:
 
 1. заявленные габариты и вес товара с упаковкой и сигнал расхождения карточки;
-2. подтверждённые фактические замеры/штрафы WB там, где источник их содержит;
+2. подтверждённые фактические замеры/удержания WB там, где Analytics Reports их
+   содержит;
 3. недельные коэффициенты логистики и хранения и периоды их действия;
 4. склад отправления и доступное направление доставки, агрегаты по складам и
    маршрутам;
@@ -133,8 +140,16 @@ staff-only блок в `#tables/logistics`. Route-флаг не меняет ф�
 - `Сигнал расхождения` — флаг `isValid=false` в `dimensions` карточки. Он
   указывает на вероятное расхождение с категорийным средним, но НЕ содержит
   измеренных WB значений и сам по себе не является штрафом или фактом замера.
-- `Фактический замер / штраф` — измеренные WB габариты и денежное списание,
-  подтверждённые финансовым отчётом реализации. Это `Факт`.
+- `Фактический замер` — отдельная запись Analytics
+  `warehouse-measurements` или `measurement-penalties` с измеренными WB
+  габаритами. Это `Факт` источника, а не текущее состояние карточки.
+- `Удержание за занижение габаритов` — `penaltyAmount` из
+  `measurement-penalties`; `reversalAmount` хранится отдельно как отмена
+  удержания. Общий `penalty` Finance не доказывает эту причину.
+- `Чистое удержание F-4` — детерминированное
+  `penaltyAmount - reversalAmount` без ограничения снизу. Это справочная
+  производная Analytics, не бухгалтерская сверка и не новое слагаемое итоговой
+  прибыли отчёта.
 - `Коэффициент недели` — логистический/складской множитель WB, действующий на
   конкретной календарной неделе. Исторический коэффициент объясняет только свой
   период.
@@ -155,10 +170,13 @@ staff-only блок в `#tables/logistics`. Route-флаг не меняет ф�
 - чтение склада отправления и направления доставки на уровне продажи/заказа;
 - коннектор тарифов WB box/pallet с сохранением периода действия
   (`dtNextBox`/`dtTillMax`) и складских коэффициентов;
-- сбор подтверждённых фактических замеров/штрафов из финансового отчёта
-  реализации, если probe подтвердит наличие полей;
+- read-only сбор подтверждённых фактических замеров и удержаний из Analytics
+  `measurement-penalties` и `warehouse-measurements` после live source gate;
+- отдельные immutable `report_logistics_measurement_contexts` и
+  `report_logistics_measurement_rows`, не меняющие F-1 dimension mart;
 - витрины `report_logistics_dimension_rows` и `report_logistics_route_rows`;
-- read-only API `/logistics/dimensions` и `/logistics/routes`;
+- read-only API `/logistics/dimensions`, `/logistics/tariffs`,
+  `/logistics/routes` и `/logistics/measurements`;
 - блок факторов на первом экране логистики с явными статусами основания;
 - детерминированные рекомендации по расхождению габаритов и дорогому
   направлению.
@@ -171,6 +189,9 @@ staff-only блок в `#tables/logistics`. Route-флаг не меняет ф�
   обновление карточек товара;
 - калькуляторы логистики и маржинального дохода (третья очередь);
 - трактовка `isValid=false` как штрафа или доказанного расхождения;
+- использование общего `penalty`/`bonusTypeName` Finance как замены F-4
+  источника или автоматическое прибавление F-4 удержания к расходам отчёта;
+- скачивание, публикация или передача в API/UI/AI `photoUrls` замеров;
 - применение текущего тарифа к историческому периоду как факта;
 - автоматическое изменение распределения товара по складам;
 - Ozon и другие маркетплейсы.
@@ -178,9 +199,10 @@ staff-only блок в `#tables/logistics`. Route-флаг не меняет ф�
 # Источники и границы чтения
 
 Все методы ниже read-only и вызываются токенами минимально необходимых
-категорий (least privilege). Точные имена полей и путей взяты из официальных
-страниц WB, но НЕ сверены построчно по Swagger; поля с пометкой
-`требует подтверждения` фиксируются контрактом только после probe.
+категорий (least privilege). Контракты F-1…F-4 повторно сверены с официальной
+документацией WB на 21.07.2026. Документированный контракт подтверждает схему,
+но не доступ конкретного токена, фактическую глубину истории и наличие строк;
+эти свойства проверяются отдельным live probe без публикации raw.
 
 ## Габариты и вес — Content API
 
@@ -224,20 +246,40 @@ staff-only блок в `#tables/logistics`. Route-флаг не меняет ф�
   оставляет точку `data_unavailable`, а не обрезает период молча. Поле
   `dtFromMin` удалено WB 15.07.2026 — в парсер не закладывать.
 
-## Фактические замеры и штрафы — Finance report
+## Фактические замеры и удержания — Analytics Reports
 
-- С 15.07.2026 отчёт реализации мигрирован:
-  `GET /api/v5/supplier/reportDetailByPeriod` отключён; замена —
-  `POST https://.../api/finance/v1/sales-reports/detailed/{reportId}`
-  (токен «Финансы», поля camelCase, денежные значения строками, набор полей
-  настраивается массивом `fields`).
-- Целевые поля: фактические (замеренные) габариты, `penalty`,
-  `bonus_type_name`/аналог, `warehouseName` — все `требует подтверждения` по
-  Swagger finances. Отдельной строки «штраф именно за габариты» в документации
-  не подтверждено.
-- Отчёт платного хранения `GET /api/v1/paid_storage` (задание → опрос статуса →
-  выгрузка): `volume`, коэффициент склада, `warehousePrice`; окно ~8 дней за
-  запрос.
+Авторитетные F-4 источники находятся в разделе официальных отчётов удержаний и
+требуют токен категории «Аналитика»:
+
+- `GET https://seller-analytics-api.wildberries.ru/api/analytics/v1/measurement-penalties`
+  — отчёт о повышающем коэффициенте логистики и хранения из-за занижения
+  габаритов. Поля: `nmId`, `subjectName`, `dimId`, `prcOver`, измеренные
+  `volume/width/length/height`, заявленные
+  `volumeSup/widthSup/lengthSup/heightSup`, `dtBonus`, `isValid`, `isValidDt`,
+  `penaltyAmount`, `reversalAmount`, `photoUrls`;
+- `GET https://seller-analytics-api.wildberries.ru/api/analytics/v1/warehouse-measurements`
+  — отдельный отчёт складских замеров. Поля: `nmId`, `subjectName`, `dimId`,
+  `volume/width/length/height`, `dt`, `photoUrls`.
+
+Snapshot source types фиксируются как `wb_measurement_penalties` и
+`wb_warehouse_measurements`; переименование требует новой methodology version.
+
+Оба метода принимают optional `dateFrom`, обязательные `dateTo` и `limit <=
+1000`, а также `offset`; документированный лимит — один запрос в минуту на
+кабинет для каждого метода. Сбор обязан пройти все страницы до сверки с
+provider `total`. Календарный период отчёта трактуется в `Europe/Moscow`, а в
+WB передаётся полное покрывающее timestamp-окно. Фактическая глубина истории
+provider contract не гарантирована и измеряется probe/manifest.
+
+`photoUrls` остаются только в зашифрованном/защищённом raw snapshot согласно
+общему retention. Collector не скачивает изображения; URL не попадает в flat,
+mart, логи, API, UI, AI или operational evidence.
+
+Finance `sales-reports/detailed` содержит общий `penalty` и
+`bonusTypeName`, но не документирует измеренные габариты и не является
+авторитетным F-4 источником. Он может использоваться позже только для отдельной
+бухгалтерской сверки. F-4 v1 не связывает Analytics удержание с Finance строкой
+по тексту, сумме или `nmId` и не добавляет его повторно в финансовые KPI.
 
 ## Read-only boundary
 
@@ -256,16 +298,19 @@ Probe-чеклист:
 
 1. Content: доля товаров среза с непустыми `dimensions` и распределение
    `isValid`. Габариты вообще заполнены?
-2. Finance (новый метод): присутствуют ли фактические габариты, `penalty` и
-   `warehouseName` в реальном отчёте; сверить состав полей по Swagger.
+2. Analytics F-4: отдельно вызвать `measurement-penalties` и
+   `warehouse-measurements` с `limit=1` для каждого разрешённого кабинета;
+   зафиксировать только HTTP/schema status, не значения и не число строк.
 3. Tariffs: доступен ли архив за нужные исторические недели; какая самая ранняя
    дата отдаётся; совпадает ли `warehouseName` тарифа со складом продаж.
 4. Statistics: покрытие `warehouseName` и направления за период отчёта; глубина
    90 дней достаточна для выбранных отчётов?
 5. Join: связуемость `nmId`/`srid`/`warehouseName` между продажами, тарифами,
    карточками и финансовым фактом без дублирования сумм.
-6. Замеры/штрафы: подтверждается ли хотя бы один сквозной пример
-   «расхождение → коэффициент недели → денежное списание» на реальных данных.
+6. Замеры/удержания: проверить полную offset-pagination, согласованность
+   provider `total`, timestamps, уникальность `(cabinet, dimId, nmId)` и
+   возможность exact `(cabinet, nmId)` product mapping. Наличие ненулевого
+   удержания не является условием доступности источника.
 
 Результат probe фиксируется как обезличенная матрица доступности (аналог этапа
 0 первой очереди) и определяет, какие подпункты scope включаются, а какие
@@ -286,7 +331,7 @@ Probe-чеклист:
 | Склад/направление | ❌ недоступен в сохранённом | В финансовом снимке нет `officeName`/`warehouseName`/гео — только `srid`; отчёт продаж с гео не сохраняется. Нужен новый live-источник Statistics `supplier/sales`. |
 | Тарифы box/pallet | ❌ не подключено | В сохранённых данных тарифов нет; нужен новый live-коннектор. |
 | Причины возвратов (goods-return/claims) | ❌ не подключено | В сохранённых данных отсутствуют; нужны новые live-коннекторы. |
-| Замеры/штрафы (Finance new) | ⚠️ не проверено | Требует живого вызова нового метода `sales-reports/detailed`. |
+| Замеры/удержания (Analytics Reports) | ⚠️ live-доступ не проверен | Официальный schema contract подтверждён 21.07.2026; перед кодом нужны безопасные вызовы двух Analytics GET-методов для каждого разрешённого кабинета. |
 
 Следствие для порядка подпакетов: **F-1 (габариты)** разблокирован на уровне
 источника и начат — извлечение `dimensions` в плоскую карточку реализовано
@@ -303,6 +348,22 @@ Probe-чеклист:
 Глубина архива не считается гарантией: штатный сбор фиксирует успех или
 недоступность каждой календарной недели отдельно.
 
+## Source gate F-4 (2026-07-21)
+
+Документированный API-контракт двух Analytics методов подтверждён. Это закрывает
+ошибочную гипотезу о Finance как источнике замеров, но не является environment
+evidence. До изменения product-кода оператор выполняет минимальный live probe
+по runbook. Gate считается пройденным, если для каждого разрешённого кабинета
+зафиксирован один из безопасных статусов `confirmed_empty`,
+`confirmed_nonempty`, `access_denied` или `unavailable`, а успешный ответ
+содержит ожидаемую envelope/schema. Raw строки, значения, `dimId`, `nmId`, URL
+фото, суммы и клиентские объёмы не сохраняются в evidence.
+
+`access_denied`/`unavailable` допускает реализацию с явным partial coverage для
+этого кабинета. Несоответствие успешной schema официальному контракту
+возвращает F-4 на spec review. Ни один live probe этого spec-first изменения не
+претендует на rollout или изменение production.
+
 # Расчётная модель факторов
 
 Модель наследует правила первой очереди и добавляет факторный слой без
@@ -310,8 +371,21 @@ Probe-чеклист:
 
 - Заявленные габариты и вес показываются как введённые продавцом значения.
   `isValid=false` показывается как `Сигнал`, а не факт замера.
-- Фактический замер/штраф показывается как `Факт` только при подтверждённом
-  финансовом источнике; сумма штрафа не смешивается с базовой логистикой.
+- Фактический замер/удержание показывается как `Факт` только из подтверждённого
+  Analytics Reports snapshot. `penaltyAmount` и `reversalAmount` хранятся
+  отдельно; `net_penalty_amount = penalty_amount - reversal_amount` считается
+  только когда оба значения валидны и неотрицательны. Результат не ограничивается
+  нулём и не смешивается с базовой логистикой или общим `penalty` Finance.
+- Размеры и объёмы F-4 — события на даты `dt`/`dtBonus`, а не текущее состояние
+  карточки. Пустые, нечисловые и неположительные размеры/объёмы остаются
+  `null`; явные нули денежных полей сохраняются. Контрольный объём считается
+  только из трёх положительных размеров как `length * width * height / 1000` и
+  округляется до 0,01 л `ROUND_HALF_UP`; он проверяет, но не заменяет provider
+  `volume`/`volumeSup`.
+- `prcOver` хранится как provider ratio `measuredVolume / declaredVolume *
+  100`. Пользовательское превышение — nullable `prcOver - 100`; оно не
+  пересчитывается из другого источника. `isValid` F-4 — сигнал конкретной
+  Analytics-записи и не смешивается с одноимённым сигналом карточки F-1.
 - Коэффициент недели связывается с календарной неделей операции. Для
   исторической недели применяется коэффициент того же периода; при отсутствии
   архива тариф на дату factor snapshot может быть показан только как
@@ -370,6 +444,73 @@ missing/invalid/conflicting строк, а также безопасные block
 required context создаёт non-overridable publication blocker. Отсутствие
 габаритов у товара создаёт mart row с `data_unavailable` и `partial`, но само по
 себе публикацию не блокирует.
+
+F-4 не обновляет и не расширяет опубликованные dimension rows. Историческое
+событие замера не соответствует grain текущей карточки, поэтому существующее
+`measured_penalty_amount` остаётся `null`; новые факты живут только в отдельной
+measurement mart.
+
+## `report_logistics_measurement_rows`
+
+F-4 хранит одну immutable строку на provider-событие в report run с внутренним
+grain `(tenant, client, wb_cabinet_id, dim_id, nm_id)`. `dim_id` и `nm_id`
+нужны для воспроизводимости и exact join, но никогда не возвращаются наружу.
+Строка содержит nullable report mapping (`client_company_id`, `scheme`,
+`product_ref`), `event_kind=measurement_penalty|warehouse_measurement|merged`,
+`measurement_at`, `penalty_effective_at`, `validation_at`, заявленные и
+измеренные размеры/объёмы, provider ratio и derived excess, F-4 `is_valid`,
+`penalty_amount`, `reversal_amount`, `net_penalty_amount`,
+`accounting_reconciliation_status=unreconciled`, evidence/coverage/data-quality
+statuses и source hash.
+
+Сначала каждый endpoint нормализуется по `(wb_cabinet_id, dim_id, nm_id)`.
+Полностью одинаковые повторы схлопываются. Разные значения одного ключа,
+повторный `dim_id` с разными `nm_id` в одном кабинете или несовместимые размеры
+между двумя endpoint дают `conflicting_measurement`; числовые поля конфликта не
+выбираются случайно. Совпадение `dim_id` или `nm_id` в другом кабинете никогда
+не является связью. Строки двух endpoints объединяются в `merged` только при
+точном ключе и одинаковых общих измеренных значениях.
+
+Product mapping выполняется только по `(wb_cabinet_id, nm_id)` к SKU-mart
+этого report run. Недельные повторы одного и того же
+`(company, scheme, product_ref)` схлопываются. Единственный distinct target даёт
+exact mapping; отсутствие target даёт `unmatched_product`, несколько targets —
+`ambiguous_product_scope`. Событие сохраняется с nullable mapping для coverage,
+но не размножается по организациям/схемам и не дублирует сумму.
+
+Пустые, нечисловые и неположительные размеры, объёмы и `prcOver` сохраняются
+как `null`; отрицательные денежные source-значения считаются invalid, а явный
+ноль сохраняется. `net_penalty_amount` nullable, если хотя бы одна денежная
+компонента invalid/missing. Row hash включает `wb-logistics-measurements-v1`,
+hashes точной SKU-группы и всех участвующих Analytics source rows. `photoUrls`,
+`subjectName` и raw payload в mart не переносятся.
+
+## `report_logistics_measurement_contexts`
+
+Один immutable context на report run хранит tenant/client,
+`factor_methodology_version=wb-logistics-measurements-v1`, `data_status`, полный
+`input_hash`, отдельные hashes выбранных `wb_measurement_penalties` и
+`wb_warehouse_measurements` snapshots, `factor_snapshot_at`, coverage window,
+source/provider-total/mart event counts, число scoped products, matched,
+unmatched, ambiguous, invalid, conflicting, penalty, reversal и warehouse-only
+events, а также безопасные blocking/review codes. Денежные суммы не входят в
+context/evidence.
+
+Для каждого source type выбирается один авторитетный snapshot из lineage
+`primary -> base -> contributor`. Две разные ревизии одного type и приоритета,
+tenant/cabinet/window mismatch, DB/file ambiguity, неподтверждённый manifest,
+изменившиеся flat hashes/provider total/row count или небезопасный путь создают
+`blocked` context без mart rows. DB и `file_authoritative` обязаны давать
+одинаковый результат. Успешный неполный endpoint, HTTP access failure или
+неизвестная глубина истории дают `partial/data_unavailable`, но не подменяются
+snapshot другого периода.
+
+Context и rows сохраняются одной транзакцией только при создании нового draft;
+published report не изменяется. При включённом measurements master-флаге report
+получает `logistics_measurements_required=true`: missing/outdated/blocked
+required context — non-overridable publication blocker. `partial` из-за
+доступности источника или data-level conflict требует review, но публикацию не
+блокирует.
 
 ## `report_logistics_tariff_rows`
 
@@ -466,6 +607,7 @@ Additive read-only методы, зарезервированные канони
 авторизацию, tenant boundary, роли, пагинацию и фильтры кабинета:
 
 - `GET /api/reports/{report_id}/logistics/dimensions` — вторая очередь;
+- `GET /api/reports/{report_id}/logistics/measurements` — F-4;
 - `GET /api/reports/{report_id}/logistics/tariffs` — F-2;
 - `GET /api/reports/{report_id}/logistics/routes` — вторая очередь.
 
@@ -495,6 +637,37 @@ Additive read-only методы, зарезервированные канони
 Габариты всегда подписываются как текущее состояние карточки на
 `factorSnapshotAt`, а не как исторический замер. Raw payload, source hashes и
 seller account identifiers в ответ не входят.
+
+Контракт F-4 `/measurements`:
+
+- фильтры `periodStart`, `periodEnd`, `wbCabinetId`, `clientCompanyId`,
+  `scheme`, `product`, `eventKind`, `hasPenalty`; период относится к дате
+  события F-4 (`penaltyEffectiveAt`, иначе `measurementAt`) в
+  `Europe/Moscow`, а не к неделям финансовой логистики и не к дате карточки;
+- SQL-pagination `offset`/`limit`; сортировки `eventDate`, `product`,
+  `volumeRatioPercent`, `penaltyAmount`, `netPenaltyAmount`, `coverageStatus`;
+- поля `dataStatus`, `sliceStatus`, `methodologyVersion`,
+  `factorMethodologyVersion`, `generatedAt`, `sourceCoverageStart`,
+  `sourceCoverageEnd`, `factorSnapshotAt`, `filterContext`, `coverage`, `rows`,
+  `total`, `offset`, `limit`, `recommendations`, `accountingTreatment`;
+- безопасная row содержит report product label/ref, `eventKind`, даты замера и
+  удержания, заявленные и измеренные размеры/объёмы, provider ratio, derived
+  excess, безопасный F-4 validation signal, `penaltyAmount`, `reversalAmount`,
+  `netPenaltyAmount`, `accountingReconciliationStatus`, evidence/coverage
+  statuses. Raw `dimId`, `nmId`, `photoUrls`, hashes, subject/account/seller IDs
+  не возвращаются;
+- `coverage` считается SQL по полному фильтрованному срезу до pagination:
+  expected/complete/unavailable endpoints, scoped products, products with
+  events, total/penalty/reversal/warehouse-only events, matched/unmatched/
+  ambiguous/invalid/conflicting events и `measurementIncidencePercent`;
+- низкая доля товаров с событиями не является неполнотой: WB не обязан
+  измерять каждый товар. `needs_rebuild` — нет совместимого context; `blocked`
+  — integrity/scope/row-count failure; `empty` — источники полностью собраны,
+  но в разрешённом срезе нет событий; `partial` — неполный источник или есть
+  invalid/conflicting/unmatched/ambiguous события; иначе `ready`;
+- `accountingTreatment` всегда объясняет, что суммы являются фактом Analytics,
+  пока `unreconciled` не прибавляются к итоговой прибыли/убытку и не заменяют
+  общий штраф Finance. Explicit zero остаётся нулём, missing остаётся `null`.
 
 Контракт F-2 `/tariffs`:
 
@@ -541,7 +714,7 @@ seller account identifiers в ответ не входят.
 (`#tables/logistics`) как второй уровень, не создавая отдельного пункта меню и
 не меняя денежный итог первого экрана.
 
-- Показывает габариты/вес, сигнал расхождения, подтверждённые замеры/штрафы,
+- Показывает габариты/вес, сигнал расхождения, подтверждённые замеры/удержания,
   коэффициенты, склады и направления только при подтверждённом источнике.
 - Явно маркирует основание каждой строки: `Факт`, `Оценка`, `Гипотеза`,
   `Данные недоступны`. Строки факторов помечены как пересекающиеся срезы и не
@@ -570,10 +743,28 @@ seller account identifiers в ответ не входят.
 и второй очереди. Client дополнительно требует оба client-флага; при отказе API
 возвращает HTTP 404, UI не делает запрос и не показывает секцию.
 
+Синтетический target F-4 фиксируется в
+[`docs/design/wb-logistics-f4-measurements-target.html`](../design/wb-logistics-f4-measurements-target.html).
+Секция `Факторы стоимости -> Контрольные замеры и удержания WB` идёт сразу
+после F-1 габаритов, до тарифов и маршрутов: source completeness, число событий
+и затронутых товаров, заявленные/измеренные размеры, ratio/excess,
+удержание/отмена/чистая справочная сумма и reconciliation status. Отсутствие
+события у товара не подписывается как пропуск данных. Суммы визуально отделены
+от финансового итога предупреждением о возможном двойном учёте. Raw IDs, URL
+фото и hashes не выводятся; на mobile строки становятся подписанными карточками.
+
+F-4 закрыт defaults-off флагами
+`SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED` и
+`SHUMEYKO_LOGISTICS_MEASUREMENTS_CLIENT_ENABLED`. Staff требует master-флаги
+логистики/factors и measurements master. Client дополнительно требует client-
+флаги логистики/factors/measurements. При запрете API возвращает 404, UI не
+выполняет запрос. Ошибка measurement API отображается локально и не ломает
+F-1/F-2/F-3 или первую очередь; состояние сбрасывается при смене report/filter.
+
 Синтетический target F-2 фиксируется в
 [`docs/design/wb-logistics-f2-tariffs-target.html`](../design/wb-logistics-f2-tariffs-target.html).
 Секция `Факторы стоимости -> Тарифы и коэффициенты WB` идёт после габаритов и
-до рейтинга товаров: coverage по неделям, дата запроса, склад, box/pallet,
+F-4 замеров, до рейтинга товаров: coverage по неделям, дата запроса, склад, box/pallet,
 коэффициенты доставки/хранения и метка `Факт`/`Оценка`/`Данные недоступны`.
 На mobile строки становятся подписанными карточками. Ошибка tariff API
 локальна и не ломает габариты или первую очередь.
@@ -608,9 +799,18 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 Добавляются флаги:
 
 - подтверждённое расхождение габаритов → проверить упаковку и данные карточки
-  (`evidenceType=fact` только при подтверждённом замере, иначе `limitation`);
+  (`evidenceType=fact` только при валидном F-4 замере, иначе `limitation`);
+- `penaltyAmount > 0` → проверить упаковку и заявленные габариты; сумма
+  показывается в evidence, но `impactAmount=null`, пока нет точной Finance
+  reconciliation;
+- `reversalAmount > 0` → проверить итог удержания в финансовой сверке
+  (`evidenceType=fact`, `impactAmount=null`);
+- invalid/conflicting/unmatched/ambiguous F-4 событие или недоступный endpoint →
+  проверить источник/связку (`evidenceType=data_unavailable`, без денежного
+  эффекта);
 - высокий расход на конкретном направлении → проверить распределение запасов;
-- `isValid=false` без финансового подтверждения → пометка ограничения, не факт.
+- `isValid=false` карточки без совпавшего валидного F-4 события → пометка
+  ограничения, не факт замера или удержания.
 
 Лидеры выбираются SQL по полному фильтрованному срезу, не из top-10 общего
 рейтинга.
@@ -622,12 +822,27 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 причину возврата, не объявляет товар убыточным по одному фактору или
 коэффициенту, не подставляет отсутствующее значение нулём. AI обязан разделять
 `Факт`, `Оценка`, `Гипотеза` и `Данные недоступны`.
+F-4 не передаёт AI `photoUrls`, raw identifiers или суммы как потенциальную
+экономию; до reconciliation модель получает явный `includedInFinancialKpi=false`.
 
 # Ошибки и пограничные случаи
 
 - Нет `dimensions` в карточке → фактор габаритов `data_unavailable`, gate не
   блокируется.
-- `isValid=false` без финансового факта → только сигнал, не штраф.
+- `isValid=false` в карточке без валидного F-4 события → только сигнал, не замер
+  и не удержание.
+- Полностью собранный F-4 источник без событий → `empty`, а не missing и не
+  доказательство отсутствия будущих замеров.
+- Низкая incidence событий по товарам → не `partial`; `partial` создают только
+  неполный сбор или проблемные возвращённые события.
+- Одинаковый F-4 event в двух endpoints с одинаковыми значениями → одна merged
+  row; разные значения → `conflicting_measurement` без случайного выбора.
+- Событие без единственной exact `(cabinet, nmId)` связи сохраняется в coverage
+  как unmatched/ambiguous и не размножает удержание по компаниям/схемам.
+- Missing/invalid/negative money → `null`; provider zero сохраняется; derived
+  net не ограничивается нулём и не включается в financial KPI.
+- HTTP 401/403/429 или неполная pagination отдельного F-4 endpoint → безопасный
+  `partial/data_unavailable`; успешный verified empty endpoint остаётся empty.
 - Нет исторического тарифа за нужную неделю → коэффициент показывается как
   `Оценка` по явно выбранному тарифу, историю им не объясняют.
 - Нет направления доставки → route mart сохраняет строку цепочки с
@@ -637,8 +852,8 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 - Разные rate limits источников → после первого 429 серия запросов этого
   токена останавливается, оставшиеся даты получают безопасный статус, а
   частичный сбор помечается `partial`, а не тихо обрезается.
-- Смена финансового отчёта (15.07.2026): чтение только нового метода
-  `sales-reports/detailed`; старый v5-эндпоинт не используется.
+- Общий Finance `penalty` не связывается с F-4 по сумме/тексту/товару и не
+  подменяет отсутствующий Analytics endpoint.
 - Новая обязательная витрина со статусом `blocked`/устаревшей методикой →
   publication blocker, как в первой очереди.
 - DB/file ambiguity, изменившийся manifest/hash/row count, выход raw path за
@@ -661,6 +876,9 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
   блокирует публикацию.
 - Один `srid` с разными `nm_id`, одинаковый `srid` другого кабинета и строка
   без точного product key не связываются по fallback.
+- Measurement snapshot conflict/integrity/scope обрабатывается fail-closed с
+  кодами `measurement_*`; `blocked` context не содержит mart rows. Data-level
+  invalid/conflict остаётся reviewable `partial`, а не integrity blocker.
 
 # Безопасность и tenant isolation
 
@@ -668,6 +886,8 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 - Внешние интеграции остаются read-only; write-методы (ответ покупателю,
   обновление карточек) запрещены.
 - Raw payload, токены и секреты не возвращаются интерфейсу и AI.
+- `photoUrls` не скачиваются и не покидают защищённый raw слой; operational
+  evidence не содержит IDs, сумм, размеров, URL или client counts.
 - Действующие audit, session, retention и backup правила применяются без
   ослабления.
 
@@ -684,8 +904,9 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
    staff-only UI.
 4. `F-3 Склады и маршруты` — направление/склад из продаж, витрина
    `report_logistics_route_rows`, API `/routes`, агрегаты.
-5. `F-4 Замеры и штрафы` — только при подтверждении probe: фактические габариты
-   и штрафы из финансового отчёта.
+5. `F-4 Замеры и удержания` — отдельный source gate двух Analytics GET,
+   verified snapshots, `wb-logistics-measurements-v1` context/mart,
+   `/measurements` и staff-only UI без повторного финансового учёта.
 6. `F-5 Приёмка и rollout` — staff-only проверка за флагом, затем отдельное
    решение о клиентском включении.
 
@@ -694,7 +915,7 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 
 # Acceptance Criteria
 
-Design-часть draft считается принятой, когда владелец подтвердил состав MVP
+Design-часть подпакета считается принятой, когда владелец подтвердил состав MVP
 факторов и разделение факт/оценка/гипотеза/недоступно. Реализация второй
 очереди считается готовой, когда:
 
@@ -702,8 +923,8 @@ Design-часть draft считается принятой, когда влад
    недоступные факторы явно помечены `data_unavailable`, а не заполнены нулём;
 2. заявленные габариты и `isValid` показаны как значение продавца/сигнал, а не
    как факт замера WB;
-3. фактический замер/штраф показан как `Факт` только при подтверждённом
-   финансовом источнике и не смешан с базовой логистикой;
+3. фактический замер/удержание показан как `Факт` только при подтверждённом
+   Analytics Reports источнике и не смешан с базовой логистикой или Finance;
 4. исторический период объясняется только коэффициентом своего периода; текущий
    тариф помечается `Оценка`;
 5. маршрутная и dimension-витрины трассируются до source hashes и версий;
@@ -729,6 +950,21 @@ Design-часть draft считается принятой, когда влад
     hashes, а локальная ошибка F-3 не ломает F-1/F-2 и первую очередь.
 18. route context/rows атомарны, published report immutable, required
     blocked/missing/outdated context блокирует публикацию, partial — нет.
+19. F-4 source gate отдельно проверяет оба Analytics endpoint для каждого
+    разрешённого кабинета и не публикует raw, IDs, значения, суммы или counts.
+20. Measurement snapshot selection воспроизводим для DB/file-authoritative;
+    integrity/scope/provider-total failure даёт blocked context без rows.
+21. F-4 не дублирует событие между endpoints и организациями, связывает товар
+    только по кабинету и `nmId`, а conflicts/unmatched/ambiguous оставляет явными.
+22. `/measurements` реализует filters/sorts/SQL-pagination, full-slice coverage
+    и различает source completeness от incidence; пустой полный источник даёт
+    `empty`, а низкая incidence не даёт `partial`.
+23. F-4 суммы хранятся как source fact и nullable derived net, но до exact
+    Finance reconciliation имеют `includedInFinancialKpi=false`; общий
+    `penalty` не используется как fallback.
+24. Measurement context/rows атомарны, published report immutable, required
+    missing/outdated/blocked context блокирует публикацию, partial — нет;
+    defaults-off role/flag matrix и локальная UI error isolation соблюдены.
 
 # Test Plan
 
@@ -742,6 +978,12 @@ Design-часть draft считается принятой, когда влад
   duplicate/conflicting supplier-sales, missing route, стабильность hashes,
   order/route logistics reconciliation и nullable historical box coefficient;
 - unit: `evidenceType` факторов и запрет нулевой подстановки;
+- unit F-4: pagination/provider-total, одинаковые и конфликтующие `dimId`,
+  изоляция кабинетов, deterministic merge двух endpoints, exact/ambiguous/
+  unmatched product mapping, timestamp boundaries и стабильность hashes;
+- unit F-4: missing/invalid/non-positive размеры и объёмы, explicit monetary
+  zero, invalid negative money, контрольный объём `ROUND_HALF_UP`, provider
+  ratio/excess, nullable net и отсутствие clamp;
 - integration: сборка витрин `report_logistics_dimension_rows` и
   `report_logistics_route_rows` из обезличенного снимка, lineage и hash;
 - API: `/dimensions` и `/routes` возвращают статусы, покрытие и факт/оценку;
@@ -757,6 +999,17 @@ Design-часть draft считается принятой, когда влад
 - persistence/API: atomic route context+rows, published immutability,
   reconciliation, publication blocker, role/flag matrix, filters,
   SQL-pagination/sorting и coverage полного среза;
+- source integration F-4: DB/file parity отдельно для двух source types,
+  primary/base/contributor precedence, manifest/path/hash/row-count/provider-
+  total mismatch, storage ambiguity, tenant/cabinet/window mismatch, partial
+  endpoint и запрет скачивания/экспозиции `photoUrls`;
+- persistence/API F-4: atomic measurement context+rows, published immutability,
+  required-context blocker, все states/filters/sorts/SQL-pagination, coverage до
+  страницы, incidence semantics, tenant/role/flag matrix, 404 и отсутствие raw/
+  hash/ID/photo данных;
+- UI F-4: load/reset при смене report/filter, ready/partial/empty/needs_rebuild/
+  blocked/error, mobile cards, отсутствие трактовки суммы как нового расхода
+  или потенциальной экономии;
 - browser: staff-only deep-link на desktop/mobile, client 404/скрытый блок,
   отсутствие overflow и console/page/network errors.
 
@@ -794,6 +1047,18 @@ staff API/UI проверяются на desktop 1440x900 и mobile 390x844. Cli
 выполняются; operational evidence не содержит объёмов, складов, направлений или
 идентификаторов клиента.
 
+Для F-4 до product-кода выполняется live source gate двух Analytics GET без
+сохранения raw в evidence. Затем применяются additive migration и immutable
+runtime. На test включаются factor master и
+`SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED`; measurements client-флаг остаётся
+`false`. Новый immutable report строится из verified snapshots с полной
+provider-total reconciliation. Staff API/UI проверяются на desktop 1440x900 и
+mobile 390x844; client API возвращает 404, секция отсутствует, browser не имеет
+overflow/console/page/network errors. В evidence записываются только дата,
+revision/runtime identity, flags, schema/methodology states и результат
+проверок — без клиентских counts, IDs, размеров, сумм, складов и URL фото.
+Production, client enable и финансовая агрегация F-4 не выполняются.
+
 Rollback отключает новые API-маршруты и факторный блок, не изменяя существующие
 отчёты и первую очередь. Новые витрины additive и неизменяемы. Внешние источники
 при rollout и rollback не изменяются. Отключение флага не снимает publication
@@ -801,34 +1066,55 @@ blocker с report run, который обязан был пройти gate, н�
 
 # Согласованные решения
 
-Решения приняты после живого probe (2026-07-19):
+Решения приняты после probe и официальной сверки контрактов 2026-07-19…21:
 
 1. Заявленные габариты и `isValid` — это значение продавца и сигнал; фактом
-   замера считается только подтверждённый финансовый источник.
+   замера считается только подтверждённый Analytics Reports источник.
 2. Исторический тариф/коэффициент берётся по периоду; текущий — только
    `Оценка`.
-3. Финансовый отчёт читается новым методом `sales-reports/detailed`; старый
-   `reportDetailByPeriod` не используется.
+3. F-4 читает `measurement-penalties` и `warehouse-measurements`. Общий Finance
+   `penalty` не является источником причины и не используется как fallback.
 4. Витрины factors additive и неизменяемы; отсутствие фактора не заполняется
    нулём.
 5. Блок факторов встраивается в существующий экран логистики, без отдельного
    пункта меню.
 6. Калькуляторы остаются третьей очередью и в этот draft не входят.
+7. F-4 сохраняется отдельной event mart; dimension mart текущей карточки не
+   дополняется историческими замерами.
+8. `penaltyAmount`, `reversalAmount` и derived net показываются как справочный
+   факт Analytics с `includedInFinancialKpi=false` до exact Finance
+   reconciliation; текстовый или суммовой fuzzy join запрещён.
+9. Полнота источника и incidence событий — разные метрики. Полный пустой ответ
+   даёт `empty`; отсутствие замера у большинства товаров не означает partial.
 
 # Открытые вопросы
 
-- Точный состав полей нового финансового метода (фактические габариты,
-  `penalty`, `warehouseName`) — сверить по Swagger finances (требует live).
+- Live availability/retention двух F-4 Analytics endpoint для каждого
+  разрешённого кабинета — проверить безопасным probe перед кодом; официальный
+  schema contract уже подтверждён.
+- Exact бухгалтерское соответствие Analytics удержания строке Finance не
+  документировано. Оно не входит в F-4 v1; до отдельного accepted решения суммы
+  не включаются повторно в financial KPI.
 - Глубина архива тарифов не гарантирована provider contract и измеряется
   статусами отдельных дат, а не считается настройкой F-2.
 - Отдельный retention для tariff snapshot не вводится: действует retention
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
-Частично закрытые probe (2026-07-19): габариты, тарифы и supplier-sales
-подтверждены read-only проверками. F-1 и F-2 приняты на staff-only test; F-3
-собран локально и требует merge/CI/test evidence.
+Частично закрытые probe (2026-07-19…21): габариты, тарифы и supplier-sales
+подтверждены read-only проверками; F-1, F-2 и F-3 приняты на staff-only test.
+F-4 schema подтверждена официальным контрактом, live token/source gate остаётся
+предусловием реализации.
 
 # Changelog
+
+- 2026-07-21 — принят отдельный spec-first контракт F-4 «Замеры и удержания»:
+  исправлен источник с общего Finance penalty на Analytics
+  `measurement-penalties`/`warehouse-measurements`, определены live source gate,
+  verified dual-source lineage, `wb-logistics-measurements-v1` context/event
+  mart, exact cabinet/nm mapping без дублирования, money/reversal/net semantics,
+  `/logistics/measurements`, состояния и incidence-aware coverage, defaults-off
+  flags, synthetic responsive target и staff-only rollout boundary. Product-код
+  и среды не менялись; factor-spec остаётся `accepted`.
 
 - 2026-07-21 — принят точный контракт F-3 «Склады и маршруты»: verified
   `supplier/sales`, exact cabinet/srid/nm join, explicit missing/mixed,
@@ -843,7 +1129,7 @@ blocker с report run, который обязан был пройти gate, н�
   verified lineage/DB-file rules, `wb-logistics-tariffs-v1` context/mart,
   `/logistics/tariffs`, states/coverage/recommendations, отдельные defaults-off
   flags, visual target и staff-only test rollout. Общий spec остаётся
-  `accepted`; F-4–F-5 и client/production enable не входят.
+  `accepted`; реализация F-4, F-5 и client/production enable не входят.
 
 - 2026-07-20 — F-1 «Габариты» доведён до staff-only test: добавлены flags и
   role matrix, авторитетный Content snapshot selector с DB/file parity и
@@ -876,8 +1162,9 @@ blocker с report run, который обязан был пройти gate, н�
   `wb_tariffs`/`wb_goods_return`/`wb_supplier_sales` и probe-скрипт; они внесены
   в `related_code`/`related_tests`. Проектные решения переведены в согласованные.
   Не реализованы: сохранение снимков, витрины, API и блок факторов — следующими
-  подпакетами за выключенным флагом. F-4 (финансовые замеры/штрафы) — после
-  построчной сверки Swagger.
+  подпакетами за выключенным флагом. На тот момент F-4 ошибочно был привязан к
+  Finance и оставлен до сверки Swagger; решение исправлено записью 21.07.2026
+  про отдельные Analytics Reports.
 - 2026-07-20 — синхронизировано состояние после PR №34–39 и принят контракт
   завершения F-1 до staff-only test: отдельные factor flags, versioned dimension
   context, DB/file-authoritative selection, строгий join cabinet+nmId,
