@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260721-logistics-f3-routes-v1"
+      content="20260721-logistics-f4-measurements-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="data:," />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260721-logistics-f3-routes-v1"
+      href="/static/styles.css?v=20260721-logistics-f4-measurements-v1"
     />
     <link
       rel="stylesheet"
@@ -501,6 +501,72 @@
               </button>
               <span id="logistics-dimensions-page" class="muted"></span>
               <button id="logistics-dimensions-next" type="button" class="secondary-button">
+                Далее
+              </button>
+            </div>
+          </section>
+
+          <section
+            id="logistics-measurements"
+            class="panel logistics-tariffs-panel logistics-measurements-panel"
+            aria-labelledby="logistics-measurements-title"
+            hidden
+          >
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Факторы стоимости</p>
+                <h3 id="logistics-measurements-title">Контрольные замеры и удержания WB</h3>
+                <p class="muted logistics-tariffs-note">
+                  Исторические события Analytics на дату замера. Отсутствие события
+                  у товара не означает пропуск данных.
+                </p>
+              </div>
+              <span id="logistics-measurements-status" class="logistics-data-status"></span>
+            </div>
+            <div
+              id="logistics-measurements-coverage"
+              class="logistics-tariffs-coverage"
+              aria-label="Покрытие контрольных замеров"
+            ></div>
+            <p class="logistics-tariffs-warning">
+              Удержание, отмена и чистая сумма показаны справочно. До точной
+              финансовой сверки они не прибавляются к расходам или прибыли отчёта.
+            </p>
+            <ul
+              id="logistics-measurements-recommendations"
+              class="logistics-factor-recommendations"
+            ></ul>
+            <div class="table-wrap logistics-tariffs-table-wrap">
+              <table
+                id="logistics-measurements-table"
+                class="logistics-table logistics-tariffs-table logistics-measurements-table"
+                data-sort-mode="remote"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" data-sort-key="eventDate">Дата</th>
+                    <th scope="col" data-sort-key="product">Товар</th>
+                    <th scope="col" data-sort-disabled="true">Замер WB, см</th>
+                    <th scope="col" data-sort-disabled="true">Заявлено, см</th>
+                    <th scope="col" data-sort-key="volumeRatioPercent">Объём</th>
+                    <th scope="col" data-sort-key="penaltyAmount">Удержание</th>
+                    <th scope="col" data-sort-key="coverageStatus">Статус</th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-measurements-rows"></tbody>
+              </table>
+            </div>
+            <div
+              id="logistics-measurements-pagination"
+              class="logistics-pagination"
+              aria-label="Страницы контрольных замеров"
+              hidden
+            >
+              <button id="logistics-measurements-prev" type="button" class="secondary-button">
+                Назад
+              </button>
+              <span id="logistics-measurements-page" class="muted"></span>
+              <button id="logistics-measurements-next" type="button" class="secondary-button">
                 Далее
               </button>
             </div>
@@ -2827,9 +2893,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260721-logistics-f3-routes-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260721-logistics-f3-routes-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260721-logistics-f3-routes-v1" defer></script>
-    <script src="/static/app.js?v=20260721-logistics-f3-routes-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260721-logistics-f4-measurements-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260721-logistics-f4-measurements-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260721-logistics-f4-measurements-v1" defer></script>
+    <script src="/static/app.js?v=20260721-logistics-f4-measurements-v1" defer></script>
   </body>
 </html>

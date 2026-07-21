@@ -76,6 +76,12 @@ const state = {
   logisticsDimensionsSortDirection: "asc",
   logisticsDimensionsRequestKey: "",
   logisticsDimensionsRequestId: 0,
+  logisticsMeasurements: null,
+  logisticsMeasurementsOffset: 0,
+  logisticsMeasurementsSortBy: "eventDate",
+  logisticsMeasurementsSortDirection: "desc",
+  logisticsMeasurementsRequestKey: "",
+  logisticsMeasurementsRequestId: 0,
   logisticsTariffs: null,
   logisticsTariffsOffset: 0,
   logisticsTariffsSortBy: "requestedDate",
@@ -219,6 +225,26 @@ const els = {
   logisticsDimensionsPrev: document.querySelector("#logistics-dimensions-prev"),
   logisticsDimensionsPage: document.querySelector("#logistics-dimensions-page"),
   logisticsDimensionsNext: document.querySelector("#logistics-dimensions-next"),
+  logisticsMeasurementsSection: document.querySelector("#logistics-measurements"),
+  logisticsMeasurementsStatus: document.querySelector(
+    "#logistics-measurements-status",
+  ),
+  logisticsMeasurementsCoverage: document.querySelector(
+    "#logistics-measurements-coverage",
+  ),
+  logisticsMeasurementsRecommendations: document.querySelector(
+    "#logistics-measurements-recommendations",
+  ),
+  logisticsMeasurementsTable: document.querySelector(
+    "#logistics-measurements-table",
+  ),
+  logisticsMeasurementsRows: document.querySelector("#logistics-measurements-rows"),
+  logisticsMeasurementsPagination: document.querySelector(
+    "#logistics-measurements-pagination",
+  ),
+  logisticsMeasurementsPrev: document.querySelector("#logistics-measurements-prev"),
+  logisticsMeasurementsPage: document.querySelector("#logistics-measurements-page"),
+  logisticsMeasurementsNext: document.querySelector("#logistics-measurements-next"),
   logisticsTariffsSection: document.querySelector("#logistics-tariffs"),
   logisticsTariffsStatus: document.querySelector("#logistics-tariffs-status"),
   logisticsTariffsCoverage: document.querySelector("#logistics-tariffs-coverage"),
@@ -676,6 +702,7 @@ function init() {
     event.preventDefault();
     state.logisticsProductsOffset = 0;
     state.logisticsDimensionsOffset = 0;
+    state.logisticsMeasurementsOffset = 0;
     state.logisticsTariffsOffset = 0;
     state.logisticsRoutesOffset = 0;
     loadLogisticsAnalysis({ force: true });
@@ -719,6 +746,27 @@ function init() {
     }
     state.logisticsDimensionsOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsDimensions({ force: true });
+  });
+  els.logisticsMeasurementsPrev?.addEventListener("click", () => {
+    if (state.logisticsMeasurementsOffset <= 0) {
+      return;
+    }
+    state.logisticsMeasurementsOffset = Math.max(
+      0,
+      state.logisticsMeasurementsOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsMeasurements({ force: true });
+  });
+  els.logisticsMeasurementsNext?.addEventListener("click", () => {
+    const payload = state.logisticsMeasurements || {};
+    const itemCount = asArray(payload.rows).length;
+    if (
+      state.logisticsMeasurementsOffset + itemCount >= Number(payload.total || 0)
+    ) {
+      return;
+    }
+    state.logisticsMeasurementsOffset += LOGISTICS_PAGE_SIZE;
+    loadLogisticsMeasurements({ force: true });
   });
   els.logisticsTariffsPrev?.addEventListener("click", () => {
     if (state.logisticsTariffsOffset <= 0) {
@@ -1071,6 +1119,11 @@ function syncRemoteTableSortState() {
     state.logisticsDimensionsSortDirection,
   );
   setRemoteTableSortState(
+    els.logisticsMeasurementsTable,
+    state.logisticsMeasurementsSortBy,
+    state.logisticsMeasurementsSortDirection,
+  );
+  setRemoteTableSortState(
     els.logisticsTariffsTable,
     state.logisticsTariffsSortBy,
     state.logisticsTariffsSortDirection,
@@ -1113,6 +1166,13 @@ function onRemoteTableSort(event) {
     state.logisticsDimensionsSortDirection = direction;
     state.logisticsDimensionsOffset = 0;
     loadLogisticsDimensions({ force: true });
+    return;
+  }
+  if (table === els.logisticsMeasurementsTable) {
+    state.logisticsMeasurementsSortBy = sortKey;
+    state.logisticsMeasurementsSortDirection = direction;
+    state.logisticsMeasurementsOffset = 0;
+    loadLogisticsMeasurements({ force: true });
     return;
   }
   if (table === els.logisticsTariffsTable) {
@@ -4045,6 +4105,14 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
   if (!isCurrentClientLoad(context)) {
     return;
   }
+  if (state.reportId !== reportId) {
+    state.logisticsMeasurements = null;
+    state.logisticsMeasurementsOffset = 0;
+    state.logisticsMeasurementsSortBy = "eventDate";
+    state.logisticsMeasurementsSortDirection = "desc";
+    state.logisticsMeasurementsRequestKey = "";
+    state.logisticsMeasurementsRequestId += 1;
+  }
   if (state.clientReportReportId !== reportId) {
     state.clientReportPayload = null;
     state.clientReportReportId = "";
@@ -4826,6 +4894,11 @@ async function loadLogisticsAnalysis(options = {}) {
   } else {
     resetLogisticsDimensions({ hide: true });
   }
+  if (logisticsMeasurementsAvailable()) {
+    loadLogisticsMeasurements({ force: options.force });
+  } else {
+    resetLogisticsMeasurements({ hide: true });
+  }
   if (logisticsTariffsAvailable()) {
     loadLogisticsTariffs({ force: options.force });
   } else {
@@ -4932,6 +5005,60 @@ async function loadLogisticsDimensions(options = {}) {
     state.logisticsDimensions = { error: true, rows: [], total: 0 };
     state.logisticsDimensionsRequestKey = "";
     renderLogisticsDimensions();
+  }
+}
+
+async function loadLogisticsMeasurements(options = {}) {
+  if (
+    !logisticsMeasurementsAvailable() ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
+    !state.reportId
+  ) {
+    resetLogisticsMeasurements({ hide: true });
+    return;
+  }
+  const reportId = state.reportId;
+  const params = logisticsFilterParams({
+    sortBy: state.logisticsMeasurementsSortBy,
+    sortOrder: state.logisticsMeasurementsSortDirection,
+    offset: state.logisticsMeasurementsOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${params}`;
+  if (!options.force && requestKey === state.logisticsMeasurementsRequestKey) {
+    renderLogisticsMeasurements();
+    return;
+  }
+  state.logisticsMeasurementsRequestKey = requestKey;
+  const requestId = ++state.logisticsMeasurementsRequestId;
+  els.logisticsMeasurementsSection.hidden = false;
+  els.logisticsMeasurementsStatus.textContent = "Загружаем контрольные замеры…";
+  els.logisticsMeasurementsStatus.dataset.status = "loading";
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/measurements?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.logisticsMeasurementsRequestKey !== requestKey ||
+      state.logisticsMeasurementsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsMeasurements = payload;
+    renderLogisticsMeasurements();
+  } catch (error) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsMeasurementsRequestKey !== requestKey ||
+      state.logisticsMeasurementsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsMeasurements = { error: true, rows: [], total: 0 };
+    state.logisticsMeasurementsRequestKey = "";
+    renderLogisticsMeasurements();
   }
 }
 
@@ -5071,6 +5198,7 @@ function resetLogisticsWorkspace() {
     { offset: 0, itemCount: 0, total: 0 },
   );
   resetLogisticsDimensions({ hide: !logisticsFactorsAvailable() });
+  resetLogisticsMeasurements({ hide: !logisticsMeasurementsAvailable() });
   resetLogisticsTariffs({ hide: !logisticsTariffsAvailable() });
   resetLogisticsRoutes({ hide: !logisticsRoutesAvailable() });
   closeLogisticsOrders();
@@ -5094,6 +5222,28 @@ function resetLogisticsDimensions(options = {}) {
     els.logisticsDimensionsPrev,
     els.logisticsDimensionsPage,
     els.logisticsDimensionsNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
+}
+
+function resetLogisticsMeasurements(options = {}) {
+  state.logisticsMeasurements = null;
+  state.logisticsMeasurementsRequestKey = "";
+  state.logisticsMeasurementsRequestId += 1;
+  if (!els.logisticsMeasurementsSection) {
+    return;
+  }
+  els.logisticsMeasurementsSection.hidden = Boolean(options.hide);
+  els.logisticsMeasurementsStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsMeasurementsStatus.dataset.status = "empty";
+  els.logisticsMeasurementsCoverage.replaceChildren();
+  els.logisticsMeasurementsRecommendations.replaceChildren();
+  els.logisticsMeasurementsRows.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsMeasurementsPagination,
+    els.logisticsMeasurementsPrev,
+    els.logisticsMeasurementsPage,
+    els.logisticsMeasurementsNext,
     { offset: 0, itemCount: 0, total: 0 },
   );
 }
@@ -5603,6 +5753,184 @@ function renderLogisticsDimensionRows(items, emptyText) {
         : "logistics-quality-badge is-warning";
       badge.textContent = signal;
       cells[4].replaceChildren(badge);
+      row.append(...cells);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsMeasurements() {
+  if (!logisticsMeasurementsAvailable()) {
+    resetLogisticsMeasurements({ hide: true });
+    return;
+  }
+  const payload = state.logisticsMeasurements || {};
+  els.logisticsMeasurementsSection.hidden = false;
+  if (payload.error) {
+    els.logisticsMeasurementsStatus.textContent =
+      "Замеры временно недоступны. Основная логистика и остальные факторы продолжают работать.";
+    els.logisticsMeasurementsStatus.dataset.status = "error";
+    renderLogisticsMeasurementCoverage({});
+    renderLogisticsMeasurementRecommendations([]);
+    renderLogisticsMeasurementRows([], "Не удалось загрузить срез замеров.");
+    return;
+  }
+  const status = normalize(payload.sliceStatus || payload.dataStatus);
+  const statusCopy = {
+    ready: "Источники и события подтверждены",
+    partial: "Часть источников или событий требует проверки",
+    empty: "Источники собраны, событий в срезе нет",
+    needs_rebuild: "Нужна новая ревизия отчёта",
+    blocked: "Проверка снимка не пройдена",
+  }[status] || "Замеры ещё не загружены";
+  const snapshot = payload.factorSnapshotAt
+    ? ` · снимок ${formatCompactDate(payload.factorSnapshotAt)}`
+    : "";
+  els.logisticsMeasurementsStatus.textContent = `${statusCopy}${snapshot}`;
+  els.logisticsMeasurementsStatus.dataset.status = status || "empty";
+  renderLogisticsMeasurementCoverage(payload.coverage || {});
+  renderLogisticsMeasurementRecommendations(asArray(payload.recommendations));
+  const emptyText = {
+    empty: "В выбранном периоде и фильтрах нет событий контрольных замеров.",
+    partial: "Событий в срезе нет, но источник собран не полностью.",
+    needs_rebuild: "Старый отчёт не содержит контекст замеров F‑4.",
+    blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
+  }[status] || "Нет событий замеров для выбранного среза.";
+  renderLogisticsMeasurementRows(asArray(payload.rows), emptyText);
+  renderLogisticsPagination(
+    els.logisticsMeasurementsPagination,
+    els.logisticsMeasurementsPrev,
+    els.logisticsMeasurementsPage,
+    els.logisticsMeasurementsNext,
+    {
+      offset: state.logisticsMeasurementsOffset,
+      itemCount: asArray(payload.rows).length,
+      total: Number(payload.total || 0),
+    },
+  );
+}
+
+function renderLogisticsMeasurementCoverage(coverage) {
+  const issues = Number(coverage.unmatchedEvents || 0)
+    + Number(coverage.ambiguousEvents || 0)
+    + Number(coverage.invalidEvents || 0)
+    + Number(coverage.conflictingEvents || 0);
+  const cards = [
+    [
+      "Источники",
+      coverage.completeEndpoints == null || coverage.expectedEndpoints == null
+        ? null
+        : `${number(coverage.completeEndpoints)} / ${number(coverage.expectedEndpoints)}`,
+    ],
+    ["События", coverage.totalEvents],
+    ["Товары с событиями", coverage.productsWithEvents],
+    ["С удержанием", coverage.penaltyEvents],
+    ["Требуют проверки", issues],
+    ["Доля товаров", coverage.measurementIncidencePercent],
+  ];
+  els.logisticsMeasurementsCoverage.replaceChildren(
+    ...cards.map(([labelText, value]) => {
+      const card = document.createElement("span");
+      const label = document.createElement("small");
+      const strong = document.createElement("strong");
+      label.textContent = labelText;
+      strong.textContent = value === null || value === undefined
+        ? "—"
+        : labelText === "Доля товаров"
+          ? logisticsPercent(value)
+          : typeof value === "string"
+            ? value
+            : number(value);
+      card.append(label, strong);
+      return card;
+    }),
+  );
+}
+
+function renderLogisticsMeasurementRecommendations(items) {
+  if (!items.length) {
+    els.logisticsMeasurementsRecommendations.replaceChildren();
+    return;
+  }
+  els.logisticsMeasurementsRecommendations.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("li");
+      const title = document.createElement("strong");
+      const message = document.createElement("span");
+      title.textContent = item.title || "Проверить замеры";
+      message.textContent = item.message || "";
+      row.append(title, message);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsMeasurementRows(items, emptyText) {
+  if (!items.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 7;
+    cell.className = "muted";
+    cell.textContent = emptyText;
+    row.append(cell);
+    els.logisticsMeasurementsRows.replaceChildren(row);
+    return;
+  }
+  els.logisticsMeasurementsRows.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("tr");
+      const measured = [
+        item.measuredLengthCm,
+        item.measuredWidthCm,
+        item.measuredHeightCm,
+      ].map((value) => value == null ? "—" : number(value)).join(" × ");
+      const declared = [
+        item.declaredLengthCm,
+        item.declaredWidthCm,
+        item.declaredHeightCm,
+      ].map((value) => value == null ? "—" : number(value)).join(" × ");
+      const volume = item.measuredVolumeL == null
+        ? "—"
+        : `${number(item.measuredVolumeL)} л`;
+      const ratio = item.volumeRatioPercent == null
+        ? ""
+        : ` · ${logisticsPercent(item.volumeRatioPercent)}`;
+      const excess = item.volumeExcessPercent == null
+        ? ""
+        : ` · превышение ${logisticsPercent(item.volumeExcessPercent)}`;
+      const amounts = [
+        `Удержание ${item.penaltyAmount == null ? "—" : money(item.penaltyAmount)}`,
+        `Отмена ${item.reversalAmount == null ? "—" : money(item.reversalAmount)}`,
+        `Чистое ${item.netPenaltyAmount == null ? "—" : money(item.netPenaltyAmount)}`,
+      ].join(" · ");
+      const ready = normalize(item.coverageStatus) === "ready";
+      const status = !ready
+        ? "Проверить источник или связку"
+        : item.measurementValid === false
+          ? "Сигнал записи WB"
+          : "Факт Analytics";
+      const cells = [
+        [
+          "Дата события",
+          formatCompactDate(item.penaltyEffectiveAt || item.measurementAt),
+        ],
+        ["Товар", item.product || item.productRef || "Связка не найдена"],
+        ["Замер WB, см", measured],
+        ["Заявлено, см", declared],
+        ["Объём", `${volume}${ratio}${excess}`],
+        ["Справочные суммы", amounts],
+        ["Статус", status],
+      ].map(([label, value]) => {
+        const cell = logisticsTableCell(value);
+        cell.dataset.label = label;
+        return cell;
+      });
+      const badge = document.createElement("span");
+      badge.className = ready && item.measurementValid !== false
+        ? "logistics-quality-badge"
+        : "logistics-quality-badge is-warning";
+      badge.textContent = status;
+      cells[6].replaceChildren(badge);
       row.append(...cells);
       return row;
     }),
@@ -16294,6 +16622,12 @@ function resetClientScopedState(options = {}) {
   state.logisticsDimensionsSortDirection = "asc";
   state.logisticsDimensionsRequestKey = "";
   state.logisticsDimensionsRequestId += 1;
+  state.logisticsMeasurements = null;
+  state.logisticsMeasurementsOffset = 0;
+  state.logisticsMeasurementsSortBy = "eventDate";
+  state.logisticsMeasurementsSortDirection = "desc";
+  state.logisticsMeasurementsRequestKey = "";
+  state.logisticsMeasurementsRequestId += 1;
   state.logisticsTariffs = null;
   state.logisticsTariffsOffset = 0;
   state.logisticsTariffsSortBy = "requestedDate";
@@ -16389,6 +16723,12 @@ function logisticsScenarioAvailable() {
 function logisticsFactorsAvailable() {
   return Boolean(
     logisticsScenarioAvailable() && state.user?.logisticsFactorsEnabled,
+  );
+}
+
+function logisticsMeasurementsAvailable() {
+  return Boolean(
+    logisticsFactorsAvailable() && state.user?.logisticsMeasurementsEnabled,
   );
 }
 

@@ -622,12 +622,14 @@ deployment и без write-операций во внешние системы:
 
 Обновление 2026-07-21: F-1 «Габариты», F-2 «Тарифы» и F-3 «Склады и
 направления» приняты на staff-only test. Для F-4 «Замеры и удержания» принят
-отдельный spec-first контракт: источник исправлен на Analytics
+отдельный spec-first контракт и собран implementation package: источник — Analytics
 `measurement-penalties`/`warehouse-measurements`, а общий Finance penalty не
-используется как fallback и не учитывается повторно. Factor-spec остаётся
-`accepted`, потому что вторая очередь ещё не завершена. Следующий отдельный
-implementation slice F-4 начинается только после live source gate и требует
-собственного test-rollout. Общий операционный чеклист проверки источников —
+используется как fallback и не учитывается повторно. Минимальный live source
+gate пройден с boolean-only evidence; код остаётся за defaults-off флагами до
+merge. Factor-spec остаётся `accepted`, потому что вторая очередь ещё не
+завершена. Следующий этап F-4 — зелёные GitHub jobs, additive migration и
+собственный staff-only test rollout без client/production enable. Общий
+операционный чеклист проверки источников —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
 `monthly_reconciliation_unresolved` остаётся advisory (PR №22).
 

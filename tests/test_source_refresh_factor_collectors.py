@@ -12,6 +12,7 @@ class _FakeService:
         self.calls: dict[str, tuple] = {}
         self.tariffs_recorded = False
         self.supplier_sales_recorded = False
+        self.measurements_recorded: set[str] = set()
 
     def _wb_tariffs_exporter(self, accounts, output_dir, *, period_start, period_end):
         self.calls["tariffs"] = (
@@ -63,6 +64,37 @@ class _FakeService:
         self.supplier_sales_recorded = True
         return SimpleNamespace(id=2)
 
+    def _wb_measurement_penalties_exporter(
+        self, accounts, output_dir, *, period_start, period_end
+    ):
+        self.calls["measurement_penalties"] = (
+            tuple(accounts), output_dir, period_start, period_end
+        )
+        return []
+
+    def _wb_warehouse_measurements_exporter(
+        self, accounts, output_dir, *, period_start, period_end
+    ):
+        self.calls["warehouse_measurements"] = (
+            tuple(accounts), output_dir, period_start, period_end
+        )
+        return []
+
+    def _record_wb_measurements(
+        self,
+        db,
+        refresh_run,
+        output_dir,
+        results,
+        *,
+        source_type,
+        wb_cabinet_ids,
+        period_start,
+        period_end,
+    ):
+        self.measurements_recorded.add(source_type)
+        return SimpleNamespace(id=3)
+
 
 def _context(tmp_path: Path, *, wb: bool) -> sr.CollectorContext:
     wb_settings = (
@@ -102,14 +134,28 @@ def test_factor_collectors_call_exporter_and_return_output_dir(
     tariffs = sr._collect_wb_tariffs(service, context)
     goods_return = sr._collect_wb_goods_return(service, context)
     supplier_sales = sr._collect_wb_supplier_sales(service, context)
+    measurement_penalties = sr._collect_wb_measurement_penalties(service, context)
+    warehouse_measurements = sr._collect_wb_warehouse_measurements(service, context)
 
     assert tariffs.output_dir == tmp_path / "wb_tariffs"
     assert goods_return.output_dir == tmp_path / "wb_goods_return"
     assert supplier_sales.output_dir == tmp_path / "wb_supplier_sales"
-    assert set(service.calls) == {"tariffs", "goods_return", "supplier_sales"}
+    assert measurement_penalties.output_dir == tmp_path / "wb_measurement_penalties"
+    assert warehouse_measurements.output_dir == tmp_path / "wb_warehouse_measurements"
+    assert set(service.calls) == {
+        "tariffs",
+        "goods_return",
+        "supplier_sales",
+        "measurement_penalties",
+        "warehouse_measurements",
+    }
     assert service.calls["tariffs"][0]  # accounts passed through
     assert service.tariffs_recorded is True
     assert service.supplier_sales_recorded is True
+    assert service.measurements_recorded == {
+        "wb_measurement_penalties",
+        "wb_warehouse_measurements",
+    }
 
 
 def test_factor_collectors_skip_without_wb_settings(tmp_path: Path) -> None:
@@ -128,6 +174,12 @@ def test_factor_collectors_registered_as_optional() -> None:
         collector.source_type: collector
         for collector in service._collector_plan("full")  # type: ignore[attr-defined]
     }
-    for source_type in ("wb_tariffs", "wb_goods_return", "wb_supplier_sales"):
+    for source_type in (
+        "wb_tariffs",
+        "wb_goods_return",
+        "wb_supplier_sales",
+        "wb_measurement_penalties",
+        "wb_warehouse_measurements",
+    ):
         assert source_type in plan
         assert plan[source_type].required is False

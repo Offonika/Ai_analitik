@@ -19,6 +19,7 @@ from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
@@ -26,6 +27,7 @@ from wb_unit_economics.logistics_analysis import (
     UnitEconomicsSlice,
     build_dimension_rows,
     build_logistics_analysis,
+    build_measurement_rows,
     build_route_rows,
     build_tariff_rows,
 )
@@ -1696,6 +1698,58 @@ def _route_context(report, rows, *, data_status: str = "ready"):
     }
 
 
+def _measurement_context(report, rows, *, data_status: str = "ready"):
+    return {
+        "tenant_id": report.tenant_id,
+        "client_id": report.client_id,
+        "factor_methodology_version": LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
+        "data_status": data_status,
+        "input_hash": "safe-measurement-input-hash",
+        "penalty_source_snapshot_hash": "safe-penalty-snapshot-hash",
+        "warehouse_source_snapshot_hash": "safe-warehouse-snapshot-hash",
+        "penalty_source_loaded_at": datetime(2026, 7, 21, 12, 0),
+        "warehouse_source_loaded_at": datetime(2026, 7, 21, 12, 0),
+        "factor_snapshot_at": datetime(2026, 7, 21, 12, 0),
+        "source_coverage_start": report.period_start,
+        "source_coverage_end": report.period_end,
+        "expected_endpoint_count": 2,
+        "complete_endpoint_count": 2,
+        "unavailable_endpoint_count": 0,
+        "source_event_count": len(rows),
+        "provider_event_count": len(rows),
+        "measurement_row_count": len(rows),
+        "scoped_product_count": 2,
+        "product_with_event_count": len(
+            {row["product_ref"] for row in rows if row.get("product_ref")}
+        ),
+        "matched_event_count": sum(bool(row.get("product_ref")) for row in rows),
+        "unmatched_event_count": sum(
+            row["coverage_status"] == "unmatched_product" for row in rows
+        ),
+        "ambiguous_event_count": sum(
+            row["coverage_status"] == "ambiguous_product_scope" for row in rows
+        ),
+        "invalid_event_count": sum(
+            row["coverage_status"] == "invalid_measurement" for row in rows
+        ),
+        "conflicting_event_count": sum(
+            row["coverage_status"] == "conflicting_measurement" for row in rows
+        ),
+        "penalty_event_count": sum(
+            (row.get("penalty_amount") or 0) > 0 for row in rows
+        ),
+        "reversal_event_count": sum(
+            (row.get("reversal_amount") or 0) > 0 for row in rows
+        ),
+        "warehouse_only_event_count": sum(
+            row.get("event_kind") == "warehouse_measurement" for row in rows
+        ),
+        "blocking_reasons": [],
+        "review_reasons": [] if data_status == "ready" else ["test_partial"],
+        "created_at": datetime(2026, 7, 21, 12, 1),
+    }
+
+
 def persist_logistics_fixture(client: TestClient) -> None:
     with client.app.state.session_factory() as db:
         report = db.get(repository.ReportRun, "report-1")
@@ -1952,6 +2006,290 @@ def test_logistics_dimensions_role_and_flag_matrix(tmp_path: Path) -> None:
     client.app.state.settings.logistics_factors_client_enabled = True
     assert client.get("/api/reports/report-1/logistics/dimensions").status_code == 200
     assert client.get("/api/me").json()["logisticsFactorsEnabled"] is True
+
+
+def test_logistics_measurements_api_states_filters_and_full_slice_coverage(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_measurements_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    legacy = client.get("/api/reports/report-1/logistics/measurements").json()
+    assert legacy["dataStatus"] == "needs_rebuild"
+    assert legacy["sliceStatus"] == "needs_rebuild"
+    assert legacy["rows"] == []
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report, product_count=2)
+        repository.replace_report_logistics_analysis(db, report, result)
+        penalty_rows = [
+            {
+                "tenant_id": report.tenant_id,
+                "client_id": report.client_id,
+                "wb_cabinet_id": "cabinet-logistics",
+                "dim_id": "dimension-event-one-must-not-leak",
+                "nm_id": "101",
+                "volume": "2.5",
+                "width": "10",
+                "length": "25",
+                "height": "10",
+                "volume_sup": "2",
+                "width_sup": "10",
+                "length_sup": "20",
+                "height_sup": "10",
+                "prc_over": "125",
+                "dt_bonus": "2026-04-07T10:00:00Z",
+                "is_valid": False,
+                "is_valid_dt": "2026-04-07T11:00:00Z",
+                "penalty_amount": "10",
+                "reversal_amount": "5",
+                "source_hash": "penalty-source-hash-must-not-leak",
+            },
+            {
+                "tenant_id": report.tenant_id,
+                "client_id": report.client_id,
+                "wb_cabinet_id": "cabinet-logistics",
+                "dim_id": "dimension-event-unmatched-must-not-leak",
+                "nm_id": "999",
+                "volume": "1",
+                "width": "10",
+                "length": "10",
+                "height": "10",
+                "prc_over": "110",
+                "dt_bonus": "2026-04-08T10:00:00Z",
+                "penalty_amount": "3",
+                "reversal_amount": "0",
+                "source_hash": "unmatched-source-hash-must-not-leak",
+            },
+            {
+                "tenant_id": report.tenant_id,
+                "client_id": report.client_id,
+                "wb_cabinet_id": "cabinet-logistics",
+                "dim_id": "dimension-event-invalid-date-must-not-leak",
+                "nm_id": "101",
+                "volume": "1",
+                "width": "10",
+                "length": "10",
+                "height": "10",
+                "dt_bonus": "not-a-timestamp",
+                "source_hash": "invalid-source-hash-must-not-leak",
+            },
+        ]
+        warehouse_rows = [
+            {
+                "tenant_id": report.tenant_id,
+                "client_id": report.client_id,
+                "wb_cabinet_id": "cabinet-logistics",
+                "dim_id": "dimension-event-one-must-not-leak",
+                "nm_id": "101",
+                "volume": "2.5",
+                "width": "10",
+                "length": "25",
+                "height": "10",
+                "dt": "2026-04-07T09:00:00Z",
+                "source_hash": "warehouse-source-hash-must-not-leak",
+            },
+            {
+                "tenant_id": report.tenant_id,
+                "client_id": report.client_id,
+                "wb_cabinet_id": "cabinet-logistics",
+                "dim_id": "dimension-event-two-must-not-leak",
+                "nm_id": "102",
+                "volume": "1.5",
+                "width": "10",
+                "length": "15",
+                "height": "10",
+                "dt": "2026-04-09T09:00:00Z",
+                "source_hash": "warehouse-two-hash-must-not-leak",
+            },
+        ]
+        rows = build_measurement_rows(
+            result.sku_rows,
+            penalty_rows,
+            warehouse_rows,
+        )
+        repository.replace_report_logistics_measurement_analysis(
+            db,
+            report,
+            context=_measurement_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/reports/report-1/logistics/measurements",
+        params={"limit": 1, "sortBy": "penaltyAmount", "sortOrder": "desc"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataStatus"] == "partial"
+    assert body["sliceStatus"] == "partial"
+    assert body["total"] == 4
+    assert len(body["rows"]) == 1
+    assert body["coverage"] == {
+        "expectedEndpoints": 2,
+        "completeEndpoints": 2,
+        "unavailableEndpoints": 0,
+        "scopedProducts": 2,
+        "productsWithEvents": 2,
+        "totalEvents": 4,
+        "penaltyEvents": 2,
+        "reversalEvents": 1,
+        "warehouseOnlyEvents": 1,
+        "matchedEvents": 3,
+        "unmatchedEvents": 1,
+        "ambiguousEvents": 0,
+        "invalidEvents": 1,
+        "conflictingEvents": 0,
+        "measurementIncidencePercent": 100,
+    }
+    assert body["accountingTreatment"]["includedInFinancialKpi"] is False
+    assert body["rows"][0]["includedInFinancialKpi"] is False
+    assert body["rows"][0]["accountingReconciliationStatus"] == "unreconciled"
+    assert {item["evidenceType"] for item in body["recommendations"]} == {
+        "fact",
+        "data_unavailable",
+    }
+    serialized = response.text
+    for forbidden in (
+        "dimension-event-one-must-not-leak",
+        "penalty-source-hash-must-not-leak",
+        "warehouse-source-hash-must-not-leak",
+        "invalid-source-hash-must-not-leak",
+        "sourceHashDigest",
+        "sourceSnapshotHash",
+        "dimId",
+        "nmId",
+            "photoUrls",
+            "sellerAccountId",
+        ):
+        assert forbidden not in serialized
+
+    penalty_only = client.get(
+        "/api/reports/report-1/logistics/measurements",
+        params={"hasPenalty": "true"},
+    ).json()
+    assert penalty_only["total"] == 2
+    assert penalty_only["coverage"]["penaltyEvents"] == 2
+
+    warehouse_only = client.get(
+        "/api/reports/report-1/logistics/measurements",
+        params={"eventKind": "warehouse_measurement"},
+    ).json()
+    assert warehouse_only["total"] == 1
+    assert warehouse_only["rows"][0]["eventKind"] == "warehouse_measurement"
+
+    product_filtered = client.get(
+        "/api/reports/report-1/logistics/measurements",
+        params={"product": "Товар 102"},
+    ).json()
+    assert product_filtered["total"] == 1
+    assert product_filtered["coverage"]["scopedProducts"] == 1
+    assert product_filtered["coverage"]["measurementIncidencePercent"] == 100
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsMeasurementContext, "report-1")
+        assert context is not None
+        unmatched = (
+            db.query(repository.ReportLogisticsMeasurementRow)
+            .filter_by(
+                report_run_id="report-1",
+                coverage_status="unmatched_product",
+            )
+            .one()
+        )
+        invalid = (
+            db.query(repository.ReportLogisticsMeasurementRow)
+            .filter_by(
+                report_run_id="report-1",
+                coverage_status="invalid_measurement",
+            )
+            .one()
+        )
+        db.delete(unmatched)
+        db.delete(invalid)
+        context.measurement_row_count = 2
+        context.data_status = "ready"
+        context.review_reasons = []
+        db.commit()
+    ready = client.get("/api/reports/report-1/logistics/measurements").json()
+    assert ready["dataStatus"] == "ready"
+    assert ready["sliceStatus"] == "ready"
+    assert ready["total"] == 2
+
+    empty = client.get(
+        "/api/reports/report-1/logistics/measurements",
+        params={"periodStart": "2026-06-01", "periodEnd": "2026-06-07"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["coverage"]["totalEvents"] == 0
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsMeasurementContext, "report-1")
+        assert context is not None
+        context.measurement_row_count = 3
+        db.commit()
+    blocked = client.get("/api/reports/report-1/logistics/measurements").json()
+    assert blocked["dataStatus"] == "blocked"
+    assert blocked["sliceStatus"] == "blocked"
+    assert blocked["rows"] == []
+
+
+def test_logistics_measurements_role_and_flag_matrix(tmp_path: Path) -> None:
+    (tmp_path / "staff").mkdir()
+    (tmp_path / "client").mkdir()
+    staff = make_client(
+        tmp_path / "staff",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_measurements_enabled": False,
+        },
+    )
+    login(staff)
+    path = "/api/reports/report-1/logistics/measurements"
+    assert staff.get(path).status_code == 404
+    assert staff.get("/api/me").json()["logisticsMeasurementsEnabled"] is False
+    staff.app.state.settings.logistics_measurements_enabled = True
+    assert staff.get(path).status_code == 200
+    assert staff.get("/api/me").json()["logisticsMeasurementsEnabled"] is True
+
+    client = make_client(
+        tmp_path / "client",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_analysis_client_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_factors_client_enabled": True,
+            "logistics_measurements_enabled": True,
+            "logistics_measurements_client_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="measurement-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "measurement-client@example.com", "secret")
+    assert client.get(path).status_code == 404
+    assert client.get("/api/me").json()["logisticsMeasurementsEnabled"] is False
+    client.app.state.settings.logistics_measurements_client_enabled = True
+    assert client.get(path).status_code == 200
+    assert client.get("/api/me").json()["logisticsMeasurementsEnabled"] is True
 
 
 def test_published_dimension_mart_is_immutable(tmp_path: Path) -> None:
@@ -2416,10 +2754,19 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-dimensions-pagination"' in cabinet.text
     assert "Габариты в карточке WB" in cabinet.text
     assert "не исторический" in cabinet.text
+    assert 'id="logistics-measurements"' in cabinet.text
+    assert 'id="logistics-measurements-coverage"' in cabinet.text
+    assert 'id="logistics-measurements-rows"' in cabinet.text
+    assert 'id="logistics-measurements-pagination"' in cabinet.text
+    assert "Контрольные замеры и удержания WB" in cabinet.text
+    assert "не прибавляются к расходам" in cabinet.text
     assert ".logistics-dimensions-table {" in styles.text
     assert "table-layout: fixed;" in styles.text
     assert ".logistics-dimensions-table th:nth-child(5)" in styles.text
     assert cabinet.text.index('id="logistics-dimensions"') < cabinet.text.index(
+        'id="logistics-measurements"'
+    )
+    assert cabinet.text.index('id="logistics-measurements"') < cabinet.text.index(
         'aria-labelledby="logistics-products-title"'
     )
     assert 'id="logistics-orders-rows"' in cabinet.text
@@ -2441,6 +2788,13 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "logisticsOrganizationFilter" not in script.text
     assert "function loadLogisticsDimensions" in script.text
     assert "function resetLogisticsDimensions" in script.text
+    assert "function loadLogisticsMeasurements" in script.text
+    assert "function resetLogisticsMeasurements" in script.text
+    assert "Замеры временно недоступны. Основная логистика" in script.text
+    assert "Сигнал записи WB" in script.text
+    assert "Справочные суммы" in script.text
+    assert "state.logisticsMeasurementsOffset = 0;" in script.text
+    assert "state.logisticsMeasurementsRequestId += 1;" in script.text
     assert "Основная логистика продолжает работать" in script.text
     assert "measuredPenaltyAmount" not in script.text
     assert "loadLogisticsAnalysis" in script.text
@@ -3724,6 +4078,88 @@ def test_required_route_context_controls_publication_readiness(
             item
             for item in outdated
             if item["code"] == "logistics_routes_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+
+def test_required_measurement_context_controls_publication_readiness(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.logistics_measurements_required = True
+        missing = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in missing
+            if item["code"] == "logistics_measurements_missing"
+        )
+        assert blocker["nonOverridable"] is True
+        db.rollback()
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        rows = build_measurement_rows(
+            result.sku_rows,
+            [
+                {
+                    "tenant_id": report.tenant_id,
+                    "client_id": report.client_id,
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "dim_id": "safe-readiness-event",
+                    "nm_id": "101",
+                    "volume": "2.5",
+                    "width": "10",
+                    "length": "25",
+                    "height": "10",
+                    "dt_bonus": "2026-04-07T10:00:00Z",
+                    "penalty_amount": "0",
+                    "reversal_amount": "0",
+                }
+            ],
+            [],
+        )
+        repository.replace_report_logistics_measurement_analysis(
+            db,
+            report,
+            context=_measurement_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        assert not any(
+            item["code"].startswith("logistics_measurements_")
+            for item in readiness["blockingReasons"]
+        )
+        assert any(
+            item["code"] == "logistics_measurements_partial"
+            for item in readiness["reviewReasons"]
+        )
+
+        context = db.get(repository.ReportLogisticsMeasurementContext, report.id)
+        assert context is not None
+        context.measurement_row_count += 1
+        mismatch = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in mismatch
+            if item["code"] == "logistics_measurements_row_count_mismatch"
+        )
+        assert blocker["nonOverridable"] is True
+
+        context.measurement_row_count -= 1
+        context.factor_methodology_version = "wb-logistics-measurements-legacy"
+        outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in outdated
+            if item["code"] == "logistics_measurements_outdated"
         )
         assert blocker["nonOverridable"] is True
 
@@ -5063,10 +5499,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260721-logistics-f3-routes-v1"
+        "20260721-logistics-f4-measurements-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260721-logistics-f3-routes-v1"
+        "20260721-logistics-f4-measurements-v1"
     )
 
     page = client.get("/")
@@ -5217,11 +5653,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260721-logistics-f3-routes-v1"
+            "styles.css?v=20260721-logistics-f4-measurements-v1"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260721-logistics-f3-routes-v1"
+            "app.js?v=20260721-logistics-f4-measurements-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -5536,17 +5972,26 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "logisticsTariffsAvailable" in app_js.text
     assert 'id="logistics-tariffs"' in cabinet.text
     assert "Тарифы и коэффициенты WB" in cabinet.text
+    assert "/logistics/measurements" in app_js.text
+    assert "logisticsMeasurementsAvailable" in app_js.text
+    assert "if (logisticsMeasurementsAvailable())" in app_js.text
+    assert "resetLogisticsMeasurements({ hide: true })" in app_js.text
+    assert 'id="logistics-measurements"' in cabinet.text
+    assert "Контрольные замеры и удержания WB" in cabinet.text
     assert "/logistics/routes" in app_js.text
     assert "logisticsRoutesAvailable" in app_js.text
     assert 'id="logistics-routes"' in cabinet.text
     assert "Склады и направления" in cabinet.text
+    assert cabinet.text.index('id="logistics-measurements"') < cabinet.text.index(
+        'id="logistics-tariffs"'
+    )
     assert cabinet.text.index('id="logistics-tariffs"') < cabinet.text.index(
         'id="logistics-routes"'
     )
     assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
         'id="logistics-products-title"'
     )
-    assert "20260721-logistics-f3-routes-v1" in cabinet.text
+    assert "20260721-logistics-f4-measurements-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert "/freshness" in app_js.text
     assert "/client-draft" in app_js.text
