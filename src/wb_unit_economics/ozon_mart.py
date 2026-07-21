@@ -11,6 +11,7 @@ from wb_unit_economics.calculation import (
     VAT_INPUT_CONFIRMED,
     VAT_INPUT_PARTIAL,
     calculate_tax_amounts,
+    tax_profile_is_configured,
     tax_profile_is_confirmed,
     tax_profile_is_osno,
 )
@@ -636,11 +637,13 @@ def _empty_summary() -> dict[str, int]:
         "buyoutPeriodOnly": 0,
         "partialExpenses": 0,
         "taxProfileMissing": 0,
+        "taxMethodUnsupported": 0,
         "taxInputVatReview": 0,
     }
 
 
 _TAX_PROFILE_MISSING_COMPLETENESS = frozenset({"missing_tax_profile"})
+_TAX_METHOD_UNSUPPORTED_COMPLETENESS = frozenset({"unsupported_tax_method"})
 _TAX_INPUT_VAT_REVIEW_COMPLETENESS = frozenset(
     {
         "input_vat_missing",
@@ -654,6 +657,10 @@ _TAX_INPUT_VAT_REVIEW_COMPLETENESS = frozenset(
 def _increment_tax_summary(summary: dict[str, int], tax_completeness: str) -> None:
     if tax_completeness in _TAX_PROFILE_MISSING_COMPLETENESS:
         summary["taxProfileMissing"] = int(summary.get("taxProfileMissing") or 0) + 1
+    elif tax_completeness in _TAX_METHOD_UNSUPPORTED_COMPLETENESS:
+        summary["taxMethodUnsupported"] = (
+            int(summary.get("taxMethodUnsupported") or 0) + 1
+        )
     elif tax_completeness in _TAX_INPUT_VAT_REVIEW_COMPLETENESS:
         summary["taxInputVatReview"] = int(summary.get("taxInputVatReview") or 0) + 1
 
@@ -1231,15 +1238,17 @@ def _tax_profile_payload(
             "validTo": None,
             "source": "missing",
         }
-    confirmed = tax_profile_is_confirmed(profile)
+    configured = tax_profile_is_configured(profile)
+    calculation_supported = tax_profile_is_confirmed(profile)
     return {
         "status": (
             "override"
-            if profile.source == "manual_override" and confirmed
+            if profile.source == "manual_override" and configured
             else "ready"
-            if confirmed
+            if configured
             else "unconfirmed"
         ),
+        "calculationSupported": calculation_supported,
         "taxSystem": profile.tax_system,
         "taxObject": profile.tax_object,
         "taxRate": _json_number(profile.tax_rate),
@@ -1261,9 +1270,12 @@ def _apply_tax_profile_to_rows(
     tax_profile: TaxProfile | None,
     profile_required: bool,
 ) -> None:
-    if tax_profile is not None and not tax_profile_is_confirmed(tax_profile):
+    if tax_profile is not None and not tax_profile_is_configured(tax_profile):
         tax_profile = None
         profile_required = True
+    calculation_supported = bool(
+        tax_profile is not None and tax_profile_is_confirmed(tax_profile)
+    )
     for row in rows:
         profit_before_tax = _decimal_or_none(row.get("profit"))
         revenue = _decimal_or_none(row.get("onecRevenue"))
@@ -1294,6 +1306,12 @@ def _apply_tax_profile_to_rows(
         if tax_profile is None:
             if not profile_required:
                 row["taxCompleteness"] = "not_required"
+            continue
+        if not calculation_supported:
+            row["taxCompleteness"] = "unsupported_tax_method"
+            row["taxMethod"] = (
+                "Профиль загружен; метод расчёта налога пока не поддерживается"
+            )
             continue
         is_osno = tax_profile_is_osno(tax_profile)
         confirmed_vat_input = _decimal_or_none(row.get("confirmedInputVat"))
@@ -2746,6 +2764,15 @@ def _mart_issues(summary: Mapping[str, int]) -> list[dict[str, str]]:
             "ozon_mart_tax_profile_missing",
             "Налоговый профиль не загружен",
             "Настройки налогообложения из 1С не загружены или не применены.",
+        ),
+        (
+            "taxMethodUnsupported",
+            "ozon_mart_tax_method_unsupported",
+            "Метод расчёта налога не поддерживается",
+            (
+                "Профиль 1С загружен, но налог по объекту «доходы минус "
+                "расходы» текущей методикой не рассчитывается."
+            ),
         ),
         (
             "taxInputVatReview",

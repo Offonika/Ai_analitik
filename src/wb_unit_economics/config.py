@@ -6,6 +6,10 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from wb_unit_economics.calculation import (
+    tax_profile_is_configured,
+    tax_profile_is_confirmed,
+)
 from wb_unit_economics.contracts import (
     AccountOrgMapping,
     TaxProfile,
@@ -218,12 +222,14 @@ def tax_profile_source_diagnostic(
     if organization is None:
         status = "missing_organization"
         message = "Карточка связанной организации не найдена в выгрузке 1С."
-    elif policy_profile is not None and _policy_profile_is_calculation_ready(
-        policy_profile
-    ):
+    elif policy_profile is not None and tax_profile_is_configured(policy_profile):
         status = "ready"
         message = (
-            "Налоговый профиль получен из периодических настроек организации 1С."
+            "Налоговый профиль получен из периодических настроек организации "
+            "1С; текущая методика не рассчитывает налог по объекту «доходы "
+            "минус расходы»."
+            if not _policy_profile_is_calculation_ready(policy_profile)
+            else "Налоговый профиль получен из периодических настроек организации 1С."
         )
     elif policy_profile is not None:
         status = "unconfirmed"
@@ -287,6 +293,7 @@ def tax_profile_source_diagnostic(
                 "vatMode": derived_profile.vat_mode.value,
                 "vatDeductionMode": derived_profile.vat_deduction_mode.value,
                 "source": derived_profile.source,
+                "calculationSupported": tax_profile_is_confirmed(derived_profile),
             }
             if derived_profile is not None
             else None

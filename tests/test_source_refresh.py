@@ -4723,7 +4723,7 @@ def test_source_refresh_builds_usn_profile_from_accounting_evidence(
     assert source_profile.confirmed_by == "Бухгалтер"
 
 
-def test_source_refresh_builds_unconfirmed_usn_expense_profile_from_settings(
+def test_source_refresh_builds_configured_usn_expense_profile_from_settings(
     tmp_path: Path,
 ) -> None:
     _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
@@ -4813,10 +4813,10 @@ def test_source_refresh_builds_unconfirmed_usn_expense_profile_from_settings(
             refresh_run=run,
         )
 
-    assert tax_collection.status == "needs_review"
+    assert tax_collection.status == "loaded"
     assert tax_collection.payload["configuredCompanyCount"] == 1
-    assert tax_collection.payload["profileCount"] == 0
-    assert tax_collection.payload["unconfirmedProfileCount"] == 1
+    assert tax_collection.payload["profileCount"] == 1
+    assert tax_collection.payload["unconfirmedProfileCount"] == 0
     assert source_profile.tax_system == "УСН Доходы минус расходы"
     assert source_profile.tax_object == "income_minus_expenses"
     assert source_profile.tax_rate == Decimal("15")
