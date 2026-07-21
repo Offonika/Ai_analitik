@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Назначение
@@ -16,20 +16,19 @@ accepted-спецификацию. При расхождении следова�
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
 
-Последнее записанное operational evidence датировано **18 июля 2026 года**.
+Последнее записанное operational evidence датировано **21 июля 2026 года**.
 Перед любым утверждением о текущих feature flags, runtime, gate или rollout
 обязательно повторно проверить соответствующую среду; приведенное ниже
 состояние не является доказательством на более позднюю дату. Code defaults
-`false/false` описывают только поведение без конфигурации и не подтверждают
-фактическое состояние test или production.
+не подтверждают фактическое состояние test или production.
 
-Проверенный immutable recovery-draft из свежего full read-only refresh
-опубликован как текущий test-report после отдельного разрешения. Публикация
-выполнена штатным audited-механизмом; общий blocker
-`monthly_reconciliation_unresolved` сохранен как контрольная задача и не скрыт.
-На test master- и клиентский флаги включены, развернут immutable release
-`runtime-fa020db-logistics-client-ui-20260718`. Production остается на
-`runtime-6368dcf-global-table-sorting-20260718`, клиентский флаг там выключен.
+На test развернут чистый immutable release
+`runtime-main-fe0f229-logistics-f4-v2-20260721`. Master-флаги факторов и F-4
+включены только для staff; factor- и measurement-client flags, а также client
+login выключены. Новый F-4 draft из verified read-only snapshots сохранен, но
+не опубликован. Production остается на
+`runtime-fcfc52b-tax-profile-configured-20260721`; production и клиентское
+включение F-4 не выполнялись.
 
 # Текст для нового чата
 
@@ -37,89 +36,46 @@ accepted-спецификацию. При расхождении следова�
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v5.
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
 операционное состояние в этом runbook. На test развернут immutable release
-runtime-fa020db-logistics-client-ui-20260718, master- и клиентский флаги
-включены. Проверенный recovery-draft свежего full read-only refresh опубликован
-как current через audited publish-with-tasks; blocker
-monthly_reconciliation_unresolved сохранен. Client-role summary/products
-возвращают HTTP 200, dataStatus ready, sliceStatus partial и
-not_available_missing_profit_link: финансовые KPI/rankings null/empty, точная
-логистика и product rows доступны. Staff-only orders и оставшийся старый draft
-возвращают HTTP 404. Desktop/mobile deep-link #tables/logistics прошел без
-дополнительного клика, application console/page/network errors и overflow.
-Временные пользователи и сессии удалены. Production не менять без отдельного
-разрешения; его runtime и client flag остались прежними.
+runtime-main-fe0f229-logistics-f4-v2-20260721 из main merge fe0f229. Factor и
+F-4 master включены для staff, оба client-флага и client login выключены.
+Неопубликованный immutable draft имеет partial measurement context без
+blocking reasons; справочные суммы F-4 исключены из финансовых KPI до сверки.
+Staff API/UI, desktop 1440x900 и mobile 390x844 приняты; client-role получает
+HTTP 404, блок скрыт и запрос не выполняется. Временные пользователи, пароли,
+сессии, browser script и screenshots удалены. Production не менять без
+отдельного разрешения; production runtime и client flags не менялись.
 ```
 
 # Текущее состояние
 
-- Расчетная методика нового test-draft: `wb-logistics-v5`.
-- Формула ключа: `wb-order-product-v1`.
-- Поддерживается только WB.
-- Реализованы order/SKU-витрины, readiness-context, три read-only API,
-  staff-only интерфейс, SQL-рекомендации и безопасный AI digest.
-- Контексты v1-v4 и несовместимая версия ключа возвращают `needs_rebuild`.
-- `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` по умолчанию.
-- `SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false` по умолчанию.
-- Исправление file-authoritative snapshot включено в `main` merge-коммитом
-  `3773ed5`; клиентский deep-link hardening включен merge-коммитом `fa020db`.
-  Test указывает на immutable release
-  `runtime-fa020db-logistics-client-ui-20260718`. Production остался на
-  отдельно проверенном release
-  `runtime-6368dcf-global-table-sorting-20260718`; test promotion не менял
-  production symlink или service.
-- На test `SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true` и master-флаг логистики
-  применены через отдельный systemd override; после визуальной приемки и
-  отдельного разрешения клиентский флаг переключен в `true`. Code defaults
-  по-прежнему `false/false` и не считаются environment
-  evidence.
-- С разрешенными клиентом read-only интеграциями выполнен новый full refresh в
-  test. Обязательные внешние чтения завершились; raw snapshot и его manifest
-  сохранены до нормализации. Одна 1C-конфигурация из локального environment была
-  неактуальна, поэтому использована уже сохраненная защищенная tenant-интеграция
-  только в памяти процесса; секреты не копировались в Git, Markdown или вывод.
-- Первый свежий draft оказался `blocked`: крупная коллекция WB Finance была
-  корректно сохранена как `skipped_large_snapshot` с авторитетными raw-файлами,
-  но logistics selector читал только строки БД. Это подтвержденный storage gap,
-  а не отсутствие данных источника.
-- Коммит `d24d356` добавил потоковое чтение только для повторно проверенного
-  `file_authoritative`/`skipped_large_snapshot`: путь обязан оставаться внутри
-  run root, manifest/hash/row count перепроверяются, а одновременные DB- и
-  file-строки блокируются как неоднозначность.
-- Из того же неизмененного свежего snapshot создан новый immutable recovery-
-  draft без внешних API-вызовов и перезаписи старого report run. Context имеет
-  `ready`, методику `wb-logistics-v5`. После отдельного разрешения report
-  опубликован как current через audited publish-with-tasks; blocker
-  `monthly_reconciliation_unresolved` сохранен как контрольная задача.
-  Идентификаторы и клиентские объемы не фиксируются в Git или Markdown.
-- Live staff API вернул `partial` и
-  `not_available_missing_profit_link`: точная логистика, products и staff-only
-  orders доступны, финансовые KPI равны `null`, финансовые рейтинги пусты.
-  Инвертированный период отклоняется HTTP 400. Одноразовая staff-сессия после
-  smoke удалена. После rollout `/api/me` подтверждает master flag `true` и
-  client flag `true`.
-- Live client-role smoke после публикации вернул HTTP 200 для `/api/me`,
-  logistics summary и products текущего v5-report: `dataStatus=ready`,
-  `sliceStatus=partial`, финансовый статус
-  `not_available_missing_profit_link`, финансовые KPI `null`, рейтинги пусты,
-  product rows доступны. Staff-only orders и оставшийся старый draft возвращают
-  HTTP 404. Временный client-user и smoke-сессия удалены.
-- Временный Playwright/Chromium browser runtime использован только вне
-  репозитория для desktop 1440×900 и mobile 390×844 приемки. После исправления
-  гонки начальной загрузки deep-link `#tables/logistics` стабилен без
-  дополнительного клика; staff-only `client-draft` из client-role не
-  запрашивается. Focus transfer, отсутствие global overflow, именованные
-  controls, `null -> —`, видимая причина недоступности финансов и product rows
-  подтверждены; application console/page/network errors отсутствуют. На первом
-  mobile viewport warning находится ниже global filters/navigation, но доступен
-  обычной прокруткой без отдельного раскрытия. Снимки остаются локальным
-  operational evidence и не добавляются в Git или Markdown.
-- Public health test-контура отдает build
-  `20260718-logistics-v5-global-table-sorting-v1`, schema
-  `2026_07_18_logistics_profit_link_v5` и `runtimeEnvironment=test`; health
-  timer завершился `success`.
-- Production и текущий опубликованный report не менялись; production client
-  flag остается выключенным. Публикация v5 draft или production rollout требуют
-  повторной проверки environment evidence и отдельного разрешения.
+- Базовая методика логистики — `wb-logistics-v5`, методика F-4 —
+  `wb-logistics-measurements-v1`; поддерживается только WB.
+- F-4 реализован в `main` через PR №49; визуальное исправление desktop-таблицы
+  влито через PR №50. Test runtime собран из точного merge-коммита PR №50 с
+  `sourceDirty=false`.
+- Test health подтверждает `runtimeEnvironment=test`, совпадающие backend/static
+  build `20260721-logistics-f4-measurements-v2`, schema
+  `2026_07_21_logistics_measurements_context_v1` и `status=ok`.
+- На test включены `SHUMEYKO_LOGISTICS_FACTORS_ENABLED=true` и
+  `SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=true`. Оба соответствующих
+  client-флага и `SHUMEYKO_CLIENT_LOGIN_ENABLED` выключены; code defaults не
+  считаются environment evidence.
+- Новый immutable draft создан из сохраненных verified snapshots без повторного
+  внешнего чтения после локальной runtime-ошибки. Measurement context имеет
+  `partial`, source и mart reconciliation пройдены, blocking reasons пусты.
+  Справочные удержания не включены в финансовые KPI до однозначной сверки.
+- Staff read-only API и интерфейс F-4 приняты. Client-role получает HTTP 404;
+  блок скрыт, а factor request не выполняется. Ошибок браузера и overflow на
+  desktop/mobile не выявлено после CSS-hotfix.
+- F-4 draft не публиковался. Общие publication blockers не скрыты и не
+  переопределены. Factor-spec остается `accepted`: вся вторая очередь не
+  завершена.
+- Временные acceptance users деактивированы, пароли повторно сброшены, sessions,
+  credential-файлы, screenshots и browser script удалены.
+- Production symlink остается на
+  `runtime-fcfc52b-tax-profile-configured-20260721`; production service,
+  production/client factor flags и внешние интеграции этой работой не
+  менялись.
 
 # Operational evidence F-1 «Габариты» на test — 20 июля 2026 года
 
@@ -324,6 +280,74 @@ Production symlink остался на
 сохранил `status=ok`, production environment и прежние совпадающие
 backend/static build. Новый report не публиковался, production/client flags и
 внешние интеграции не менялись.
+
+# Operational evidence F-4 «Замеры/штрафы» на test — 21 июля 2026 года
+
+F-4 влит в `main` через PR №49 squash-коммитом `90420d6`. Обязательные GitHub
+Actions job завершились успешно: `quality` за 1 минуту 1 секунду и `tests` за
+23 минуты 10 секунд. Обнаруженное при визуальной приемке перекрытие длинного
+названия товара с соседней desktop-колонкой исправлено в PR №50, слитом
+squash-коммитом `fe0f229`; повторные `quality` и `tests` прошли за 1 минуту
+16 секунд и 19 минут 47 секунд соответственно.
+
+Из точного `fe0f229` собран immutable release
+`runtime-main-fe0f229-logistics-f4-v2-20260721` с `sourceDirty=false`.
+Additive migration повторно применена идемпотентно, после чего атомарно
+переключен только test symlink и перезапущен только test web service. Финальный
+health подтвердил `status=ok`, `runtimeEnvironment=test`, одинаковый
+backend/static build `20260721-logistics-f4-measurements-v2` и schema
+`2026_07_21_logistics_measurements_context_v1`.
+
+На test включены factor master и measurement master. Factor- и
+measurement-client flags оставлены `false`; штатный client login после
+приемки также подтвержден как выключенный фактическим HTTP 401 при корректном
+пароле синтетической client-роли. Production configuration и production
+service не изменялись.
+
+Read-only full source refresh загрузил обе требуемые F-4 коллекции и сохранил
+verified snapshots. Первый внешний проход был остановлен транзитной ошибкой 1C
+до завершения; успешный повтор сохранил источники, но materialization уперлась
+в недоступный относительный путь immutable runtime. Новый draft затем собран
+из тех же сохраненных snapshots без повторного внешнего чтения. Перед сборкой
+повторно проверены безопасные пути, manifest, hashes, row count, tenant scope и
+отсутствие DB/file ambiguity.
+
+Создан новый неопубликованный immutable draft со статусом `needs_review`.
+Measurement context записан с методикой `wb-logistics-measurements-v1` и
+состоянием `partial`; provider endpoint total и mart row count согласованы,
+blocking reasons пусты. События, не имеющие однозначной финансовой сверки,
+остались справочными: удержание, отмена и чистая сумма не добавлены в расходы,
+прибыль или иные финансовые KPI. Общие publication blockers сохранены; F-4 не
+переопределял их. Идентификаторы, клиентские объемы, товарные значения,
+денежные суммы и source hashes в evidence не перенесены.
+
+Live API и browser acceptance подтвердили:
+
+- staff read-only API возвращает HTTP 200, `partial`, обе версии методики,
+  source coverage, filter context, SQL-pagination, разрешенные сортировки и
+  coverage полного фильтрованного среза;
+- raw/hash identifiers отсутствуют, рекомендации не создают финансовый эффект,
+  а сигнал и справочные суммы не трактуются как подтвержденный штраф;
+- client-role получает HTTP 404, блок скрыт и запрос factor API не выполняется;
+- прямой `#tables/logistics` прошел на desktop 1440×900 и mobile 390×844 без
+  horizontal/page overflow и application console/page/network errors;
+- повторная визуальная проверка после PR №50 подтвердила перенос длинных
+  названий без перекрытия соседних колонок; mobile-строки отображаются как
+  подписанные карточки.
+
+После проверки временный client-login override удален. Synthetic acceptance
+users деактивированы, их пароли повторно сброшены, sessions, credential-файлы,
+browser script и screenshots удалены. Существовавшие source-refresh cache
+каталоги не удалялись, поскольку их принадлежность только этой приемке не была
+доказана. Test остается на F-4 v2 со staff-only flags; production symlink
+остается на `runtime-fcfc52b-tax-profile-configured-20260721`. Factor-spec
+остается `accepted`; production, client enable и публикация draft не
+выполнялись.
+
+Rollback F-4: вернуть measurement master, а при необходимости factor master в
+`false`, перезапустить только test web и repoint test symlink на предыдущий
+immutable release. Additive schema, snapshots и неопубликованный immutable
+draft при этом не удалять и не перезаписывать.
 
 # Последнее UX-решение
 
