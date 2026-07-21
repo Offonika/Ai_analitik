@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy import select
@@ -756,8 +757,107 @@ def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -
             for row in workbook[summary_sheet].iter_rows(values_only=True)
             if row[0]
         }
-        assert values["reportId"] == payload["meta"]["reportId"]
-        assert values["payloadSha256"] == payload_hash
+        if payload["reportKind"] == "tax_load":
+            assert values["ID отчёта"] == payload["meta"]["reportId"]
+            assert values["SHA-256 отчёта"] == payload_hash
+            assert "reportId" not in values
+            assert "payloadSha256" not in values
+        else:
+            assert values["reportId"] == payload["meta"]["reportId"]
+            assert values["payloadSha256"] == payload_hash
+
+
+def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    path = tmp_path / "tax-load-russian.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, read_only=True, data_only=True)
+
+    overview = {
+        row[0]: row[1]
+        for row in workbook["Обзор"].iter_rows(values_only=True)
+        if row[0]
+    }
+    assert overview["Вид отчёта"] == "Налоговая нагрузка"
+    assert overview["Статус отчёта"] == "Нужна проверка бухгалтера"
+    assert overview["Статус сравнения"] == "Ожидает подтверждения методики"
+    assert overview["Начало отчётного периода"] == "01.01.2026"
+
+    taxes = list(workbook["Налоги"].iter_rows(values_only=True))
+    assert taxes[0] == (
+        "Код налога",
+        "Налог",
+        "Период",
+        "Налоговая база",
+        "Начислено",
+        "Уплачено",
+        "Сальдо",
+        "Срок уплаты",
+        "Статус значения",
+        "Статус подтверждения",
+        "Источник",
+        "Код замечания",
+        "Вид платежа",
+        "Включён в нагрузку ФНС",
+        "Причина исключения",
+    )
+    assert taxes[1][9] == "Загружено"
+    assert taxes[1][12] == "Собственный налог"
+    assert taxes[1][13] == "Да"
+    assert taxes[2][14] == "Агентский платёж"
+
+    coverage = list(
+        workbook["Источники и статус"].iter_rows(values_only=True)
+    )
+    assert coverage[0] == (
+        "Источник",
+        "Начало отчётного периода",
+        "Окончание отчётного периода",
+        "Статус",
+        "ID снимка",
+    )
+    assert coverage[1][0] == "Налоговый учёт 1С"
+    assert coverage[1][3] == "Загружено"
+
+
+def test_tax_load_excel_fails_closed_for_untranslated_field(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["taxLoadSummary"]["futureInternalField"] = "internal_value"
+
+    with pytest.raises(ValueError, match="Excel label is missing"):
+        write_scenario_excel(
+            payload,
+            canonical_payload_sha256(payload),
+            tmp_path / "tax-load-untranslated.xlsx",
+        )
+
+
+def test_tax_load_excel_hides_unknown_enum_value(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["businessStatus"] = "future_internal_status"
+    path = tmp_path / "tax-load-unknown-status.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    overview = {
+        row[0]: row[1]
+        for row in workbook["Обзор"].iter_rows(values_only=True)
+        if row[0]
+    }
+
+    assert overview["Статус отчёта"] == "Не определено"
+    assert "future_internal_status" not in overview.values()
 
 
 def test_fns_2025_reference_is_versioned_and_comparison_disabled() -> None:
