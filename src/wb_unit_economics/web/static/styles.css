@@ -6396,10 +6396,6 @@ td {
   width: 13%;
 }
 
-.logistics-measurements-table td {
-  overflow-wrap: anywhere;
-}
-
 .logistics-bar-list {
   display: grid;
   gap: 14px;
@@ -6538,6 +6534,14 @@ td {
   display: block;
   margin-top: 4px;
   color: #6b7b8e;
+}
+
+.logistics-table.logistics-measurements-table th,
+.logistics-table.logistics-measurements-table td,
+.logistics-table.logistics-measurements-table td:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .logistics-quality-badge {

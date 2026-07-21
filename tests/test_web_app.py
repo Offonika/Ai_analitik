@@ -5991,8 +5991,14 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
         'id="logistics-products-title"'
     )
-    assert "20260721-logistics-f4-measurements-v1" in cabinet.text
+    assert "20260721-logistics-f4-measurements-v2" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
+    measurement_cell_rule = styles.text.split(
+        ".logistics-table.logistics-measurements-table th,", 1
+    )[1].split("}", 1)[0]
+    assert "min-width: 0" in measurement_cell_rule
+    assert "overflow-wrap: anywhere" in measurement_cell_rule
+    assert "white-space: normal" in measurement_cell_rule
     assert "/freshness" in app_js.text
     assert "/client-draft" in app_js.text
     assert "setTopbarNotice" in app_js.text
