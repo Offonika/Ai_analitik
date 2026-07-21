@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import select
 
 from wb_unit_economics.onec_odata import (
@@ -727,7 +727,7 @@ def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
     assert summary["usnIncomeStatus"] == "source_gap"
 
 
-def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -> None:
+def test_scenario_excel_has_exact_sheets_and_traceable_overview(tmp_path: Path) -> None:
     cases = [
         (
             build_month_close_control_payload(
@@ -759,7 +759,6 @@ def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -
         }
         if payload["reportKind"] == "tax_load":
             assert values["ID отчёта"] == payload["meta"]["reportId"]
-            assert values["SHA-256 отчёта"] == payload_hash
             assert "reportId" not in values
             assert "payloadSha256" not in values
         else:
@@ -770,26 +769,42 @@ def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -
 def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> None:
     payload = build_tax_load_payload(
         _report("tax_load"),
-        tax_profile={},
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "revenueTaxRate": "6",
+        },
         evidence=_tax_evidence(),
     )
     path = tmp_path / "tax-load-russian.xlsx"
-    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    write_scenario_excel(
+        payload,
+        canonical_payload_sha256(payload),
+        path,
+        export_context={
+            "clientName": "Клиент А",
+            "organizationName": "ИП Клиент А",
+        },
+    )
+    workbook = load_workbook(path, data_only=True)
 
     overview = {
         row[0]: row[1]
         for row in workbook["Обзор"].iter_rows(values_only=True)
         if row[0]
     }
+    assert overview["Клиент"] == "Клиент А"
+    assert overview["Организация 1С"] == "ИП Клиент А"
     assert overview["Вид отчёта"] == "Налоговая нагрузка"
+    assert overview["Налоговый режим"] == "УСН «Доходы»"
+    assert overview["Статус налогового профиля"] == "Готово"
     assert overview["Статус отчёта"] == "Нужна проверка бухгалтера"
-    assert overview["Статус сравнения"] == "Ожидает подтверждения методики"
-    assert overview["Начало отчётного периода"] == "01.01.2026"
+    assert overview["Подтверждение бухгалтера"] == "Не подтверждено"
+    assert overview["Начало отчётного периода"].date() == date(2026, 1, 1)
+    assert overview["Начало периода с начала года"].date() == date(2026, 1, 1)
 
     taxes = list(workbook["Налоги"].iter_rows(values_only=True))
     assert taxes[0] == (
-        "Код налога",
         "Налог",
         "Период",
         "Налоговая база",
@@ -797,34 +812,48 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
         "Уплачено",
         "Сальдо",
         "Срок уплаты",
-        "Статус значения",
-        "Статус подтверждения",
-        "Источник",
-        "Код замечания",
-        "Вид платежа",
         "Включён в нагрузку ФНС",
         "Причина исключения",
+        "Статус подтверждения",
+        "Источник",
     )
+    assert taxes[1][7] == "Да"
     assert taxes[1][9] == "Загружено"
-    assert taxes[1][12] == "Собственный налог"
-    assert taxes[1][13] == "Да"
-    assert taxes[2][14] == "Агентский платёж"
+    assert taxes[2][8] == "Агентский платёж"
+    assert "Код налога" not in taxes[0]
+    assert "Код замечания" not in taxes[0]
 
-    coverage = list(
-        workbook["Источники и статус"].iter_rows(values_only=True)
-    )
+    coverage = list(workbook["Источники и статус"].iter_rows(values_only=True))
     assert coverage[0] == (
         "Источник",
         "Начало отчётного периода",
         "Окончание отчётного периода",
         "Статус",
-        "ID снимка",
     )
     assert coverage[1][0] == "Налоговый учёт 1С"
     assert coverage[1][3] == "Загружено"
+    assert "ID снимка" not in coverage[0]
+
+    assert workbook["Налоги"].freeze_panes == "A2"
+    assert workbook["Налоги"].sheet_view.showGridLines is False
+    tax_table = next(iter(workbook["Налоги"].tables.values()))
+    assert tax_table.tableStyleInfo.name == "TableStyleMedium2"
+    assert tax_table.autoFilter is not None
+
+    paid_column = taxes[0].index("Уплачено") + 1
+    paid_cell = workbook["Налоги"].cell(row=2, column=paid_column)
+    assert paid_cell.data_type == "n"
+    assert "₽" in paid_cell.number_format
+    ratio_row = next(
+        row
+        for row in workbook["Обзор"].iter_rows()
+        if row[0].value == "Налоговая нагрузка по методике ФНС, %"
+    )
+    assert ratio_row[1].data_type == "n"
+    assert "%" in ratio_row[1].number_format
 
 
-def test_tax_load_excel_fails_closed_for_untranslated_field(tmp_path: Path) -> None:
+def test_tax_load_excel_ignores_unapproved_internal_field(tmp_path: Path) -> None:
     payload = build_tax_load_payload(
         _report("tax_load"),
         tax_profile={},
@@ -832,12 +861,19 @@ def test_tax_load_excel_fails_closed_for_untranslated_field(tmp_path: Path) -> N
     )
     payload["taxLoadSummary"]["futureInternalField"] = "internal_value"
 
-    with pytest.raises(ValueError, match="Excel label is missing"):
-        write_scenario_excel(
-            payload,
-            canonical_payload_sha256(payload),
-            tmp_path / "tax-load-untranslated.xlsx",
-        )
+    path = tmp_path / "tax-load-untranslated.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    values = {
+        value
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows(values_only=True)
+        for value in row
+        if value is not None
+    }
+
+    assert "futureInternalField" not in values
+    assert "internal_value" not in values
 
 
 def test_tax_load_excel_hides_unknown_enum_value(tmp_path: Path) -> None:
@@ -858,6 +894,45 @@ def test_tax_load_excel_hides_unknown_enum_value(tmp_path: Path) -> None:
 
     assert overview["Статус отчёта"] == "Не определено"
     assert "future_internal_status" not in overview.values()
+
+
+def test_tax_load_excel_neutralizes_formula_text(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["taxRows"][0]["taxName"] = '=HYPERLINK("https://example.test")'
+    path = tmp_path / "tax-load-safe-text.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=False)
+    cell = workbook["Налоги"].cell(row=2, column=1)
+
+    assert cell.value.startswith("=HYPERLINK")
+    assert cell.data_type == "s"
+
+
+def test_scenario_excel_atomic_save_preserves_previous_file_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    path = tmp_path / "tax-load-atomic.xlsx"
+    path.write_bytes(b"previous-complete-file")
+
+    def fail_save(_workbook: Workbook, temporary_path: Path) -> None:
+        Path(temporary_path).write_bytes(b"partial")
+        raise RuntimeError("simulated save failure")
+
+    monkeypatch.setattr(Workbook, "save", fail_save)
+    with pytest.raises(RuntimeError, match="simulated save failure"):
+        write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+
+    assert path.read_bytes() == b"previous-complete-file"
+    assert not list(tmp_path.glob(".tax-load-atomic-*.xlsx"))
 
 
 def test_fns_2025_reference_is_versioned_and_comparison_disabled() -> None:
@@ -1029,6 +1104,38 @@ def _complete_generation(
         generation = db.get(SourceRefreshRun, generation_run_id)
         assert generation is not None
         user = db.scalar(select(User).where(User.email == "admin@example.com"))
+        base_tax_profile = db.get(OrganizationTaxProfile, "tax-profile-1")
+        if (
+            base_tax_profile is not None
+            and base_tax_profile.organization_id == generation.organization_id
+        ):
+            db.add(
+                OrganizationTaxProfile(
+                    id=f"tax-profile-{generation.id}",
+                    tenant_id=base_tax_profile.tenant_id,
+                    client_id=base_tax_profile.client_id,
+                    client_company_id=base_tax_profile.client_company_id,
+                    organization_id=base_tax_profile.organization_id,
+                    tax_system=base_tax_profile.tax_system,
+                    vat_rate=base_tax_profile.vat_rate,
+                    vat_mode=base_tax_profile.vat_mode,
+                    vat_deduction_mode=base_tax_profile.vat_deduction_mode,
+                    revenue_tax_rate=base_tax_profile.revenue_tax_rate,
+                    income_tax_kind=base_tax_profile.income_tax_kind,
+                    valid_from=base_tax_profile.valid_from,
+                    valid_to=base_tax_profile.valid_to,
+                    source=base_tax_profile.source,
+                    rate_basis_kind=base_tax_profile.rate_basis_kind,
+                    basis_document=base_tax_profile.basis_document,
+                    confirmed_by=base_tax_profile.confirmed_by,
+                    source_object_ids=base_tax_profile.source_object_ids,
+                    source_refresh_run_id=generation.id,
+                    source_snapshot_hash=base_tax_profile.source_snapshot_hash,
+                    methodology_version=base_tax_profile.methodology_version,
+                    status=base_tax_profile.status,
+                    created_at=repository.security.utcnow(),
+                )
+            )
         repository.add_source_refresh_collection(
             db,
             generation,
@@ -1171,6 +1278,20 @@ def test_staff_api_generation_idempotency_current_audit_and_excel(
         other_organization.json()["generationRunId"],
         {**_month_close_evidence(), "organizationId": "ORG-2"},
     )
+    tax_export = client.get(f"/api/reports/{other_kind_report_id}/export.xlsx")
+    assert tax_export.status_code == 200
+    assert "xlsx" in tax_export.headers["content-disposition"]
+    tax_workbook = load_workbook(BytesIO(tax_export.content), data_only=True)
+    tax_overview = {
+        row[0]: row[1]
+        for row in tax_workbook["Обзор"].iter_rows(values_only=True)
+        if row[0]
+    }
+    assert tax_overview["Клиент"] == "Клиент А"
+    assert tax_overview["Организация 1С"] == "ООО Клиент А"
+    assert tax_overview["Налоговый режим"] == "ОСНО"
+    assert tax_overview["Начало периода с начала года"].date() == date(2026, 1, 1)
+    assert "Код налога" not in {cell.value for cell in tax_workbook["Налоги"][1]}
 
     with session_factory() as db:
         reports = list(

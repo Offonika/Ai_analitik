@@ -62,7 +62,12 @@ from wb_unit_economics.web.database import (
     make_session_factory,
     schema_version,
 )
-from wb_unit_economics.web.models import ReportRun, SourceRefreshRun, User
+from wb_unit_economics.web.models import (
+    ClientCompany,
+    ReportRun,
+    SourceRefreshRun,
+    User,
+)
 from wb_unit_economics.web.refresh import (
     AutoRefreshBusyError,
     AutoRefreshDisabledError,
@@ -3652,7 +3657,25 @@ def create_app(
                     status_code=400, detail="export path is outside reports"
                 )
             path = output_dir / f"{_safe_path_segment(report.id)}.xlsx"
-            write_scenario_excel(payload, payload_sha256, path)
+            company = db.scalar(
+                select(ClientCompany)
+                .where(
+                    ClientCompany.tenant_id == report.tenant_id,
+                    ClientCompany.client_id == report.client_id,
+                    ClientCompany.onec_organization_id == report.organization_id,
+                )
+                .order_by(ClientCompany.status != "active", ClientCompany.id)
+                .limit(1)
+            )
+            write_scenario_excel(
+                payload,
+                payload_sha256,
+                path,
+                export_context={
+                    "clientName": report.client_name,
+                    "organizationName": company.display_name if company else "",
+                },
+            )
             repository.audit(
                 db,
                 action="report_exported",
@@ -3671,7 +3694,11 @@ def create_app(
                 media_type=(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 ),
-                filename=f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx",
+                filename=(
+                    f"Налоговая_нагрузка_{report.period_start:%Y_%m}.xlsx"
+                    if report.report_kind == "tax_load"
+                    else f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx"
+                ),
             )
         if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
             _require_staff_or_403(current, report.tenant_id)
