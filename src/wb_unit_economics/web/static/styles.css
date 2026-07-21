@@ -7511,7 +7511,11 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
     overflow: visible;
   }
 
-  .logistics-dimensions-table,
+  .logistics-dimensions-table {
+    display: block;
+    width: 100%;
+  }
+
   .logistics-dimensions-table tbody {
     display: grid;
     gap: 10px;
@@ -7569,7 +7573,11 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
     overflow: visible;
   }
 
-  .logistics-tariffs-table,
+  .logistics-tariffs-table {
+    display: block;
+    width: 100%;
+  }
+
   .logistics-tariffs-table tbody {
     display: grid;
     gap: 10px;
