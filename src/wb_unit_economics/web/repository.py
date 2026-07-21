@@ -33,6 +33,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
 
 from wb_unit_economics.calculation import (
+    tax_profile_is_configured,
     tax_profile_is_confirmed,
     tax_profile_is_osno,
 )
@@ -2474,7 +2475,7 @@ def _client_companies_payload(db: Session, client: Client) -> list[dict[str, Any
             company=item,
             calculation_date=security.utcnow().date(),
         )
-        if profile is not None and not tax_profile_is_confirmed(profile):
+        if profile is not None and not tax_profile_is_configured(profile):
             profile_status = {
                 **profile_status,
                 "status": "unconfirmed",
@@ -2516,6 +2517,9 @@ def _client_companies_payload(db: Session, client: Client) -> list[dict[str, Any
                     else None
                 ),
                 "taxProfileManualOverride": bool(profile_status.get("manualOverride")),
+                "taxCalculationSupported": (
+                    tax_profile_is_confirmed(profile) if profile else False
+                ),
             }
         )
     return result
@@ -3311,9 +3315,10 @@ def _tax_profile_payload_for_generation(
             "elevatedTaxRate": override.elevated_tax_rate,
             "profileStatus": (
                 "ready"
-                if tax_profile_is_confirmed(override_contract)
+                if tax_profile_is_configured(override_contract)
                 else "unconfirmed"
             ),
+            "calculationSupported": tax_profile_is_confirmed(override_contract),
             "vatRate": override.vat_rate,
             "vatMode": override.vat_mode,
             "vatDeductionMode": override.vat_deduction_mode,
@@ -3362,8 +3367,9 @@ def _tax_profile_payload_for_generation(
         "taxRate": profile.tax_rate,
         "elevatedTaxRate": profile.elevated_tax_rate,
         "profileStatus": (
-            "ready" if tax_profile_is_confirmed(profile_contract) else "unconfirmed"
+            "ready" if tax_profile_is_configured(profile_contract) else "unconfirmed"
         ),
+        "calculationSupported": tax_profile_is_confirmed(profile_contract),
         "vatRate": profile.vat_rate,
         "vatMode": profile.vat_mode,
         "vatDeductionMode": profile.vat_deduction_mode,
@@ -20674,9 +20680,10 @@ def _company_tax_profiles_for_period(
         check["basisDocument"] = profile.basis_document
         check["confirmedBy"] = profile.confirmed_by
         check["sourceObjectIds"] = profile.source_object_ids
-        confirmed = tax_profile_is_confirmed(profile)
-        check["confirmed"] = confirmed
-        if not confirmed:
+        configured = tax_profile_is_configured(profile)
+        check["confirmed"] = configured
+        check["calculationSupported"] = tax_profile_is_confirmed(profile)
+        if not configured:
             check["status"] = "unconfirmed"
             ready = False
         profiles_by_signature.setdefault(_tax_profile_signature(profile), profile)

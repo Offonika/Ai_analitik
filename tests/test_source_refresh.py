@@ -5657,7 +5657,9 @@ def test_accounting_evidence_snapshot_query_uses_run_collection_index(
     snapshot_where = str(db.statements[1]).partition("WHERE")[2]
     assert "source_snapshot_rows.refresh_run_id" in snapshot_where
     assert "source_snapshot_rows.collection_id" in snapshot_where
-def test_source_refresh_builds_unconfirmed_usn_expense_profile_from_settings(
+
+
+def test_source_refresh_builds_configured_usn_expense_profile_from_settings(
     tmp_path: Path,
 ) -> None:
     _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
@@ -5747,10 +5749,10 @@ def test_source_refresh_builds_unconfirmed_usn_expense_profile_from_settings(
             refresh_run=run,
         )
 
-    assert tax_collection.status == "needs_review"
+    assert tax_collection.status == "loaded"
     assert tax_collection.payload["configuredCompanyCount"] == 1
-    assert tax_collection.payload["profileCount"] == 0
-    assert tax_collection.payload["unconfirmedProfileCount"] == 1
+    assert tax_collection.payload["profileCount"] == 1
+    assert tax_collection.payload["unconfirmedProfileCount"] == 0
     assert source_profile.tax_system == "УСН Доходы минус расходы"
     assert source_profile.tax_object == "income_minus_expenses"
     assert source_profile.tax_rate == Decimal("15")
@@ -5761,6 +5763,8 @@ def test_source_refresh_builds_unconfirmed_usn_expense_profile_from_settings(
     assert source_profile.source == "1C:tax_system_settings+vat_settings"
     assert resolved_profile is not None
     assert resolved_status["status"] == "ready"
+
+
 def test_source_refresh_blocks_conflicting_active_run_with_status(
     tmp_path: Path,
 ) -> None:

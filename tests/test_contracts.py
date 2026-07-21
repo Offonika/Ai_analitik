@@ -507,8 +507,9 @@ def test_tax_profile_uses_effective_periodic_onec_settings_per_organization() ->
     assert profile.revenue_tax_rate == Decimal("0")
     assert profile.valid_from == date(2026, 1, 1)
     assert profile.source == "1C:tax_system_settings+vat_settings"
-    assert diagnostic["status"] == "unconfirmed"
+    assert diagnostic["status"] == "ready"
     assert diagnostic["derivedProfile"]["taxRate"] == "15"
+    assert diagnostic["derivedProfile"]["calculationSupported"] is False
 
 
 def test_periodic_onec_usn_income_profile_uses_rate_as_revenue_fraction() -> None:
