@@ -58,6 +58,18 @@ def fns_tax_burden_ratio(paid_taxes: object, income: object) -> Decimal | None:
     )
 
 
+def _is_usn_income_tax_system(value: object) -> bool:
+    normalized = str(value or "").strip().casefold()
+    is_usn = (
+        "usn" in normalized
+        or "усн" in normalized
+        or "упрощ" in normalized
+    )
+    has_income = "income" in normalized or "доход" in normalized
+    has_expenses = "expense" in normalized or "расход" in normalized
+    return is_usn and has_income and not has_expenses
+
+
 def fns_paid_taxes_numerator(tax_rows: object) -> Decimal | None:
     """Sum only classified own taxes; never treat unclassified data as zero."""
 
@@ -269,8 +281,7 @@ def build_tax_load_payload(
     # НДС из поступлений (для ИП, у которого нет отчета о финансовых результатах;
     # spec: Tax Methodology Boundary, решение от 21.07.2026). Официальный
     # fns_tax_burden_ratio при этом не подменяется.
-    tax_system = str(profile.get("taxSystem") or "").strip().lower()
-    is_usn = tax_system.startswith("usn")
+    is_usn = _is_usn_income_tax_system(profile.get("taxSystem"))
     usn_income_value: str | None = None
     usn_income_ratio: Decimal | None = None
     usn_income_evidence = evidence.get("usnIncomeEvidence")

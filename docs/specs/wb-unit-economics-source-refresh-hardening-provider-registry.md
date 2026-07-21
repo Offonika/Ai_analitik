@@ -54,7 +54,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Implementation Status
@@ -585,6 +585,9 @@ mutual-settlement сохраняет документные строки, а buy
 - Автоочистка failed snapshots сохраняет минимум два последних failed runs и
   не выходит за direct children `source_refresh_root`.
 - Non-SQLite SQLAlchemy engine использует `pool_pre_ping` и `pool_recycle`.
+- DB reader нормализованного evidence ограничивает `source_snapshot_rows`
+  одновременно по `refresh_run_id` и `collection_id`, используя позиционный
+  индекс snapshot вместо полного сканирования таблицы.
 - Тесты, ruff, docs validators и no-secrets validators проходят.
 - Таймаут тяжелой 1С страницы уменьшает batch без потери уже сохраненных
   страниц; следующий совместимый run продолжает с checkpoint без дублей.
@@ -615,6 +618,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-21: accounting evidence reader привязан к паре
+  `refresh_run_id + collection_id`, чтобы использовать существующий индекс и
+  не упираться в statement timeout на накопленной snapshot-таблице.
 - 2026-07-20: accepted fail-closed Ozon typed rollout with a dedicated flag,
   post-collector atomic promotion, stable fallback grain, logical-row limits,
   full legacy/file parity qualification and verified multi-format restore.

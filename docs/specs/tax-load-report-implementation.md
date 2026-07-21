@@ -14,9 +14,12 @@ related_code:
   - src/wb_unit_economics/config.py
   - src/wb_unit_economics/onec_odata.py
   - src/wb_unit_economics/web/models.py
+  - src/wb_unit_economics/web/reports/builders.py
+  - src/wb_unit_economics/web/reports/evidence.py
   - src/wb_unit_economics/web/repository.py
 related_tests:
   - tests/test_onec_month_close_audit_pack.py
+  - tests/test_multi_report_cabinet.py
   - tests/test_web_database.py
   - tests/test_web_app.py
 contracts:
@@ -489,6 +492,9 @@ checks и клиентскую публикацию, но не accepted staff-on
 
 # Changelog
 
+- 2026-07-21: `usn_income_tax_burden` распознает как legacy-код
+  `usn_income`, так и канонический профиль 1С `УСН Доходы`; профиль
+  `УСН Доходы минус расходы` не использует показатель режима «доходы».
 - 2026-07-21: принято решение Фазы 0 по знаменателю для ИП на УСН (подтверждено
   бухгалтером) — доход по УСН без НДС из фактических поступлений (по образцу
   «Образец УСН доходы») как отдельно названный управленческий показатель

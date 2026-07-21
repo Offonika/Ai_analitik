@@ -5622,6 +5622,43 @@ def test_source_refresh_builds_usn_profile_from_accounting_evidence(
     assert source_profile.confirmed_by == "Бухгалтер"
 
 
+def test_accounting_evidence_snapshot_query_uses_run_collection_index(
+    tmp_path: Path,
+) -> None:
+    collection = SimpleNamespace(
+        id=17,
+        source_type="onec_kudir",
+        status="loaded",
+        snapshot_hash="kudir-sha",
+        raw_path="",
+    )
+    row = SimpleNamespace(row_payload={"Ref_Key": "row-1"})
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.statements: list[object] = []
+
+        def scalars(self, statement: object) -> list[object]:
+            self.statements.append(statement)
+            return [collection] if len(self.statements) == 1 else [row]
+
+    db = RecordingSession()
+    service = SourceRefreshService(
+        WebSettings(source_refresh_root=str(tmp_path / "source-refresh"))
+    )
+
+    sources = service._accounting_evidence_sources(
+        db,
+        SimpleNamespace(id="generation-1"),
+        tmp_path,
+    )
+
+    assert sources["onec_kudir"].rows == ({"Ref_Key": "row-1"},)
+    snapshot_where = str(db.statements[1]).partition("WHERE")[2]
+    assert "source_snapshot_rows.refresh_run_id" in snapshot_where
+    assert "source_snapshot_rows.collection_id" in snapshot_where
+
+
 def test_source_refresh_blocks_conflicting_active_run_with_status(
     tmp_path: Path,
 ) -> None:

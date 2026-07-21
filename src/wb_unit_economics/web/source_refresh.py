@@ -1001,7 +1001,10 @@ class SourceRefreshService:
                 row.row_payload or {}
                 for row in db.scalars(
                     select(SourceSnapshotRow)
-                    .where(SourceSnapshotRow.collection_id == collection.id)
+                    .where(
+                        SourceSnapshotRow.refresh_run_id == generation.id,
+                        SourceSnapshotRow.collection_id == collection.id,
+                    )
                     .order_by(SourceSnapshotRow.row_number)
                 )
             ]
