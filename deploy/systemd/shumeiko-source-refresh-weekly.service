@@ -9,6 +9,7 @@ Type=oneshot
 WorkingDirectory=/opt/shumeyko-runtime/prod/current
 EnvironmentFile=/etc/shumeiko-web-prod.env
 Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko
+Environment=SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20
 ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode full --reason "systemd weekly full source refresh"
 MemoryHigh=512M
 MemoryMax=1G

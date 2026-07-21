@@ -1,0 +1,18 @@
+[Unit]
+Description=Archive old Shumeyko source snapshots to versioned S3
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+RequiresMountsFor=/data/shumeyko/source_refresh
+ConditionPathIsDirectory=/data/shumeyko/source_refresh
+ConditionPathExists=/root/.config/shumeyko/s3-backup.json
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/archive_source_refresh_snapshots.py archive-eligible --apply --evict --min-age-hours 48 --keep-daily 3 --keep-full 2 --max-snapshots 1
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=12h
+NoNewPrivileges=true
+PrivateTmp=true
