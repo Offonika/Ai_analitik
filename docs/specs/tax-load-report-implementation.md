@@ -24,6 +24,18 @@ related_tests:
   - tests/test_web_app.py
 contracts:
   - tax_load_report
+ai_sections:
+  status: "Статус документа"
+  goal: "Goal"
+  scope: "Scope"
+  period: "Period Model"
+  sources: "Read-Only Sources"
+  methodology: "Tax Methodology Boundary"
+  ui: "Web Scenario"
+  reconciliation: "Reconciliation Rules"
+  acceptance: "Acceptance Criteria"
+  tests: "Test Plan"
+  rollout: "Rollout And Rollback"
 depends_on:
   - docs/specs/multi-report-cabinet-implementation.md
   - docs/decisions/2026-07-10-tax-profiles-osno-profit.md
@@ -215,6 +227,15 @@ fns_tax_burden_ratio =
 `included_in_fns_tax_burden` и при исключении `exclusion_reason`. Если строка
 не классифицирована, сумма не включается молча: сводный числитель и коэффициент
 остаются `null` до уточнения.
+
+Если отдельная расшифровка платежей на ЕНС пуста, подтвержденным fallback могут
+быть проведенные и не удаленные банковские документы 1С с
+`ВидОперации = Налоги` за период с начала года. Fallback применяется только
+к YTD-числителю и только когда каждое назначение
+однозначно классифицировано, все собственные налоговые строки сопоставлены и
+для каждого класса есть ровно одна агрегированная строка отчета. НДФЛ,
+страховые взносы, неоднозначные или несопоставленные документы сохраняют
+числитель и коэффициент `null`.
 
 Источники методики:
 
@@ -492,6 +513,9 @@ checks и клиентскую публикацию, но не accepted staff-on
 
 # Changelog
 
+- 2026-07-21: при пустой расшифровке ЕНС разрешен fail-closed fallback на
+  проведенные банковские документы `ВидОперации = Налоги` за YTD; неполная
+  или неоднозначная классификация по-прежнему оставляет числитель `null`.
 - 2026-07-21: `usn_income_tax_burden` распознает как legacy-код
   `usn_income`, так и канонический профиль 1С `УСН Доходы`; профиль
   `УСН Доходы минус расходы` не использует показатель режима «доходы».
