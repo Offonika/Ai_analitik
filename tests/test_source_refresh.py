@@ -1441,6 +1441,292 @@ def test_route_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> None
     assert len(selection.route_rows) == 1
 
 
+@pytest.mark.parametrize(
+    "source_type",
+    ["wb_measurement_penalties", "wb_warehouse_measurements"],
+)
+def test_measurement_snapshot_db_and_file_authoritative_are_equivalent(
+    tmp_path: Path,
+    source_type: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        rows = [_measurement_source_row(source_type)]
+        db_run, _, _ = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id=f"{source_type}-db",
+            cabinet_id=cabinet_id,
+            source_type=source_type,
+            rows=rows,
+            file_authoritative=False,
+        )
+        file_run, _, _ = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id=f"{source_type}-file",
+            cabinet_id=cabinet_id,
+            source_type=source_type,
+            rows=rows,
+            file_authoritative=True,
+        )
+
+        db_selection = source_refresh._select_measurement_snapshot(
+            db, report, roles=[(0, db_run)], source_type=source_type
+        )
+        file_selection = source_refresh._select_measurement_snapshot(
+            db, report, roles=[(0, file_run)], source_type=source_type
+        )
+
+    assert db_selection.blocking_reasons == ()
+    assert file_selection.blocking_reasons == ()
+    assert db_selection.measurement_rows == file_selection.measurement_rows
+    assert db_selection.source_row_count == file_selection.source_row_count == 1
+    assert db_selection.provider_event_count == 1
+    assert db_selection.complete is True
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("database_hash", "measurement_penalties_source_payload_hash_mismatch"),
+        ("database_row_count", "measurement_penalties_database_row_count_mismatch"),
+        ("snapshot_hash", "measurement_penalties_source_snapshot_hash_mismatch"),
+        ("provider_total", "measurement_penalties_source_provider_total_mismatch"),
+        ("tenant_scope", "measurement_penalties_source_scope_mismatch"),
+        ("window", "measurement_penalties_source_window_mismatch"),
+        ("unverified_manifest", "measurement_penalties_raw_snapshot_invalid"),
+        ("storage_ambiguity", "measurement_penalties_source_storage_ambiguity"),
+        ("file_tamper", "measurement_penalties_file_snapshot_invalid"),
+        ("path_traversal", "measurement_penalties_file_snapshot_invalid"),
+    ],
+)
+def test_measurement_snapshot_integrity_failures_are_blocking(
+    tmp_path: Path,
+    failure: str,
+    expected_code: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    source_type = "wb_measurement_penalties"
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        file_authoritative = failure in {
+            "storage_ambiguity",
+            "file_tamper",
+            "path_traversal",
+        }
+        run, collection, flat_path = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id=f"measurement-{failure}",
+            cabinet_id=cabinet_id,
+            source_type=source_type,
+            rows=[_measurement_source_row(source_type)],
+            file_authoritative=file_authoritative,
+        )
+        if failure == "database_hash":
+            db.query(SourceSnapshotRow).filter_by(
+                collection_id=collection.id
+            ).one().raw_payload_hash = "changed"
+        elif failure == "database_row_count":
+            db.query(SourceSnapshotRow).filter_by(
+                collection_id=collection.id
+            ).delete()
+        elif failure == "snapshot_hash":
+            collection.snapshot_hash = "changed"
+        elif failure == "provider_total":
+            results = [
+                {**collection.payload["results"][0], "providerTotal": 2}
+            ]
+            collection.snapshot_hash = source_refresh._hash_payload(results)
+            collection.payload = {**collection.payload, "results": results}
+        elif failure == "tenant_scope":
+            collection.tenant_id = "other"
+        elif failure == "window":
+            collection.payload = {
+                **collection.payload,
+                "coverageStart": "2026-04-02",
+            }
+        elif failure == "unverified_manifest":
+            collection.payload = {
+                **collection.payload,
+                "rawIntegrity": {"status": "failed"},
+            }
+        elif failure == "storage_ambiguity":
+            row = {
+                **_measurement_source_row(source_type),
+                "measurement_source_type": source_type,
+            }
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=1,
+                raw_payload_hash=source_refresh._hash_payload(row),
+                source_row_id="measurement-1",
+                wb_cabinet_id=cabinet_id,
+                row_payload=row,
+            )
+        elif failure == "file_tamper":
+            flat_path.write_text(json.dumps([]), encoding="utf-8")
+        elif failure == "path_traversal":
+            results = list(collection.payload["results"])
+            results[0] = {
+                **results[0],
+                "flatOutputFile": "../measurements.flat.json",
+            }
+            collection.snapshot_hash = source_refresh._hash_payload(results)
+            collection.payload = {**collection.payload, "results": results}
+
+        selection = source_refresh._select_measurement_snapshot(
+            db,
+            report,
+            roles=[(0, run)],
+            source_type=source_type,
+        )
+
+    assert selection.measurement_rows == ()
+    assert expected_code in selection.blocking_reasons
+
+
+def test_measurement_snapshot_precedence_partial_and_context_build(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        report.publication_status = "draft"
+        report.is_current = False
+        unit_row = db.query(repository.ReportUnitRow).one()
+        cabinet_id = unit_row.wb_cabinet_id
+        primary, primary_collection, _ = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="measurement-primary",
+            cabinet_id=cabinet_id,
+            source_type="wb_measurement_penalties",
+            rows=[_measurement_source_row("wb_measurement_penalties")],
+            file_authoritative=False,
+        )
+        base, _, _ = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="measurement-base",
+            cabinet_id=cabinet_id,
+            source_type="wb_measurement_penalties",
+            rows=[
+                {
+                    **_measurement_source_row("wb_measurement_penalties"),
+                    "penalty_amount": "20",
+                }
+            ],
+            file_authoritative=False,
+        )
+        peer, _, _ = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="measurement-peer",
+            cabinet_id=cabinet_id,
+            source_type="wb_measurement_penalties",
+            rows=[
+                {
+                    **_measurement_source_row("wb_measurement_penalties"),
+                    "penalty_amount": "30",
+                }
+            ],
+            file_authoritative=False,
+        )
+        warehouse_run, _, _ = _add_measurement_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="measurement-warehouse",
+            cabinet_id=cabinet_id,
+            source_type="wb_warehouse_measurements",
+            rows=[_measurement_source_row("wb_warehouse_measurements")],
+            file_authoritative=False,
+        )
+
+        selected = source_refresh._select_measurement_snapshot(
+            db,
+            report,
+            roles=[(0, primary), (1, base)],
+            source_type="wb_measurement_penalties",
+        )
+        conflicted = source_refresh._select_measurement_snapshot(
+            db,
+            report,
+            roles=[(0, primary), (0, peer)],
+            source_type="wb_measurement_penalties",
+        )
+        assert selected.measurement_rows[0]["penalty_amount"] == "10"
+        assert conflicted.blocking_reasons == (
+            "measurement_penalties_source_revision_conflict",
+        )
+
+        logistics_result = SimpleNamespace(
+            context=SimpleNamespace(data_status="ready"),
+            sku_rows=[
+                SimpleNamespace(
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    wb_cabinet_id=cabinet_id,
+                    client_company_id=unit_row.client_company_id,
+                    scheme="fbo",
+                    product_ref="product-safe",
+                    product="Товар",
+                    nm_id="1001",
+                    source_hash_digest="sku-source-hash",
+                )
+            ],
+        )
+        source_refresh._build_and_persist_logistics_measurements(
+            db,
+            report,
+            logistics_result=logistics_result,
+            contributing_runs=[primary, warehouse_run],
+        )
+        db.flush()
+        context = db.get(repository.ReportLogisticsMeasurementContext, report.id)
+        events = db.query(repository.ReportLogisticsMeasurementRow).all()
+
+        assert report.logistics_measurements_required is True
+        assert context is not None
+        assert context.data_status == "ready"
+        assert context.complete_endpoint_count == 2
+        assert context.source_event_count == 2
+        assert context.provider_event_count == 2
+        assert context.measurement_row_count == 1
+        assert len(events) == 1
+        assert events[0].event_kind == "merged"
+        assert events[0].included_in_financial_kpi is False
+
+        primary_collection.status = "partial_source"
+        partial = source_refresh._select_measurement_snapshot(
+            db,
+            report,
+            roles=[(0, primary)],
+            source_type="wb_measurement_penalties",
+        )
+        assert partial.blocking_reasons == ()
+        assert "measurement_penalties_source_partial" in partial.review_reasons
+        assert partial.complete is False
+
+
 def test_dimension_snapshot_uses_primary_before_base_and_blocks_peer_conflict(
     tmp_path: Path,
 ) -> None:
@@ -7487,6 +7773,147 @@ def _add_route_snapshot(
                 source_row_id=f"route-{row_number}",
                 wb_cabinet_id=cabinet_id,
                 row_payload=row,
+            )
+    return run, collection, flat_path
+
+
+def _measurement_source_row(source_type: str) -> dict[str, object]:
+    common: dict[str, object] = {
+        "nm_id": "1001",
+        "dim_id": "dimension-event-safe",
+        "volume": "2.5",
+        "width": "10",
+        "length": "25",
+        "height": "10",
+    }
+    if source_type == "wb_measurement_penalties":
+        return {
+            **common,
+            "volume_sup": "2",
+            "width_sup": "10",
+            "length_sup": "20",
+            "height_sup": "10",
+            "prc_over": "125",
+            "dt_bonus": "2026-04-07T10:00:00Z",
+            "is_valid": True,
+            "is_valid_dt": "2026-04-07T11:00:00Z",
+            "penalty_amount": "10",
+            "reversal_amount": "0",
+        }
+    return {**common, "dt": "2026-04-07T09:00:00Z"}
+
+
+def _add_measurement_snapshot(
+    db,
+    report,
+    *,
+    settings: WebSettings,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    source_type: str,
+    rows: list[dict[str, object]],
+    file_authoritative: bool,
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="measurement source test",
+        enforce_active_check=False,
+    )
+    run_root = settings.source_refresh_root_path / snapshot_set_id
+    raw_dir = run_root / source_type
+    raw_dir.mkdir(parents=True)
+    run.root_dir = str(run_root)
+    raw_payload = {
+        "dateFrom": f"{report.period_start.isoformat()}T00:00:00Z",
+        "dateTo": f"{report.period_end.isoformat()}T23:59:59Z",
+        "reports": rows,
+        "total": len(rows),
+    }
+    raw_path = raw_dir / "measurements.raw.json"
+    flat_path = raw_dir / "measurements.flat.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    flat_path.write_text(json.dumps(rows), encoding="utf-8")
+    results = [
+        {
+            "sellerAccountId": "WB_ACCOUNT_SAFE",
+            "accountName": "Кабинет",
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 1,
+            "status": "loaded" if rows else "empty_expected",
+            "ok": True,
+            "rowCount": len(rows),
+            "providerTotal": len(rows),
+            "statusCode": 200,
+            "rawPayloadHash": source_refresh._hash_payload(raw_payload),
+            "flatPayloadHash": source_refresh._hash_payload(rows),
+            "outputFile": raw_path.name,
+            "flatOutputFile": flat_path.name,
+            "error": "",
+        }
+    ]
+    factor_snapshot_at = "2026-07-21T12:00:00+00:00"
+    metadata = {
+        "source": source_type,
+        "periodStart": report.period_start.isoformat(),
+        "periodEnd": report.period_end.isoformat(),
+        "coverageStart": report.period_start.isoformat(),
+        "coverageEnd": report.period_end.isoformat(),
+        "factorSnapshotAt": factor_snapshot_at,
+    }
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({**metadata, "results": results}),
+        encoding="utf-8",
+    )
+    payload: dict[str, object] = {
+        "results": results,
+        **{key: value for key, value in metadata.items() if key != "source"},
+    }
+    if file_authoritative:
+        payload["rowPersistence"] = {
+            "status": "file_authoritative",
+            "rawFilesAuthoritative": True,
+        }
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type=source_type,
+        source_label="WB measurements",
+        required=False,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(rows),
+        raw_path=str(raw_dir),
+        payload=payload,
+    )
+    source_refresh._attach_collection_raw_integrity(
+        collection,
+        source_root=settings.source_refresh_root_path,
+    )
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    if not file_authoritative:
+        for row_number, row in enumerate(rows, 1):
+            persisted = {
+                **row,
+                "marketplace": "wb",
+                "measurement_source_type": source_type,
+                "source_output_file": flat_path.name,
+            }
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=row_number,
+                raw_payload_hash=source_refresh._hash_payload(persisted),
+                source_row_id=f"measurement-{row_number}",
+                wb_cabinet_id=cabinet_id,
+                row_payload=persisted,
             )
     return run, collection, flat_path
 

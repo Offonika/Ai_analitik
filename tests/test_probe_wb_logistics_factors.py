@@ -4,6 +4,8 @@ import importlib.util
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 _SPEC = importlib.util.spec_from_file_location(
     "probe_wb_logistics_factors",
     Path(__file__).resolve().parents[1] / "scripts" / "probe_wb_logistics_factors.py",
@@ -51,3 +53,139 @@ def test_endpoints_are_read_only_wb_hosts() -> None:
     for _name, url, _params, _scope in probe.endpoints(date(2026, 7, 19)):
         assert url.startswith("https://")
         assert "wildberries.ru" in url
+
+
+def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days() -> None:
+    endpoints = probe.f4_endpoints(date(2026, 7, 21), days=31)
+
+    assert [item[0] for item in endpoints] == [
+        "measurement_penalties",
+        "warehouse_measurements",
+    ]
+    for _name, url, params in endpoints:
+        assert url.startswith(
+            "https://seller-analytics-api.wildberries.ru/api/analytics/v1/"
+        )
+        assert params["limit"] == 1
+        assert params["offset"] == 0
+        assert params["dateFrom"].endswith("Z")
+        assert params["dateTo"].endswith("Z")
+
+    with pytest.raises(ValueError, match="between 1 and 366"):
+        probe.f4_endpoints(date(2026, 7, 21), days=0)
+
+
+class _Response:
+    def __init__(self, status_code: int, payload=None, *, broken_json: bool = False):
+        self.status_code = status_code
+        self.payload = payload
+        self.broken_json = broken_json
+
+    def json(self):
+        if self.broken_json:
+            raise ValueError("not json")
+        return self.payload
+
+
+def _measurement_penalty_row() -> dict:
+    return {
+        "nmId": 100,
+        "dimId": 200,
+        "prcOver": 125.0,
+        "volume": 2.5,
+        "width": 10,
+        "length": 25,
+        "height": 10,
+        "volumeSup": 2.0,
+        "widthSup": 10,
+        "lengthSup": 20,
+        "heightSup": 10,
+        "dtBonus": "2026-07-01T00:00:00Z",
+        "isValid": True,
+        "isValidDt": "2026-07-01T01:00:00Z",
+        "penaltyAmount": 10,
+        "reversalAmount": 0,
+        "photoUrls": ["RAW_PHOTO_URL"],
+    }
+
+
+def test_f4_response_classifier_checks_envelope_and_required_names_only() -> None:
+    assert (
+        probe.classify_f4_response(
+            "measurement_penalties",
+            _Response(200, {"data": {"reports": [], "total": 0}}),
+        )
+        == "confirmed_empty"
+    )
+    assert (
+        probe.classify_f4_response(
+            "measurement_penalties",
+            _Response(
+                200,
+                {"data": {"reports": [_measurement_penalty_row()], "total": 1}},
+            ),
+        )
+        == "confirmed_nonempty"
+    )
+    assert (
+        probe.classify_f4_response(
+            "measurement_penalties",
+            _Response(200, {"data": {"reports": [], "total": 1}}),
+        )
+        == "schema_mismatch"
+    )
+    assert (
+        probe.classify_f4_response(
+            "measurement_penalties", _Response(200, broken_json=True)
+        )
+        == "schema_mismatch"
+    )
+    assert (
+        probe.classify_f4_response("measurement_penalties", _Response(403))
+        == "access_denied"
+    )
+    assert (
+        probe.classify_f4_response("measurement_penalties", _Response(429))
+        == "unavailable"
+    )
+
+
+def test_f4_status_aggregation_has_no_values_ids_labels_or_counts() -> None:
+    report = probe.aggregate_f4_statuses(
+        {
+            "measurement_penalties": ["confirmed_nonempty", "access_denied"],
+            "warehouse_measurements": ["confirmed_empty", "unavailable"],
+        }
+    )
+
+    assert report["implementationGate"] is True
+    assert report["endpoints"]["measurement_penalties"] == {
+        "schemaConfirmedAny": True,
+        "confirmedEmptyPresent": False,
+        "confirmedNonemptyPresent": True,
+        "accessDeniedPresent": True,
+        "unavailablePresent": False,
+        "schemaMismatchPresent": False,
+    }
+    rendered = str(report)
+    for forbidden in (
+        "RAW_PHOTO_URL",
+        "nmId",
+        "dimId",
+        "provider",
+        "total",
+        "rowCount",
+        "cabinetCount",
+    ):
+        assert forbidden not in rendered
+
+
+def test_f4_schema_mismatch_blocks_implementation_gate() -> None:
+    report = probe.aggregate_f4_statuses(
+        {
+            "measurement_penalties": ["confirmed_nonempty", "schema_mismatch"],
+            "warehouse_measurements": ["confirmed_empty"],
+        }
+    )
+
+    assert report["implementationGate"] is False

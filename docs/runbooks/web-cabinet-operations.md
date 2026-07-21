@@ -738,8 +738,12 @@ SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false
 SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
 SHUMEYKO_LOGISTICS_FACTORS_ENABLED=false
 SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false
+SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=false
+SHUMEYKO_LOGISTICS_MEASUREMENTS_CLIENT_ENABLED=false
 SHUMEYKO_LOGISTICS_TARIFFS_ENABLED=false
 SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED=false
+SHUMEYKO_LOGISTICS_ROUTES_ENABLED=false
+SHUMEYKO_LOGISTICS_ROUTES_CLIENT_ENABLED=false
 ```
 
 Фактическое состояние test/production перед rollout проверяется по
@@ -805,6 +809,37 @@ SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED=false
    обязан вернуть 404, запрос и секция отсутствовать. Production и client
    enable не выполнять.
 
+Для staff-only F-3 «Склады и направления» после F-2 дополнительно:
+
+1. Применить additive migration
+   `2026_07_21_logistics_routes_context_v1` через штатный `init_db`.
+2. Оставить factor master включённым и включить на test только
+   `SHUMEYKO_LOGISTICS_ROUTES_ENABLED=true`; client-флаги factors/routes
+   явно оставить `false`.
+3. Выполнить новый full source refresh из verified `wb_supplier_sales`
+   snapshot, создать immutable draft и проверить
+   `factorMethodologyVersion=wb-logistics-routes-v1` и `/logistics/routes`.
+4. Под staff проверить desktop/mobile блок, exact route evidence и локальную
+   ошибку. Под client API обязан вернуть 404, запрос и секция отсутствовать.
+   Production и client enable не выполнять.
+
+Для staff-only F-4 «Замеры и удержания» после успешного source gate:
+
+1. Применить additive migration
+   `2026_07_21_logistics_measurements_context_v1` через штатный `init_db`.
+2. Оставить factor master включённым и включить на test только
+   `SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=true`;
+   `SHUMEYKO_LOGISTICS_MEASUREMENTS_CLIENT_ENABLED=false`.
+3. Выполнить новый full source refresh. Оба Analytics source type обязаны
+   пройти manifest/hash/row-count/provider-total проверку; недоступный endpoint
+   даёт `partial`, integrity/scope failure — `blocked` context без rows.
+4. Создать новый immutable draft и проверить
+   `factorMethodologyVersion=wb-logistics-measurements-v1`,
+   `/logistics/measurements` и отсутствие повторного учёта сумм в финансовых
+   KPI. Под client API обязан вернуть 404, запрос и секция отсутствовать.
+5. Выполнить browser-приёмку 1440×900 и 390×844 без overflow и
+   console/page/network errors. Production и client enable не выполнять.
+
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
 маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
@@ -818,6 +853,11 @@ order-id и source hashes не должны появляться в API, UI, AI-
 Частичный rollback F-2 —
 `SHUMEYKO_LOGISTICS_TARIFFS_ENABLED=false`; F-1 и первая очередь остаются
 доступными, а required blocker уже созданного draft не снимается.
+Частичный rollback F-3 —
+`SHUMEYKO_LOGISTICS_ROUTES_ENABLED=false`; остальные factor-блоки не меняются.
+Частичный rollback F-4 —
+`SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=false`; F-1/F-2/F-3 и первая очередь
+остаются доступными, а required blocker уже созданного draft не снимается.
 
 # Backup
 

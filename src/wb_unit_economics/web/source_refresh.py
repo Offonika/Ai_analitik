@@ -14,7 +14,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -36,6 +36,7 @@ from wb_unit_economics.contracts import (
 )
 from wb_unit_economics.logistics_analysis import (
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
     LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LogisticsAnalysisResult,
@@ -44,6 +45,7 @@ from wb_unit_economics.logistics_analysis import (
     UnitEconomicsSlice,
     build_dimension_rows,
     build_logistics_analysis,
+    build_measurement_rows,
     build_route_rows,
     build_tariff_rows,
     source_row_from_payload,
@@ -120,6 +122,12 @@ from wb_unit_economics.wb_goods_return import (
     WbGoodsReturnClient,
     WbGoodsReturnExportResult,
     export_wb_goods_return,
+)
+from wb_unit_economics.wb_measurements import (
+    WbMeasurementExportResult,
+    WbMeasurementsClient,
+    export_wb_measurement_penalties,
+    export_wb_warehouse_measurements,
 )
 from wb_unit_economics.wb_stocks import (
     WbStockExportResult,
@@ -387,6 +395,100 @@ def _default_wb_supplier_sales_exporter(
     return results
 
 
+def _default_wb_measurements_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+    source_type: str,
+) -> list[WbMeasurementExportResult]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    start_at = datetime.combine(
+        period_start,
+        datetime.min.time(),
+        tzinfo=MOSCOW_TZ,
+    ).astimezone(UTC)
+    end_at = (
+        datetime.combine(
+            period_end + timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=MOSCOW_TZ,
+        ).astimezone(UTC)
+        - timedelta(microseconds=1)
+    )
+    factor_snapshot_at = datetime.now(tz=UTC)
+    results: list[WbMeasurementExportResult] = []
+    for account in accounts:
+        seller_account_id = str(account.seller_account_id)
+        file_prefix = hashlib.sha256(
+            seller_account_id.encode("utf-8")
+        ).hexdigest()[:12]
+        client = WbMeasurementsClient(api_key=account.api_key)
+        exporter = (
+            export_wb_measurement_penalties
+            if source_type == "wb_measurement_penalties"
+            else export_wb_warehouse_measurements
+        )
+        results.append(
+            exporter(
+                client,
+                output_dir,
+                date_from=start_at,
+                date_to=end_at,
+                seller_account_id=seller_account_id,
+                account_name=str(account.account_name),
+                file_prefix=file_prefix,
+            )
+        )
+    manifest = {
+        "source": source_type,
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "coverageStart": period_start.isoformat(),
+        "coverageEnd": period_end.isoformat(),
+        "factorSnapshotAt": factor_snapshot_at.isoformat(),
+        "results": [_wb_measurement_result_payload(item) for item in results],
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return results
+
+
+def _default_wb_measurement_penalties_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbMeasurementExportResult]:
+    return _default_wb_measurements_exporter(
+        accounts,
+        output_dir,
+        period_start=period_start,
+        period_end=period_end,
+        source_type="wb_measurement_penalties",
+    )
+
+
+def _default_wb_warehouse_measurements_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbMeasurementExportResult]:
+    return _default_wb_measurements_exporter(
+        accounts,
+        output_dir,
+        period_start=period_start,
+        period_end=period_end,
+        source_type="wb_warehouse_measurements",
+    )
+
+
 class SourceRefreshDisabledError(RuntimeError):
     pass
 
@@ -475,6 +577,12 @@ class SourceRefreshService:
         wb_supplier_sales_exporter: Callable[
             ..., list[WbSupplierSalesExportResult]
         ] = _default_wb_supplier_sales_exporter,
+        wb_measurement_penalties_exporter: Callable[
+            ..., list[WbMeasurementExportResult]
+        ] = _default_wb_measurement_penalties_exporter,
+        wb_warehouse_measurements_exporter: Callable[
+            ..., list[WbMeasurementExportResult]
+        ] = _default_wb_warehouse_measurements_exporter,
         ozon_cash_flow_exporter: Callable[..., list[OzonPageResult]] = (
             export_ozon_cash_flow
         ),
@@ -531,6 +639,12 @@ class SourceRefreshService:
         self._wb_tariffs_exporter = wb_tariffs_exporter
         self._wb_goods_return_exporter = wb_goods_return_exporter
         self._wb_supplier_sales_exporter = wb_supplier_sales_exporter
+        self._wb_measurement_penalties_exporter = (
+            wb_measurement_penalties_exporter
+        )
+        self._wb_warehouse_measurements_exporter = (
+            wb_warehouse_measurements_exporter
+        )
         self._ozon_cash_flow_exporter = ozon_cash_flow_exporter
         self._ozon_realization_exporter = ozon_realization_exporter
         self._ozon_realization_posting_exporter = ozon_realization_posting_exporter
@@ -2155,6 +2269,22 @@ class SourceRefreshService:
                 collect=_collect_wb_supplier_sales,
             ),
             SourceCollector(
+                source_type="wb_measurement_penalties",
+                label="WB dimension measurement retentions",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_measurement_penalties,
+            ),
+            SourceCollector(
+                source_type="wb_warehouse_measurements",
+                label="WB warehouse measurements",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_warehouse_measurements,
+            ),
+            SourceCollector(
                 source_type="ozon_finance_cash_flow",
                 label="Ozon financial cash-flow statement",
                 required=False,
@@ -3118,6 +3248,103 @@ class SourceRefreshService:
             db.flush()
             return collection
         _persist_wb_supplier_sales_rows(
+            db,
+            collection,
+            result_items,
+            wb_cabinet_ids=wb_cabinet_ids,
+        )
+        return collection
+
+    def _record_wb_measurements(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        output_dir: Path,
+        results: Iterable[WbMeasurementExportResult],
+        *,
+        source_type: str,
+        wb_cabinet_ids: dict[str, str],
+        period_start: date,
+        period_end: date,
+    ) -> SourceRefreshCollection:
+        if source_type not in {
+            "wb_measurement_penalties",
+            "wb_warehouse_measurements",
+        }:
+            raise ValueError("invalid WB measurement source type")
+        result_items = list(results)
+        payload_items = [
+            _wb_measurement_result_payload(
+                item,
+                wb_cabinet_id=wb_cabinet_ids.get(item.seller_account_id, ""),
+            )
+            for item in result_items
+        ]
+        manifest: Mapping[str, Any] = {}
+        try:
+            loaded = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            if isinstance(loaded, Mapping):
+                manifest = loaded
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        successful = [item for item in result_items if item.ok]
+        failed = [item for item in result_items if not item.ok]
+        status = (
+            "partial_source"
+            if successful and failed
+            else "loaded"
+            if successful
+            else "needs_review"
+        )
+        payload: dict[str, Any] = {
+            "results": payload_items,
+            "periodStart": period_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "coverageStart": str(manifest.get("coverageStart") or ""),
+            "coverageEnd": str(manifest.get("coverageEnd") or ""),
+            "factorSnapshotAt": str(manifest.get("factorSnapshotAt") or ""),
+        }
+        label = (
+            "WB dimension measurement retentions"
+            if source_type == "wb_measurement_penalties"
+            else "WB warehouse measurements"
+        )
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type=source_type,
+            source_label=label,
+            required=False,
+            status=status,
+            snapshot_hash=_hash_payload(payload_items),
+            row_count=sum(item.row_count for item in successful),
+            raw_path=str(output_dir),
+            error_message=(
+                "Some WB measurement sources are unavailable."
+                if successful and failed
+                else "WB measurement source is unavailable."
+                if failed
+                else ""
+            ),
+            payload=payload,
+        )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        if self.settings.source_refresh_raw_db_mode == "files_only":
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "file_authoritative",
+                    "rawFilesAuthoritative": True,
+                },
+            }
+            db.flush()
+            return collection
+        _persist_wb_measurement_rows(
             db,
             collection,
             result_items,
@@ -4309,6 +4536,15 @@ class SourceRefreshService:
                     base_refresh_run=base_refresh_run,
                     contributing_runs=contributing_runs,
                 )
+                if self.settings.logistics_measurements_enabled:
+                    _build_and_persist_logistics_measurements(
+                        db,
+                        report,
+                        logistics_result=logistics_result,
+                        primary_refresh_run=refresh_run,
+                        base_refresh_run=base_refresh_run,
+                        contributing_runs=contributing_runs,
+                    )
                 if self.settings.logistics_tariffs_enabled:
                     _build_and_persist_logistics_tariffs(
                         db,
@@ -4986,6 +5222,59 @@ def _collect_wb_supplier_sales(
         context.refresh_run,
         output_dir,
         results,
+        wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(collection=collection, output_dir=output_dir)
+
+
+def _collect_wb_measurement_penalties(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    return _collect_wb_measurement_source(
+        service,
+        context,
+        source_type="wb_measurement_penalties",
+        exporter=service._wb_measurement_penalties_exporter,
+    )
+
+
+def _collect_wb_warehouse_measurements(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    return _collect_wb_measurement_source(
+        service,
+        context,
+        source_type="wb_warehouse_measurements",
+        exporter=service._wb_warehouse_measurements_exporter,
+    )
+
+
+def _collect_wb_measurement_source(
+    service: SourceRefreshService,
+    context: CollectorContext,
+    *,
+    source_type: str,
+    exporter: Callable[..., list[WbMeasurementExportResult]],
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / source_type
+    results = exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    collection = service._record_wb_measurements(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        source_type=source_type,
         wb_cabinet_ids=context.credentials.wb_cabinet_ids,
         period_start=context.period_start,
         period_end=context.period_end,
@@ -5819,6 +6108,41 @@ def _wb_supplier_sales_result_payload(
         "status": status,
         "ok": item.ok,
         "rowCount": item.row_count,
+        "statusCode": item.status_code,
+        "rawPayloadHash": item.raw_payload_hash,
+        "flatPayloadHash": item.flat_payload_hash,
+        "outputFile": (
+            item.raw_output_path.name if item.raw_output_path else None
+        ),
+        "flatOutputFile": (
+            item.flat_output_path.name if item.flat_output_path else None
+        ),
+        "error": item.error,
+    }
+
+
+def _wb_measurement_result_payload(
+    item: WbMeasurementExportResult,
+    *,
+    wb_cabinet_id: str = "",
+) -> dict[str, Any]:
+    if item.ok:
+        status = "loaded" if item.row_count else "empty_expected"
+    elif item.status_code in {401, 403}:
+        status = "auth_failed"
+    elif item.status_code == 429:
+        status = "rate_limited"
+    else:
+        status = "failed"
+    return {
+        "sellerAccountId": item.seller_account_id,
+        "accountName": item.account_name,
+        "wbCabinetId": wb_cabinet_id,
+        "pageIndex": 1,
+        "status": status,
+        "ok": item.ok,
+        "rowCount": item.row_count,
+        "providerTotal": item.provider_total,
         "statusCode": item.status_code,
         "rawPayloadHash": item.raw_payload_hash,
         "flatPayloadHash": item.flat_payload_hash,
@@ -7106,6 +7430,602 @@ def _dimension_card_scope_errors(
         ):
             return ["dimension_source_scope_mismatch"]
     return []
+
+
+@dataclass(frozen=True)
+class _MeasurementSnapshotSelection:
+    source_type: str
+    measurement_rows: tuple[dict[str, Any], ...] = ()
+    source_snapshot_hash: str = ""
+    source_loaded_at: datetime | None = None
+    factor_snapshot_at: datetime | None = None
+    source_coverage_start: date | None = None
+    source_coverage_end: date | None = None
+    source_row_count: int = 0
+    provider_event_count: int = 0
+    complete: bool = False
+    blocking_reasons: tuple[str, ...] = ()
+    review_reasons: tuple[str, ...] = ()
+
+
+def _build_and_persist_logistics_measurements(
+    db: Session,
+    report: ReportRun,
+    *,
+    logistics_result: LogisticsAnalysisResult,
+    primary_refresh_run: SourceRefreshRun | None = None,
+    base_refresh_run: SourceRefreshRun | None = None,
+    contributing_runs: Iterable[SourceRefreshRun] = (),
+) -> None:
+    roles: list[tuple[int, SourceRefreshRun]] = []
+    if primary_refresh_run is not None:
+        roles.append((0, primary_refresh_run))
+    if base_refresh_run is not None and all(
+        run.id != base_refresh_run.id for _, run in roles
+    ):
+        roles.append((1, base_refresh_run))
+    for run in contributing_runs:
+        if all(existing.id != run.id for _, existing in roles):
+            roles.append((2, run))
+
+    penalty = _select_measurement_snapshot(
+        db,
+        report,
+        roles=roles,
+        source_type="wb_measurement_penalties",
+    )
+    warehouse = _select_measurement_snapshot(
+        db,
+        report,
+        roles=roles,
+        source_type="wb_warehouse_measurements",
+    )
+    selections = (penalty, warehouse)
+    blocking = [
+        reason for selection in selections for reason in selection.blocking_reasons
+    ]
+    review = [
+        reason for selection in selections for reason in selection.review_reasons
+    ]
+    if logistics_result.context.data_status == "blocked":
+        blocking.append("logistics_analysis_blocked")
+    rows = (
+        build_measurement_rows(
+            logistics_result.sku_rows,
+            penalty.measurement_rows,
+            warehouse.measurement_rows,
+        )
+        if not blocking
+        else []
+    )
+
+    unmatched = sum(
+        row["coverage_status"] == "unmatched_product" for row in rows
+    )
+    ambiguous = sum(
+        row["coverage_status"] == "ambiguous_product_scope" for row in rows
+    )
+    invalid = sum(
+        row["coverage_status"] == "invalid_measurement" for row in rows
+    )
+    conflicting = sum(
+        row["coverage_status"] == "conflicting_measurement" for row in rows
+    )
+    matched = sum(bool(row.get("product_ref")) for row in rows)
+    penalty_events = sum(
+        (row.get("penalty_amount") or Decimal("0")) > 0 for row in rows
+    )
+    reversal_events = sum(
+        (row.get("reversal_amount") or Decimal("0")) > 0 for row in rows
+    )
+    warehouse_only = sum(
+        row.get("event_kind") == "warehouse_measurement" for row in rows
+    )
+    for count, reason in (
+        (unmatched, "measurement_product_unmatched"),
+        (ambiguous, "measurement_product_scope_ambiguous"),
+        (invalid, "measurement_values_invalid"),
+        (conflicting, "measurement_values_conflicting"),
+    ):
+        if count:
+            review.append(reason)
+    complete_endpoints = sum(selection.complete for selection in selections)
+    unavailable_endpoints = len(selections) - complete_endpoints
+    if unavailable_endpoints:
+        review.append("measurement_endpoint_incomplete")
+    data_status = "blocked" if blocking else "partial" if review else "ready"
+    factor_times = [
+        selection.factor_snapshot_at
+        for selection in selections
+        if selection.factor_snapshot_at is not None
+    ]
+    factor_snapshot_at = max(factor_times) if factor_times else None
+    scoped_products = {
+        (row.wb_cabinet_id, row.nm_id)
+        for row in logistics_result.sku_rows
+        if row.wb_cabinet_id and row.nm_id
+    }
+    products_with_events = {
+        str(row.get("product_ref")) for row in rows if row.get("product_ref")
+    }
+    input_hash = _hash_payload(
+        {
+            "factorMethodologyVersion": LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
+            "penaltySnapshotHash": penalty.source_snapshot_hash,
+            "warehouseSnapshotHash": warehouse.source_snapshot_hash,
+            "penaltySourceHashes": sorted(
+                str(row.get("source_hash") or "")
+                for row in penalty.measurement_rows
+            ),
+            "warehouseSourceHashes": sorted(
+                str(row.get("source_hash") or "")
+                for row in warehouse.measurement_rows
+            ),
+            "skuSourceHashes": sorted(
+                row.source_hash_digest for row in logistics_result.sku_rows
+            ),
+            "blockingReasons": sorted(set(blocking)),
+            "reviewReasons": sorted(set(review)),
+        }
+    )
+    repository.replace_report_logistics_measurement_analysis(
+        db,
+        report,
+        context={
+            "tenant_id": report.tenant_id,
+            "client_id": report.client_id,
+            "factor_methodology_version": (
+                LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION
+            ),
+            "data_status": data_status,
+            "input_hash": input_hash,
+            "penalty_source_snapshot_hash": penalty.source_snapshot_hash,
+            "warehouse_source_snapshot_hash": warehouse.source_snapshot_hash,
+            "penalty_source_loaded_at": penalty.source_loaded_at,
+            "warehouse_source_loaded_at": warehouse.source_loaded_at,
+            "factor_snapshot_at": factor_snapshot_at,
+            "source_coverage_start": (
+                report.period_start
+                if any(selection.source_coverage_start for selection in selections)
+                else None
+            ),
+            "source_coverage_end": (
+                report.period_end
+                if any(selection.source_coverage_end for selection in selections)
+                else None
+            ),
+            "expected_endpoint_count": len(selections),
+            "complete_endpoint_count": complete_endpoints,
+            "unavailable_endpoint_count": unavailable_endpoints,
+            "source_event_count": sum(
+                selection.source_row_count for selection in selections
+            ),
+            "provider_event_count": sum(
+                selection.provider_event_count for selection in selections
+            ),
+            "measurement_row_count": len(rows),
+            "scoped_product_count": len(scoped_products),
+            "product_with_event_count": len(products_with_events),
+            "matched_event_count": matched,
+            "unmatched_event_count": unmatched,
+            "ambiguous_event_count": ambiguous,
+            "invalid_event_count": invalid,
+            "conflicting_event_count": conflicting,
+            "penalty_event_count": penalty_events,
+            "reversal_event_count": reversal_events,
+            "warehouse_only_event_count": warehouse_only,
+            "blocking_reasons": sorted(set(blocking)),
+            "review_reasons": sorted(set(review)),
+            "created_at": datetime.now(tz=UTC),
+        },
+        rows=rows,
+    )
+
+
+def _select_measurement_snapshot(
+    db: Session,
+    report: ReportRun,
+    *,
+    roles: Iterable[tuple[int, SourceRefreshRun]],
+    source_type: str,
+) -> _MeasurementSnapshotSelection:
+    if source_type not in {
+        "wb_measurement_penalties",
+        "wb_warehouse_measurements",
+    }:
+        raise ValueError("invalid measurement source type")
+    code = (
+        "measurement_penalties"
+        if source_type == "wb_measurement_penalties"
+        else "warehouse_measurements"
+    )
+    candidates: list[tuple[int, SourceRefreshRun, SourceRefreshCollection]] = []
+    for priority, run in roles:
+        for collection in run.collections:
+            if collection.source_type == source_type:
+                candidates.append((priority, run, collection))
+    if not candidates:
+        return _MeasurementSnapshotSelection(
+            source_type=source_type,
+            review_reasons=(f"{code}_source_missing",),
+        )
+    selected_priority = min(item[0] for item in candidates)
+    selected = [item for item in candidates if item[0] == selected_priority]
+    if len({item[2].snapshot_hash for item in selected}) != 1:
+        return _MeasurementSnapshotSelection(
+            source_type=source_type,
+            blocking_reasons=(f"{code}_source_revision_conflict",),
+        )
+    _priority, run, collection = sorted(
+        selected,
+        key=lambda item: (
+            _dimension_loaded_at_timestamp(item[2].loaded_at),
+            item[1].id,
+            item[2].id,
+        ),
+        reverse=True,
+    )[0]
+    if (
+        collection.tenant_id != report.tenant_id
+        or collection.client_id != report.client_id
+    ):
+        return _MeasurementSnapshotSelection(
+            source_type=source_type,
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            blocking_reasons=(f"{code}_source_scope_mismatch",),
+        )
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list) or not all(
+        isinstance(item, Mapping) for item in results
+    ):
+        return _MeasurementSnapshotSelection(
+            source_type=source_type,
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            blocking_reasons=(f"{code}_source_manifest_invalid",),
+        )
+    blocking: list[str] = []
+    review: list[str] = []
+    if _hash_payload(results) != collection.snapshot_hash:
+        blocking.append(f"{code}_source_snapshot_hash_mismatch")
+    try:
+        declared_count = sum(int(item.get("rowCount") or 0) for item in results)
+        provider_total = sum(
+            int(item.get("providerTotal") or 0)
+            for item in results
+            if item.get("ok") is True
+        )
+    except (TypeError, ValueError):
+        declared_count = -1
+        provider_total = -1
+    if declared_count != collection.row_count:
+        blocking.append(f"{code}_source_manifest_row_count_mismatch")
+    for item in results:
+        row_count = item.get("rowCount")
+        item_total = item.get("providerTotal")
+        if item.get("ok") is True and (
+            not isinstance(row_count, int)
+            or isinstance(row_count, bool)
+            or not isinstance(item_total, int)
+            or isinstance(item_total, bool)
+            or item_total != row_count
+        ):
+            blocking.append(f"{code}_source_provider_total_mismatch")
+        if item.get("ok") is not True:
+            review.append(f"{code}_source_unavailable")
+    blocking.extend(_measurement_manifest_scope_errors(db, report, results, code=code))
+
+    period_start = _safe_iso_date(payload.get("periodStart"))
+    period_end = _safe_iso_date(payload.get("periodEnd"))
+    coverage_start = _safe_iso_date(payload.get("coverageStart"))
+    coverage_end = _safe_iso_date(payload.get("coverageEnd"))
+    if (
+        period_start != report.period_start
+        or period_end != report.period_end
+        or coverage_start != report.period_start
+        or coverage_end != report.period_end
+    ):
+        blocking.append(f"{code}_source_window_mismatch")
+    factor_snapshot_at = _safe_aware_datetime(payload.get("factorSnapshotAt"))
+    if factor_snapshot_at is None:
+        blocking.append(f"{code}_factor_snapshot_missing")
+
+    snapshots = list(
+        db.scalars(
+            select(SourceSnapshotRow)
+            .where(
+                SourceSnapshotRow.refresh_run_id == run.id,
+                SourceSnapshotRow.collection_id == collection.id,
+                SourceSnapshotRow.source_type == source_type,
+            )
+            .order_by(SourceSnapshotRow.row_number)
+        )
+    )
+    persistence = payload.get("rowPersistence") or {}
+    file_authoritative = (
+        persistence.get("status")
+        in {"file_authoritative", "skipped_large_snapshot"}
+        and persistence.get("rawFilesAuthoritative") is True
+    )
+    if file_authoritative and snapshots:
+        blocking.append(f"{code}_source_storage_ambiguity")
+    measurement_rows: list[dict[str, Any]] = []
+    if file_authoritative:
+        try:
+            measurement_rows.extend(
+                _iter_file_authoritative_measurement_rows(
+                    collection,
+                    refresh_run=run,
+                    source_type=source_type,
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                )
+            )
+        except (OSError, TypeError, ValueError, RawIntegrityError):
+            blocking.append(f"{code}_file_snapshot_invalid")
+    else:
+        if len(snapshots) != collection.row_count:
+            blocking.append(f"{code}_database_row_count_mismatch")
+        for snapshot in snapshots:
+            row_payload = snapshot.row_payload
+            if not isinstance(row_payload, Mapping):
+                blocking.append(f"{code}_source_payload_invalid")
+                continue
+            if snapshot.raw_payload_hash != _hash_payload(row_payload):
+                blocking.append(f"{code}_source_payload_hash_mismatch")
+                continue
+            if row_payload.get("measurement_source_type") != source_type:
+                blocking.append(f"{code}_source_type_mismatch")
+                continue
+            measurement_rows.append(
+                _measurement_input(
+                    row_payload,
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    wb_cabinet_id=snapshot.wb_cabinet_id,
+                )
+            )
+    try:
+        _verify_measurement_manifest(
+            collection,
+            refresh_run=run,
+            source_type=source_type,
+            expected_metadata={
+                "periodStart": payload.get("periodStart"),
+                "periodEnd": payload.get("periodEnd"),
+                "coverageStart": payload.get("coverageStart"),
+                "coverageEnd": payload.get("coverageEnd"),
+                "factorSnapshotAt": payload.get("factorSnapshotAt"),
+            },
+        )
+    except (OSError, TypeError, ValueError, RawIntegrityError):
+        blocking.append(f"{code}_raw_snapshot_invalid")
+    blocking.extend(
+        _measurement_row_scope_errors(db, report, measurement_rows, code=code)
+    )
+    if collection.status == "partial_source":
+        review.append(f"{code}_source_partial")
+    if collection.status not in {"loaded", "partial_source"}:
+        review.append(f"{code}_source_unavailable")
+    complete = (
+        collection.status == "loaded"
+        and bool(results)
+        and all(item.get("ok") is True for item in results)
+        and not blocking
+    )
+    return _MeasurementSnapshotSelection(
+        source_type=source_type,
+        measurement_rows=tuple(measurement_rows) if not blocking else (),
+        source_snapshot_hash=collection.snapshot_hash,
+        source_loaded_at=collection.loaded_at,
+        factor_snapshot_at=factor_snapshot_at,
+        source_coverage_start=coverage_start,
+        source_coverage_end=coverage_end,
+        source_row_count=len(measurement_rows),
+        provider_event_count=max(provider_total, 0),
+        complete=complete,
+        blocking_reasons=tuple(dict.fromkeys(blocking)),
+        review_reasons=tuple(dict.fromkeys(review)),
+    )
+
+
+def _safe_aware_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _measurement_manifest_scope_errors(
+    db: Session,
+    report: ReportRun,
+    results: Iterable[Mapping[str, Any]],
+    *,
+    code: str,
+) -> list[str]:
+    cabinet_ids = {str(item.get("wbCabinetId") or "").strip() for item in results}
+    if "" in cabinet_ids:
+        return [f"{code}_source_cabinet_missing"]
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
+    for cabinet_id in cabinet_ids:
+        cabinet = cabinets.get(cabinet_id)
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+        ):
+            return [f"{code}_source_scope_mismatch"]
+    return []
+
+
+def _measurement_row_scope_errors(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    code: str,
+) -> list[str]:
+    cabinet_ids = {
+        str(item.get("wb_cabinet_id") or "").strip() for item in rows
+    }
+    if "" in cabinet_ids:
+        return [f"{code}_source_cabinet_missing"]
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
+    for cabinet_id in cabinet_ids:
+        cabinet = cabinets.get(cabinet_id)
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+        ):
+            return [f"{code}_source_scope_mismatch"]
+    return []
+
+
+def _verify_measurement_manifest(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+    source_type: str,
+    expected_metadata: Mapping[str, Any],
+) -> None:
+    payload = collection.payload or {}
+    if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+        raise RawIntegrityError("measurement raw integrity is not verified")
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RawIntegrityError("measurement results are missing")
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    verify_raw_directory(
+        raw_dir,
+        source_type=source_type,
+        source_root=source_root,
+        collection_results=[item for item in results if isinstance(item, Mapping)],
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    manifest = json.loads((raw_dir / "manifest.json").read_text(encoding="utf-8"))
+    if not isinstance(manifest, Mapping) or manifest.get("source") != source_type:
+        raise RawIntegrityError("measurement manifest source mismatch")
+    for field, expected in expected_metadata.items():
+        if manifest.get(field) != expected:
+            raise RawIntegrityError("measurement manifest metadata mismatch")
+
+
+def _iter_file_authoritative_measurement_rows(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+    source_type: str,
+    tenant_id: str,
+    client_id: str,
+) -> Iterable[dict[str, Any]]:
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RawIntegrityError("measurement results are missing")
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    verify_raw_directory(
+        raw_dir,
+        source_type=source_type,
+        source_root=source_root,
+        collection_results=[item for item in results if isinstance(item, Mapping)],
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    count = 0
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise RawIntegrityError("measurement result is not an object")
+        output_name = str(result.get("flatOutputFile") or "").strip()
+        if not output_name:
+            continue
+        if Path(output_name).name != output_name:
+            raise RawIntegrityError("measurement flat output path is unsafe")
+        output_path = (raw_dir / output_name).resolve()
+        if not output_path.is_relative_to(raw_dir.resolve()):
+            raise RawIntegrityError("measurement flat output path is unsafe")
+        rows = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            raise RawIntegrityError("measurement flat rows are not a list")
+        cabinet_id = str(result.get("wbCabinetId") or "").strip()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise RawIntegrityError("measurement row is not an object")
+            count += 1
+            yield _measurement_input(
+                row,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                wb_cabinet_id=cabinet_id,
+            )
+    if count != collection.row_count:
+        raise RawIntegrityError("measurement row count changed")
+
+
+def _measurement_input(
+    payload: Mapping[str, Any],
+    *,
+    tenant_id: str,
+    client_id: str,
+    wb_cabinet_id: str,
+) -> dict[str, Any]:
+    keys = (
+        "nm_id",
+        "dim_id",
+        "prc_over",
+        "volume",
+        "width",
+        "length",
+        "height",
+        "volume_sup",
+        "width_sup",
+        "length_sup",
+        "height_sup",
+        "dt_bonus",
+        "is_valid",
+        "is_valid_dt",
+        "penalty_amount",
+        "reversal_amount",
+        "dt",
+    )
+    normalized = {
+        "tenant_id": tenant_id,
+        "client_id": client_id,
+        "wb_cabinet_id": str(wb_cabinet_id or "").strip(),
+        **{key: payload.get(key) for key in keys},
+    }
+    normalized["source_hash"] = _hash_payload(normalized)
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -8590,6 +9510,58 @@ def _persist_wb_supplier_sales_rows(
                 source_row_id = ":".join(
                     (
                         str(row.get("srid") or ""),
+                        str(row.get("nm_id") or ""),
+                        str(local_index),
+                    )
+                )
+                batch.append(
+                    {
+                        "row_number": row_number,
+                        "raw_payload_hash": _hash_payload(row_payload),
+                        "row_payload": row_payload,
+                        "source_row_id": source_row_id,
+                        "wb_cabinet_id": wb_cabinet_ids.get(
+                            result.seller_account_id,
+                            "",
+                        ),
+                        "loaded_at": collection.loaded_at,
+                    }
+                )
+                row_number += 1
+                _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_wb_measurement_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    results: Iterable[WbMeasurementExportResult],
+    *,
+    wb_cabinet_ids: dict[str, str],
+) -> None:
+    try:
+        row_number = 1
+        batch: list[dict[str, Any]] = []
+        for result in results:
+            if not result.ok or result.flat_output_path is None:
+                continue
+            rows = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("measurement flat rows must be a list")
+            for local_index, row in enumerate(rows, 1):
+                if not isinstance(row, Mapping):
+                    raise ValueError("measurement flat row must be an object")
+                row_payload = {
+                    **row,
+                    "marketplace": "wb",
+                    "measurement_source_type": result.source_type,
+                    "source_output_file": result.flat_output_path.name,
+                }
+                source_row_id = ":".join(
+                    (
+                        str(row.get("dim_id") or ""),
                         str(row.get("nm_id") or ""),
                         str(local_index),
                     )

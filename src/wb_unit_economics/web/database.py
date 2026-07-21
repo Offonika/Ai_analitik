@@ -35,7 +35,10 @@ LOGISTICS_FACTOR_MARTS_SCHEMA_VERSION = "2026_07_19_logistics_factor_marts_v1"
 LOGISTICS_DIMENSIONS_SCHEMA_VERSION = "2026_07_20_logistics_dimensions_context_v1"
 LOGISTICS_TARIFFS_SCHEMA_VERSION = "2026_07_21_logistics_tariffs_context_v1"
 LOGISTICS_ROUTES_SCHEMA_VERSION = "2026_07_21_logistics_routes_context_v1"
-DB_FIRST_SCHEMA_VERSION = LOGISTICS_ROUTES_SCHEMA_VERSION
+LOGISTICS_MEASUREMENTS_SCHEMA_VERSION = (
+    "2026_07_21_logistics_measurements_context_v1"
+)
+DB_FIRST_SCHEMA_VERSION = LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -126,6 +129,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
         _record_schema_migration(engine, LOGISTICS_DIMENSIONS_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_TARIFFS_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_ROUTES_SCHEMA_VERSION)
+        _record_schema_migration(engine, LOGISTICS_MEASUREMENTS_SCHEMA_VERSION)
 
 
 def schema_version(engine: Engine) -> str:
@@ -218,6 +222,9 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
             f"BOOLEAN NOT NULL DEFAULT {bool_default}"
         ),
         "logistics_routes_required": (
+            f"BOOLEAN NOT NULL DEFAULT {bool_default}"
+        ),
+        "logistics_measurements_required": (
             f"BOOLEAN NOT NULL DEFAULT {bool_default}"
         ),
     }

@@ -6,8 +6,8 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Literal
 
 LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
@@ -15,6 +15,7 @@ LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
 LOGISTICS_FACTORS_METHODOLOGY_VERSION = "wb-logistics-factors-v1"
 LOGISTICS_TARIFFS_METHODOLOGY_VERSION = "wb-logistics-tariffs-v1"
 LOGISTICS_ROUTES_METHODOLOGY_VERSION = "wb-logistics-routes-v1"
+LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION = "wb-logistics-measurements-v1"
 CHAIN_KEY_VERSION = "wb-order-product-v1"
 RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
@@ -1880,6 +1881,368 @@ def build_dimension_rows(
                 "data_quality_status": quality,
                 "row_uid": _dimension_row_uid(identity),
                 "source_hash_digest": source_hash_digest,
+            }
+        )
+    return result
+
+
+_MEASUREMENT_NUMERIC_FIELDS = (
+    "measured_volume_l",
+    "measured_width_cm",
+    "measured_length_cm",
+    "measured_height_cm",
+    "declared_volume_l",
+    "declared_width_cm",
+    "declared_length_cm",
+    "declared_height_cm",
+    "volume_ratio_percent",
+    "volume_excess_percent",
+    "penalty_amount",
+    "reversal_amount",
+    "net_penalty_amount",
+    "measured_calculated_volume_l",
+    "declared_calculated_volume_l",
+)
+
+
+def _measurement_positive_decimal(value: Any) -> tuple[Decimal | None, bool]:
+    parsed, status = _parse_decimal(value, required=False)
+    if status == "not_provided":
+        return None, False
+    if status != "ready" or parsed is None or parsed <= 0:
+        return None, True
+    return parsed, False
+
+
+def _measurement_money(value: Any) -> tuple[Decimal | None, bool]:
+    parsed, status = _parse_decimal(value, required=False)
+    if status == "not_provided":
+        return None, False
+    if status != "ready" or parsed is None or parsed < 0:
+        return None, True
+    return parsed, False
+
+
+def _measurement_timestamp(value: Any) -> tuple[datetime | None, bool]:
+    if value in (None, ""):
+        return None, False
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = _text(value)
+        normalized = f"{text[:-1]}+00:00" if text.endswith("Z") else text
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None, True
+    if parsed.tzinfo is None:
+        return None, True
+    return parsed.astimezone(UTC), False
+
+
+def _measurement_calculated_volume(
+    length: Decimal | None,
+    width: Decimal | None,
+    height: Decimal | None,
+) -> Decimal | None:
+    if length is None or width is None or height is None:
+        return None
+    return (length * width * height / Decimal("1000")).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def _measurement_source_hash(row: Mapping[str, Any]) -> str:
+    explicit = _text(row.get("source_hash") or row.get("raw_payload_hash"))
+    return explicit or _hash_payload(dict(row))
+
+
+def _normalized_measurement_candidate(
+    row: Mapping[str, Any],
+    *,
+    source_type: str,
+) -> tuple[dict[str, Any], bool]:
+    measured: dict[str, Decimal | None] = {}
+    invalid = False
+    for output_name, input_name in (
+        ("measured_volume_l", "volume"),
+        ("measured_width_cm", "width"),
+        ("measured_length_cm", "length"),
+        ("measured_height_cm", "height"),
+    ):
+        measured[output_name], value_invalid = _measurement_positive_decimal(
+            row.get(input_name)
+        )
+        invalid = invalid or value_invalid
+
+    declared: dict[str, Decimal | None] = {}
+    for output_name, input_name in (
+        ("declared_volume_l", "volume_sup"),
+        ("declared_width_cm", "width_sup"),
+        ("declared_length_cm", "length_sup"),
+        ("declared_height_cm", "height_sup"),
+    ):
+        declared[output_name], value_invalid = _measurement_positive_decimal(
+            row.get(input_name)
+        )
+        invalid = invalid or value_invalid
+
+    ratio, ratio_invalid = _measurement_positive_decimal(row.get("prc_over"))
+    penalty, penalty_invalid = _measurement_money(row.get("penalty_amount"))
+    reversal, reversal_invalid = _measurement_money(row.get("reversal_amount"))
+    invalid = invalid or ratio_invalid or penalty_invalid or reversal_invalid
+    measurement_at, measurement_at_invalid = _measurement_timestamp(row.get("dt"))
+    penalty_at, penalty_at_invalid = _measurement_timestamp(row.get("dt_bonus"))
+    validation_at, validation_at_invalid = _measurement_timestamp(
+        row.get("is_valid_dt")
+    )
+    invalid = invalid or any(
+        (measurement_at_invalid, penalty_at_invalid, validation_at_invalid)
+    )
+    raw_valid = row.get("is_valid")
+    if raw_valid is None:
+        is_valid = None
+    elif isinstance(raw_valid, bool):
+        is_valid = raw_valid
+    else:
+        is_valid = None
+        invalid = True
+
+    normalized: dict[str, Any] = {
+        **measured,
+        **declared,
+        "volume_ratio_percent": ratio,
+        "volume_excess_percent": ratio - Decimal("100") if ratio else None,
+        "is_valid": is_valid,
+        "measurement_at": measurement_at,
+        "penalty_effective_at": penalty_at,
+        "validation_at": validation_at,
+        "penalty_amount": penalty,
+        "reversal_amount": reversal,
+        "net_penalty_amount": (
+            penalty - reversal
+            if penalty is not None and reversal is not None
+            else None
+        ),
+        "measured_calculated_volume_l": _measurement_calculated_volume(
+            measured["measured_length_cm"],
+            measured["measured_width_cm"],
+            measured["measured_height_cm"],
+        ),
+        "declared_calculated_volume_l": _measurement_calculated_volume(
+            declared["declared_length_cm"],
+            declared["declared_width_cm"],
+            declared["declared_height_cm"],
+        ),
+        "event_kind": (
+            "measurement_penalty"
+            if source_type == "wb_measurement_penalties"
+            else "warehouse_measurement"
+        ),
+    }
+    return normalized, invalid
+
+
+def _measurement_signature(candidate: Mapping[str, Any]) -> str:
+    return json.dumps(
+        candidate,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _measurement_row_uid(identity: Sequence[str]) -> str:
+    return "measurement:" + hashlib.sha256(
+        "\x1f".join(_text(item) for item in identity).encode("utf-8")
+    ).hexdigest()
+
+
+def build_measurement_rows(
+    sku_rows: Sequence[LogisticsSkuRow],
+    measurement_penalty_rows: Sequence[Mapping[str, Any]],
+    warehouse_measurement_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build the immutable F-4 event mart without financial attribution.
+
+    Both Analytics endpoints are normalized independently by the exact
+    ``(cabinet, dim_id, nm_id)`` key. Product mapping is exact by cabinet and
+    ``nm_id`` and never fans a provider amount out across report scopes.
+    """
+
+    sku_by_product: dict[tuple[str, str], list[LogisticsSkuRow]] = defaultdict(list)
+    report_scopes = {
+        (_text(row.tenant_id), _text(row.client_id)) for row in sku_rows
+    }
+    default_scope = next(iter(report_scopes)) if len(report_scopes) == 1 else ("", "")
+    for row in sku_rows:
+        cabinet = _text(row.wb_cabinet_id)
+        nm_id = _text(row.nm_id)
+        if cabinet and nm_id:
+            sku_by_product[(cabinet, nm_id)].append(row)
+
+    grouped: dict[
+        tuple[str, str, str], dict[str, list[Mapping[str, Any]]]
+    ] = defaultdict(lambda: defaultdict(list))
+    dim_nm_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for source_type, rows in (
+        ("wb_measurement_penalties", measurement_penalty_rows),
+        ("wb_warehouse_measurements", warehouse_measurement_rows),
+    ):
+        for row in rows:
+            cabinet = _text(row.get("wb_cabinet_id"))
+            dim_id = _text(row.get("dim_id"))
+            nm_id = _text(row.get("nm_id"))
+            if not cabinet or not dim_id or not nm_id:
+                continue
+            key = (cabinet, dim_id, nm_id)
+            grouped[key][source_type].append(row)
+            dim_nm_pairs[(cabinet, dim_id)].add(nm_id)
+
+    result: list[dict[str, Any]] = []
+    for key in sorted(grouped):
+        source_groups = grouped[key]
+        candidates_by_source: dict[str, dict[str, Any]] = {}
+        source_invalid = False
+        source_conflict = len(dim_nm_pairs[(key[0], key[1])]) > 1
+        all_source_hashes: list[str] = []
+        for source_type in sorted(source_groups):
+            normalized: list[dict[str, Any]] = []
+            for source_row in source_groups[source_type]:
+                candidate, invalid = _normalized_measurement_candidate(
+                    source_row,
+                    source_type=source_type,
+                )
+                normalized.append(candidate)
+                source_invalid = source_invalid or invalid
+                all_source_hashes.append(_measurement_source_hash(source_row))
+            signatures = {_measurement_signature(item) for item in normalized}
+            if len(signatures) != 1:
+                source_conflict = True
+            elif normalized:
+                candidates_by_source[source_type] = normalized[0]
+
+        penalty_candidate = candidates_by_source.get("wb_measurement_penalties")
+        warehouse_candidate = candidates_by_source.get("wb_warehouse_measurements")
+        if penalty_candidate is not None and warehouse_candidate is not None:
+            shared_fields = (
+                "measured_volume_l",
+                "measured_width_cm",
+                "measured_length_cm",
+                "measured_height_cm",
+            )
+            if any(
+                penalty_candidate.get(field) != warehouse_candidate.get(field)
+                for field in shared_fields
+            ):
+                source_conflict = True
+            selected = {**warehouse_candidate, **penalty_candidate}
+            selected["measurement_at"] = warehouse_candidate.get("measurement_at")
+            selected["event_kind"] = "merged"
+        else:
+            selected = dict(penalty_candidate or warehouse_candidate or {})
+        selected["event_kind"] = (
+            "merged"
+            if len(source_groups) > 1
+            else (
+                "measurement_penalty"
+                if "wb_measurement_penalties" in source_groups
+                else "warehouse_measurement"
+            )
+        )
+
+        sku_group = sku_by_product.get((key[0], key[2]), [])
+        mapping_targets = sorted(
+            {
+                (
+                    _text(row.client_company_id),
+                    _text(row.scheme),
+                    _text(row.product_ref),
+                )
+                for row in sku_group
+            }
+        )
+        product_labels = sorted(
+            {_text(row.product) for row in sku_group if _text(row.product)}
+        )
+        if not mapping_targets:
+            mapping_status = "unmatched_product"
+            mapping = ("", "", "")
+        elif len(mapping_targets) > 1:
+            mapping_status = "ambiguous_product_scope"
+            mapping = ("", "", "")
+        else:
+            mapping_status = "ready"
+            mapping = mapping_targets[0]
+
+        if source_conflict:
+            quality = "conflicting_measurement"
+        elif source_invalid:
+            quality = "invalid_measurement"
+        else:
+            quality = mapping_status
+        if source_conflict:
+            for field in _MEASUREMENT_NUMERIC_FIELDS:
+                selected[field] = None
+            selected["is_valid"] = None
+
+        tenant_id = _text(
+            next(
+                (
+                    item.get("tenant_id")
+                    for rows in source_groups.values()
+                    for item in rows
+                    if item.get("tenant_id")
+                ),
+                default_scope[0],
+            )
+        )
+        client_id = _text(
+            next(
+                (
+                    item.get("client_id")
+                    for rows in source_groups.values()
+                    for item in rows
+                    if item.get("client_id")
+                ),
+                default_scope[1],
+            )
+        )
+        identity = (tenant_id, client_id, key[0], key[1], key[2])
+        sku_hashes = sorted({_text(row.source_hash_digest) for row in sku_group})
+        result.append(
+            {
+                "tenant_id": tenant_id,
+                "client_id": client_id,
+                "wb_cabinet_id": key[0],
+                "dim_id": key[1],
+                "nm_id": key[2],
+                "client_company_id": mapping[0] or None,
+                "scheme": mapping[1] or None,
+                "product_ref": mapping[2] or None,
+                "product": product_labels[0] if len(product_labels) == 1 else "",
+                **selected,
+                "accounting_reconciliation_status": "unreconciled",
+                "included_in_financial_kpi": False,
+                "evidence_type": (
+                    "fact" if quality == "ready" else "data_unavailable"
+                ),
+                "coverage_status": quality,
+                "data_quality_status": quality,
+                "row_uid": _measurement_row_uid(identity),
+                "source_hash_digest": _hash_payload(
+                    {
+                        "factorMethodologyVersion": (
+                            LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION
+                        ),
+                        "identity": identity,
+                        "skuSourceHashes": sku_hashes,
+                        "measurementSourceHashes": sorted(all_source_hashes),
+                        "dataQualityStatus": quality,
+                    }
+                ),
             }
         )
     return result

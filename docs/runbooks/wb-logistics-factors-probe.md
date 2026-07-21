@@ -26,9 +26,10 @@ Draft-спеки, для которых нужен этот probe:
 `docs/specs/wb-logistics-cost-analysis-implementation.md`; при расхождении
 действует он. Этот runbook не заменяет спеки и ничего не согласовывает сам.
 
-**Статус на 2026-07-21:** базовый живой probe F-1…F-3 выполнен; для F-4
-официальный schema contract подтверждён, но live-вызовы двух measurement
-endpoint ещё не выполнялись. Ниже — безопасный gate перед F-4 product-кодом.
+**Статус на 2026-07-21:** базовый живой probe F-1…F-3 выполнен. Минимальный
+F-4 source gate двух measurement endpoints также пройден в отдельном read-only
+процессе: schema подтверждена без вывода raw, идентификаторов, значений, сумм
+или counts. Ниже сохранён воспроизводимый безопасный порядок повторной проверки.
 
 # Безопасность прогона
 
@@ -150,15 +151,14 @@ scope не обходится другим токеном и не скрывае
 
 # F-4 live source gate
 
-До изменения collector/mart/API выполнить минимальный read-only probe на test
-или в отдельном процессе с действующим service environment. Скрипт не должен
+Перед collector/mart/API выполнен минимальный read-only probe в отдельном
+процессе с действующим service environment. Скрипт не должен
 печатать integration/provider names, число кабинетов, `total`, raw rows или
 значения полей.
 
-Текущий `scripts/probe_wb_logistics_factors.py` F-4 endpoints ещё не вызывает и
-для этого gate не подходит. В отдельной implementation-ветке сначала добавить
-безопасный F-4 mode и unit-тест, запрещающий вывод provider labels/counts/raw
-values; до этого environment status F-4 остаётся `not_probed`.
+`scripts/probe_wb_logistics_factors.py --mode f4` вызывает только два read-only
+endpoint с `limit=1` и выводит агрегированные boolean-признаки. Unit-тесты
+запрещают provider labels, counts, raw values и identifiers в результате.
 
 Для каждого разрешённого кабинета и каждого F-4 endpoint зафиксировать только:
 
@@ -186,6 +186,28 @@ Implementation gate открывается, только если каждый �
 хотя бы один `confirmed_empty|confirmed_nonempty` на разрешённом кабинете и нет
 `schema_mismatch`. Остальные кабинеты сохраняют собственный partial status;
 общий успех не скрывает их недоступность.
+
+## Результат F-4 source gate (2026-07-21)
+
+Повторяемая команда запускается из immutable runtime с service environment:
+
+```bash
+PYTHONPATH=src .venv/bin/python \
+  scripts/probe_wb_logistics_factors.py --mode f4
+```
+
+В test environment не было usable read-only интеграции, поэтому environment
+gate там не выдавался за успешный. В отдельном процессе с prod-service
+environment оба Analytics endpoint имели подтверждённую schema хотя бы для
+одной разрешённой интеграции; `schemaMismatchPresent=false`, общий
+`implementationGate=true`. Внешнее состояние не изменялось. В evidence не
+записаны integration/provider labels, количество кабинетов или строк,
+клиентский период, IDs, размеры, суммы, URL фото либо response body.
+
+Это подтверждает только минимальный live source gate. Полная offset-pagination
+и provider-total reconciliation выполняются штатным collector при построении
+verified snapshot и проверяются до сохранения mart; результат конкретного
+rollout фиксируется отдельно после merge и развёртывания.
 
 # После probe
 

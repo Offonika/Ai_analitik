@@ -497,6 +497,9 @@ class ReportRun(Base):
     logistics_routes_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    logistics_measurements_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -562,6 +565,19 @@ class ReportRun(Base):
     logistics_route_rows: Mapped[list[ReportLogisticsRouteRow]] = relationship(
         back_populates="report",
         cascade="all, delete-orphan",
+    )
+    logistics_measurement_context: Mapped[
+        ReportLogisticsMeasurementContext | None
+    ] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    logistics_measurement_rows: Mapped[list[ReportLogisticsMeasurementRow]] = (
+        relationship(
+            back_populates="report",
+            cascade="all, delete-orphan",
+        )
     )
 
 
@@ -1084,6 +1100,111 @@ class ReportLogisticsRouteContext(Base):
     report: Mapped[ReportRun] = relationship(back_populates="logistics_route_context")
 
 
+class ReportLogisticsMeasurementContext(Base):
+    """Versioned F-4 dual-source snapshot context and event-mart coverage."""
+
+    __tablename__ = "report_logistics_measurement_contexts"
+    __table_args__ = (
+        Index(
+            "ix_report_logistics_measurement_context_status",
+            "tenant_id",
+            "data_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    factor_methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    data_status: Mapped[str] = mapped_column(String, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    penalty_source_snapshot_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    warehouse_source_snapshot_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    penalty_source_loaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    warehouse_source_loaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    factor_snapshot_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    source_coverage_start: Mapped[date | None] = mapped_column(Date)
+    source_coverage_end: Mapped[date | None] = mapped_column(Date)
+    expected_endpoint_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2
+    )
+    complete_endpoint_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    unavailable_endpoint_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    source_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    provider_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    measurement_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    scoped_product_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    product_with_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    matched_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    unmatched_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    ambiguous_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    invalid_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    conflicting_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    penalty_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    reversal_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    warehouse_only_event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    blocking_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    review_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_measurement_context"
+    )
+
+
 class ReportLogisticsOrderRow(Base):
     __tablename__ = "report_logistics_order_rows"
     __table_args__ = (
@@ -1361,6 +1482,100 @@ class ReportLogisticsDimensionRow(Base):
 
     report: Mapped[ReportRun] = relationship(
         back_populates="logistics_dimension_rows"
+    )
+
+
+class ReportLogisticsMeasurementRow(Base):
+    """Immutable F-4 Analytics event, unreconciled with financial KPI."""
+
+    __tablename__ = "report_logistics_measurement_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "row_uid",
+            name="uq_report_logistics_measurement_row",
+        ),
+        Index(
+            "ix_report_logistics_measurement_filter",
+            "report_run_id",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+            "event_kind",
+        ),
+        Index(
+            "ix_report_logistics_measurement_event_date",
+            "report_run_id",
+            "penalty_effective_at",
+            "measurement_at",
+        ),
+        Index(
+            "ix_report_logistics_measurement_product",
+            "report_run_id",
+            "product_ref",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False)
+    dim_id: Mapped[str] = mapped_column(String, nullable=False)
+    nm_id: Mapped[str] = mapped_column(String, nullable=False)
+    client_company_id: Mapped[str | None] = mapped_column(String)
+    scheme: Mapped[str | None] = mapped_column(String)
+    product_ref: Mapped[str | None] = mapped_column(String)
+    product: Mapped[str] = mapped_column(String, nullable=False, default="")
+    event_kind: Mapped[str] = mapped_column(String, nullable=False)
+    measurement_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    penalty_effective_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    validation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    measured_volume_l: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    measured_width_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    measured_length_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    measured_height_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    measured_calculated_volume_l: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 6)
+    )
+    declared_volume_l: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    declared_width_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    declared_length_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    declared_height_cm: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    declared_calculated_volume_l: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 6)
+    )
+    volume_ratio_percent: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    volume_excess_percent: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    is_valid: Mapped[bool | None] = mapped_column(Boolean)
+    penalty_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    reversal_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    net_penalty_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    accounting_reconciliation_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="unreconciled"
+    )
+    included_in_financial_kpi: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    evidence_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    coverage_status: Mapped[str] = mapped_column(String, nullable=False, default="")
+    data_quality_status: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False)
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_measurement_rows"
     )
 
 

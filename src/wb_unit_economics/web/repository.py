@@ -14,6 +14,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     and_,
@@ -59,6 +60,7 @@ from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
@@ -101,6 +103,8 @@ from wb_unit_economics.web.models import (
     ReportLogisticsAnalysisContext,
     ReportLogisticsDimensionContext,
     ReportLogisticsDimensionRow,
+    ReportLogisticsMeasurementContext,
+    ReportLogisticsMeasurementRow,
     ReportLogisticsOrderRow,
     ReportLogisticsRouteContext,
     ReportLogisticsRouteRow,
@@ -13538,6 +13542,234 @@ def replace_report_logistics_route_analysis(
     return persisted
 
 
+def replace_report_logistics_measurement_rows(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> int:
+    """Persist F-4 events only while the report is an unpublished draft."""
+
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics measurement mart is immutable")
+    db.execute(
+        delete(ReportLogisticsMeasurementRow).where(
+            ReportLogisticsMeasurementRow.report_run_id == report.id
+        )
+    )
+    for row in rows:
+        db.add(
+            ReportLogisticsMeasurementRow(
+                report_run_id=report.id,
+                tenant_id=str(row.get("tenant_id") or report.tenant_id),
+                client_id=str(row.get("client_id") or report.client_id),
+                row_uid=str(row["row_uid"]),
+                wb_cabinet_id=str(row.get("wb_cabinet_id") or ""),
+                dim_id=str(row.get("dim_id") or ""),
+                nm_id=str(row.get("nm_id") or ""),
+                client_company_id=(
+                    str(row["client_company_id"])
+                    if row.get("client_company_id")
+                    else None
+                ),
+                scheme=str(row["scheme"]) if row.get("scheme") else None,
+                product_ref=(
+                    str(row["product_ref"]) if row.get("product_ref") else None
+                ),
+                product=str(row.get("product") or ""),
+                event_kind=str(row.get("event_kind") or ""),
+                measurement_at=row.get("measurement_at"),
+                penalty_effective_at=row.get("penalty_effective_at"),
+                validation_at=row.get("validation_at"),
+                measured_volume_l=row.get("measured_volume_l"),
+                measured_width_cm=row.get("measured_width_cm"),
+                measured_length_cm=row.get("measured_length_cm"),
+                measured_height_cm=row.get("measured_height_cm"),
+                measured_calculated_volume_l=row.get(
+                    "measured_calculated_volume_l"
+                ),
+                declared_volume_l=row.get("declared_volume_l"),
+                declared_width_cm=row.get("declared_width_cm"),
+                declared_length_cm=row.get("declared_length_cm"),
+                declared_height_cm=row.get("declared_height_cm"),
+                declared_calculated_volume_l=row.get(
+                    "declared_calculated_volume_l"
+                ),
+                volume_ratio_percent=row.get("volume_ratio_percent"),
+                volume_excess_percent=row.get("volume_excess_percent"),
+                is_valid=row.get("is_valid"),
+                penalty_amount=row.get("penalty_amount"),
+                reversal_amount=row.get("reversal_amount"),
+                net_penalty_amount=row.get("net_penalty_amount"),
+                accounting_reconciliation_status=str(
+                    row.get("accounting_reconciliation_status") or "unreconciled"
+                ),
+                included_in_financial_kpi=bool(
+                    row.get("included_in_financial_kpi", False)
+                ),
+                evidence_type=str(row.get("evidence_type") or ""),
+                coverage_status=str(row.get("coverage_status") or ""),
+                data_quality_status=str(row.get("data_quality_status") or ""),
+                source_hash_digest=str(row.get("source_hash_digest") or ""),
+            )
+        )
+    db.flush()
+    return len(rows)
+
+
+def replace_report_logistics_measurement_analysis(
+    db: Session,
+    report: ReportRun,
+    *,
+    context: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+) -> ReportLogisticsMeasurementContext:
+    """Atomically stage the F-4 context and event mart for a new draft."""
+
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics measurement analysis is immutable")
+    if str(context.get("tenant_id") or "") != report.tenant_id:
+        raise ValueError("measurement context tenant does not match report")
+    if str(context.get("client_id") or "") != report.client_id:
+        raise ValueError("measurement context client does not match report")
+    status = str(context.get("data_status") or "")
+    if status not in {"ready", "partial", "blocked"}:
+        raise ValueError("unsupported measurement context status")
+    if status == "blocked" and rows:
+        raise ValueError("blocked measurement context cannot persist mart rows")
+    _validate_logistics_measurement_rows_scope(db, report, rows)
+    expected_count = int(context.get("measurement_row_count") or 0)
+    if expected_count != len(rows):
+        raise ValueError("measurement context row count does not match mart")
+
+    db.execute(
+        delete(ReportLogisticsMeasurementContext).where(
+            ReportLogisticsMeasurementContext.report_run_id == report.id
+        )
+    )
+    replace_report_logistics_measurement_rows(db, report, rows)
+    persisted = ReportLogisticsMeasurementContext(
+        report_run_id=report.id,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        factor_methodology_version=str(context["factor_methodology_version"]),
+        data_status=status,
+        input_hash=str(context.get("input_hash") or ""),
+        penalty_source_snapshot_hash=str(
+            context.get("penalty_source_snapshot_hash") or ""
+        ),
+        warehouse_source_snapshot_hash=str(
+            context.get("warehouse_source_snapshot_hash") or ""
+        ),
+        penalty_source_loaded_at=context.get("penalty_source_loaded_at"),
+        warehouse_source_loaded_at=context.get("warehouse_source_loaded_at"),
+        factor_snapshot_at=context.get("factor_snapshot_at"),
+        source_coverage_start=context.get("source_coverage_start"),
+        source_coverage_end=context.get("source_coverage_end"),
+        expected_endpoint_count=int(context.get("expected_endpoint_count") or 0),
+        complete_endpoint_count=int(context.get("complete_endpoint_count") or 0),
+        unavailable_endpoint_count=int(
+            context.get("unavailable_endpoint_count") or 0
+        ),
+        source_event_count=int(context.get("source_event_count") or 0),
+        provider_event_count=int(context.get("provider_event_count") or 0),
+        measurement_row_count=expected_count,
+        scoped_product_count=int(context.get("scoped_product_count") or 0),
+        product_with_event_count=int(
+            context.get("product_with_event_count") or 0
+        ),
+        matched_event_count=int(context.get("matched_event_count") or 0),
+        unmatched_event_count=int(context.get("unmatched_event_count") or 0),
+        ambiguous_event_count=int(context.get("ambiguous_event_count") or 0),
+        invalid_event_count=int(context.get("invalid_event_count") or 0),
+        conflicting_event_count=int(
+            context.get("conflicting_event_count") or 0
+        ),
+        penalty_event_count=int(context.get("penalty_event_count") or 0),
+        reversal_event_count=int(context.get("reversal_event_count") or 0),
+        warehouse_only_event_count=int(
+            context.get("warehouse_only_event_count") or 0
+        ),
+        blocking_reasons=list(context.get("blocking_reasons") or []),
+        review_reasons=list(context.get("review_reasons") or []),
+        created_at=context.get("created_at") or datetime.now(UTC),
+    )
+    db.add(persisted)
+    report.logistics_measurements_required = True
+    audit(
+        db,
+        action="report_logistics_measurements_saved",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "dataStatus": status,
+            "factorMethodologyVersion": persisted.factor_methodology_version,
+            "measurementRows": expected_count,
+        },
+    )
+    db.flush()
+    return persisted
+
+
+def _validate_logistics_measurement_rows_scope(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    cabinet_ids: set[str] = set()
+    company_ids: set[str] = set()
+    for row in rows:
+        if str(row.get("tenant_id") or "") != report.tenant_id:
+            raise ValueError("measurement row tenant does not match report")
+        if str(row.get("client_id") or "") != report.client_id:
+            raise ValueError("measurement row client does not match report")
+        cabinet_ids.add(str(row.get("wb_cabinet_id") or ""))
+        company_id = str(row.get("client_company_id") or "")
+        if company_id:
+            company_ids.add(company_id)
+    cabinet_ids.discard("")
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
+    companies = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(ClientCompany).where(ClientCompany.id.in_(company_ids))
+            )
+        }
+        if company_ids
+        else {}
+    )
+    for row in rows:
+        cabinet_id = str(row.get("wb_cabinet_id") or "")
+        company_id = str(row.get("client_company_id") or "")
+        cabinet = cabinets.get(cabinet_id)
+        company = companies.get(company_id) if company_id else None
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+            or (
+                company_id
+                and (
+                    company is None
+                    or company.tenant_id != report.tenant_id
+                    or company.client_id != report.client_id
+                    or cabinet.client_company_id != company_id
+                )
+            )
+        ):
+            raise ValueError("measurement row cabinet/company scope mismatch")
+
+
 def report_logistics_dimensions_payload(
     db: Session,
     report: ReportRun,
@@ -13820,6 +14052,24 @@ def _logistics_dimension_context_state(
     return context.data_status
 
 
+def _logistics_measurement_context_state(
+    report: ReportRun,
+    context: ReportLogisticsMeasurementContext | None,
+) -> str:
+    if context is None:
+        return "missing"
+    if (
+        context.factor_methodology_version
+        != LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION
+    ):
+        return "outdated_methodology"
+    if context.tenant_id != report.tenant_id or context.client_id != report.client_id:
+        return "scope_mismatch"
+    if context.data_status not in {"ready", "partial", "blocked"}:
+        return "invalid_status"
+    return context.data_status
+
+
 def _empty_logistics_dimension_coverage() -> dict[str, Any]:
     return {
         "total": 0,
@@ -13899,6 +14149,553 @@ def _validate_logistics_dimension_rows_scope(
             raise ValueError(
                 "dimension row cabinet/company scope does not match report"
             )
+
+
+LOGISTICS_MEASUREMENT_SORT_KEYS = {
+    "eventDate",
+    "product",
+    "volumeRatioPercent",
+    "penaltyAmount",
+    "netPenaltyAmount",
+    "coverageStatus",
+}
+
+
+def report_logistics_measurements_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+    event_kind: str = "",
+    has_penalty: bool | None = None,
+    sort_by: str = "eventDate",
+    sort_order: str = "desc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
+    context = db.get(ReportLogisticsMeasurementContext, report.id)
+    state = _logistics_measurement_context_state(report, context)
+    base_state = _logistics_context_state(report, logistics_context)
+    if context is not None and state in {"ready", "partial"}:
+        actual_rows = int(
+            db.scalar(
+                select(func.count())
+                .select_from(ReportLogisticsMeasurementRow)
+                .where(ReportLogisticsMeasurementRow.report_run_id == report.id)
+            )
+            or 0
+        )
+        if actual_rows != context.measurement_row_count:
+            state = "blocked"
+    filter_context = {
+        "periodStart": period_start.isoformat() if period_start else None,
+        "periodEnd": period_end.isoformat() if period_end else None,
+        "wbCabinetId": wb_cabinet_id or None,
+        "clientCompanyId": client_company_id or None,
+        "scheme": scheme.casefold() or None,
+        "product": product_query.strip() or None,
+        "eventKind": event_kind or None,
+        "hasPenalty": has_penalty,
+        "dateGrain": "event_date_europe_moscow",
+    }
+    meta = {
+        "reportId": report.id,
+        "dataStatus": "needs_rebuild",
+        "sliceStatus": "needs_rebuild",
+        "methodologyVersion": (
+            logistics_context.methodology_version
+            if logistics_context is not None
+            else LOGISTICS_METHODOLOGY_VERSION
+        ),
+        "factorMethodologyVersion": LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
+        "generatedAt": (
+            context.created_at.isoformat()
+            if context is not None
+            else report.generated_at.isoformat()
+        ),
+        "sourceCoverageStart": (
+            context.source_coverage_start.isoformat()
+            if context is not None and context.source_coverage_start
+            else None
+        ),
+        "sourceCoverageEnd": (
+            context.source_coverage_end.isoformat()
+            if context is not None and context.source_coverage_end
+            else None
+        ),
+        "factorSnapshotAt": (
+            context.factor_snapshot_at.isoformat()
+            if context is not None and context.factor_snapshot_at
+            else None
+        ),
+        "filterContext": filter_context,
+        "accountingTreatment": _logistics_measurement_accounting_treatment(),
+    }
+    empty_payload = {
+        **meta,
+        "coverage": _empty_logistics_measurement_coverage(context),
+        "rows": [],
+        "total": 0,
+        "offset": offset,
+        "limit": limit,
+        "recommendations": [],
+    }
+    if base_state == "blocked" or state in {"blocked", "scope_mismatch"}:
+        return _logistics_json_safe(
+            {**empty_payload, "dataStatus": "blocked", "sliceStatus": "blocked"}
+        )
+    if base_state not in {"ready", "partial"} or state not in {"ready", "partial"}:
+        return _logistics_json_safe(empty_payload)
+    assert context is not None
+
+    event_date_column = func.coalesce(
+        ReportLogisticsMeasurementRow.penalty_effective_at,
+        ReportLogisticsMeasurementRow.measurement_at,
+    )
+    conditions: list[Any] = [
+        ReportLogisticsMeasurementRow.report_run_id == report.id
+    ]
+    period_conditions: list[Any] = []
+    if period_start is not None:
+        period_conditions.append(
+            event_date_column >= _moscow_period_boundary(period_start)
+        )
+    if period_end is not None:
+        period_conditions.append(
+            event_date_column < _moscow_period_boundary(period_end + timedelta(days=1))
+        )
+    if period_conditions:
+        period_condition = and_(*period_conditions)
+        if (
+            period_start == report.period_start
+            and period_end == report.period_end
+        ):
+            conditions.append(or_(period_condition, event_date_column.is_(None)))
+        else:
+            conditions.append(period_condition)
+    if wb_cabinet_id:
+        conditions.append(
+            ReportLogisticsMeasurementRow.wb_cabinet_id == wb_cabinet_id
+        )
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsMeasurementRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(
+            ReportLogisticsMeasurementRow.scheme == scheme.casefold()
+        )
+    if product_query.strip():
+        pattern = f"%{_escape_like(product_query.strip())}%"
+        conditions.append(
+            or_(
+                ReportLogisticsMeasurementRow.product.like(pattern, escape="\\"),
+                func.coalesce(ReportLogisticsMeasurementRow.product_ref, "").like(
+                    pattern, escape="\\"
+                ),
+            )
+        )
+    if event_kind:
+        conditions.append(ReportLogisticsMeasurementRow.event_kind == event_kind)
+    if has_penalty is True:
+        conditions.append(ReportLogisticsMeasurementRow.penalty_amount > 0)
+    elif has_penalty is False:
+        conditions.append(
+            or_(
+                ReportLogisticsMeasurementRow.penalty_amount.is_(None),
+                ReportLogisticsMeasurementRow.penalty_amount <= 0,
+            )
+        )
+
+    stats = db.execute(
+        select(
+            func.count(),
+            func.count(func.distinct(ReportLogisticsMeasurementRow.product_ref)),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReportLogisticsMeasurementRow.penalty_amount > 0, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReportLogisticsMeasurementRow.reversal_amount > 0, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsMeasurementRow.event_kind
+                            == "warehouse_measurement",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReportLogisticsMeasurementRow.product_ref.is_not(None), 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsMeasurementRow.coverage_status
+                            == "unmatched_product",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsMeasurementRow.coverage_status
+                            == "ambiguous_product_scope",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsMeasurementRow.coverage_status
+                            == "invalid_measurement",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsMeasurementRow.coverage_status
+                            == "conflicting_measurement",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).where(*conditions)
+    ).one()
+    total = int(stats[0] or 0)
+    products_with_events = int(stats[1] or 0)
+    penalty_events = int(stats[2] or 0)
+    reversal_events = int(stats[3] or 0)
+    warehouse_only_events = int(stats[4] or 0)
+    matched_events = int(stats[5] or 0)
+    unmatched_events = int(stats[6] or 0)
+    ambiguous_events = int(stats[7] or 0)
+    invalid_events = int(stats[8] or 0)
+    conflicting_events = int(stats[9] or 0)
+    scoped_products = _logistics_measurement_scoped_product_count(
+        db,
+        report,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    coverage = {
+        "expectedEndpoints": context.expected_endpoint_count,
+        "completeEndpoints": context.complete_endpoint_count,
+        "unavailableEndpoints": context.unavailable_endpoint_count,
+        "scopedProducts": scoped_products,
+        "productsWithEvents": products_with_events,
+        "totalEvents": total,
+        "penaltyEvents": penalty_events,
+        "reversalEvents": reversal_events,
+        "warehouseOnlyEvents": warehouse_only_events,
+        "matchedEvents": matched_events,
+        "unmatchedEvents": unmatched_events,
+        "ambiguousEvents": ambiguous_events,
+        "invalidEvents": invalid_events,
+        "conflictingEvents": conflicting_events,
+        "measurementIncidencePercent": (
+            Decimal(products_with_events) * Decimal("100") / Decimal(scoped_products)
+            if scoped_products
+            else None
+        ),
+    }
+    problem_events = (
+        unmatched_events + ambiguous_events + invalid_events + conflicting_events
+    )
+    recommendations = _logistics_measurement_recommendations(
+        penalty_events=penalty_events,
+        reversal_events=reversal_events,
+        problem_events=problem_events,
+        unavailable_endpoints=context.unavailable_endpoint_count,
+    )
+    if total == 0:
+        slice_status = "partial" if context.data_status == "partial" else "empty"
+        return _logistics_json_safe(
+            {
+                **empty_payload,
+                "dataStatus": context.data_status,
+                "sliceStatus": slice_status,
+                "coverage": coverage,
+                "recommendations": recommendations,
+            }
+        )
+
+    sort_fields = {
+        "eventDate": event_date_column,
+        "product": ReportLogisticsMeasurementRow.product,
+        "volumeRatioPercent": ReportLogisticsMeasurementRow.volume_ratio_percent,
+        "penaltyAmount": ReportLogisticsMeasurementRow.penalty_amount,
+        "netPenaltyAmount": ReportLogisticsMeasurementRow.net_penalty_amount,
+        "coverageStatus": ReportLogisticsMeasurementRow.coverage_status,
+    }
+    sort_column = sort_fields[sort_by]
+    direction = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    rows = list(
+        db.scalars(
+            select(ReportLogisticsMeasurementRow)
+            .where(*conditions)
+            .order_by(
+                case((sort_column.is_(None), 1), else_=0),
+                direction,
+                ReportLogisticsMeasurementRow.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    slice_status = (
+        "partial"
+        if context.data_status == "partial" or problem_events
+        else "ready"
+    )
+    return _logistics_json_safe(
+        {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "rows": [_logistics_measurement_row_payload(row) for row in rows],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "recommendations": recommendations,
+        }
+    )
+
+
+def _moscow_period_boundary(value: date) -> datetime:
+    return datetime.combine(
+        value,
+        datetime.min.time(),
+        tzinfo=ZoneInfo("Europe/Moscow"),
+    ).astimezone(UTC)
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _logistics_measurement_scoped_product_count(
+    db: Session,
+    report: ReportRun,
+    *,
+    wb_cabinet_id: str,
+    client_company_id: str,
+    scheme: str,
+    product_query: str,
+) -> int:
+    conditions: list[Any] = [ReportLogisticsSkuRow.report_run_id == report.id]
+    if wb_cabinet_id:
+        conditions.append(ReportLogisticsSkuRow.wb_cabinet_id == wb_cabinet_id)
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsSkuRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(ReportLogisticsSkuRow.scheme == scheme.casefold())
+    if product_query.strip():
+        pattern = f"%{_escape_like(product_query.strip())}%"
+        conditions.append(
+            or_(
+                ReportLogisticsSkuRow.product.like(pattern, escape="\\"),
+                ReportLogisticsSkuRow.product_ref.like(pattern, escape="\\"),
+            )
+        )
+    return int(
+        db.scalar(
+            select(
+                func.count(
+                    func.distinct(
+                        ReportLogisticsSkuRow.wb_cabinet_id
+                        + literal("\x1f")
+                        + ReportLogisticsSkuRow.nm_id
+                    )
+                )
+            ).where(*conditions)
+        )
+        or 0
+    )
+
+
+def _empty_logistics_measurement_coverage(
+    context: ReportLogisticsMeasurementContext | None,
+) -> dict[str, Any]:
+    return {
+        "expectedEndpoints": context.expected_endpoint_count if context else 2,
+        "completeEndpoints": context.complete_endpoint_count if context else 0,
+        "unavailableEndpoints": (
+            context.unavailable_endpoint_count if context else 2
+        ),
+        "scopedProducts": context.scoped_product_count if context else 0,
+        "productsWithEvents": 0,
+        "totalEvents": 0,
+        "penaltyEvents": 0,
+        "reversalEvents": 0,
+        "warehouseOnlyEvents": 0,
+        "matchedEvents": 0,
+        "unmatchedEvents": 0,
+        "ambiguousEvents": 0,
+        "invalidEvents": 0,
+        "conflictingEvents": 0,
+        "measurementIncidencePercent": None,
+    }
+
+
+def _logistics_measurement_accounting_treatment() -> dict[str, Any]:
+    return {
+        "status": "unreconciled",
+        "includedInFinancialKpi": False,
+        "message": (
+            "Суммы являются фактом Analytics, но до точной финансовой сверки "
+            "не прибавляются к прибыли/убытку и не заменяют общий штраф Finance."
+        ),
+    }
+
+
+def _logistics_measurement_row_payload(
+    row: ReportLogisticsMeasurementRow,
+) -> dict[str, Any]:
+    return {
+        "productRef": row.product_ref,
+        "product": row.product or None,
+        "scheme": row.scheme,
+        "eventKind": row.event_kind,
+        "measurementAt": row.measurement_at,
+        "penaltyEffectiveAt": row.penalty_effective_at,
+        "validationAt": row.validation_at,
+        "measuredVolumeL": row.measured_volume_l,
+        "measuredWidthCm": row.measured_width_cm,
+        "measuredLengthCm": row.measured_length_cm,
+        "measuredHeightCm": row.measured_height_cm,
+        "measuredCalculatedVolumeL": row.measured_calculated_volume_l,
+        "declaredVolumeL": row.declared_volume_l,
+        "declaredWidthCm": row.declared_width_cm,
+        "declaredLengthCm": row.declared_length_cm,
+        "declaredHeightCm": row.declared_height_cm,
+        "declaredCalculatedVolumeL": row.declared_calculated_volume_l,
+        "volumeRatioPercent": row.volume_ratio_percent,
+        "volumeExcessPercent": row.volume_excess_percent,
+        "measurementValid": row.is_valid,
+        "penaltyAmount": row.penalty_amount,
+        "reversalAmount": row.reversal_amount,
+        "netPenaltyAmount": row.net_penalty_amount,
+        "accountingReconciliationStatus": row.accounting_reconciliation_status,
+        "includedInFinancialKpi": row.included_in_financial_kpi,
+        "evidenceType": row.evidence_type,
+        "coverageStatus": row.coverage_status,
+        "dataQualityStatus": row.data_quality_status,
+    }
+
+
+def _logistics_measurement_recommendations(
+    *,
+    penalty_events: int,
+    reversal_events: int,
+    problem_events: int,
+    unavailable_endpoints: int,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    if penalty_events:
+        result.append(
+            {
+                "code": "measurement_penalty_review",
+                "priority": 20,
+                "title": "Проверить упаковку и заявленные габариты",
+                "message": (
+                    "Analytics вернул удержания за контрольные замеры; суммы "
+                    "показаны справочно без повторного финансового учёта."
+                ),
+                "impactAmount": None,
+                "evidenceType": "fact",
+                "actionTarget": "#logistics-measurements",
+                "actionLabel": "Посмотреть замеры",
+                "evidence": {"eventCount": penalty_events},
+            }
+        )
+    if reversal_events:
+        result.append(
+            {
+                "code": "measurement_reversal_review",
+                "priority": 30,
+                "title": "Проверить отмены удержаний",
+                "message": "Сверьте итог удержания с финансовыми документами.",
+                "impactAmount": None,
+                "evidenceType": "fact",
+                "actionTarget": "#logistics-measurements",
+                "actionLabel": "Посмотреть отмены",
+                "evidence": {"eventCount": reversal_events},
+            }
+        )
+    unavailable = problem_events + unavailable_endpoints
+    if unavailable:
+        result.append(
+            {
+                "code": "measurement_data_unavailable",
+                "priority": 40,
+                "title": "Проверить источник и связку товаров",
+                "message": (
+                    "Часть источников или событий недоступна, невалидна, "
+                    "конфликтует либо не имеет единственной связи с товаром."
+                ),
+                "impactAmount": None,
+                "evidenceType": "data_unavailable",
+                "actionTarget": "#logistics-measurements",
+                "actionLabel": "Проверить источник",
+                "evidence": {"issueCount": unavailable},
+            }
+        )
+    return result
 
 
 LOGISTICS_TARIFF_SORT_KEYS = {
@@ -17723,6 +18520,68 @@ def report_readiness_payload(
                     _readiness_reason(
                         "logistics_routes_partial",
                         "Часть складов или направлений недоступна или конфликтует.",
+                    )
+                )
+                score -= 5
+
+    measurement_context = db.get(ReportLogisticsMeasurementContext, report.id)
+    if report.logistics_measurements_required:
+        measurement_state = _logistics_measurement_context_state(
+            report, measurement_context
+        )
+        measurement_blockers = {
+            "missing": (
+                "logistics_measurements_missing",
+                "Обязательный контекст замеров отсутствует; нужен новый report run.",
+            ),
+            "outdated_methodology": (
+                "logistics_measurements_outdated",
+                "Контекст замеров построен по устаревшей методике.",
+            ),
+            "scope_mismatch": (
+                "logistics_measurements_scope_mismatch",
+                "Контекст замеров принадлежит другому tenant или клиенту.",
+            ),
+            "invalid_status": (
+                "logistics_measurements_invalid_status",
+                "Контекст замеров имеет неизвестный статус.",
+            ),
+            "blocked": (
+                "logistics_measurements_blocked",
+                "Проверка целостности snapshot замеров не пройдена.",
+            ),
+        }
+        if measurement_state in measurement_blockers:
+            code, message = measurement_blockers[measurement_state]
+            blocking_reasons.append(
+                _readiness_reason(code, message, nonOverridable=True)
+            )
+            score = min(score, 40)
+        elif measurement_context is not None:
+            actual_measurement_rows = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReportLogisticsMeasurementRow)
+                    .where(
+                        ReportLogisticsMeasurementRow.report_run_id == report.id
+                    )
+                )
+                or 0
+            )
+            if actual_measurement_rows != measurement_context.measurement_row_count:
+                blocking_reasons.append(
+                    _readiness_reason(
+                        "logistics_measurements_row_count_mismatch",
+                        "Количество событий витрины замеров не совпадает с context.",
+                        nonOverridable=True,
+                    )
+                )
+                score = min(score, 40)
+            elif measurement_state == "partial":
+                review_reasons.append(
+                    _readiness_reason(
+                        "logistics_measurements_partial",
+                        "Часть источников или событий замеров требует проверки.",
                     )
                 )
                 score -= 5
