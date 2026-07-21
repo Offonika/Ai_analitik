@@ -303,6 +303,28 @@ drop-in и временный client login удалены, test symlink возв
 неопубликованный F-3 draft сохранены. Production и client enable не
 выполнялись.
 
+## Post-merge promotion F-3 из `main` — 21 июля 2026 года
+
+PR №45 слит в `main` squash-коммитом `a3b55af`. Из точного commit собран
+immutable release `runtime-main-a3b55af-logistics-f3-20260721` с
+`sourceDirty=false`; повторный запуск additive migration подтвердил schema
+`2026_07_21_logistics_routes_context_v1`. Только test symlink атомарно
+переключён на этот release и перезапущен только test web service.
+
+Local и public test health подтвердили `status=ok`,
+`runtimeEnvironment=test`, совпадающие backend/static build
+`20260721-logistics-f3-routes-v1` и неактивный source refresh. Отдельный test
+health timer завершился успешно. `SHUMEYKO_CLIENT_LOGIN_ENABLED=false`, factor
+client flag остался `false`, а routes master/client overrides отсутствуют;
+следовательно, F-3 после merge не включён ни для staff, ни для client без
+отдельного rollout-решения.
+
+Production symlink остался на
+`runtime-fcfc52b-tax-profile-configured-20260721`; production local health
+сохранил `status=ok`, production environment и прежние совпадающие
+backend/static build. Новый report не публиковался, production/client flags и
+внешние интеграции не менялись.
+
 # Последнее UX-решение
 
 Пользователь подтвердил, что текущая структура интерфейса непонятна: она
