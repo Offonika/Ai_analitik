@@ -13,6 +13,7 @@ from typing import Any, Literal
 LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
 LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
 LOGISTICS_FACTORS_METHODOLOGY_VERSION = "wb-logistics-factors-v1"
+LOGISTICS_TARIFFS_METHODOLOGY_VERSION = "wb-logistics-tariffs-v1"
 CHAIN_KEY_VERSION = "wb-order-product-v1"
 RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
@@ -1880,4 +1881,258 @@ def build_dimension_rows(
                 "source_hash_digest": source_hash_digest,
             }
         )
+    return result
+
+
+def _tariff_decimal(value: Any) -> tuple[Decimal | None, bool]:
+    if value is None or value == "":
+        return None, False
+    parsed, status = _parse_decimal(value, required=False)
+    if status != "ready" or parsed is None or parsed < 0:
+        return None, True
+    return parsed, False
+
+
+def _tariff_date(value: Any) -> tuple[date | None, bool]:
+    parsed, status = _parse_date(value, required=False)
+    return parsed, status == "invalid"
+
+
+def _tariff_source_hash(row: Mapping[str, Any]) -> str:
+    explicit = _text(row.get("source_hash") or row.get("raw_payload_hash"))
+    return explicit or _hash_payload(dict(row))
+
+
+def _normalized_tariff_candidate(
+    row: Mapping[str, Any],
+    tariff_type: str,
+) -> tuple[dict[str, Any], bool]:
+    if tariff_type == "box":
+        field_map = {
+            "delivery_base_rub": "box_delivery_base",
+            "delivery_liter_rub": "box_delivery_liter",
+            "delivery_coefficient_pct": "box_delivery_coef_expr",
+            "marketplace_delivery_base_rub": "box_delivery_marketplace_base",
+            "marketplace_delivery_liter_rub": "box_delivery_marketplace_liter",
+            "marketplace_delivery_coefficient_pct": (
+                "box_delivery_marketplace_coef_expr"
+            ),
+            "storage_base_rub": "box_storage_base",
+            "storage_liter_rub": "box_storage_liter",
+            "storage_coefficient_pct": "box_storage_coef_expr",
+        }
+        next_value = row.get("dt_next_box")
+    else:
+        field_map = {
+            "delivery_base_rub": "pallet_delivery_value_base",
+            "delivery_liter_rub": "pallet_delivery_value_liter",
+            "delivery_coefficient_pct": "pallet_delivery_expr",
+            "marketplace_delivery_base_rub": "",
+            "marketplace_delivery_liter_rub": "",
+            "marketplace_delivery_coefficient_pct": "",
+            "storage_base_rub": "pallet_storage_value_expr",
+            "storage_liter_rub": "",
+            "storage_coefficient_pct": "pallet_storage_expr",
+        }
+        next_value = row.get("dt_next_pallet")
+    normalized: dict[str, Any] = {
+        "warehouse": _text(row.get("warehouse_name")),
+        "geo_name": _text(row.get("geo_name")),
+    }
+    invalid = not normalized["warehouse"]
+    for output_name, source_name in field_map.items():
+        value, value_invalid = _tariff_decimal(
+            row.get(source_name) if source_name else None
+        )
+        normalized[output_name] = value
+        invalid = invalid or value_invalid
+    next_change_at, next_invalid = _tariff_date(next_value)
+    archive_end_at, end_invalid = _tariff_date(row.get("dt_till_max"))
+    tariff_date, tariff_date_invalid = _tariff_date(
+        row.get("requested_date") or row.get("source_tariff_date")
+    )
+    normalized.update(
+        {
+            "tariff_date": tariff_date,
+            "next_change_at": next_change_at,
+            "archive_end_at": archive_end_at,
+        }
+    )
+    invalid = invalid or next_invalid or end_invalid or tariff_date_invalid
+    return normalized, invalid
+
+
+def _tariff_row_uid(identity: Sequence[str]) -> str:
+    return "tariff:" + hashlib.sha256(
+        "\x1f".join(_text(item) for item in identity).encode("utf-8")
+    ).hexdigest()
+
+
+def build_tariff_rows(
+    sku_rows: Sequence[LogisticsSkuRow],
+    tariff_rows: Sequence[Mapping[str, Any]],
+    *,
+    factor_snapshot_date: date | None,
+) -> list[dict[str, Any]]:
+    """Build F-2 tariff facts/estimates without joining a route from F-3."""
+
+    scopes: dict[tuple[str, ...], list[LogisticsSkuRow]] = defaultdict(list)
+    for row in sku_rows:
+        identity = (
+            row.tenant_id,
+            row.client_id,
+            row.wb_cabinet_id,
+            row.client_company_id,
+            row.scheme,
+            row.financial_week_start.isoformat(),
+        )
+        scopes[identity].append(row)
+
+    source_by_point: dict[
+        tuple[str, date, str], list[Mapping[str, Any]]
+    ] = defaultdict(list)
+    for row in tariff_rows:
+        cabinet = _text(row.get("wb_cabinet_id"))
+        tariff_type = _text(row.get("tariff_type")).casefold()
+        requested_date, invalid_date = _tariff_date(
+            row.get("requested_date") or row.get("source_tariff_date")
+        )
+        if (
+            cabinet
+            and tariff_type in {"box", "pallet"}
+            and not invalid_date
+            and requested_date is not None
+        ):
+            source_by_point[(cabinet, requested_date, tariff_type)].append(row)
+
+    result: list[dict[str, Any]] = []
+    for identity in sorted(scopes):
+        group = scopes[identity]
+        week_start = date.fromisoformat(identity[5])
+        sku_hashes = sorted({_text(row.source_hash_digest) for row in group})
+        for tariff_type in ("box", "pallet"):
+            candidates = source_by_point.get(
+                (identity[2], week_start, tariff_type), []
+            )
+            evidence_type = "fact"
+            if not candidates and factor_snapshot_date is not None:
+                candidates = source_by_point.get(
+                    (identity[2], factor_snapshot_date, tariff_type), []
+                )
+                evidence_type = "estimate"
+            by_warehouse: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+            for candidate in candidates:
+                by_warehouse[_text(candidate.get("warehouse_name"))].append(
+                    candidate
+                )
+            if not by_warehouse:
+                by_warehouse[""] = []
+
+            for warehouse in sorted(by_warehouse):
+                source_candidates = by_warehouse[warehouse]
+                normalized_candidates: list[dict[str, Any]] = []
+                invalid = False
+                for candidate in source_candidates:
+                    normalized, candidate_invalid = _normalized_tariff_candidate(
+                        candidate,
+                        tariff_type,
+                    )
+                    normalized_candidates.append(normalized)
+                    invalid = invalid or candidate_invalid
+                signatures = {
+                    json.dumps(
+                        item,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                    for item in normalized_candidates
+                }
+                conflict = len(signatures) > 1
+                selected = (
+                    normalized_candidates[0]
+                    if len(signatures) == 1 and normalized_candidates
+                    else {}
+                )
+                has_required = all(
+                    selected.get(field) is not None
+                    for field in (
+                        "delivery_coefficient_pct",
+                        "storage_coefficient_pct",
+                    )
+                )
+                if not source_candidates:
+                    quality = "data_unavailable"
+                elif conflict:
+                    quality = "conflicting_tariff"
+                elif invalid:
+                    quality = "invalid_tariff"
+                elif not has_required:
+                    quality = "missing_tariff_values"
+                else:
+                    quality = "ready"
+                if quality == "conflicting_tariff":
+                    selected = {}
+                effective_evidence = (
+                    evidence_type
+                    if source_candidates and selected and quality == "ready"
+                    else "data_unavailable"
+                )
+                source_hashes = sorted(
+                    {_tariff_source_hash(item) for item in source_candidates}
+                )
+                row_identity = (*identity, tariff_type, warehouse)
+                result.append(
+                    {
+                        "tenant_id": identity[0],
+                        "client_id": identity[1],
+                        "wb_cabinet_id": identity[2],
+                        "client_company_id": identity[3],
+                        "scheme": identity[4],
+                        "financial_week_start": week_start,
+                        "requested_date": week_start,
+                        "tariff_date": selected.get("tariff_date"),
+                        "tariff_type": tariff_type,
+                        "warehouse": warehouse,
+                        "geo_name": selected.get("geo_name", ""),
+                        "next_change_at": selected.get("next_change_at"),
+                        "archive_end_at": selected.get("archive_end_at"),
+                        "delivery_base_rub": selected.get("delivery_base_rub"),
+                        "delivery_liter_rub": selected.get("delivery_liter_rub"),
+                        "delivery_coefficient_pct": selected.get(
+                            "delivery_coefficient_pct"
+                        ),
+                        "marketplace_delivery_base_rub": selected.get(
+                            "marketplace_delivery_base_rub"
+                        ),
+                        "marketplace_delivery_liter_rub": selected.get(
+                            "marketplace_delivery_liter_rub"
+                        ),
+                        "marketplace_delivery_coefficient_pct": selected.get(
+                            "marketplace_delivery_coefficient_pct"
+                        ),
+                        "storage_base_rub": selected.get("storage_base_rub"),
+                        "storage_liter_rub": selected.get("storage_liter_rub"),
+                        "storage_coefficient_pct": selected.get(
+                            "storage_coefficient_pct"
+                        ),
+                        "evidence_type": effective_evidence,
+                        "coverage_status": quality,
+                        "data_quality_status": quality,
+                        "row_uid": _tariff_row_uid(row_identity),
+                        "source_hash_digest": _hash_payload(
+                            {
+                                "factorMethodologyVersion": (
+                                    LOGISTICS_TARIFFS_METHODOLOGY_VERSION
+                                ),
+                                "identity": row_identity,
+                                "skuSourceHashes": sku_hashes,
+                                "tariffSourceHashes": source_hashes,
+                                "dataQualityStatus": quality,
+                                "evidenceType": effective_evidence,
+                            }
+                        ),
+                    }
+                )
     return result

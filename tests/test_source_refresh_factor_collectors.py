@@ -10,12 +10,27 @@ from wb_unit_economics.web import source_refresh as sr
 class _FakeService:
     def __init__(self) -> None:
         self.calls: dict[str, tuple] = {}
+        self.tariffs_recorded = False
 
     def _wb_tariffs_exporter(self, accounts, output_dir, *, period_start, period_end):
         self.calls["tariffs"] = (
             tuple(accounts), output_dir, period_start, period_end
         )
         return []
+
+    def _record_wb_tariffs(
+        self,
+        db,
+        refresh_run,
+        output_dir,
+        results,
+        *,
+        wb_cabinet_ids,
+        period_start,
+        period_end,
+    ):
+        self.tariffs_recorded = True
+        return SimpleNamespace(id=1)
 
     def _wb_goods_return_exporter(
         self, accounts, output_dir, *, period_start, period_end
@@ -78,6 +93,7 @@ def test_factor_collectors_call_exporter_and_return_output_dir(
     assert supplier_sales.output_dir == tmp_path / "wb_supplier_sales"
     assert set(service.calls) == {"tariffs", "goods_return", "supplier_sales"}
     assert service.calls["tariffs"][0]  # accounts passed through
+    assert service.tariffs_recorded is True
 
 
 def test_factor_collectors_skip_without_wb_settings(tmp_path: Path) -> None:

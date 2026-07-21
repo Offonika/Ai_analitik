@@ -6,12 +6,12 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260720-logistics-f1-dimensions-v1"
+      content="20260721-logistics-f2-tariffs-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260720-logistics-f1-dimensions-v1"
+      href="/static/styles.css?v=20260721-logistics-f2-tariffs-v1"
     />
     <link
       rel="stylesheet"
@@ -500,6 +500,71 @@
               </button>
               <span id="logistics-dimensions-page" class="muted"></span>
               <button id="logistics-dimensions-next" type="button" class="secondary-button">
+                Далее
+              </button>
+            </div>
+          </section>
+
+          <section
+            id="logistics-tariffs"
+            class="panel logistics-tariffs-panel"
+            aria-labelledby="logistics-tariffs-title"
+            hidden
+          >
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Факторы стоимости</p>
+                <h3 id="logistics-tariffs-title">Тарифы и коэффициенты WB</h3>
+                <p class="muted logistics-tariffs-note">
+                  Архивный тариф — факт только для запрошенной недели. Текущий
+                  тариф отмечается как оценка и не меняет денежный итог.
+                </p>
+              </div>
+              <span id="logistics-tariffs-status" class="logistics-data-status"></span>
+            </div>
+            <div
+              id="logistics-tariffs-coverage"
+              class="logistics-tariffs-coverage"
+              aria-label="Покрытие тарифов"
+            ></div>
+            <p class="logistics-tariffs-warning">
+              Коэффициенты уже учтены WB в ставках и не умножаются на итог
+              отчёта повторно.
+            </p>
+            <ul
+              id="logistics-tariffs-recommendations"
+              class="logistics-factor-recommendations"
+            ></ul>
+            <div class="table-wrap logistics-tariffs-table-wrap">
+              <table
+                id="logistics-tariffs-table"
+                class="logistics-table logistics-tariffs-table"
+                data-sort-mode="remote"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" data-sort-key="requestedDate">Неделя</th>
+                    <th scope="col" data-sort-key="warehouse">Склад</th>
+                    <th scope="col" data-sort-disabled="true">Тип</th>
+                    <th scope="col" data-sort-key="deliveryCoefficient">Доставка</th>
+                    <th scope="col" data-sort-key="storageCoefficient">Хранение</th>
+                    <th scope="col" data-sort-key="coverageStatus">Основание</th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-tariffs-rows"></tbody>
+              </table>
+            </div>
+            <div
+              id="logistics-tariffs-pagination"
+              class="logistics-pagination"
+              aria-label="Страницы тарифов"
+              hidden
+            >
+              <button id="logistics-tariffs-prev" type="button" class="secondary-button">
+                Назад
+              </button>
+              <span id="logistics-tariffs-page" class="muted"></span>
+              <button id="logistics-tariffs-next" type="button" class="secondary-button">
                 Далее
               </button>
             </div>
@@ -2696,9 +2761,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
-    <script src="/static/app.js?v=20260720-logistics-f1-dimensions-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260721-logistics-f2-tariffs-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260721-logistics-f2-tariffs-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260721-logistics-f2-tariffs-v1" defer></script>
+    <script src="/static/app.js?v=20260721-logistics-f2-tariffs-v1" defer></script>
   </body>
 </html>

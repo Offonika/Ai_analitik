@@ -20,10 +20,12 @@ from wb_unit_economics.logistics_analysis import (
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
+    LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
     build_dimension_rows,
     build_logistics_analysis,
+    build_tariff_rows,
 )
 from wb_unit_economics.web import dashboard_payload, integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
@@ -1591,6 +1593,53 @@ def _dimension_context(report, rows, *, data_status: str = "ready"):
     }
 
 
+def _tariff_context(report, rows, *, data_status: str = "ready"):
+    points: dict[tuple, set[str]] = {}
+    for row in rows:
+        point = (
+            row["wb_cabinet_id"],
+            row["client_company_id"],
+            row["scheme"],
+            row["financial_week_start"],
+            row["tariff_type"],
+        )
+        points.setdefault(point, set()).add(row["evidence_type"])
+    factual = sum("fact" in values for values in points.values())
+    estimated = sum(
+        "fact" not in values and "estimate" in values
+        for values in points.values()
+    )
+    expected = len(points)
+    return {
+        "tenant_id": report.tenant_id,
+        "client_id": report.client_id,
+        "factor_methodology_version": LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
+        "data_status": data_status,
+        "input_hash": "safe-tariff-input-hash",
+        "source_snapshot_hash": "safe-tariff-snapshot-hash",
+        "source_loaded_at": datetime(2026, 7, 21, 12, 0),
+        "factor_snapshot_date": date(2026, 7, 21),
+        "source_row_count": len(rows),
+        "tariff_row_count": len(rows),
+        "expected_point_count": expected,
+        "factual_point_count": factual,
+        "estimated_point_count": estimated,
+        "unavailable_point_count": expected - factual - estimated,
+        "invalid_row_count": sum(
+            row["coverage_status"] == "invalid_tariff" for row in rows
+        ),
+        "conflicting_row_count": sum(
+            row["coverage_status"] == "conflicting_tariff" for row in rows
+        ),
+        "warehouse_count": len(
+            {row["warehouse"] for row in rows if row["warehouse"]}
+        ),
+        "blocking_reasons": [],
+        "review_reasons": [] if data_status == "ready" else ["test_partial"],
+        "created_at": datetime(2026, 7, 21, 12, 1),
+    }
+
+
 def persist_logistics_fixture(client: TestClient) -> None:
     with client.app.state.session_factory() as db:
         report = db.get(repository.ReportRun, "report-1")
@@ -1861,6 +1910,181 @@ def test_published_dimension_mart_is_immutable(tmp_path: Path) -> None:
                 context=_dimension_context(report, []),
                 rows=[],
             )
+
+
+def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_tariffs_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report, product_count=2)
+        repository.replace_report_logistics_analysis(db, report, result)
+        source_rows = [
+            {
+                "wb_cabinet_id": "cabinet-logistics",
+                "requested_date": "2026-04-06",
+                "tariff_type": "box",
+                "warehouse_name": warehouse,
+                "box_delivery_base": "48",
+                "box_delivery_liter": "11,2",
+                "box_delivery_coef_expr": "125",
+                "box_storage_base": "0,14",
+                "box_storage_liter": "0,07",
+                "box_storage_coef_expr": "115",
+                "source_hash": f"box-{index}",
+            }
+            for index, warehouse in enumerate(("Склад A", "Склад B"), 1)
+        ]
+        source_rows.append(
+            {
+                "wb_cabinet_id": "cabinet-logistics",
+                "requested_date": "2026-07-21",
+                "tariff_type": "pallet",
+                "warehouse_name": "Склад A",
+                "pallet_delivery_expr": "170",
+                "pallet_delivery_value_base": "51",
+                "pallet_storage_expr": "155",
+                "pallet_storage_value_expr": "35.65",
+                "source_hash": "pallet-current",
+            }
+        )
+        rows = build_tariff_rows(
+            result.sku_rows,
+            source_rows,
+            factor_snapshot_date=date(2026, 7, 21),
+        )
+        repository.replace_report_logistics_tariff_analysis(
+            db,
+            report,
+            context=_tariff_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/reports/report-1/logistics/tariffs",
+        params={"limit": 1, "sortBy": "warehouse", "sortOrder": "asc"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataStatus"] == "partial"
+    assert body["sliceStatus"] == "partial"
+    assert body["total"] == 3
+    assert len(body["rows"]) == 1
+    assert body["coverage"] == {
+        "expectedPoints": 2,
+        "factualPoints": 1,
+        "estimatedPoints": 1,
+        "unavailablePoints": 0,
+        "invalidRows": 0,
+        "conflictingRows": 0,
+        "warehouses": 2,
+        "factualCoveragePct": 50,
+    }
+    assert body["financialEffect"] is None
+    assert body["recommendations"][0]["evidenceType"] == "limitation"
+    assert "sourceHashDigest" not in body["rows"][0]
+    assert "sourceSnapshotHash" not in body
+    assert "wbCabinetId" not in body["rows"][0]
+
+    box = client.get(
+        "/api/reports/report-1/logistics/tariffs",
+        params={"tariffType": "box", "warehouse": "Склад B"},
+    ).json()
+    assert box["total"] == 1
+    assert box["rows"][0]["warehouse"] == "Склад B"
+    assert box["rows"][0]["evidenceType"] == "fact"
+
+    empty = client.get(
+        "/api/reports/report-1/logistics/tariffs",
+        params={"periodStart": "2026-06-01", "periodEnd": "2026-06-07"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["coverage"]["expectedPoints"] == 0
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsTariffContext, "report-1")
+        assert context is not None
+        pallet = (
+            db.query(repository.ReportLogisticsTariffRow)
+            .filter_by(report_run_id="report-1", tariff_type="pallet")
+            .one()
+        )
+        pallet.evidence_type = "fact"
+        pallet.tariff_date = pallet.requested_date
+        context.data_status = "ready"
+        db.commit()
+    ready = client.get("/api/reports/report-1/logistics/tariffs").json()
+    assert ready["dataStatus"] == "ready"
+    assert ready["sliceStatus"] == "ready"
+    assert ready["coverage"]["factualCoveragePct"] == 100
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsTariffContext, "report-1")
+        assert context is not None
+        context.tenant_id = "other"
+        db.commit()
+    blocked = client.get("/api/reports/report-1/logistics/tariffs").json()
+    assert blocked["dataStatus"] == "blocked"
+    assert blocked["rows"] == []
+
+
+def test_logistics_tariffs_role_and_flag_matrix(tmp_path: Path) -> None:
+    (tmp_path / "staff").mkdir()
+    (tmp_path / "client").mkdir()
+    staff = make_client(
+        tmp_path / "staff",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_tariffs_enabled": False,
+        },
+    )
+    login(staff)
+    assert staff.get("/api/reports/report-1/logistics/tariffs").status_code == 404
+    assert staff.get("/api/me").json()["logisticsTariffsEnabled"] is False
+    staff.app.state.settings.logistics_tariffs_enabled = True
+    assert staff.get("/api/reports/report-1/logistics/tariffs").status_code == 200
+    assert staff.get("/api/me").json()["logisticsTariffsEnabled"] is True
+
+    client = make_client(
+        tmp_path / "client",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_analysis_client_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_factors_client_enabled": True,
+            "logistics_tariffs_enabled": True,
+            "logistics_tariffs_client_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="tariff-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "tariff-client@example.com", "secret")
+    assert client.get("/api/reports/report-1/logistics/tariffs").status_code == 404
+    assert client.get("/api/me").json()["logisticsTariffsEnabled"] is False
+    client.app.state.settings.logistics_tariffs_client_enabled = True
+    assert client.get("/api/reports/report-1/logistics/tariffs").status_code == 200
+    assert client.get("/api/me").json()["logisticsTariffsEnabled"] is True
 
 
 def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
@@ -3100,6 +3324,81 @@ def test_required_dimension_context_controls_publication_readiness(
             item
             for item in outdated
             if item["code"] == "logistics_dimensions_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+
+def test_required_tariff_context_controls_publication_readiness(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.logistics_tariffs_required = True
+        missing = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item for item in missing if item["code"] == "logistics_tariffs_missing"
+        )
+        assert blocker["nonOverridable"] is True
+        db.rollback()
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        rows = build_tariff_rows(
+            result.sku_rows,
+            [
+                {
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "requested_date": "2026-04-06",
+                    "tariff_type": "box",
+                    "warehouse_name": "Склад A",
+                    "box_delivery_coef_expr": "125",
+                    "box_storage_coef_expr": "115",
+                    "source_hash": "tariff-readiness",
+                }
+            ],
+            factor_snapshot_date=date(2026, 7, 21),
+        )
+        repository.replace_report_logistics_tariff_analysis(
+            db,
+            report,
+            context=_tariff_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        assert not any(
+            item["code"].startswith("logistics_tariffs_")
+            for item in readiness["blockingReasons"]
+        )
+        assert any(
+            item["code"] == "logistics_tariffs_partial"
+            for item in readiness["reviewReasons"]
+        )
+
+        context = db.get(repository.ReportLogisticsTariffContext, report.id)
+        assert context is not None
+        context.tariff_row_count += 1
+        mismatch = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in mismatch
+            if item["code"] == "logistics_tariffs_row_count_mismatch"
+        )
+        assert blocker["nonOverridable"] is True
+
+        context.tariff_row_count -= 1
+        context.factor_methodology_version = "wb-logistics-tariffs-legacy"
+        outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in outdated
+            if item["code"] == "logistics_tariffs_outdated"
         )
         assert blocker["nonOverridable"] is True
 
@@ -4439,10 +4738,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260720-logistics-f1-dimensions-v1"
+        "20260721-logistics-f2-tariffs-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260720-logistics-f1-dimensions-v1"
+        "20260721-logistics-f2-tariffs-v1"
     )
 
     page = client.get("/")
@@ -4593,11 +4892,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260720-logistics-f1-dimensions-v1"
+            "styles.css?v=20260721-logistics-f2-tariffs-v1"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260720-logistics-f1-dimensions-v1"
+            "app.js?v=20260721-logistics-f2-tariffs-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -4908,6 +5207,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.status_code == 200
     assert "/api/reports" in app_js.text
     assert "/summary" in app_js.text
+    assert "/logistics/tariffs" in app_js.text
+    assert "logisticsTariffsAvailable" in app_js.text
+    assert 'id="logistics-tariffs"' in cabinet.text
+    assert "Тарифы и коэффициенты WB" in cabinet.text
+    assert "20260721-logistics-f2-tariffs-v1" in cabinet.text
+    assert ".logistics-tariffs-table" in styles.text
     assert "/freshness" in app_js.text
     assert "/client-draft" in app_js.text
     assert "setTopbarNotice" in app_js.text

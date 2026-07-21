@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -721,6 +721,8 @@ SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false
 SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false
 SHUMEYKO_LOGISTICS_FACTORS_ENABLED=false
 SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false
+SHUMEYKO_LOGISTICS_TARIFFS_ENABLED=false
+SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED=false
 ```
 
 Фактическое состояние test/production перед rollout проверяется по
@@ -770,6 +772,22 @@ SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false
    Под client-ролью factor API обязан вернуть HTTP 404, секция не показывается
    и запрос не выполняется. Production и client factor flag не включать.
 
+Для staff-only F-2 «Тарифы» после F-1 дополнительно:
+
+1. Применить additive migration
+   `2026_07_21_logistics_tariffs_context_v1` через штатный `init_db`.
+2. Оставить factor master включённым и включить на test только
+   `SHUMEYKO_LOGISTICS_TARIFFS_ENABLED=true`; оба client-флага factors/tariffs
+   явно оставить `false`.
+3. Выполнить новый full source refresh. `wb_tariffs` обязан иметь verified
+   manifest и статусы каждой недельной даты; 429/недоступный архив даёт
+   `partial`, а не нулевую ставку.
+4. Создать новый immutable draft и проверить
+   `factorMethodologyVersion=wb-logistics-tariffs-v1`, `/logistics/tariffs`,
+   desktop/mobile блок после габаритов и локальную ошибку. Под client API
+   обязан вернуть 404, запрос и секция отсутствовать. Production и client
+   enable не выполнять.
+
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
 маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
@@ -780,6 +798,9 @@ order-id и source hashes не должны появляться в API, UI, AI-
 Частичный rollback F-1 выполняется отдельно:
 `SHUMEYKO_LOGISTICS_FACTORS_ENABLED=false`; первая очередь логистики при этом
 остаётся доступной.
+Частичный rollback F-2 —
+`SHUMEYKO_LOGISTICS_TARIFFS_ENABLED=false`; F-1 и первая очередь остаются
+доступными, а required blocker уже созданного draft не снимается.
 
 # Backup
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ __all__ = [
     "TARIFFS_PALLET_ENDPOINT",
     "WbTariffsClient",
     "WbTariffsExportResult",
+    "build_tariff_snapshot_dates",
     "export_wb_tariffs",
     "flatten_box_tariffs",
     "flatten_pallet_tariffs",
@@ -122,9 +123,19 @@ def flatten_box_tariffs(
                 "box_delivery_base": warehouse.get("boxDeliveryBase"),
                 "box_delivery_liter": warehouse.get("boxDeliveryLiter"),
                 "box_delivery_coef_expr": warehouse.get("boxDeliveryCoefExpr"),
+                "box_delivery_marketplace_base": warehouse.get(
+                    "boxDeliveryMarketplaceBase"
+                ),
+                "box_delivery_marketplace_liter": warehouse.get(
+                    "boxDeliveryMarketplaceLiter"
+                ),
+                "box_delivery_marketplace_coef_expr": warehouse.get(
+                    "boxDeliveryMarketplaceCoefExpr"
+                ),
                 "box_storage_base": warehouse.get("boxStorageBase"),
                 "box_storage_liter": warehouse.get("boxStorageLiter"),
                 "box_storage_coef_expr": warehouse.get("boxStorageCoefExpr"),
+                "geo_name": warehouse.get("geoName"),
             }
         )
     return rows
@@ -149,6 +160,9 @@ def flatten_pallet_tariffs(
                 "pallet_delivery_value_base": warehouse.get(
                     "palletDeliveryValueBase"
                 ),
+                "pallet_delivery_value_liter": warehouse.get(
+                    "palletDeliveryValueLiter"
+                ),
                 "pallet_storage_expr": warehouse.get("palletStorageExpr"),
                 "pallet_storage_value_expr": warehouse.get(
                     "palletStorageValueExpr"
@@ -161,12 +175,34 @@ def flatten_pallet_tariffs(
 @dataclass(frozen=True)
 class WbTariffsExportResult:
     ok: bool
+    seller_account_id: str = ""
+    target_date: date | None = None
     box_row_count: int = 0
     pallet_row_count: int = 0
     raw_output_path: Path | None = None
     flat_output_path: Path | None = None
     raw_payload_hash: str = ""
+    flat_payload_hash: str = ""
+    status_code: int | None = None
     error: str = ""
+
+
+def build_tariff_snapshot_dates(
+    period_start: date,
+    period_end: date,
+    *,
+    factor_snapshot_date: date,
+) -> tuple[date, ...]:
+    """Return calendar-week starts plus the explicit current snapshot date."""
+
+    if period_end < period_start:
+        raise ValueError("period_end must not be before period_start")
+    current = period_start - timedelta(days=period_start.weekday())
+    values: set[date] = {factor_snapshot_date}
+    while current <= period_end:
+        values.add(current)
+        current += timedelta(days=7)
+    return tuple(sorted(values))
 
 
 def export_wb_tariffs(
@@ -174,13 +210,26 @@ def export_wb_tariffs(
     output_dir: Path,
     *,
     target_date: date,
+    seller_account_id: str = "",
+    file_prefix: str = "",
 ) -> WbTariffsExportResult:
     """Read-only снимок тарифов box/pallet: raw + flat в ``output_dir``."""
     try:
         box_payload = client.fetch_box_tariffs(target_date)
         pallet_payload = client.fetch_pallet_tariffs(target_date)
     except (httpx.HTTPError, ValueError) as exc:
-        return WbTariffsExportResult(ok=False, error=exc.__class__.__name__)
+        status_code = (
+            exc.response.status_code
+            if isinstance(exc, httpx.HTTPStatusError)
+            else None
+        )
+        return WbTariffsExportResult(
+            ok=False,
+            seller_account_id=seller_account_id,
+            target_date=target_date,
+            status_code=status_code,
+            error=exc.__class__.__name__,
+        )
     box_rows = flatten_box_tariffs(box_payload, target_date)
     pallet_rows = flatten_pallet_tariffs(pallet_payload, target_date)
     raw = {
@@ -189,15 +238,24 @@ def export_wb_tariffs(
         "pallet": pallet_payload,
     }
     flat = {"box": box_rows, "pallet": pallet_rows}
-    raw_path = output_dir / f"wb_tariffs_{target_date.isoformat()}.raw.json"
-    flat_path = output_dir / f"wb_tariffs_{target_date.isoformat()}.flat.json"
+    prefix = f"{file_prefix}_" if file_prefix else ""
+    raw_path = output_dir / (
+        f"{prefix}wb_tariffs_{target_date.isoformat()}.raw.json"
+    )
+    flat_path = output_dir / (
+        f"{prefix}wb_tariffs_{target_date.isoformat()}.flat.json"
+    )
     _write_json(raw_path, raw)
     _write_json(flat_path, flat)
     return WbTariffsExportResult(
         ok=True,
+        seller_account_id=seller_account_id,
+        target_date=target_date,
         box_row_count=len(box_rows),
         pallet_row_count=len(pallet_rows),
         raw_output_path=raw_path,
         flat_output_path=flat_path,
         raw_payload_hash=raw_payload_hash(raw),
+        flat_payload_hash=raw_payload_hash(flat),
+        status_code=200,
     )

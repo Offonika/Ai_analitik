@@ -114,6 +114,7 @@ updated_at: "2026-07-17"
 | `GET` | `/api/reports/{report_id}/logistics/orders` | `report_logistics_orders_api_reports__report_id__logistics_orders_get` | Report Logistics Orders |
 | `GET` | `/api/reports/{report_id}/logistics/products` | `report_logistics_products_api_reports__report_id__logistics_products_get` | Report Logistics Products |
 | `GET` | `/api/reports/{report_id}/logistics/summary` | `report_logistics_summary_api_reports__report_id__logistics_summary_get` | Report Logistics Summary |
+| `GET` | `/api/reports/{report_id}/logistics/tariffs` | `report_logistics_tariffs_api_reports__report_id__logistics_tariffs_get` | Report Logistics Tariffs |
 | `GET` | `/api/reports/{report_id}/management-report` | `report_management_report_api_reports__report_id__management_report_get` | Report Management Report |
 | `POST` | `/api/reports/{report_id}/mapping-file` | `upload_mapping_file_api_reports__report_id__mapping_file_post` | Upload Mapping File |
 | `GET` | `/api/reports/{report_id}/marketplace-expense-reconciliation` | `report_marketplace_expense_reconciliation_api_reports__report_id__marketplace_expense_reconciliation_get` | Report Marketplace Expense Reconciliation |
@@ -128,4 +129,4 @@ updated_at: "2026-07-17"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **107**.
+Всего маршрутов: **108**.

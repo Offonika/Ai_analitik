@@ -76,6 +76,12 @@ const state = {
   logisticsDimensionsSortDirection: "asc",
   logisticsDimensionsRequestKey: "",
   logisticsDimensionsRequestId: 0,
+  logisticsTariffs: null,
+  logisticsTariffsOffset: 0,
+  logisticsTariffsSortBy: "requestedDate",
+  logisticsTariffsSortDirection: "asc",
+  logisticsTariffsRequestKey: "",
+  logisticsTariffsRequestId: 0,
   logisticsOrders: [],
   logisticsOrdersTotal: 0,
   logisticsOrdersOffset: 0,
@@ -207,6 +213,20 @@ const els = {
   logisticsDimensionsPrev: document.querySelector("#logistics-dimensions-prev"),
   logisticsDimensionsPage: document.querySelector("#logistics-dimensions-page"),
   logisticsDimensionsNext: document.querySelector("#logistics-dimensions-next"),
+  logisticsTariffsSection: document.querySelector("#logistics-tariffs"),
+  logisticsTariffsStatus: document.querySelector("#logistics-tariffs-status"),
+  logisticsTariffsCoverage: document.querySelector("#logistics-tariffs-coverage"),
+  logisticsTariffsRecommendations: document.querySelector(
+    "#logistics-tariffs-recommendations",
+  ),
+  logisticsTariffsTable: document.querySelector("#logistics-tariffs-table"),
+  logisticsTariffsRows: document.querySelector("#logistics-tariffs-rows"),
+  logisticsTariffsPagination: document.querySelector(
+    "#logistics-tariffs-pagination",
+  ),
+  logisticsTariffsPrev: document.querySelector("#logistics-tariffs-prev"),
+  logisticsTariffsPage: document.querySelector("#logistics-tariffs-page"),
+  logisticsTariffsNext: document.querySelector("#logistics-tariffs-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
   logisticsOrdersTable: document.querySelector("#logistics-orders-table"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
@@ -636,6 +656,7 @@ function init() {
     event.preventDefault();
     state.logisticsProductsOffset = 0;
     state.logisticsDimensionsOffset = 0;
+    state.logisticsTariffsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
@@ -677,6 +698,25 @@ function init() {
     }
     state.logisticsDimensionsOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsDimensions({ force: true });
+  });
+  els.logisticsTariffsPrev?.addEventListener("click", () => {
+    if (state.logisticsTariffsOffset <= 0) {
+      return;
+    }
+    state.logisticsTariffsOffset = Math.max(
+      0,
+      state.logisticsTariffsOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsTariffs({ force: true });
+  });
+  els.logisticsTariffsNext?.addEventListener("click", () => {
+    const payload = state.logisticsTariffs || {};
+    const itemCount = asArray(payload.rows).length;
+    if (state.logisticsTariffsOffset + itemCount >= Number(payload.total || 0)) {
+      return;
+    }
+    state.logisticsTariffsOffset += LOGISTICS_PAGE_SIZE;
+    loadLogisticsTariffs({ force: true });
   });
   els.logisticsOrdersClose?.addEventListener("click", closeLogisticsOrders);
   els.logisticsOrdersPrev?.addEventListener("click", () => {
@@ -991,6 +1031,11 @@ function syncRemoteTableSortState() {
     state.logisticsDimensionsSortDirection,
   );
   setRemoteTableSortState(
+    els.logisticsTariffsTable,
+    state.logisticsTariffsSortBy,
+    state.logisticsTariffsSortDirection,
+  );
+  setRemoteTableSortState(
     els.reportRowsTable,
     state.rowsSortBy,
     state.rowsSortDirection,
@@ -1023,6 +1068,13 @@ function onRemoteTableSort(event) {
     state.logisticsDimensionsSortDirection = direction;
     state.logisticsDimensionsOffset = 0;
     loadLogisticsDimensions({ force: true });
+    return;
+  }
+  if (table === els.logisticsTariffsTable) {
+    state.logisticsTariffsSortBy = sortKey;
+    state.logisticsTariffsSortDirection = direction;
+    state.logisticsTariffsOffset = 0;
+    loadLogisticsTariffs({ force: true });
     return;
   }
   if (table === els.logisticsOrdersTable) {
@@ -4722,6 +4774,11 @@ async function loadLogisticsAnalysis(options = {}) {
   } else {
     resetLogisticsDimensions({ hide: true });
   }
+  if (logisticsTariffsAvailable()) {
+    loadLogisticsTariffs({ force: options.force });
+  } else {
+    resetLogisticsTariffs({ hide: true });
+  }
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
     const [summary, products] = await Promise.all([
@@ -4821,6 +4878,60 @@ async function loadLogisticsDimensions(options = {}) {
   }
 }
 
+async function loadLogisticsTariffs(options = {}) {
+  if (
+    !logisticsTariffsAvailable() ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
+    !state.reportId
+  ) {
+    resetLogisticsTariffs({ hide: true });
+    return;
+  }
+  const reportId = state.reportId;
+  const params = logisticsFilterParams({
+    sortBy: state.logisticsTariffsSortBy,
+    sortOrder: state.logisticsTariffsSortDirection,
+    offset: state.logisticsTariffsOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${params}`;
+  if (!options.force && requestKey === state.logisticsTariffsRequestKey) {
+    renderLogisticsTariffs();
+    return;
+  }
+  state.logisticsTariffsRequestKey = requestKey;
+  const requestId = ++state.logisticsTariffsRequestId;
+  els.logisticsTariffsSection.hidden = false;
+  els.logisticsTariffsStatus.textContent = "Загружаем тарифы…";
+  els.logisticsTariffsStatus.dataset.status = "loading";
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/tariffs?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.logisticsTariffsRequestKey !== requestKey ||
+      state.logisticsTariffsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsTariffs = payload;
+    renderLogisticsTariffs();
+  } catch (error) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsTariffsRequestKey !== requestKey ||
+      state.logisticsTariffsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsTariffs = { error: true, rows: [], total: 0 };
+    state.logisticsTariffsRequestKey = "";
+    renderLogisticsTariffs();
+  }
+}
+
 function resetLogisticsWorkspace() {
   if (!els.logisticsDataStatus) {
     return;
@@ -4849,6 +4960,7 @@ function resetLogisticsWorkspace() {
     { offset: 0, itemCount: 0, total: 0 },
   );
   resetLogisticsDimensions({ hide: !logisticsFactorsAvailable() });
+  resetLogisticsTariffs({ hide: !logisticsTariffsAvailable() });
   closeLogisticsOrders();
 }
 
@@ -4870,6 +4982,28 @@ function resetLogisticsDimensions(options = {}) {
     els.logisticsDimensionsPrev,
     els.logisticsDimensionsPage,
     els.logisticsDimensionsNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
+}
+
+function resetLogisticsTariffs(options = {}) {
+  state.logisticsTariffs = null;
+  state.logisticsTariffsRequestKey = "";
+  state.logisticsTariffsRequestId += 1;
+  if (!els.logisticsTariffsSection) {
+    return;
+  }
+  els.logisticsTariffsSection.hidden = Boolean(options.hide);
+  els.logisticsTariffsStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsTariffsStatus.dataset.status = "empty";
+  els.logisticsTariffsCoverage.replaceChildren();
+  els.logisticsTariffsRecommendations.replaceChildren();
+  els.logisticsTariffsRows.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsTariffsPagination,
+    els.logisticsTariffsPrev,
+    els.logisticsTariffsPage,
+    els.logisticsTariffsNext,
     { offset: 0, itemCount: 0, total: 0 },
   );
 }
@@ -5335,6 +5469,153 @@ function renderLogisticsDimensionRows(items, emptyText) {
         : "logistics-quality-badge is-warning";
       badge.textContent = signal;
       cells[4].replaceChildren(badge);
+      row.append(...cells);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsTariffs() {
+  if (!logisticsTariffsAvailable()) {
+    resetLogisticsTariffs({ hide: true });
+    return;
+  }
+  const payload = state.logisticsTariffs || {};
+  els.logisticsTariffsSection.hidden = false;
+  if (payload.error) {
+    els.logisticsTariffsStatus.textContent =
+      "Тарифы временно недоступны. Основная логистика и габариты продолжают работать.";
+    els.logisticsTariffsStatus.dataset.status = "error";
+    renderLogisticsTariffCoverage({});
+    renderLogisticsTariffRecommendations([]);
+    renderLogisticsTariffRows([], "Не удалось загрузить тарифный срез.");
+    return;
+  }
+  const status = normalize(payload.sliceStatus || payload.dataStatus);
+  const statusCopy = {
+    ready: "Архивное покрытие полное",
+    partial: "Есть оценки или недоступные даты",
+    empty: "В выбранном срезе нет недель",
+    needs_rebuild: "Нужна новая ревизия отчёта",
+    blocked: "Проверка снимка не пройдена",
+  }[status] || "Тарифы ещё не загружены";
+  const snapshot = payload.factorSnapshotDate
+    ? ` · снимок ${formatCompactDate(payload.factorSnapshotDate)}`
+    : "";
+  els.logisticsTariffsStatus.textContent = `${statusCopy}${snapshot}`;
+  els.logisticsTariffsStatus.dataset.status = status || "empty";
+  renderLogisticsTariffCoverage(payload.coverage || {});
+  renderLogisticsTariffRecommendations(asArray(payload.recommendations));
+  const emptyText = {
+    empty: "В выбранном периоде и фильтрах нет тарифных недель.",
+    needs_rebuild: "Старый отчёт не содержит контекст тарифов F‑2.",
+    blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
+  }[status] || "Нет строк тарифов для выбранного среза.";
+  renderLogisticsTariffRows(asArray(payload.rows), emptyText);
+  renderLogisticsPagination(
+    els.logisticsTariffsPagination,
+    els.logisticsTariffsPrev,
+    els.logisticsTariffsPage,
+    els.logisticsTariffsNext,
+    {
+      offset: state.logisticsTariffsOffset,
+      itemCount: asArray(payload.rows).length,
+      total: Number(payload.total || 0),
+    },
+  );
+}
+
+function renderLogisticsTariffCoverage(coverage) {
+  const cards = [
+    ["Точек", coverage.expectedPoints],
+    ["Архивный факт", coverage.factualPoints],
+    ["Оценка", coverage.estimatedPoints],
+    ["Недоступно", coverage.unavailablePoints],
+    ["Складов", coverage.warehouses],
+    ["Покрытие фактом", coverage.factualCoveragePct],
+  ];
+  els.logisticsTariffsCoverage.replaceChildren(
+    ...cards.map(([labelText, value]) => {
+      const card = document.createElement("span");
+      const label = document.createElement("small");
+      const strong = document.createElement("strong");
+      label.textContent = labelText;
+      strong.textContent = value === null || value === undefined
+        ? "—"
+        : labelText === "Покрытие фактом"
+          ? logisticsPercent(value)
+          : number(value);
+      card.append(label, strong);
+      return card;
+    }),
+  );
+}
+
+function renderLogisticsTariffRecommendations(items) {
+  if (!items.length) {
+    els.logisticsTariffsRecommendations.replaceChildren();
+    return;
+  }
+  els.logisticsTariffsRecommendations.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("li");
+      const title = document.createElement("strong");
+      const message = document.createElement("span");
+      title.textContent = item.title || "Проверить тарифы";
+      message.textContent = item.message || "";
+      row.append(title, message);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsTariffRows(items, emptyText) {
+  if (!items.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 6;
+    cell.className = "muted";
+    cell.textContent = emptyText;
+    row.append(cell);
+    els.logisticsTariffsRows.replaceChildren(row);
+    return;
+  }
+  els.logisticsTariffsRows.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("tr");
+      const evidence = {
+        fact: "Факт",
+        estimate: "Оценка",
+        data_unavailable: "Данные недоступны",
+      }[normalize(item.evidenceType)] || "Проверить";
+      const cells = [
+        ["Неделя", formatCompactDate(item.requestedDate)],
+        ["Склад", item.warehouse || "—"],
+        ["Тип", normalize(item.tariffType) === "pallet" ? "Монопаллета" : "Короб"],
+        [
+          "Доставка",
+          item.deliveryCoefficientPct == null
+            ? "—"
+            : logisticsPercent(item.deliveryCoefficientPct),
+        ],
+        [
+          "Хранение",
+          item.storageCoefficientPct == null
+            ? "—"
+            : logisticsPercent(item.storageCoefficientPct),
+        ],
+        ["Основание", evidence],
+      ].map(([label, value]) => {
+        const cell = logisticsTableCell(value);
+        cell.dataset.label = label;
+        return cell;
+      });
+      const badge = document.createElement("span");
+      badge.className = evidence === "Факт"
+        ? "logistics-quality-badge"
+        : "logistics-quality-badge is-warning";
+      badge.textContent = evidence;
+      cells[5].replaceChildren(badge);
       row.append(...cells);
       return row;
     }),
@@ -15737,6 +16018,12 @@ function resetClientScopedState(options = {}) {
   state.logisticsDimensionsSortDirection = "asc";
   state.logisticsDimensionsRequestKey = "";
   state.logisticsDimensionsRequestId += 1;
+  state.logisticsTariffs = null;
+  state.logisticsTariffsOffset = 0;
+  state.logisticsTariffsSortBy = "requestedDate";
+  state.logisticsTariffsSortDirection = "asc";
+  state.logisticsTariffsRequestKey = "";
+  state.logisticsTariffsRequestId += 1;
   state.logisticsOrders = [];
   state.logisticsOrdersTotal = 0;
   state.logisticsOrdersOffset = 0;
@@ -15826,6 +16113,12 @@ function logisticsScenarioAvailable() {
 function logisticsFactorsAvailable() {
   return Boolean(
     logisticsScenarioAvailable() && state.user?.logisticsFactorsEnabled,
+  );
+}
+
+function logisticsTariffsAvailable() {
+  return Boolean(
+    logisticsFactorsAvailable() && state.user?.logisticsTariffsEnabled,
   );
 }
 

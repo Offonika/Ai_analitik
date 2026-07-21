@@ -5,10 +5,12 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+import pytest
 
 from wb_unit_economics.wb_tariffs import (
     TARIFFS_BOX_ENDPOINT,
     WbTariffsClient,
+    build_tariff_snapshot_dates,
     export_wb_tariffs,
     flatten_box_tariffs,
     flatten_pallet_tariffs,
@@ -33,6 +35,25 @@ _BOX_PAYLOAD = {
         }
     }
 }
+
+
+def test_build_tariff_snapshot_dates_uses_calendar_weeks() -> None:
+    assert build_tariff_snapshot_dates(
+        date(2026, 7, 8),
+        date(2026, 7, 21),
+        factor_snapshot_date=date(2026, 7, 24),
+    ) == (
+        date(2026, 7, 6),
+        date(2026, 7, 13),
+        date(2026, 7, 20),
+        date(2026, 7, 24),
+    )
+    with pytest.raises(ValueError, match="period_end"):
+        build_tariff_snapshot_dates(
+            date(2026, 7, 21),
+            date(2026, 7, 8),
+            factor_snapshot_date=date(2026, 7, 24),
+        )
 
 _PALLET_PAYLOAD = {
     "data": {
