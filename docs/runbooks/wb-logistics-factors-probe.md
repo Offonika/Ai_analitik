@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-19"
+updated_at: "2026-07-21"
 ---
 
 # Назначение
@@ -26,8 +26,9 @@ Draft-спеки, для которых нужен этот probe:
 `docs/specs/wb-logistics-cost-analysis-implementation.md`; при расхождении
 действует он. Этот runbook не заменяет спеки и ничего не согласовывает сам.
 
-**Статус на 2026-07-19: живой probe НЕ выполнялся.** Ниже — план прогона.
-Результаты фиксируются отдельно и в Git/Markdown не коммитятся.
+**Статус на 2026-07-21:** базовый живой probe F-1…F-3 выполнен; для F-4
+официальный schema contract подтверждён, но live-вызовы двух measurement
+endpoint ещё не выполнялись. Ниже — безопасный gate перед F-4 product-кодом.
 
 # Безопасность прогона
 
@@ -47,16 +48,15 @@ Draft-спеки, для которых нужен этот probe:
 | Content `cards/list` (габариты) | Контент | см. офиц. лимит | да |
 | Statistics `supplier/sales` (склад/направление) | Статистика | см. офиц. лимит | да |
 | Tariffs `tariffs/box|pallet` | Тарифы | 60 запросов/мин | да |
-| Finance `sales-reports/detailed` (замеры/штрафы) | Финансы | см. офиц. лимит | да |
+| Analytics `measurement-penalties` (замеры/удержания) | Аналитика | 1 запрос/мин | да |
+| Analytics `warehouse-measurements` (складские замеры) | Аналитика | 1 запрос/мин | да |
 | Analytics `goods-return` (reason) | Аналитика | 1 запрос/мин | да |
 | Returns `claims` (user_comment) | Возвраты покупателями | 20 запросов/мин | да |
 
-Планировать раздельный бюджет запросов и backoff на HTTP 429. Самый узкий лимит —
-`goods-return` (1/мин): для 31-дневных окон это последовательные запросы.
-
-⚠️ Отчёт реализации мигрировал 15.07.2026: использовать
-`POST /api/finance/v1/sales-reports/detailed/{reportId}`; старый
-`GET /api/v5/supplier/reportDetailByPeriod` отключён.
+Планировать раздельный бюджет запросов и backoff на HTTP 429. Все Analytics
+методы с лимитом 1/мин вызываются последовательно. Общий Finance `penalty` не
+используется как источник F-4: официальный Finance contract не содержит
+замеренных габаритов и не доказывает причину удержания.
 
 # Прогон probe
 
@@ -75,9 +75,12 @@ Draft-спеки, для которых нужен этот probe:
    недели; какая самая ранняя дата отдаётся; совпадает ли `warehouseName` тарифа
    со складом продаж. Проверить наличие/имя параметра `date` и полей
    `dtNextBox`/`dtTillMax`.
-4. **Замеры/штрафы (Finance):** есть ли в новом `sales-reports/detailed`
-   фактические габариты, `penalty`, `warehouseName`. Сверить состав полей по
-   Swagger finances.
+4. **Замеры/удержания (Analytics Reports):** отдельно проверить read-only
+   `GET /api/analytics/v1/measurement-penalties` и
+   `GET /api/analytics/v1/warehouse-measurements` для каждого разрешённого
+   кабинета. Первый вызов — `limit=1`, без сохранения body. Зафиксировать только
+   safe status и наличие ожидаемой envelope/schema; затем отдельным контролем
+   проверить полную offset-pagination и provider `total` без вывода значений.
 
 ## R-0. Причины возвратов
 
@@ -132,35 +135,63 @@ Draft-спеки, для которых нужен этот probe:
   scripts/probe_wb_logistics_factors.py )
 ```
 
-У tenant два рабочих WB-кабинета (обе интеграции `check_ok`, encrypted): основной
-(`wb_api`) и второй (`wb_api:<hash>`). Доступ различается по scope токена:
+На разрешённых WB-интеграциях подтверждены read-only тарифы и goods-return;
+Statistics/claims доступны не для каждого token scope. В evidence сохранены
+только безопасные статусы доступности и имена полей — без числа кабинетов,
+provider labels, клиентских объёмов или идентификаторов. Подтверждённые schema:
+тарифы — `boxDeliveryCoefExpr`/`palletDeliveryExpr`, `warehouseName`, периоды
+`dtNextBox`/`dtNextPallet`/`dtTillMax`; goods-return — `reason`, `srid`, `nmId`,
+`status`, `returnType`; Statistics — `warehouseName`, `countryName`,
+`oblastOkrugName`, `regionName`, `srid`. Габариты уже реализованы (F-1), данные
+в сохранённых карточках.
 
-| Источник | Scope | Основной `wb_api` | Второй `wb_api:<hash>` |
-|---|---|---|---|
-| Тарифы box/pallet | Тарифы | ✅ 200 | ✅ 200 |
-| goods-return (причина возврата) | Аналитика | ✅ 200 | ✅ 200 |
-| statistics `supplier/sales` (склад/направление) | Статистика | ❌ 401 | ✅ 200 |
-| claims (комментарий покупателя) | Возвраты покупателями | ❌ 401 | ✅ 200 |
-| Габариты (Content) | Контент | — | — |
+Вывод: F-1…F-3 технически доступны с явным per-cabinet partial scope. Отсутствие
+scope не обходится другим токеном и не скрывается общим успешным статусом.
 
-Поля подтверждены на 200: тарифы — `boxDeliveryCoefExpr`/`palletDeliveryExpr`,
-`warehouseName`, периоды `dtNextBox`/`dtNextPallet`/`dtTillMax`; goods-return —
-`reason`, `srid`, `nmId`, `status`, `returnType`; statistics — `warehouseName`,
-`countryName`, `oblastOkrugName`, `regionName`, `srid`. У второго кабинета claims
-отвечает 200 при пустом активном окне (14 дней); история — через `is_archive=true`.
-Габариты уже реализованы (F-1), данные в сохранённых карточках.
+# F-4 live source gate
 
-Вывод: вторая очередь **технически доступна** — второй кабинет открывает все
-источники (тарифы, склад/направление, причины возврата, заявки покупателей).
-Основному кабинету не хватает scope **«Статистика»** и **«Возвраты
-покупателями»**; чтобы охват был полным по обоим кабинетам, добавить эти права
-его токену и перезапустить probe. Реализация может начинаться с тарифов (F-2),
-причин возврата (goods-return) и склада/направления (F-3) без ожидания.
+До изменения collector/mart/API выполнить минимальный read-only probe на test
+или в отдельном процессе с действующим service environment. Скрипт не должен
+печатать integration/provider names, число кабинетов, `total`, raw rows или
+значения полей.
+
+Текущий `scripts/probe_wb_logistics_factors.py` F-4 endpoints ещё не вызывает и
+для этого gate не подходит. В отдельной implementation-ветке сначала добавить
+безопасный F-4 mode и unit-тест, запрещающий вывод provider labels/counts/raw
+values; до этого environment status F-4 остаётся `not_probed`.
+
+Для каждого разрешённого кабинета и каждого F-4 endpoint зафиксировать только:
+
+- `confirmed_empty` — HTTP 200, ожидаемая envelope/schema, `reports` пуст;
+- `confirmed_nonempty` — HTTP 200, ожидаемая envelope/schema, есть хотя бы одна
+  строка; значения и count не выводятся;
+- `access_denied` — HTTP 401/403;
+- `unavailable` — timeout/429/5xx после ограниченного retry;
+- `schema_mismatch` — HTTP 200, но контракт envelope/ключей не совпал.
+
+Probe использует `limit=1`, `offset=0`, обязательный `dateTo` и безопасное
+покрывающее окно. После первого status-probe отдельный локальный прогон может
+проверить всю pagination: следующий offset увеличивается на число полученных
+строк до сверки с provider `total`. В Git/Markdown попадает только булев
+результат reconciliation, не `total`, count, период с клиентской активностью,
+размеры, суммы, `dimId`, `nmId` или `photoUrls`.
+
+`confirmed_empty` и `confirmed_nonempty` подтверждают endpoint. `access_denied`
+или `unavailable` дают per-cabinet `partial/data_unavailable`, но не разрешают
+подменить источник Finance. `schema_mismatch` блокирует начало реализации и
+возвращает контракт на review. Наличие ненулевого удержания не является
+условием source gate.
+
+Implementation gate открывается, только если каждый из двух endpoint имеет
+хотя бы один `confirmed_empty|confirmed_nonempty` на разрешённом кабинете и нет
+`schema_mismatch`. Остальные кабинеты сохраняют собственный partial status;
+общий успех не скрывает их недоступность.
 
 # После probe
 
-1. Приложить обезличенную матрицу к соответствующему draft-спеку и обновить его
-   раздел «Открытые вопросы».
-2. При подтверждении источников — перевести затронутый draft в `accepted` в том
-   же изменении (spec-first), затем реализовывать код за выключенным флагом.
+1. Записать в operational evidence только дату/revision, safe endpoint statuses
+   и булев результат schema/pagination reconciliation; обновить раздел
+   «Открытые вопросы» factor-spec.
+2. При отсутствии `schema_mismatch` начинать реализацию принятого F-4 контракта
+   отдельной веткой за выключенным флагом. При mismatch сначала обновить spec.
 3. Не публиковать raw и не менять production без отдельного разрешения.
