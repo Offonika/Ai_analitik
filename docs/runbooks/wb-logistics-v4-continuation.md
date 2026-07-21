@@ -187,6 +187,66 @@ Rollback F-1: вернуть factor master в `false`, перезапустит�
 при необходимости repoint test symlink на предыдущий immutable release.
 Additive schema и immutable draft при этом не удаляются и не меняются.
 
+# Operational evidence F-2 «Тарифы» на test — 21 июля 2026 года
+
+Проверка выполнена только на test-контуре из ветки
+`codex/logistics-tariffs-end-to-end`. Финальная принятая ревизия runtime —
+`2480e41`, immutable release —
+`runtime-logistics-f2-tariffs-2480e41-20260721`. Public health во время
+приёмки подтвердил `runtimeEnvironment=test`, совпадающие backend/static build
+`20260721-logistics-f2-tariffs-v2`, schema
+`2026_07_21_logistics_tariffs_context_v1` и status `ok`.
+
+На время приёмки на test были включены factor master и tariff master;
+`SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false` и
+`SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED=false`. Code defaults всех
+factor-флагов остались `false`. Production runtime и клиентское включение этой
+работой не менялись.
+
+Новый read-only full source refresh загрузил `wb_tariffs` и зафиксировал
+verified manifest со статусом каждой запрошенной даты. Финальный расчётный шаг
+первого worker-run остановился на недоступном относительном каталоге внутри
+immutable release; после устранения только локальной runtime-причины новый
+immutable draft был собран из тех же сохранённых snapshots без повторных
+внешних API-вызовов. Перед сборкой raw manifest, flat hashes и row count были
+проверены повторно.
+
+Tariff context записан с методикой `wb-logistics-tariffs-v1` и состоянием
+`partial`; фактическое число tariff mart rows согласовано с context. Недоступный
+архив сохранён как явная оценка или отсутствие данных, без подстановки нулевых
+ставок и без денежного эффекта. Draft не публиковался: publication gate оставил
+его заблокированным до разбора обязательных review-состояний. Идентификаторы,
+клиентские объёмы, названия складов, ставки и source hashes в evidence не
+перенесены.
+
+Live API smoke подтвердил:
+
+- staff `/api/me` разрешает F-1 и F-2, `/logistics/tariffs` возвращает HTTP 200,
+  `partial`, обе версии методики, factor snapshot, period/filter context,
+  SQL-pagination, все разрешённые сортировки и coverage полного
+  отфильтрованного среза;
+- hash/raw identifiers отсутствуют, `financialEffect=null`, рекомендации не
+  содержат денежного эффекта и используют только `limitation` и
+  `data_unavailable`;
+- client-role сохраняет HTTP 200 для основной логистики, но `/api/me` не
+  разрешает factors/tariffs, factor API возвращает HTTP 404.
+
+Browser smoke выполнен по прямому `#tables/logistics` на внутреннем test-unit
+для desktop 1440×900 и mobile 390×844; public proxy отдельно подтверждён через
+health, а его HTML Basic Auth не обходился и не читался. Блок F-2 расположен
+после габаритов и перед рейтингом товаров. На mobile строки отображаются как
+подписанные карточки внутри собственного вертикального скролла. Первый
+визуальный pass выявил отсутствующий favicon и наложение карточек F-1 на F-2;
+финальная ревизия устранила обе проблемы. Повторный pass подтвердил отсутствие
+page/horizontal overflow и application console/page/network errors. Под
+client-role блок скрыт и запрос tariffs не выполняется.
+
+После приёмки временные sessions, credential-файл, browser runtime и screenshots
+удалены; synthetic acceptance users деактивированы, а их пароли сброшены с
+сохранением неизменяемого audit trail. Tariff test drop-in удалён, test symlink
+возвращён на предшествующий параллельный immutable runtime. Additive schema и
+неопубликованный F-2 draft сохранены; production и client enable не выполнялись.
+
 # Последнее UX-решение
 
 Пользователь подтвердил, что текущая структура интерфейса непонятна: она
