@@ -39,6 +39,7 @@ from wb_unit_economics.web.reports.builders import (
 from wb_unit_economics.web.reports.evidence import (
     AccountingEvidenceSource,
     _bank_tax_payments,
+    _date_text,
     materialize_accounting_evidence,
 )
 from wb_unit_economics.web.reports.excel import (
@@ -796,6 +797,8 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
     assert overview["Клиент"] == "Клиент А"
     assert overview["Организация 1С"] == "ИП Клиент А"
     assert overview["Вид отчёта"] == "Налоговая нагрузка"
+    assert overview["Выбранный месяц"] == "Январь 2026"
+    assert overview["Период расчёта"] == "Предварительно, с начала года"
     assert overview["Налоговый режим"] == "УСН «Доходы»"
     assert overview["Статус налогового профиля"] == "Готово"
     assert overview["Статус отчёта"] == "Нужна проверка бухгалтера"
@@ -851,6 +854,35 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
     )
     assert ratio_row[1].data_type == "n"
     assert "%" in ratio_row[1].number_format
+    due_date_column = taxes[0].index("Срок уплаты") + 1
+    due_date_cell = workbook["Налоги"].cell(row=2, column=due_date_column)
+    assert due_date_cell.data_type == "d"
+    assert due_date_cell.number_format == "DD.MM.YYYY"
+
+
+def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["taxRows"][0]["dueDate"] = "0001-01-01T00:00:00"
+    payload["paymentSchedule"][0]["dueDate"] = "0001-01-01T00:00:00"
+    path = tmp_path / "tax-load-placeholder-date.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+
+    for title in ("Налоги", "График платежей"):
+        sheet = workbook[title]
+        headers = [cell.value for cell in sheet[1]]
+        due_date_cell = sheet.cell(row=2, column=headers.index("Срок уплаты") + 1)
+        assert due_date_cell.value == "Не указано"
+        assert due_date_cell.data_type == "s"
+
+
+def test_tax_load_evidence_rejects_1c_placeholder_date() -> None:
+    assert _date_text("0001-01-01T00:00:00") is None
+    assert _date_text("2026-05-31T00:00:00") == "2026-05-31"
 
 
 def test_tax_load_excel_ignores_unapproved_internal_field(tmp_path: Path) -> None:
