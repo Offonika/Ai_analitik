@@ -1017,10 +1017,225 @@ def test_dimension_snapshot_db_and_file_authoritative_are_equivalent(
     assert db_selection.source_row_count == file_selection.source_row_count == 1
 
 
+def test_tariff_snapshot_db_and_file_authoritative_are_equivalent(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        rows = [_tariff_row()]
+        db_run, _ = _add_tariff_database_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-db",
+            cabinet_id=cabinet_id,
+            rows=rows,
+        )
+        file_run, _, _ = _add_tariff_file_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-file",
+            cabinet_id=cabinet_id,
+            rows=rows,
+        )
+
+        db_selection = source_refresh._select_tariff_snapshot(
+            db, report, roles=[(0, db_run)]
+        )
+        file_selection = source_refresh._select_tariff_snapshot(
+            db, report, roles=[(0, file_run)]
+        )
+
+    assert db_selection.blocking_reasons == ()
+    assert file_selection.blocking_reasons == ()
+    assert db_selection.tariff_rows == file_selection.tariff_rows
+    assert db_selection.factor_snapshot_date == date(2026, 7, 21)
+    assert db_selection.source_row_count == file_selection.source_row_count == 1
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("database_hash", "tariff_source_payload_hash_mismatch"),
+        ("database_row_count", "tariff_database_row_count_mismatch"),
+        ("snapshot_hash", "tariff_source_snapshot_hash_mismatch"),
+        ("tenant_scope", "tariff_source_scope_mismatch"),
+        ("unverified_manifest", "tariff_raw_snapshot_invalid"),
+        ("storage_ambiguity", "tariff_source_storage_ambiguity"),
+        ("file_tamper", "tariff_file_snapshot_invalid"),
+        ("path_traversal", "tariff_file_snapshot_invalid"),
+    ],
+)
+def test_tariff_snapshot_integrity_failures_are_blocking(
+    tmp_path: Path,
+    failure: str,
+    expected_code: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        rows = [_tariff_row()]
+        if failure in {"storage_ambiguity", "file_tamper", "path_traversal"}:
+            run, collection, flat_path = _add_tariff_file_snapshot(
+                db,
+                report,
+                settings=settings,
+                snapshot_set_id=f"tariffs-{failure}",
+                cabinet_id=cabinet_id,
+                rows=rows,
+            )
+            if failure == "storage_ambiguity":
+                row_payload = rows[0]
+                repository.add_source_snapshot_row(
+                    db,
+                    collection,
+                    row_number=1,
+                    raw_payload_hash=source_refresh._hash_payload(row_payload),
+                    source_row_id="tariff-1",
+                    wb_cabinet_id=cabinet_id,
+                    row_payload=row_payload,
+                )
+            elif failure == "file_tamper":
+                flat_path.write_text(
+                    json.dumps(
+                        {
+                            "box": [
+                                {**rows[0], "box_delivery_coef_expr": "999"}
+                            ],
+                            "pallet": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                results = list(collection.payload["results"])
+                results[0] = {
+                    **results[0],
+                    "flatOutputFile": "../tariffs.flat.json",
+                }
+                collection.snapshot_hash = source_refresh._hash_payload(results)
+                collection.payload = {**collection.payload, "results": results}
+        else:
+            run, collection = _add_tariff_database_snapshot(
+                db,
+                report,
+                settings=settings,
+                snapshot_set_id=f"tariffs-{failure}",
+                cabinet_id=cabinet_id,
+                rows=rows,
+            )
+            if failure == "database_hash":
+                db.query(SourceSnapshotRow).filter_by(
+                    collection_id=collection.id
+                ).one().raw_payload_hash = "changed"
+            elif failure == "database_row_count":
+                results = [{**collection.payload["results"][0], "rowCount": 2}]
+                collection.row_count = 2
+                collection.snapshot_hash = source_refresh._hash_payload(results)
+                collection.payload = {**collection.payload, "results": results}
+            elif failure == "snapshot_hash":
+                collection.snapshot_hash = "changed"
+            elif failure == "tenant_scope":
+                collection.tenant_id = "other"
+            elif failure == "unverified_manifest":
+                collection.payload = {
+                    **collection.payload,
+                    "rawIntegrity": {"status": "failed"},
+                }
+
+        selection = source_refresh._select_tariff_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.tariff_rows == ()
+    assert expected_code in selection.blocking_reasons
+
+
+def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        primary, _ = _add_tariff_database_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-primary",
+            cabinet_id=cabinet_id,
+            rows=[_tariff_row()],
+        )
+        base, _ = _add_tariff_database_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-base",
+            cabinet_id=cabinet_id,
+            rows=[{**_tariff_row(), "box_delivery_coef_expr": "999"}],
+        )
+        peer, _ = _add_tariff_database_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-peer",
+            cabinet_id=cabinet_id,
+            rows=[{**_tariff_row(), "box_delivery_coef_expr": "135"}],
+        )
+
+        selected = source_refresh._select_tariff_snapshot(
+            db, report, roles=[(0, primary), (1, base)]
+        )
+        conflicted = source_refresh._select_tariff_snapshot(
+            db, report, roles=[(0, primary), (0, peer)]
+        )
+
+    assert selected.blocking_reasons == ()
+    assert selected.tariff_rows[0]["box_delivery_coef_expr"] == "125"
+    assert conflicted.tariff_rows == ()
+    assert conflicted.blocking_reasons == ("tariff_source_revision_conflict",)
+
+
+def test_tariff_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        run, collection = _add_tariff_database_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-partial",
+            cabinet_id=cabinet_id,
+            rows=[_tariff_row()],
+        )
+        collection.status = "partial_source"
+
+        selection = source_refresh._select_tariff_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.blocking_reasons == ()
+    assert selection.review_reasons == ("tariff_source_partial",)
+    assert len(selection.tariff_rows) == 1
+
+
 def test_dimension_snapshot_uses_primary_before_base_and_blocks_peer_conflict(
     tmp_path: Path,
 ) -> None:
-    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
         tmp_path
     )
     with session_factory() as db:
@@ -1259,6 +1474,98 @@ def test_dimension_context_and_rows_are_built_for_new_draft(tmp_path: Path) -> N
     assert context.dimension_row_count == 1
     assert len(rows) == 1
     assert rows[0].volume_l == Decimal("6")
+
+
+def test_tariff_context_and_rows_are_built_for_new_draft(tmp_path: Path) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        report.publication_status = "draft"
+        report.is_current = False
+        unit_row = db.query(repository.ReportUnitRow).one()
+        finance_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="tariffs-end-to-end-finance",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="tariff end-to-end test",
+            enforce_active_check=False,
+        )
+        finance_collection = repository.add_source_refresh_collection(
+            db,
+            finance_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        finance_payload = {
+            "rrdId": "tariff-finance-1",
+            "rrDate": "2026-04-06",
+            "orderDt": "2026-04-05",
+            "orderUid": "tariff-order-1",
+            "nmId": "1001",
+            "sku": "BAR-1",
+            "vendorCode": "WB-1",
+            "title": "Товар",
+            "deliveryMethod": "FBO",
+            "docTypeName": "Логистика",
+            "sellerOperName": "Логистика",
+            "deliveryService": "50",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        }
+        repository.add_source_snapshot_row(
+            db,
+            finance_collection,
+            row_number=1,
+            raw_payload_hash=source_refresh._hash_payload(finance_payload),
+            source_row_id="tariff-finance-1",
+            wb_cabinet_id=unit_row.wb_cabinet_id,
+            row_payload=finance_payload,
+        )
+        tariff_run, _collection = _add_tariff_database_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="tariffs-end-to-end-source",
+            cabinet_id=unit_row.wb_cabinet_id,
+            rows=[_tariff_row()],
+        )
+
+        logistics_result = source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=finance_run,
+        )
+        source_refresh._build_and_persist_logistics_tariffs(
+            db,
+            report,
+            logistics_result=logistics_result,
+            primary_refresh_run=finance_run,
+            contributing_runs=[tariff_run],
+        )
+        db.commit()
+
+        context = db.get(repository.ReportLogisticsTariffContext, report.id)
+        rows = db.query(repository.ReportLogisticsTariffRow).all()
+
+    assert report.logistics_tariffs_required is True
+    assert context is not None
+    assert context.data_status == "partial"
+    assert context.expected_point_count == 2
+    assert context.factual_point_count == 1
+    assert context.unavailable_point_count == 1
+    assert len(rows) == 2
+    assert {row.tariff_type for row in rows} == {"box", "pallet"}
 
 
 def test_logistics_analysis_blocks_undated_report_row_without_losing_total(
@@ -6560,6 +6867,183 @@ def _add_dimension_file_snapshot(
         raw_path=str(raw_dir),
         payload={
             "results": results,
+            "rowPersistence": {
+                "status": "file_authoritative",
+                "rawFilesAuthoritative": True,
+            },
+        },
+    )
+    source_refresh._attach_collection_raw_integrity(
+        collection,
+        source_root=settings.source_refresh_root_path,
+    )
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    return run, collection, flat_path
+
+
+def _tariff_row() -> dict[str, object]:
+    return {
+        "requested_date": "2026-04-06",
+        "tariff_type": "box",
+        "warehouse_name": "Склад A",
+        "geo_name": "Округ A",
+        "dt_next_box": "2026-04-13",
+        "dt_till_max": "2026-04-30",
+        "box_delivery_base": "48",
+        "box_delivery_liter": "11,2",
+        "box_delivery_coef_expr": "125",
+        "box_storage_base": "0,14",
+        "box_storage_liter": "0,07",
+        "box_storage_coef_expr": "115",
+    }
+
+
+def _add_tariff_database_snapshot(
+    db,
+    report,
+    *,
+    settings: WebSettings,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    rows: list[dict[str, object]],
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="tariff source test",
+        enforce_active_check=False,
+    )
+    run_root = settings.source_refresh_root_path / snapshot_set_id
+    raw_dir = run_root / "wb_tariffs"
+    raw_dir.mkdir(parents=True)
+    run.root_dir = str(run_root)
+    raw_payload = {"box": {}, "pallet": {}}
+    flat_payload = {"box": rows, "pallet": []}
+    raw_path = raw_dir / "tariffs.raw.json"
+    flat_path = raw_dir / "tariffs.flat.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    flat_path.write_text(json.dumps(flat_payload), encoding="utf-8")
+    results = [
+        {
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 20260406,
+            "targetDate": "2026-04-06",
+            "status": "loaded",
+            "ok": True,
+            "rowCount": len(rows),
+            "rawPayloadHash": source_refresh._hash_payload(raw_payload),
+            "flatPayloadHash": source_refresh._hash_payload(flat_payload),
+            "outputFile": raw_path.name,
+            "flatOutputFile": flat_path.name,
+        }
+    ]
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({"results": results}),
+        encoding="utf-8",
+    )
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type="wb_tariffs",
+        source_label="WB tariffs",
+        required=False,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(rows),
+        raw_path=str(raw_dir),
+        payload={
+            "results": results,
+            "factorSnapshotDate": "2026-07-21",
+        },
+    )
+    source_refresh._attach_collection_raw_integrity(
+        collection,
+        source_root=settings.source_refresh_root_path,
+    )
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    for row_number, row in enumerate(rows, start=1):
+        repository.add_source_snapshot_row(
+            db,
+            collection,
+            row_number=row_number,
+            raw_payload_hash=source_refresh._hash_payload(row),
+            source_row_id=f"tariff-{row_number}",
+            wb_cabinet_id=cabinet_id,
+            row_payload=row,
+        )
+    return run, collection
+
+
+def _add_tariff_file_snapshot(
+    db,
+    report,
+    *,
+    settings: WebSettings,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    rows: list[dict[str, object]],
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="file tariff source test",
+        enforce_active_check=False,
+    )
+    run_root = settings.source_refresh_root_path / snapshot_set_id
+    raw_dir = run_root / "wb_tariffs"
+    raw_dir.mkdir(parents=True)
+    run.root_dir = str(run_root)
+    raw_payload = {"box": {}, "pallet": {}}
+    flat_payload = {"box": rows, "pallet": []}
+    raw_path = raw_dir / "tariffs.raw.json"
+    flat_path = raw_dir / "tariffs.flat.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    flat_path.write_text(json.dumps(flat_payload), encoding="utf-8")
+    results = [
+        {
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 20260406,
+            "targetDate": "2026-04-06",
+            "status": "loaded",
+            "ok": True,
+            "rowCount": len(rows),
+            "rawPayloadHash": source_refresh._hash_payload(raw_payload),
+            "flatPayloadHash": source_refresh._hash_payload(flat_payload),
+            "outputFile": raw_path.name,
+            "flatOutputFile": flat_path.name,
+        }
+    ]
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({"results": results}),
+        encoding="utf-8",
+    )
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type="wb_tariffs",
+        source_label="WB tariffs",
+        required=False,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(rows),
+        raw_path=str(raw_dir),
+        payload={
+            "results": results,
+            "factorSnapshotDate": "2026-07-21",
             "rowPersistence": {
                 "status": "file_authoritative",
                 "rawFilesAuthoritative": True,

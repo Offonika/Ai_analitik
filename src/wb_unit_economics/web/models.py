@@ -491,6 +491,9 @@ class ReportRun(Base):
     logistics_dimensions_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    logistics_tariffs_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -530,6 +533,17 @@ class ReportRun(Base):
     )
     logistics_dimension_context: Mapped[
         ReportLogisticsDimensionContext | None
+    ] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    logistics_tariff_rows: Mapped[list[ReportLogisticsTariffRow]] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+    )
+    logistics_tariff_context: Mapped[
+        ReportLogisticsTariffContext | None
     ] = relationship(
         back_populates="report",
         cascade="all, delete-orphan",
@@ -933,6 +947,70 @@ class ReportLogisticsDimensionContext(Base):
     )
 
 
+class ReportLogisticsTariffContext(Base):
+    """Версионированный F-2 context tariff snapshot и mart."""
+
+    __tablename__ = "report_logistics_tariff_contexts"
+    __table_args__ = (
+        Index(
+            "ix_report_logistics_tariff_context_status",
+            "tenant_id",
+            "data_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    factor_methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    data_status: Mapped[str] = mapped_column(String, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    factor_snapshot_date: Mapped[date | None] = mapped_column(Date)
+    source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tariff_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expected_point_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    factual_point_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    estimated_point_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    unavailable_point_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    invalid_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflicting_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    warehouse_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    blocking_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    review_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_tariff_context"
+    )
+
+
 class ReportLogisticsOrderRow(Base):
     __tablename__ = "report_logistics_order_rows"
     __table_args__ = (
@@ -1211,6 +1289,82 @@ class ReportLogisticsDimensionRow(Base):
     report: Mapped[ReportRun] = relationship(
         back_populates="logistics_dimension_rows"
     )
+
+
+class ReportLogisticsTariffRow(Base):
+    """Архивный тариф недели или явно маркированная оценка F-2."""
+
+    __tablename__ = "report_logistics_tariff_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "row_uid",
+            name="uq_report_logistics_tariff_row",
+        ),
+        Index(
+            "ix_report_logistics_tariff_filter",
+            "report_run_id",
+            "financial_week_start",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+            "tariff_type",
+        ),
+        Index(
+            "ix_report_logistics_tariff_warehouse",
+            "report_run_id",
+            "warehouse",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scheme: Mapped[str] = mapped_column(String, nullable=False, default="")
+    financial_week_start: Mapped[date] = mapped_column(Date, nullable=False)
+    requested_date: Mapped[date] = mapped_column(Date, nullable=False)
+    tariff_date: Mapped[date | None] = mapped_column(Date)
+    tariff_type: Mapped[str] = mapped_column(String, nullable=False)
+    warehouse: Mapped[str] = mapped_column(String, nullable=False, default="")
+    geo_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    next_change_at: Mapped[date | None] = mapped_column(Date)
+    archive_end_at: Mapped[date | None] = mapped_column(Date)
+    delivery_base_rub: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    delivery_liter_rub: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    delivery_coefficient_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 6)
+    )
+    marketplace_delivery_base_rub: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 6)
+    )
+    marketplace_delivery_liter_rub: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 6)
+    )
+    marketplace_delivery_coefficient_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 6)
+    )
+    storage_base_rub: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    storage_liter_rub: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    storage_coefficient_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    evidence_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    coverage_status: Mapped[str] = mapped_column(String, nullable=False, default="")
+    data_quality_status: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_hash_digest: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    report: Mapped[ReportRun] = relationship(back_populates="logistics_tariff_rows")
 
 
 class ReportLogisticsRouteRow(Base):

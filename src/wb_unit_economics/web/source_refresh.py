@@ -7,8 +7,10 @@ import json
 import os
 import re
 import shutil
+import time
 import zipfile
 from calendar import monthrange
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -34,12 +36,14 @@ from wb_unit_economics.contracts import (
 )
 from wb_unit_economics.logistics_analysis import (
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LogisticsAnalysisResult,
     LogisticsInputDiagnostics,
     LogisticsSourceRow,
     UnitEconomicsSlice,
     build_dimension_rows,
     build_logistics_analysis,
+    build_tariff_rows,
     source_row_from_payload,
 )
 from wb_unit_economics.onec_odata import (
@@ -127,6 +131,7 @@ from wb_unit_economics.wb_supplier_sales import (
 from wb_unit_economics.wb_tariffs import (
     WbTariffsClient,
     WbTariffsExportResult,
+    build_tariff_snapshot_dates,
     export_wb_tariffs,
 )
 from wb_unit_economics.web import integrations, mapping_service, repository, security
@@ -243,13 +248,61 @@ def _default_wb_tariffs_exporter(
     period_start: date,
     period_end: date,
 ) -> list[WbTariffsExportResult]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    factor_snapshot_date = datetime.now(tz=MOSCOW_TZ).date()
+    snapshot_dates = build_tariff_snapshot_dates(
+        period_start,
+        period_end,
+        factor_snapshot_date=factor_snapshot_date,
+    )
+    ordered_dates = (factor_snapshot_date,) + tuple(
+        item for item in snapshot_dates if item != factor_snapshot_date
+    )
     results: list[WbTariffsExportResult] = []
     for account in accounts:
         client = WbTariffsClient(api_key=account.api_key)
-        account_dir = output_dir / str(account.seller_account_id).lower()
-        results.append(
-            export_wb_tariffs(client, account_dir, target_date=period_end)
-        )
+        seller_account_id = str(account.seller_account_id)
+        file_prefix = hashlib.sha256(
+            seller_account_id.encode("utf-8")
+        ).hexdigest()[:12]
+        rate_limited = False
+        for index, target_date in enumerate(ordered_dates):
+            if rate_limited:
+                results.append(
+                    WbTariffsExportResult(
+                        ok=False,
+                        seller_account_id=seller_account_id,
+                        target_date=target_date,
+                        status_code=429,
+                        error="RateLimitSkipped",
+                    )
+                )
+                continue
+            result = export_wb_tariffs(
+                client,
+                output_dir,
+                target_date=target_date,
+                seller_account_id=seller_account_id,
+                file_prefix=file_prefix,
+            )
+            results.append(result)
+            rate_limited = result.status_code == 429
+            if index + 1 < len(ordered_dates) and not rate_limited:
+                time.sleep(1.05)
+    manifest = {
+        "source": "wb_tariffs",
+        "factorSnapshotDate": factor_snapshot_date.isoformat(),
+        "requestedWeekStarts": [
+            item.isoformat()
+            for item in snapshot_dates
+            if item != factor_snapshot_date
+        ],
+        "results": [_wb_tariffs_result_payload(item) for item in results],
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     return results
 
 
@@ -2855,6 +2908,93 @@ class SourceRefreshService:
             wb_cabinet_ids=wb_cabinet_ids,
         )
 
+    def _record_wb_tariffs(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        output_dir: Path,
+        results: Iterable[WbTariffsExportResult],
+        *,
+        wb_cabinet_ids: dict[str, str],
+        period_start: date,
+        period_end: date,
+    ) -> SourceRefreshCollection:
+        result_items = list(results)
+        payload_items = [
+            _wb_tariffs_result_payload(
+                item,
+                wb_cabinet_id=wb_cabinet_ids.get(item.seller_account_id, ""),
+            )
+            for item in result_items
+        ]
+        factor_snapshot_date = datetime.now(tz=MOSCOW_TZ).date()
+        manifest_path = output_dir / "manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, TypeError, ValueError):
+            manifest = {}
+        if isinstance(manifest, Mapping):
+            try:
+                factor_snapshot_date = date.fromisoformat(
+                    str(manifest.get("factorSnapshotDate") or "")
+                )
+            except ValueError:
+                factor_snapshot_date = datetime.now(tz=MOSCOW_TZ).date()
+        successful = [item for item in result_items if item.ok]
+        failed = [item for item in result_items if not item.ok]
+        if successful and failed:
+            status = "partial_source"
+        elif successful:
+            status = "loaded"
+        else:
+            status = "needs_review"
+        payload: dict[str, Any] = {
+            "results": payload_items,
+            "periodStart": period_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "factorSnapshotDate": factor_snapshot_date.isoformat(),
+        }
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_tariffs",
+            source_label="WB box/pallet tariffs",
+            required=False,
+            status=status,
+            snapshot_hash=_hash_payload(payload_items),
+            row_count=sum(int(item.get("rowCount") or 0) for item in payload_items),
+            raw_path=str(output_dir),
+            error_message=(
+                "Some tariff dates are unavailable."
+                if successful and failed
+                else "Tariff source is unavailable."
+                if failed
+                else ""
+            ),
+            payload=payload,
+        )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        if self.settings.source_refresh_raw_db_mode == "files_only":
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "file_authoritative",
+                    "rawFilesAuthoritative": True,
+                },
+            }
+            db.flush()
+            return collection
+        _persist_wb_tariff_rows(
+            db,
+            collection,
+            result_items,
+            wb_cabinet_ids=wb_cabinet_ids,
+        )
+        return collection
+
     def _record_wb_stock_history(
         self,
         db: Session,
@@ -4039,6 +4179,15 @@ class SourceRefreshService:
                     base_refresh_run=base_refresh_run,
                     contributing_runs=contributing_runs,
                 )
+                if self.settings.logistics_tariffs_enabled:
+                    _build_and_persist_logistics_tariffs(
+                        db,
+                        report,
+                        logistics_result=logistics_result,
+                        primary_refresh_run=refresh_run,
+                        base_refresh_run=base_refresh_run,
+                        contributing_runs=contributing_runs,
+                    )
         _validate_marts(build["payload"])
         db.commit()
         artifact_payload = repository.report_full_payload(db, report)
@@ -4646,13 +4795,22 @@ def _collect_wb_tariffs(
     if context.credentials.wb_settings is None:
         return CollectorResult()
     output_dir = context.root_dir / "wb_tariffs"
-    service._wb_tariffs_exporter(
+    results = service._wb_tariffs_exporter(
         context.credentials.wb_settings.accounts,
         output_dir,
         period_start=context.period_start,
         period_end=context.period_end,
     )
-    return CollectorResult(output_dir=output_dir)
+    collection = service._record_wb_tariffs(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(collection=collection, output_dir=output_dir)
 
 
 def _collect_wb_goods_return(
@@ -5446,6 +5604,46 @@ def _wb_product_cards_payload(
         "flatPayloadHash": item.flat_payload_hash,
         "outputFile": item.output_path.name if item.output_path else None,
         "flatOutputFile": item.flat_output_path.name if item.flat_output_path else None,
+        "error": item.error,
+    }
+
+
+def _wb_tariffs_result_payload(
+    item: WbTariffsExportResult,
+    *,
+    wb_cabinet_id: str = "",
+) -> dict[str, Any]:
+    row_count = item.box_row_count + item.pallet_row_count
+    if item.ok and row_count > 0:
+        status = "loaded"
+    elif item.ok:
+        status = "empty_unexpected"
+    elif item.status_code in {401, 403}:
+        status = "auth_failed"
+    elif item.status_code == 429:
+        status = "rate_limited"
+    else:
+        status = "failed"
+    target_date = item.target_date
+    return {
+        "sellerAccountId": item.seller_account_id,
+        "wbCabinetId": wb_cabinet_id,
+        "targetDate": target_date.isoformat() if target_date else None,
+        "pageIndex": int(target_date.strftime("%Y%m%d")) if target_date else 0,
+        "status": status,
+        "ok": item.ok,
+        "rowCount": row_count,
+        "boxRowCount": item.box_row_count,
+        "palletRowCount": item.pallet_row_count,
+        "statusCode": item.status_code,
+        "rawPayloadHash": item.raw_payload_hash,
+        "flatPayloadHash": item.flat_payload_hash,
+        "outputFile": (
+            item.raw_output_path.name if item.raw_output_path else None
+        ),
+        "flatOutputFile": (
+            item.flat_output_path.name if item.flat_output_path else None
+        ),
         "error": item.error,
     }
 
@@ -6726,6 +6924,429 @@ def _dimension_card_scope_errors(
     return []
 
 
+@dataclass(frozen=True)
+class _TariffSnapshotSelection:
+    tariff_rows: tuple[dict[str, Any], ...] = ()
+    source_snapshot_hash: str = ""
+    source_loaded_at: datetime | None = None
+    factor_snapshot_date: date | None = None
+    source_row_count: int = 0
+    blocking_reasons: tuple[str, ...] = ()
+    review_reasons: tuple[str, ...] = ()
+
+
+def _build_and_persist_logistics_tariffs(
+    db: Session,
+    report: ReportRun,
+    *,
+    logistics_result: LogisticsAnalysisResult,
+    primary_refresh_run: SourceRefreshRun | None = None,
+    base_refresh_run: SourceRefreshRun | None = None,
+    contributing_runs: Iterable[SourceRefreshRun] = (),
+) -> None:
+    roles: list[tuple[int, SourceRefreshRun]] = []
+    if primary_refresh_run is not None:
+        roles.append((0, primary_refresh_run))
+    if base_refresh_run is not None and all(
+        run.id != base_refresh_run.id for _, run in roles
+    ):
+        roles.append((1, base_refresh_run))
+    for run in contributing_runs:
+        if all(existing.id != run.id for _, existing in roles):
+            roles.append((2, run))
+    selection = _select_tariff_snapshot(db, report, roles=roles)
+    blocking = list(selection.blocking_reasons)
+    review = list(selection.review_reasons)
+    if logistics_result.context.data_status == "blocked":
+        blocking.append("logistics_analysis_blocked")
+    rows = (
+        build_tariff_rows(
+            logistics_result.sku_rows,
+            selection.tariff_rows,
+            factor_snapshot_date=selection.factor_snapshot_date,
+        )
+        if not blocking
+        else []
+    )
+    expected_points = len(
+        {
+            (
+                row.tenant_id,
+                row.client_id,
+                row.wb_cabinet_id,
+                row.client_company_id,
+                row.scheme,
+                row.financial_week_start,
+                tariff_type,
+            )
+            for row in logistics_result.sku_rows
+            for tariff_type in ("box", "pallet")
+        }
+    )
+    point_evidence: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    unavailable_points: set[tuple[Any, ...]] = set()
+    for row in rows:
+        point = (
+            row["wb_cabinet_id"],
+            row["client_company_id"],
+            row["scheme"],
+            row["financial_week_start"],
+            row["tariff_type"],
+        )
+        if row["coverage_status"] == "ready":
+            point_evidence[point].add(str(row["evidence_type"]))
+        else:
+            unavailable_points.add(point)
+    factual_points = sum("fact" in values for values in point_evidence.values())
+    estimated_points = sum(
+        "fact" not in values and "estimate" in values
+        for values in point_evidence.values()
+    )
+    unavailable_count = max(
+        expected_points - factual_points - estimated_points,
+        len(unavailable_points - set(point_evidence)),
+    )
+    invalid = sum(row["coverage_status"] == "invalid_tariff" for row in rows)
+    conflicting = sum(
+        row["coverage_status"] == "conflicting_tariff" for row in rows
+    )
+    warehouses = len({row["warehouse"] for row in rows if row["warehouse"]})
+    if estimated_points:
+        review.append("tariff_archive_estimate_used")
+    if unavailable_count:
+        review.append("tariff_values_unavailable")
+    if invalid:
+        review.append("tariff_values_invalid")
+    if conflicting:
+        review.append("tariff_values_conflicting")
+    data_status = "blocked" if blocking else "partial" if review else "ready"
+    input_hash = _hash_payload(
+        {
+            "factorMethodologyVersion": LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
+            "sourceSnapshotHash": selection.source_snapshot_hash,
+            "factorSnapshotDate": selection.factor_snapshot_date,
+            "tariffSourceHashes": sorted(
+                str(row.get("source_hash") or "")
+                for row in selection.tariff_rows
+            ),
+            "skuSourceHashes": sorted(
+                row.source_hash_digest for row in logistics_result.sku_rows
+            ),
+            "blockingReasons": sorted(set(blocking)),
+            "reviewReasons": sorted(set(review)),
+        }
+    )
+    repository.replace_report_logistics_tariff_analysis(
+        db,
+        report,
+        context={
+            "tenant_id": report.tenant_id,
+            "client_id": report.client_id,
+            "factor_methodology_version": LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
+            "data_status": data_status,
+            "input_hash": input_hash,
+            "source_snapshot_hash": selection.source_snapshot_hash,
+            "source_loaded_at": selection.source_loaded_at,
+            "factor_snapshot_date": selection.factor_snapshot_date,
+            "source_row_count": selection.source_row_count,
+            "tariff_row_count": len(rows),
+            "expected_point_count": expected_points,
+            "factual_point_count": factual_points,
+            "estimated_point_count": estimated_points,
+            "unavailable_point_count": unavailable_count,
+            "invalid_row_count": invalid,
+            "conflicting_row_count": conflicting,
+            "warehouse_count": warehouses,
+            "blocking_reasons": sorted(set(blocking)),
+            "review_reasons": sorted(set(review)),
+            "created_at": datetime.now(tz=ZoneInfo("UTC")),
+        },
+        rows=rows,
+    )
+
+
+def _select_tariff_snapshot(
+    db: Session,
+    report: ReportRun,
+    *,
+    roles: Iterable[tuple[int, SourceRefreshRun]],
+) -> _TariffSnapshotSelection:
+    candidates: list[tuple[int, SourceRefreshRun, SourceRefreshCollection]] = []
+    for priority, run in roles:
+        for collection in run.collections:
+            if collection.source_type == "wb_tariffs":
+                candidates.append((priority, run, collection))
+    if not candidates:
+        return _TariffSnapshotSelection(
+            review_reasons=("tariff_source_missing",)
+        )
+    selected_priority = min(item[0] for item in candidates)
+    selected = [item for item in candidates if item[0] == selected_priority]
+    snapshot_hashes = {item[2].snapshot_hash for item in selected}
+    if len(snapshot_hashes) != 1:
+        return _TariffSnapshotSelection(
+            blocking_reasons=("tariff_source_revision_conflict",)
+        )
+    _priority, run, collection = sorted(
+        selected,
+        key=lambda item: (
+            _dimension_loaded_at_timestamp(item[2].loaded_at),
+            item[1].id,
+            item[2].id,
+        ),
+        reverse=True,
+    )[0]
+    if (
+        collection.tenant_id != report.tenant_id
+        or collection.client_id != report.client_id
+    ):
+        return _TariffSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            blocking_reasons=("tariff_source_scope_mismatch",),
+        )
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list) or not all(
+        isinstance(item, Mapping) for item in results
+    ):
+        return _TariffSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("tariff_source_manifest_invalid",),
+        )
+    if _hash_payload(results) != collection.snapshot_hash:
+        return _TariffSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("tariff_source_snapshot_hash_mismatch",),
+        )
+    try:
+        declared_row_count = sum(int(item.get("rowCount") or 0) for item in results)
+    except (TypeError, ValueError):
+        declared_row_count = -1
+    if declared_row_count != collection.row_count:
+        return _TariffSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("tariff_source_manifest_row_count_mismatch",),
+        )
+    try:
+        factor_snapshot_date = date.fromisoformat(
+            str(payload.get("factorSnapshotDate") or "")
+        )
+    except ValueError:
+        factor_snapshot_date = None
+    snapshots = list(
+        db.scalars(
+            select(SourceSnapshotRow)
+            .where(
+                SourceSnapshotRow.refresh_run_id == run.id,
+                SourceSnapshotRow.collection_id == collection.id,
+                SourceSnapshotRow.source_type == "wb_tariffs",
+            )
+            .order_by(SourceSnapshotRow.row_number)
+        )
+    )
+    persistence = payload.get("rowPersistence") or {}
+    file_authoritative = (
+        persistence.get("status") in {"file_authoritative", "skipped_large_snapshot"}
+        and persistence.get("rawFilesAuthoritative") is True
+    )
+    if file_authoritative and snapshots:
+        return _TariffSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            factor_snapshot_date=factor_snapshot_date,
+            source_row_count=collection.row_count,
+            blocking_reasons=("tariff_source_storage_ambiguity",),
+        )
+    blocking: list[str] = []
+    tariff_rows: list[dict[str, Any]] = []
+    if file_authoritative:
+        try:
+            tariff_rows.extend(
+                _iter_file_authoritative_tariff_rows(collection, refresh_run=run)
+            )
+        except (OSError, TypeError, ValueError, RawIntegrityError):
+            blocking.append("tariff_file_snapshot_invalid")
+    else:
+        if len(snapshots) != collection.row_count:
+            blocking.append("tariff_database_row_count_mismatch")
+        for snapshot in snapshots:
+            row_payload = snapshot.row_payload
+            if not isinstance(row_payload, Mapping):
+                blocking.append("tariff_source_payload_invalid")
+                continue
+            if snapshot.raw_payload_hash != _hash_payload(row_payload):
+                blocking.append("tariff_source_payload_hash_mismatch")
+                continue
+            tariff_rows.append(
+                _tariff_input(row_payload, wb_cabinet_id=snapshot.wb_cabinet_id)
+            )
+    try:
+        if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+            raise RawIntegrityError("tariff raw integrity is not verified")
+        raw_dir = Path(collection.raw_path)
+        source_root = Path(run.root_dir) if run.root_dir else raw_dir
+        verify_raw_directory(
+            raw_dir,
+            source_type="wb_tariffs",
+            source_root=source_root,
+            collection_results=[
+                item for item in results if isinstance(item, Mapping)
+            ],
+            collection_row_count=collection.row_count,
+            collection_snapshot_hash=collection.snapshot_hash,
+        )
+    except (OSError, TypeError, ValueError, RawIntegrityError):
+        blocking.append("tariff_raw_snapshot_invalid")
+    blocking.extend(_tariff_scope_errors(db, report, tariff_rows))
+    review: list[str] = []
+    if factor_snapshot_date is None:
+        review.append("tariff_factor_snapshot_date_missing")
+    if collection.status == "partial_source":
+        review.append("tariff_source_partial")
+    if collection.status not in {"loaded", "partial_source"}:
+        review.append("tariff_source_unavailable")
+    return _TariffSnapshotSelection(
+        tariff_rows=tuple(tariff_rows) if not blocking else (),
+        source_snapshot_hash=collection.snapshot_hash,
+        source_loaded_at=collection.loaded_at,
+        factor_snapshot_date=factor_snapshot_date,
+        source_row_count=len(tariff_rows),
+        blocking_reasons=tuple(dict.fromkeys(blocking)),
+        review_reasons=tuple(dict.fromkeys(review)),
+    )
+
+
+def _iter_file_authoritative_tariff_rows(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+) -> Iterable[dict[str, Any]]:
+    payload = collection.payload or {}
+    if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+        raise RawIntegrityError("tariff raw integrity is not verified")
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RawIntegrityError("tariff results are missing")
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    verify_raw_directory(
+        raw_dir,
+        source_type="wb_tariffs",
+        source_root=source_root,
+        collection_results=[item for item in results if isinstance(item, Mapping)],
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    count = 0
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise RawIntegrityError("tariff result is not an object")
+        output_name = str(result.get("flatOutputFile") or "").strip()
+        if not output_name:
+            continue
+        if Path(output_name).name != output_name:
+            raise RawIntegrityError("tariff flat output path is unsafe")
+        output_path = (raw_dir / output_name).resolve()
+        if not output_path.is_relative_to(raw_dir.resolve()):
+            raise RawIntegrityError("tariff flat output path is unsafe")
+        flat = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(flat, Mapping):
+            raise RawIntegrityError("tariff flat payload is not an object")
+        wb_cabinet_id = str(result.get("wbCabinetId") or "").strip()
+        for tariff_type in ("box", "pallet"):
+            rows = flat.get(tariff_type)
+            if not isinstance(rows, list):
+                raise RawIntegrityError("tariff flat rows are not a list")
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise RawIntegrityError("tariff row is not an object")
+                count += 1
+                yield _tariff_input(
+                    {**row, "tariff_type": tariff_type},
+                    wb_cabinet_id=wb_cabinet_id,
+                )
+    if count != collection.row_count:
+        raise RawIntegrityError("tariff row count changed")
+
+
+def _tariff_input(
+    payload: Mapping[str, Any],
+    *,
+    wb_cabinet_id: str,
+) -> dict[str, Any]:
+    keys = (
+        "requested_date",
+        "source_tariff_date",
+        "tariff_type",
+        "warehouse_name",
+        "geo_name",
+        "dt_next_box",
+        "dt_next_pallet",
+        "dt_till_max",
+        "box_delivery_base",
+        "box_delivery_liter",
+        "box_delivery_coef_expr",
+        "box_delivery_marketplace_base",
+        "box_delivery_marketplace_liter",
+        "box_delivery_marketplace_coef_expr",
+        "box_storage_base",
+        "box_storage_liter",
+        "box_storage_coef_expr",
+        "pallet_delivery_expr",
+        "pallet_delivery_value_base",
+        "pallet_delivery_value_liter",
+        "pallet_storage_expr",
+        "pallet_storage_value_expr",
+    )
+    normalized = {
+        "wb_cabinet_id": str(wb_cabinet_id or "").strip(),
+        **{key: payload.get(key) for key in keys},
+    }
+    normalized["requested_date"] = (
+        normalized.get("requested_date")
+        or normalized.get("source_tariff_date")
+    )
+    normalized["source_hash"] = _hash_payload(normalized)
+    return normalized
+
+
+def _tariff_scope_errors(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[Mapping[str, Any]],
+) -> list[str]:
+    cabinet_ids = {str(row.get("wb_cabinet_id") or "") for row in rows}
+    if "" in cabinet_ids:
+        return ["tariff_source_cabinet_missing"]
+    cabinets = {
+        item.id: item
+        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
+    } if cabinet_ids else {}
+    for cabinet_id in cabinet_ids:
+        cabinet = cabinets.get(cabinet_id)
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+        ):
+            return ["tariff_source_scope_mismatch"]
+        company = db.get(ClientCompany, cabinet.client_company_id)
+        if (
+            company is None
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            return ["tariff_source_scope_mismatch"]
+    return []
+
+
 def _select_logistics_source_rows(
     db: Session,
     report: ReportRun,
@@ -7223,6 +7844,69 @@ def _persist_wb_product_card_rows(
                 _flush_snapshot_batch(db, collection, batch)
         _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError) as exc:
+        _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_wb_tariff_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    results: Iterable[WbTariffsExportResult],
+    *,
+    wb_cabinet_ids: dict[str, str],
+) -> None:
+    try:
+        row_number = 1
+        batch: list[dict[str, Any]] = []
+        for result in results:
+            if not result.ok or result.flat_output_path is None:
+                continue
+            payload = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                raise ValueError("tariff flat payload must be an object")
+            for tariff_type in ("box", "pallet"):
+                rows = payload.get(tariff_type)
+                if not isinstance(rows, list):
+                    raise ValueError("tariff flat rows must be a list")
+                for local_index, row in enumerate(rows, 1):
+                    if not isinstance(row, Mapping):
+                        raise ValueError("tariff flat row must be an object")
+                    row_payload = {
+                        **row,
+                        "marketplace": "wb",
+                        "tariff_type": tariff_type,
+                        "source_tariff_date": (
+                            result.target_date.isoformat()
+                            if result.target_date
+                            else ""
+                        ),
+                        "source_output_file": result.flat_output_path.name,
+                    }
+                    warehouse = str(row.get("warehouse_name") or "").strip()
+                    source_row_id = ":".join(
+                        (
+                            row_payload["source_tariff_date"],
+                            tariff_type,
+                            warehouse,
+                            str(local_index),
+                        )
+                    )
+                    batch.append(
+                        {
+                            "row_number": row_number,
+                            "raw_payload_hash": _hash_payload(row_payload),
+                            "row_payload": row_payload,
+                            "source_row_id": source_row_id,
+                            "wb_cabinet_id": wb_cabinet_ids.get(
+                                result.seller_account_id,
+                                "",
+                            ),
+                            "loaded_at": collection.loaded_at,
+                        }
+                    )
+                    row_number += 1
+                    _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
 
 

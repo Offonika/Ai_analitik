@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Visual target — F-2 тарифы WB</title>
+    <style>
+      :root { color-scheme: light; --bg:#f4f7f9; --surface:#fff; --text:#172033; --muted:#667486; --line:#d7e2e6; --brand:#17616a; --brand-bg:#e6f3f1; --review:#8b5b00; --review-bg:#fff5dc; }
+      * { box-sizing: border-box; }
+      body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+      .prototype-note { padding:9px 16px; border-bottom:1px solid #ead391; background:var(--review-bg); color:#75500a; text-align:center; font-size:12px; font-weight:750; }
+      main { width:min(1180px,100%); margin:0 auto; padding:32px 24px 56px; }
+      .context,.note { color:var(--muted); font-size:13px; }
+      h1 { margin:8px 0 6px; font-size:clamp(26px,4vw,38px); }
+      .lead { margin:0 0 22px; color:var(--muted); }
+      .placeholder { height:68px; margin:12px 0; border:1px dashed #b9c7ce; border-radius:12px; display:grid; place-items:center; color:var(--muted); background:#fafcfd; }
+      .panel { padding:20px; border:1px solid #c7dcdf; border-radius:14px; background:linear-gradient(180deg,#fff 0%,#f7fbfb 100%); }
+      .heading { display:flex; align-items:start; justify-content:space-between; gap:20px; }
+      .eyebrow { margin:0 0 5px; color:var(--brand); font-size:12px; font-weight:850; text-transform:uppercase; }
+      h2 { margin:0; font-size:21px; }
+      .note { max-width:760px; margin:7px 0 0; }
+      .status,.badge { display:inline-block; padding:6px 9px; border-radius:999px; background:var(--review-bg); color:var(--review); font-size:11px; font-weight:800; white-space:nowrap; }
+      .badge.fact { background:var(--brand-bg); color:var(--brand); }
+      .coverage { display:grid; grid-template-columns:repeat(6,minmax(105px,1fr)); gap:8px; margin:18px 0; }
+      .coverage div { padding:10px; border:1px solid var(--line); border-radius:9px; background:#fff; }
+      .coverage small,.coverage strong { display:block; }
+      .coverage small { color:var(--muted); }
+      .coverage strong { margin-top:4px; color:#24445f; }
+      .warning { margin:0 0 16px; padding:11px 13px; border-left:3px solid #b87300; border-radius:8px; background:var(--review-bg); font-size:13px; }
+      table { width:100%; border-collapse:collapse; }
+      th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; }
+      th { color:var(--muted); font-size:11px; text-transform:uppercase; }
+      td:not(:first-child),th:not(:first-child) { text-align:right; }
+      @media (max-width:760px) {
+        main { padding:20px 14px 40px; }
+        .heading { flex-direction:column; }
+        .coverage { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        thead { display:none; }
+        table,tbody { display:grid; gap:10px; }
+        tr { display:grid; padding:8px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+        td,td:not(:first-child) { display:grid; grid-template-columns:124px minmax(0,1fr); gap:8px; padding:8px 0; border-bottom:1px solid #edf2f3; text-align:right; }
+        td::before { content:attr(data-label); color:var(--muted); font-size:11px; font-weight:750; text-align:left; }
+        td:last-child { border-bottom:0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype-note">Синтетический visual target · без клиентских данных, складов и идентификаторов</div>
+    <main>
+      <div class="context">Таблицы → Логистика · тестовый кабинет · апрель–июнь</div>
+      <h1>Аналитика логистики WB</h1>
+      <p class="lead">Факторы объясняют доступные сигналы, но не пересчитывают финансовый итог.</p>
+      <div class="placeholder">Финансовая аналитика и габариты F-1</div>
+      <section class="panel" aria-labelledby="tariff-title">
+        <div class="heading">
+          <div>
+            <p class="eyebrow">Факторы стоимости</p>
+            <h2 id="tariff-title">Тарифы и коэффициенты WB</h2>
+            <p class="note">Архивный тариф — факт только для запрошенной недели. Текущий тариф отмечен как оценка и не объясняет историческую стоимость.</p>
+          </div>
+          <span class="status">Есть оценки</span>
+        </div>
+        <div class="coverage" aria-label="Покрытие тарифов">
+          <div><small>Точек</small><strong>24</strong></div>
+          <div><small>Архивный факт</small><strong>20</strong></div>
+          <div><small>Оценка</small><strong>2</strong></div>
+          <div><small>Недоступно</small><strong>2</strong></div>
+          <div><small>Складов</small><strong>8</strong></div>
+          <div><small>Покрытие фактом</small><strong>83,3%</strong></div>
+        </div>
+        <p class="warning"><strong>Без денежного эффекта.</strong> Коэффициенты уже учтены WB в ставках и не умножаются на итог отчёта повторно.</p>
+        <table>
+          <thead><tr><th>Неделя</th><th>Склад</th><th>Тип</th><th>Доставка</th><th>Хранение</th><th>Основание</th></tr></thead>
+          <tbody>
+            <tr><td data-label="Неделя">06.07.2026</td><td data-label="Склад">Склад A</td><td data-label="Тип">Короб</td><td data-label="Доставка">125%</td><td data-label="Хранение">115%</td><td data-label="Основание"><span class="badge fact">Факт</span></td></tr>
+            <tr><td data-label="Неделя">13.07.2026</td><td data-label="Склад">Склад B</td><td data-label="Тип">Монопаллета</td><td data-label="Доставка">170%</td><td data-label="Хранение">155%</td><td data-label="Основание"><span class="badge fact">Факт</span></td></tr>
+            <tr><td data-label="Неделя">20.07.2026</td><td data-label="Склад">Склад C</td><td data-label="Тип">Короб</td><td data-label="Доставка">140%</td><td data-label="Хранение">120%</td><td data-label="Основание"><span class="badge">Оценка</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+      <div class="placeholder">Рейтинг товаров первой очереди</div>
+    </main>
+  </body>
+</html>

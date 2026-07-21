@@ -60,6 +60,7 @@ from wb_unit_economics.logistics_analysis import (
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
+    LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
 )
@@ -101,6 +102,8 @@ from wb_unit_economics.web.models import (
     ReportLogisticsDimensionRow,
     ReportLogisticsOrderRow,
     ReportLogisticsSkuRow,
+    ReportLogisticsTariffContext,
+    ReportLogisticsTariffRow,
     ReportLostSalesRow,
     ReportMarketplaceExpenseRow,
     ReportReconciliationMonthly,
@@ -13279,6 +13282,133 @@ def report_logistics_dimension_rows(
     )
 
 
+def replace_report_logistics_tariff_rows(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> int:
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics tariff mart is immutable")
+    db.execute(
+        delete(ReportLogisticsTariffRow).where(
+            ReportLogisticsTariffRow.report_run_id == report.id
+        )
+    )
+    for row in rows:
+        db.add(
+            ReportLogisticsTariffRow(
+                report_run_id=report.id,
+                tenant_id=str(row.get("tenant_id") or report.tenant_id),
+                client_id=str(row.get("client_id") or report.client_id),
+                row_uid=str(row["row_uid"]),
+                wb_cabinet_id=str(row.get("wb_cabinet_id") or ""),
+                client_company_id=str(row.get("client_company_id") or ""),
+                scheme=str(row.get("scheme") or ""),
+                financial_week_start=row["financial_week_start"],
+                requested_date=row["requested_date"],
+                tariff_date=row.get("tariff_date"),
+                tariff_type=str(row.get("tariff_type") or ""),
+                warehouse=str(row.get("warehouse") or ""),
+                geo_name=str(row.get("geo_name") or ""),
+                next_change_at=row.get("next_change_at"),
+                archive_end_at=row.get("archive_end_at"),
+                delivery_base_rub=row.get("delivery_base_rub"),
+                delivery_liter_rub=row.get("delivery_liter_rub"),
+                delivery_coefficient_pct=row.get("delivery_coefficient_pct"),
+                marketplace_delivery_base_rub=row.get(
+                    "marketplace_delivery_base_rub"
+                ),
+                marketplace_delivery_liter_rub=row.get(
+                    "marketplace_delivery_liter_rub"
+                ),
+                marketplace_delivery_coefficient_pct=row.get(
+                    "marketplace_delivery_coefficient_pct"
+                ),
+                storage_base_rub=row.get("storage_base_rub"),
+                storage_liter_rub=row.get("storage_liter_rub"),
+                storage_coefficient_pct=row.get("storage_coefficient_pct"),
+                evidence_type=str(row.get("evidence_type") or ""),
+                coverage_status=str(row.get("coverage_status") or ""),
+                data_quality_status=str(row.get("data_quality_status") or ""),
+                source_hash_digest=str(row.get("source_hash_digest") or ""),
+            )
+        )
+    db.flush()
+    return len(rows)
+
+
+def replace_report_logistics_tariff_analysis(
+    db: Session,
+    report: ReportRun,
+    *,
+    context: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+) -> ReportLogisticsTariffContext:
+    """Atomically stage F-2 context and rows for an unpublished report."""
+
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics tariff analysis is immutable")
+    if str(context.get("tenant_id") or "") != report.tenant_id:
+        raise ValueError("tariff context tenant does not match report")
+    if str(context.get("client_id") or "") != report.client_id:
+        raise ValueError("tariff context client does not match report")
+    status = str(context.get("data_status") or "")
+    if status not in {"ready", "partial", "blocked"}:
+        raise ValueError("unsupported tariff context status")
+    if status == "blocked" and rows:
+        raise ValueError("blocked tariff context cannot persist mart rows")
+    _validate_logistics_tariff_rows_scope(db, report, rows)
+    expected_count = int(context.get("tariff_row_count") or 0)
+    if expected_count != len(rows):
+        raise ValueError("tariff context row count does not match mart")
+
+    db.execute(
+        delete(ReportLogisticsTariffContext).where(
+            ReportLogisticsTariffContext.report_run_id == report.id
+        )
+    )
+    replace_report_logistics_tariff_rows(db, report, rows)
+    persisted = ReportLogisticsTariffContext(
+        report_run_id=report.id,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        factor_methodology_version=str(context["factor_methodology_version"]),
+        data_status=status,
+        input_hash=str(context.get("input_hash") or ""),
+        source_snapshot_hash=str(context.get("source_snapshot_hash") or ""),
+        source_loaded_at=context.get("source_loaded_at"),
+        factor_snapshot_date=context.get("factor_snapshot_date"),
+        source_row_count=int(context.get("source_row_count") or 0),
+        tariff_row_count=expected_count,
+        expected_point_count=int(context.get("expected_point_count") or 0),
+        factual_point_count=int(context.get("factual_point_count") or 0),
+        estimated_point_count=int(context.get("estimated_point_count") or 0),
+        unavailable_point_count=int(context.get("unavailable_point_count") or 0),
+        invalid_row_count=int(context.get("invalid_row_count") or 0),
+        conflicting_row_count=int(context.get("conflicting_row_count") or 0),
+        warehouse_count=int(context.get("warehouse_count") or 0),
+        blocking_reasons=list(context.get("blocking_reasons") or []),
+        review_reasons=list(context.get("review_reasons") or []),
+        created_at=context.get("created_at") or datetime.now(UTC),
+    )
+    db.add(persisted)
+    report.logistics_tariffs_required = True
+    audit(
+        db,
+        action="report_logistics_tariffs_saved",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "dataStatus": status,
+            "factorMethodologyVersion": persisted.factor_methodology_version,
+            "tariffRows": expected_count,
+        },
+    )
+    db.flush()
+    return persisted
+
+
 def report_logistics_dimensions_payload(
     db: Session,
     report: ReportRun,
@@ -13640,6 +13770,446 @@ def _validate_logistics_dimension_rows_scope(
             raise ValueError(
                 "dimension row cabinet/company scope does not match report"
             )
+
+
+LOGISTICS_TARIFF_SORT_KEYS = {
+    "requestedDate",
+    "warehouse",
+    "deliveryCoefficient",
+    "storageCoefficient",
+    "coverageStatus",
+}
+
+
+def report_logistics_tariffs_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    warehouse: str = "",
+    tariff_type: str = "",
+    sort_by: str = "requestedDate",
+    sort_order: str = "asc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
+    context = db.get(ReportLogisticsTariffContext, report.id)
+    state = _logistics_tariff_context_state(report, context)
+    base_state = _logistics_context_state(report, logistics_context)
+    filter_context = {
+        "periodStart": period_start.isoformat() if period_start else None,
+        "periodEnd": period_end.isoformat() if period_end else None,
+        "wbCabinetId": wb_cabinet_id or None,
+        "clientCompanyId": client_company_id or None,
+        "scheme": scheme.casefold() or None,
+        "warehouse": warehouse.strip() or None,
+        "tariffType": tariff_type.casefold() or None,
+        "dateGrain": "calendar_week",
+    }
+    meta = {
+        "reportId": report.id,
+        "dataStatus": "needs_rebuild",
+        "sliceStatus": "needs_rebuild",
+        "methodologyVersion": (
+            logistics_context.methodology_version
+            if logistics_context is not None
+            else LOGISTICS_METHODOLOGY_VERSION
+        ),
+        "factorMethodologyVersion": LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
+        "generatedAt": (
+            context.created_at.isoformat()
+            if context is not None
+            else report.generated_at.isoformat()
+        ),
+        "sourceCoverageEnd": (
+            report.source_coverage_end.isoformat()
+            if report.source_coverage_end
+            else None
+        ),
+        "factorSnapshotAt": (
+            context.source_loaded_at.isoformat()
+            if context is not None and context.source_loaded_at is not None
+            else None
+        ),
+        "factorSnapshotDate": (
+            context.factor_snapshot_date.isoformat()
+            if context is not None and context.factor_snapshot_date is not None
+            else None
+        ),
+        "valueType": "fact_or_estimate",
+        "financialEffect": None,
+        "filterContext": filter_context,
+    }
+    empty_payload = {
+        **meta,
+        "coverage": _empty_logistics_tariff_coverage(),
+        "rows": [],
+        "total": 0,
+        "offset": offset,
+        "limit": limit,
+        "recommendations": [],
+    }
+    if base_state == "blocked" or state in {"blocked", "scope_mismatch"}:
+        return _logistics_json_safe(
+            {**empty_payload, "dataStatus": "blocked", "sliceStatus": "blocked"}
+        )
+    if base_state not in {"ready", "partial"} or state not in {"ready", "partial"}:
+        return _logistics_json_safe(empty_payload)
+
+    conditions: list[Any] = [
+        ReportLogisticsTariffRow.report_run_id == report.id,
+    ]
+    if period_start:
+        conditions.append(
+            ReportLogisticsTariffRow.financial_week_start
+            >= period_start - timedelta(days=6)
+        )
+    if period_end:
+        conditions.append(ReportLogisticsTariffRow.financial_week_start <= period_end)
+    if wb_cabinet_id:
+        conditions.append(ReportLogisticsTariffRow.wb_cabinet_id == wb_cabinet_id)
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsTariffRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(ReportLogisticsTariffRow.scheme == scheme.casefold())
+    if warehouse:
+        conditions.append(
+            ReportLogisticsTariffRow.warehouse.contains(warehouse.strip())
+        )
+    if tariff_type:
+        conditions.append(
+            ReportLogisticsTariffRow.tariff_type == tariff_type.casefold()
+        )
+
+    point_query = (
+        select(
+            ReportLogisticsTariffRow.wb_cabinet_id.label("cabinet"),
+            ReportLogisticsTariffRow.client_company_id.label("company"),
+            ReportLogisticsTariffRow.scheme.label("scheme"),
+            ReportLogisticsTariffRow.financial_week_start.label("week_start"),
+            ReportLogisticsTariffRow.tariff_type.label("tariff_type"),
+            func.max(
+                case(
+                    (
+                        and_(
+                            ReportLogisticsTariffRow.evidence_type == "fact",
+                            ReportLogisticsTariffRow.coverage_status == "ready",
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("has_fact"),
+            func.max(
+                case(
+                    (
+                        and_(
+                            ReportLogisticsTariffRow.evidence_type == "estimate",
+                            ReportLogisticsTariffRow.coverage_status == "ready",
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("has_estimate"),
+        )
+        .where(*conditions)
+        .group_by(
+            ReportLogisticsTariffRow.wb_cabinet_id,
+            ReportLogisticsTariffRow.client_company_id,
+            ReportLogisticsTariffRow.scheme,
+            ReportLogisticsTariffRow.financial_week_start,
+            ReportLogisticsTariffRow.tariff_type,
+        )
+        .subquery()
+    )
+    point_stats = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(point_query.c.has_fact), 0),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                point_query.c.has_fact == 0,
+                                point_query.c.has_estimate == 1,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                point_query.c.has_fact == 0,
+                                point_query.c.has_estimate == 0,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).select_from(point_query)
+    ).one()
+    row_stats = db.execute(
+        select(
+            func.count(),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsTariffRow.coverage_status
+                            == "invalid_tariff",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsTariffRow.coverage_status
+                            == "conflicting_tariff",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.count(func.distinct(ReportLogisticsTariffRow.warehouse)),
+        ).where(*conditions)
+    ).one()
+    expected = int(point_stats[0] or 0)
+    factual = int(point_stats[1] or 0)
+    estimated = int(point_stats[2] or 0)
+    unavailable = int(point_stats[3] or 0)
+    total = int(row_stats[0] or 0)
+    invalid = int(row_stats[1] or 0)
+    conflicting = int(row_stats[2] or 0)
+    warehouses = int(row_stats[3] or 0)
+    coverage = {
+        "expectedPoints": expected,
+        "factualPoints": factual,
+        "estimatedPoints": estimated,
+        "unavailablePoints": unavailable,
+        "invalidRows": invalid,
+        "conflictingRows": conflicting,
+        "warehouses": warehouses,
+        "factualCoveragePct": (
+            Decimal(factual) * Decimal("100") / Decimal(expected)
+            if expected
+            else None
+        ),
+    }
+    if expected == 0:
+        return _logistics_json_safe(
+            {
+                **empty_payload,
+                "dataStatus": context.data_status,
+                "sliceStatus": "empty",
+                "coverage": coverage,
+            }
+        )
+
+    sort_fields = {
+        "requestedDate": ReportLogisticsTariffRow.requested_date,
+        "warehouse": ReportLogisticsTariffRow.warehouse,
+        "deliveryCoefficient": ReportLogisticsTariffRow.delivery_coefficient_pct,
+        "storageCoefficient": ReportLogisticsTariffRow.storage_coefficient_pct,
+        "coverageStatus": ReportLogisticsTariffRow.coverage_status,
+    }
+    sort_column = sort_fields[sort_by]
+    direction = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    rows = list(
+        db.scalars(
+            select(ReportLogisticsTariffRow)
+            .where(*conditions)
+            .order_by(
+                case((sort_column.is_(None), 1), else_=0),
+                direction,
+                ReportLogisticsTariffRow.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    slice_status = (
+        "partial"
+        if context.data_status == "partial"
+        or factual != expected
+        or invalid
+        or conflicting
+        else "ready"
+    )
+    recommendations: list[dict[str, Any]] = []
+    if estimated:
+        recommendations.append(
+            {
+                "code": "tariff_current_estimate",
+                "priority": 30,
+                "title": "Не объяснять историю текущим тарифом",
+                "message": (
+                    "Для части недель архив недоступен: показан справочный "
+                    "тариф на дату снимка без денежного эффекта."
+                ),
+                "impactAmount": None,
+                "evidenceType": "limitation",
+                "actionTarget": "#logistics-tariffs",
+                "actionLabel": "Посмотреть оценки",
+                "evidence": {"pointCount": estimated},
+            }
+        )
+    data_issues = unavailable + invalid + conflicting
+    if data_issues:
+        recommendations.append(
+            {
+                "code": "tariff_data_unavailable",
+                "priority": 40,
+                "title": "Проверить покрытие тарифов",
+                "message": (
+                    "Часть тарифных точек отсутствует, невалидна или "
+                    "конфликтует; нули не подставлены."
+                ),
+                "impactAmount": None,
+                "evidenceType": "data_unavailable",
+                "actionTarget": "#logistics-tariffs",
+                "actionLabel": "Проверить источник",
+                "evidence": {"pointCount": data_issues},
+            }
+        )
+    return _logistics_json_safe(
+        {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "rows": [_logistics_tariff_row_payload(row) for row in rows],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "recommendations": recommendations,
+        }
+    )
+
+
+def _logistics_tariff_context_state(
+    report: ReportRun,
+    context: ReportLogisticsTariffContext | None,
+) -> str:
+    if context is None:
+        return "missing"
+    if context.factor_methodology_version != LOGISTICS_TARIFFS_METHODOLOGY_VERSION:
+        return "outdated_methodology"
+    if context.tenant_id != report.tenant_id or context.client_id != report.client_id:
+        return "scope_mismatch"
+    if context.data_status not in {"ready", "partial", "blocked"}:
+        return "invalid_status"
+    return context.data_status
+
+
+def _empty_logistics_tariff_coverage() -> dict[str, Any]:
+    return {
+        "expectedPoints": 0,
+        "factualPoints": 0,
+        "estimatedPoints": 0,
+        "unavailablePoints": 0,
+        "invalidRows": 0,
+        "conflictingRows": 0,
+        "warehouses": 0,
+        "factualCoveragePct": None,
+    }
+
+
+def _logistics_tariff_row_payload(
+    row: ReportLogisticsTariffRow,
+) -> dict[str, Any]:
+    return {
+        "requestedDate": row.requested_date,
+        "tariffDate": row.tariff_date,
+        "tariffType": row.tariff_type,
+        "warehouse": row.warehouse or None,
+        "geoName": row.geo_name or None,
+        "nextChangeAt": row.next_change_at,
+        "archiveEndAt": row.archive_end_at,
+        "deliveryBaseRub": row.delivery_base_rub,
+        "deliveryLiterRub": row.delivery_liter_rub,
+        "deliveryCoefficientPct": row.delivery_coefficient_pct,
+        "marketplaceDeliveryBaseRub": row.marketplace_delivery_base_rub,
+        "marketplaceDeliveryLiterRub": row.marketplace_delivery_liter_rub,
+        "marketplaceDeliveryCoefficientPct": (
+            row.marketplace_delivery_coefficient_pct
+        ),
+        "storageBaseRub": row.storage_base_rub,
+        "storageLiterRub": row.storage_liter_rub,
+        "storageCoefficientPct": row.storage_coefficient_pct,
+        "scheme": row.scheme,
+        "evidenceType": row.evidence_type,
+        "coverageStatus": row.coverage_status,
+        "dataQualityStatus": row.data_quality_status,
+        "financialEffect": None,
+    }
+
+
+def _validate_logistics_tariff_rows_scope(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    cabinet_ids: set[str] = set()
+    company_ids: set[str] = set()
+    for row in rows:
+        if str(row.get("tenant_id") or "") != report.tenant_id:
+            raise ValueError("tariff row tenant does not match report")
+        if str(row.get("client_id") or "") != report.client_id:
+            raise ValueError("tariff row client does not match report")
+        cabinet_ids.add(str(row.get("wb_cabinet_id") or ""))
+        company_ids.add(str(row.get("client_company_id") or ""))
+    cabinet_ids.discard("")
+    company_ids.discard("")
+    cabinets = {
+        item.id: item
+        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
+    } if cabinet_ids else {}
+    companies = {
+        item.id: item
+        for item in db.scalars(
+            select(ClientCompany).where(ClientCompany.id.in_(company_ids))
+        )
+    } if company_ids else {}
+    for row in rows:
+        cabinet_id = str(row.get("wb_cabinet_id") or "")
+        company_id = str(row.get("client_company_id") or "")
+        cabinet = cabinets.get(cabinet_id)
+        company = companies.get(company_id)
+        if (
+            cabinet is None
+            or company is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+            or cabinet.client_company_id != company_id
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            raise ValueError("tariff row cabinet/company scope does not match report")
 
 
 def _validate_logistics_result_scope(
@@ -16498,6 +17068,64 @@ def report_readiness_payload(
                     _readiness_reason(
                         "logistics_dimensions_partial",
                         "Часть габаритов отсутствует или требует проверки.",
+                    )
+                )
+                score -= 5
+
+    tariff_context = db.get(ReportLogisticsTariffContext, report.id)
+    if report.logistics_tariffs_required:
+        tariff_state = _logistics_tariff_context_state(report, tariff_context)
+        tariff_blockers = {
+            "missing": (
+                "logistics_tariffs_missing",
+                "Обязательный контекст тарифов отсутствует; нужен новый report run.",
+            ),
+            "outdated_methodology": (
+                "logistics_tariffs_outdated",
+                "Контекст тарифов построен по устаревшей методике.",
+            ),
+            "scope_mismatch": (
+                "logistics_tariffs_scope_mismatch",
+                "Контекст тарифов принадлежит другому tenant или клиенту.",
+            ),
+            "invalid_status": (
+                "logistics_tariffs_invalid_status",
+                "Контекст тарифов имеет неизвестный статус.",
+            ),
+            "blocked": (
+                "logistics_tariffs_blocked",
+                "Проверка целостности snapshot тарифов не пройдена.",
+            ),
+        }
+        if tariff_state in tariff_blockers:
+            code, message = tariff_blockers[tariff_state]
+            blocking_reasons.append(
+                _readiness_reason(code, message, nonOverridable=True)
+            )
+            score = min(score, 40)
+        elif tariff_context is not None:
+            actual_tariff_rows = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReportLogisticsTariffRow)
+                    .where(ReportLogisticsTariffRow.report_run_id == report.id)
+                )
+                or 0
+            )
+            if actual_tariff_rows != tariff_context.tariff_row_count:
+                blocking_reasons.append(
+                    _readiness_reason(
+                        "logistics_tariffs_row_count_mismatch",
+                        "Количество строк витрины тарифов не совпадает с context.",
+                        nonOverridable=True,
+                    )
+                )
+                score = min(score, 40)
+            elif tariff_state == "partial":
+                review_reasons.append(
+                    _readiness_reason(
+                        "logistics_tariffs_partial",
+                        "Часть архивных тарифов недоступна или требует проверки.",
                     )
                 )
                 score -= 5

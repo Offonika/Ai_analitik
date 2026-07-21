@@ -433,6 +433,9 @@ ALTER TABLE IF EXISTS wb_unit_economics.report_runs
 ALTER TABLE IF EXISTS wb_unit_economics.report_runs
     ADD COLUMN IF NOT EXISTS logistics_dimensions_required boolean NOT NULL DEFAULT false;
 
+ALTER TABLE IF EXISTS wb_unit_economics.report_runs
+    ADD COLUMN IF NOT EXISTS logistics_tariffs_required boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_rows (
     id bigserial PRIMARY KEY,
     report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
@@ -495,6 +498,75 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_contexts
 
 CREATE INDEX IF NOT EXISTS ix_report_logistics_dimension_context_status
     ON wb_unit_economics.report_logistics_dimension_contexts (tenant_id, data_status);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_tariff_rows (
+    id bigserial PRIMARY KEY,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    row_uid text NOT NULL,
+    wb_cabinet_id text NOT NULL DEFAULT '',
+    client_company_id text NOT NULL DEFAULT '',
+    scheme text NOT NULL DEFAULT '',
+    financial_week_start date NOT NULL,
+    requested_date date NOT NULL,
+    tariff_date date,
+    tariff_type text NOT NULL,
+    warehouse text NOT NULL DEFAULT '',
+    geo_name text NOT NULL DEFAULT '',
+    next_change_at date,
+    archive_end_at date,
+    delivery_base_rub numeric,
+    delivery_liter_rub numeric,
+    delivery_coefficient_pct numeric,
+    marketplace_delivery_base_rub numeric,
+    marketplace_delivery_liter_rub numeric,
+    marketplace_delivery_coefficient_pct numeric,
+    storage_base_rub numeric,
+    storage_liter_rub numeric,
+    storage_coefficient_pct numeric,
+    evidence_type text NOT NULL DEFAULT '',
+    coverage_status text NOT NULL DEFAULT '',
+    data_quality_status text NOT NULL DEFAULT '',
+    source_hash_digest text NOT NULL DEFAULT '',
+    CONSTRAINT uq_report_logistics_tariff_row UNIQUE (report_run_id, row_uid)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_tariff_filter
+    ON wb_unit_economics.report_logistics_tariff_rows (
+        report_run_id, financial_week_start, wb_cabinet_id,
+        client_company_id, scheme, tariff_type
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_tariff_warehouse
+    ON wb_unit_economics.report_logistics_tariff_rows (report_run_id, warehouse);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_tariff_contexts (
+    report_run_id text PRIMARY KEY REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    factor_methodology_version text NOT NULL,
+    data_status text NOT NULL,
+    input_hash text NOT NULL,
+    source_snapshot_hash text NOT NULL DEFAULT '',
+    source_loaded_at timestamptz,
+    factor_snapshot_date date,
+    source_row_count integer NOT NULL DEFAULT 0,
+    tariff_row_count integer NOT NULL DEFAULT 0,
+    expected_point_count integer NOT NULL DEFAULT 0,
+    factual_point_count integer NOT NULL DEFAULT 0,
+    estimated_point_count integer NOT NULL DEFAULT 0,
+    unavailable_point_count integer NOT NULL DEFAULT 0,
+    invalid_row_count integer NOT NULL DEFAULT 0,
+    conflicting_row_count integer NOT NULL DEFAULT 0,
+    warehouse_count integer NOT NULL DEFAULT 0,
+    blocking_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_tariff_context_status
+    ON wb_unit_economics.report_logistics_tariff_contexts (tenant_id, data_status);
 
 ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts
     ADD COLUMN IF NOT EXISTS source_quality_status text NOT NULL DEFAULT 'ready',

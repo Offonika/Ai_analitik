@@ -24,21 +24,25 @@ ai_sections:
   tests: "Test Plan"
 code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
-    symbols: ["def build_dimension_rows"]
+    symbols: ["def build_dimension_rows", "def build_tariff_rows"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot"]
+    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot"]
   - path: src/wb_unit_economics/web/repository.py
-    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload"]
+    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload"]
 test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_build_dimension_rows_links_by_nm_and_marks_unavailable"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix"]
+    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking"]
+    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft"]
+  - path: tests/test_wb_tariffs.py
+    symbols: ["def test_build_tariff_snapshot_dates_uses_calendar_weeks", "def test_flatten_box_tariffs_keeps_period_and_none_for_missing"]
+  - path: tests/test_logistics_factor_marts.py
+    symbols: ["def test_build_tariff_rows_uses_historical_fact_and_current_estimate", "def test_build_tariff_rows_keeps_missing_and_invalid_values_explicit", "def test_tariff_analysis_is_atomic_and_published_report_is_immutable"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Статус документа
@@ -91,6 +95,11 @@ state matrix, фильтры, SQL-pagination и coverage полного срез
 Статус всего factor-spec остаётся `accepted`: сохранение и расчёт тарифов,
 возвратов и продаж, route mart, `/routes`, фактические замеры/штрафы, factor AI
 digest и клиентский/production rollout остаются следующими подпакетами.
+
+F-2 реализуется отдельным сквозным пакетом после F-1: verified snapshot
+архивных и текущих box/pallet тарифов -> нормализация -> tariff context/mart ->
+read-only `/tariffs` -> staff-only блок в `#tables/logistics`. Отдельный
+tariff-флаг не включает F-3 и не меняет финансовый итог.
 
 # Цель
 
@@ -194,13 +203,20 @@ digest и клиентский/production rollout остаются следую�
   (`boxDeliveryBase`, `boxDeliveryLiter`, `boxDeliveryCoefExpr`,
   `boxStorageBase`, `boxStorageCoefExpr`, `warehouseName`), период действия
   `dtNextBox`/`dtTillMax`. Отдаёт текущие и архивные ставки.
-- Историческая дата запрашивается query-параметром `date` (`YYYY-MM-DD`) —
-  имя/обязательность и самая ранняя доступная дата архива `требует
-  подтверждения`.
+- Историческая дата запрашивается обязательным query-параметром `date`
+  (`YYYY-MM-DD`). Официальная документация WB на 21.07.2026 прямо определяет
+  методы как источник текущих и архивных тарифов, но не гарантирует глубину
+  архива; каждая запрошенная дата поэтому имеет отдельный статус сбора.
+- `boxDeliveryCoefExpr`, `boxDeliveryMarketplaceCoefExpr` и
+  `boxStorageCoefExpr` — проценты. WB указывает, что коэффициенты уже учтены в
+  денежных ставках; F-2 показывает их как evidence и повторно не умножает
+  денежный итог отчёта.
 - `GET https://common-api.wildberries.ru/api/tariffs/v1/acceptance/coefficients`
   — коэффициенты приёмки по складам.
-- Rate limit 60 запросов/мин; поле `dtFromMin` удалено WB 15.07.2026 — в
-  парсер не закладывать.
+- Лимит зависит от типа токена: Personal/Service — 60 запросов в минуту на
+  endpoint, Base — 1 запрос в час. Сбор выполняется последовательно, HTTP 429
+  оставляет точку `data_unavailable`, а не обрезает период молча. Поле
+  `dtFromMin` удалено WB 15.07.2026 — в парсер не закладывать.
 
 ## Фактические замеры и штрафы — Finance report
 
@@ -272,6 +288,15 @@ Probe-чеклист:
 причины возвратов требуют живого read-only probe с ключами клиента до
 реализации.
 
+## Результат живого probe тарифов (2026-07-19)
+
+Оба read-only метода `/box` и `/pallet` вернули HTTP 200 для двух разрешённых
+кабинетов. Подтверждены обязательный `date`, `warehouseName`,
+`boxDeliveryCoefExpr`, `palletDeliveryExpr`, `dtNextBox`, `dtNextPallet` и
+`dtTillMax`. Raw и клиентские идентификаторы в evidence не записывались.
+Глубина архива не считается гарантией: штатный сбор фиксирует успех или
+недоступность каждой календарной недели отдельно.
+
 # Расчётная модель факторов
 
 Модель наследует правила первой очереди и добавляет факторный слой без
@@ -283,7 +308,12 @@ Probe-чеклист:
   финансовом источнике; сумма штрафа не смешивается с базовой логистикой.
 - Коэффициент недели связывается с календарной неделей операции. Для
   исторической недели применяется коэффициент того же периода; при отсутствии
-  архива вывод помечается `Оценка` и историю им не объясняют.
+  архива тариф на дату factor snapshot может быть показан только как
+  `estimate`; историю им не объясняют и денежные KPI не пересчитывают.
+- Недельная сетка F-2 строится по фактически присутствующим в SKU-mart
+  `(cabinet, company, scheme, financial_week_start)`. Для каждой точки
+  запрашиваются `box` и `pallet`; склад тарифа не связывается со складом
+  операции до F-3.
 - Направление и склад агрегируются на уровне `report_logistics_route_rows`;
   при нескольких значениях внутри цепочки возвращается `mixed`, а не первое
   случайное значение (как в order mart первой очереди).
@@ -335,6 +365,44 @@ required context создаёт non-overridable publication blocker. Отсут�
 габаритов у товара создаёт mart row с `data_unavailable` и `partial`, но само по
 себе публикацию не блокирует.
 
+## `report_logistics_tariff_rows`
+
+F-2 хранит одну строку на
+`tenant/client/cabinet/company/scheme/financial_week_start/tariff_type/warehouse`.
+Поля: `requested_date`, дата тарифа, `box|pallet`, склад и geo label, ближайшая
+дата изменения и конец доступного периода из ответа, nullable базовые ставки,
+ставки дополнительного литра и коэффициенты доставки/хранения, отдельные FBS-
+поля box, `evidence_type`, `coverage_status`, `data_quality_status` и source
+hash. Денежные значения и проценты не входят в расчёт итоговой логистики.
+
+Пустые, нечисловые и отрицательные значения остаются `null`; явный provider
+zero сохраняется как ноль. Повторяющиеся строки одного склада с одинаковыми
+значениями схлопываются. Разные значения одного business key дают
+`conflicting_tariff` без случайного выбора. Архивная строка, полученная на
+`financial_week_start`, имеет `evidence_type=fact`. Если точка архива
+недоступна, допускается только явно выбранная строка снимка на дату сбора с
+`evidence_type=estimate`; если нет и её, сохраняется placeholder
+`data_unavailable`. Hash строки включает `wb-logistics-tariffs-v1`, hashes
+SKU-группы и всех участвующих строк тарифа.
+
+## `report_logistics_tariff_contexts`
+
+Один immutable context на report run хранит tenant/client,
+`factor_methodology_version=wb-logistics-tariffs-v1`, `data_status`, input и
+snapshot hashes, factor snapshot timestamp, числа ожидаемых/фактических/
+оценочных/недоступных cabinet-week-type точек, строк и складов, invalid/conflict
+counts, безопасные blocking/review codes.
+
+Источник выбирается из lineage `primary -> base -> contributor`. Две разные
+ревизии одного приоритета, scope mismatch, DB/file ambiguity, неподтверждённый
+manifest, изменившиеся hashes/row count или небезопасный путь создают
+`blocked` context без tariff rows. DB и `file_authoritative` дают одинаковый
+результат. Context и rows сохраняются атомарно только для нового draft;
+published report не изменяется. При включённом tariff master-флаге report
+получает `logistics_tariffs_required=true`: missing/outdated/blocked required
+context — non-overridable publication blocker, `partial` из-за недоступного
+архива — review и публикацию не блокирует.
+
 ## `report_logistics_route_rows`
 
 Уже зарезервирована каноническим спеком. Гранулярность — склад и доступное
@@ -349,6 +417,7 @@ Additive read-only методы, зарезервированные канони
 авторизацию, tenant boundary, роли, пагинацию и фильтры кабинета:
 
 - `GET /api/reports/{report_id}/logistics/dimensions` — вторая очередь;
+- `GET /api/reports/{report_id}/logistics/tariffs` — F-2;
 - `GET /api/reports/{report_id}/logistics/routes` — вторая очередь.
 
 Ответы содержат те же служебные поля, что и методы первой очереди
@@ -377,6 +446,24 @@ Additive read-only методы, зарезервированные канони
 Габариты всегда подписываются как текущее состояние карточки на
 `factorSnapshotAt`, а не как исторический замер. Raw payload, source hashes и
 seller account identifiers в ответ не входят.
+
+Контракт F-2 `/tariffs`:
+
+- фильтры `periodStart`, `periodEnd`, `wbCabinetId`, `clientCompanyId`,
+  `scheme`, `warehouse`, `tariffType`; SQL-pagination `offset`/`limit`;
+- сортировки `requestedDate`, `warehouse`, `deliveryCoefficient`,
+  `storageCoefficient`, `coverageStatus`;
+- служебные поля F-1 плюс `filterContext`, coverage полного фильтрованного
+  среза, `rows`, `total`, `offset`, `limit`, `recommendations`;
+- coverage считает все cabinet-week-type точки до pagination: expected,
+  factual, estimated, unavailable, invalid, conflicts, warehouses и процент
+  фактического покрытия;
+- старый/несовместимый context — `needs_rebuild`, integrity/scope failure —
+  `blocked`, разрешённый срез без недель — `empty`, estimate/missing/invalid/
+  conflict — `partial`, полное архивное покрытие — `ready`;
+- строка явно содержит `requestedDate`, `tariffDate`, `evidenceType` и
+  предупреждение, что это справочный тариф без денежного эффекта. Raw,
+  source hashes, account IDs и внутренние row IDs не возвращаются.
 
 # Интерфейс
 
@@ -413,6 +500,20 @@ seller account identifiers в ответ не входят.
 и второй очереди. Client дополнительно требует оба client-флага; при отказе API
 возвращает HTTP 404, UI не делает запрос и не показывает секцию.
 
+Синтетический target F-2 фиксируется в
+[`docs/design/wb-logistics-f2-tariffs-target.html`](../design/wb-logistics-f2-tariffs-target.html).
+Секция `Факторы стоимости -> Тарифы и коэффициенты WB` идёт после габаритов и
+до рейтинга товаров: coverage по неделям, дата запроса, склад, box/pallet,
+коэффициенты доставки/хранения и метка `Факт`/`Оценка`/`Данные недоступны`.
+На mobile строки становятся подписанными карточками. Ошибка tariff API
+локальна и не ломает габариты или первую очередь.
+
+F-2 дополнительно закрыт defaults-off флагами
+`SHUMEYKO_LOGISTICS_TARIFFS_ENABLED` и
+`SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED`. Staff требует master-флаги
+логистики/factors и tariff master. Client дополнительно требует все три
+client-флага. При запрете API возвращает 404, UI не выполняет запрос.
+
 # Правила рекомендаций
 
 Наследуют формат первой очереди (`code`, `priority`, `title`, `message`,
@@ -446,8 +547,9 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 - Нет направления доставки → маршрутная витрина не строится (правило канона).
 - Несколько складов/направлений в одной цепочке → `mixed`, а не первое
   значение.
-- Разные rate limits источников → backoff на 429, частичный сбор помечается
-  `partial`, а не тихо обрезается.
+- Разные rate limits источников → после первого 429 серия запросов этого
+  токена останавливается, оставшиеся даты получают безопасный статус, а
+  частичный сбор помечается `partial`, а не тихо обрезается.
 - Смена финансового отчёта (15.07.2026): чтение только нового метода
   `sales-reports/detailed`; старый v5-эндпоинт не используется.
 - Новая обязательная витрина со статусом `blocked`/устаревшей методикой →
@@ -459,6 +561,11 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
   `primary -> base -> contributor`. Частичный snapshot не дополняется старыми
   строками другой ревизии: доступные товары показываются, остальные получают
   `data_unavailable`.
+- Тарифные snapshot conflict/integrity/scope обрабатываются теми же fail-closed
+  правилами lineage, но с кодами `tariff_*`; при `blocked` строки не
+  сохраняются.
+- Успешная историческая дата без отдельного склада означает отсутствие этого
+  склада в том ответе; F-2 не дополняет её складом из другой архивной даты.
 
 # Безопасность и tenant isolation
 
@@ -478,7 +585,8 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 2. `F-1 Габариты` — извлечение `dimensions` из карточек, витрина
    `report_logistics_dimension_rows`, API `/dimensions`, блок UI.
 3. `F-2 Тарифы и коэффициенты` — коннектор box/pallet с периодами действия,
-   привязка коэффициента недели.
+   verified исторические snapshots, tariff context/mart, `/tariffs` и
+   staff-only UI.
 4. `F-3 Склады и маршруты` — направление/склад из продаж, витрина
    `report_logistics_route_rows`, API `/routes`, агрегаты.
 5. `F-4 Замеры и штрафы` — только при подтверждении probe: фактические габариты
@@ -516,12 +624,18 @@ Design-часть draft считается принятой, когда влад
     `nm_id` другого кабинета не связывается;
 13. factor API и UI закрыты отдельной staff/client role matrix, а ошибка F-1 не
     скрывает и не меняет денежную аналитику первой очереди.
+14. F-2 хранит факт только для явно запрошенной исторической даты, current
+    fallback маркирует `estimate`, а coverage считается до pagination.
+15. tariff context/rows атомарны, published report immutable, required
+    blocked/missing/outdated context блокирует публикацию, partial — нет.
 
 # Test Plan
 
 - unit: извлечение `dimensions`/`weightBrutto`/`isValid` из карточки, включая
   отсутствующий объект и `isValid=false`;
 - unit: привязка коэффициента недели к периоду; отсутствие архива → `Оценка`;
+- unit: календарная сетка дат, locale Decimal, explicit zero, missing/invalid/
+  negative, одинаковые и конфликтующие tariff rows, стабильность hashes;
 - unit: агрегация склад/направление, `mixed` при конфликте;
 - unit: `evidenceType` факторов и запрет нулевой подстановки;
 - integration: сборка витрин `report_logistics_dimension_rows` и
@@ -533,6 +647,9 @@ Design-часть draft считается принятой, когда влад
   документацию не переносятся.
 - source integration: DB/file parity, lineage precedence, raw integrity/path,
   storage ambiguity и tenant scope;
+- persistence/API: atomic tariff context+rows, published immutability,
+  row-count reconciliation, все states/filters/sort/pagination, full-slice
+  coverage, role/flag matrix и отсутствие raw/hash полей;
 - browser: staff-only deep-link на desktop/mobile, client 404/скрытый блок,
   отсутствие overflow и console/page/network errors.
 
@@ -553,6 +670,14 @@ Design-часть draft считается принятой, когда влад
 `SHUMEYKO_LOGISTICS_FACTORS_ENABLED=true`; client-флаг остаётся `false` даже
 если клиентская первая очередь уже включена. Требуется новый immutable report
 run из verified snapshot. Production в этот rollout не входит.
+
+Для F-2 сначала применяется additive migration и immutable runtime. На test
+включаются factor master и `SHUMEYKO_LOGISTICS_TARIFFS_ENABLED`; оба client-
+флага остаются `false`. Новый report run строится из verified tariff snapshot,
+после чего staff API/UI проверяются на desktop 1440x900 и mobile 390x844.
+Client API обязан вернуть 404, секция отсутствовать. Production и client
+enable не выполняются; operational evidence не содержит объёмов, складов или
+идентификаторов клиента.
 
 Rollback отключает новые API-маршруты и факторный блок, не изменяя существующие
 отчёты и первую очередь. Новые витрины additive и неизменяемы. Внешние источники
@@ -579,21 +704,27 @@ blocker с report run, который обязан был пройти gate, н�
 
 - Точный состав полей нового финансового метода (фактические габариты,
   `penalty`, `warehouseName`) — сверить по Swagger finances (требует live).
-- Имя/обязательность параметра `date` тарифов и глубина архива для
-  исторического пересчёта (требует live).
+- Глубина архива тарифов не гарантирована provider contract и измеряется
+  статусами отдельных дат, а не считается настройкой F-2.
 - Порог покрытия, при котором строится `report_logistics_route_rows`.
 - Нужно ли начать сохранять Statistics `supplier/sales` (склад/направление):
   сейчас этих полей в сохранённом снимке нет — probe подтвердил.
-- Нужен ли отдельный retention для тарифного snapshot (тарифы общие, не
-  клиентские).
-- Разрешение на живой read-only probe тарифов/statistics/возвратов через
-  приложение с ключами клиента (на test).
+- Отдельный retention для tariff snapshot не вводится: действует retention
+  source-refresh, а опубликованный report хранит только нормализованный mart.
 
 Частично закрытые probe (2026-07-19): габариты — источник подтверждён и F-1
 начат; минимальный состав первой поставки — начинать с F-1 (габариты), так как
 данные уже есть, остальные подпакеты после живого probe.
 
 # Changelog
+
+- 2026-07-21 — принят точный контракт F-2 «Тарифы»: официальный WB contract
+  повторно проверен (обязательный `date`, текущие/архивные box/pallet,
+  percent-поля и token-dependent rate limits), добавлены weekly collection,
+  verified lineage/DB-file rules, `wb-logistics-tariffs-v1` context/mart,
+  `/logistics/tariffs`, states/coverage/recommendations, отдельные defaults-off
+  flags, visual target и staff-only test rollout. Общий spec остаётся
+  `accepted`; F-3–F-5 и client/production enable не входят.
 
 - 2026-07-20 — F-1 «Габариты» доведён до staff-only test: добавлены flags и
   role matrix, авторитетный Content snapshot selector с DB/file parity и

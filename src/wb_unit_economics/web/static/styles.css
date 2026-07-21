@@ -6306,6 +6306,71 @@ td {
   white-space: normal;
 }
 
+.logistics-tariffs-panel {
+  border-color: #c7dcdf;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbfb 100%);
+}
+
+.logistics-tariffs-note {
+  max-width: 760px;
+  margin: 7px 0 0;
+}
+
+.logistics-tariffs-coverage {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(105px, 1fr));
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.logistics-tariffs-coverage > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid #d7e6e8;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.logistics-tariffs-coverage small {
+  color: #6b7b8e;
+  font-size: 11px;
+}
+
+.logistics-tariffs-coverage strong {
+  color: #24445f;
+  font-size: 15px;
+}
+
+.logistics-tariffs-warning {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-left: 3px solid #b87300;
+  border-radius: 7px;
+  background: #fff8e9;
+  color: #6b5a39;
+  font-size: 13px;
+}
+
+.logistics-tariffs-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.logistics-tariffs-table th,
+.logistics-tariffs-table td,
+.logistics-tariffs-table td:first-child {
+  min-width: 0;
+  white-space: normal;
+}
+
+.logistics-tariffs-table .logistics-quality-badge {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .logistics-bar-list {
   display: grid;
   gap: 14px;
@@ -7389,6 +7454,10 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   .logistics-dimensions-coverage {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+
+  .logistics-tariffs-coverage {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media screen and (max-width: 760px) {
@@ -7434,11 +7503,20 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .logistics-dimensions-table-wrap {
-    overflow: visible;
+  .logistics-tariffs-coverage {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .logistics-dimensions-table,
+  .logistics-dimensions-table-wrap {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .logistics-dimensions-table {
+    display: block;
+    width: 100%;
+  }
+
   .logistics-dimensions-table tbody {
     display: grid;
     gap: 10px;
@@ -7489,6 +7567,69 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   }
 
   .logistics-dimensions-table td[colspan]::before {
+    content: none;
+  }
+
+  .logistics-tariffs-table-wrap {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .logistics-tariffs-table {
+    display: block;
+    width: 100%;
+  }
+
+  .logistics-tariffs-table tbody {
+    display: grid;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .logistics-tariffs-table thead {
+    display: none;
+  }
+
+  .logistics-tariffs-table tr {
+    display: grid;
+    gap: 0;
+    padding: 7px 12px;
+    border: 1px solid #d7e6e8;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .logistics-tariffs-table td,
+  .logistics-tariffs-table td:first-child {
+    display: grid;
+    grid-template-columns: minmax(104px, 0.8fr) minmax(0, 1.2fr);
+    gap: 10px;
+    min-width: 0;
+    padding: 8px 0;
+    border: 0;
+    border-bottom: 1px solid #edf2f3;
+    white-space: normal;
+    text-align: right;
+  }
+
+  .logistics-tariffs-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .logistics-tariffs-table td::before {
+    color: #6b7b8e;
+    content: attr(data-label);
+    font-size: 11px;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .logistics-tariffs-table td[colspan] {
+    display: block;
+    text-align: left;
+  }
+
+  .logistics-tariffs-table td[colspan]::before {
     content: none;
   }
 }
