@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterable, Mapping
-from datetime import datetime
+from contextlib import suppress
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 MONTH_CLOSE_SHEETS = (
     "Сводка закрытия",
@@ -32,6 +38,8 @@ TAX_LOAD_SHEETS = (
 )
 
 TAX_LOAD_FIELD_LABELS = {
+    "clientName": "Клиент",
+    "organizationName": "Организация 1С",
     "reportId": "ID отчёта",
     "tenantId": "ID контура",
     "clientId": "ID клиента",
@@ -39,6 +47,12 @@ TAX_LOAD_FIELD_LABELS = {
     "organizationId": "ID организации 1С",
     "periodStart": "Начало отчётного периода",
     "periodEnd": "Окончание отчётного периода",
+    "ytdStart": "Начало периода с начала года",
+    "ytdEnd": "Окончание периода с начала года",
+    "taxSystem": "Налоговый режим",
+    "profileStatus": "Статус налогового профиля",
+    "revenueTaxRate": "Ставка налога с выручки, %",
+    "accountantApprovalStatus": "Подтверждение бухгалтера",
     "methodologyVersion": "Версия методики",
     "generatedAt": "Дата формирования",
     "publicationStatus": "Статус публикации",
@@ -112,6 +126,8 @@ TAX_LOAD_VALUE_LABELS = {
     "critical": "Критично",
     "draft": "Черновик",
     "published": "Опубликован",
+    "not_confirmed": "Не подтверждено",
+    "unconfirmed": "Не подтверждено",
     "management_reference": "Управленческий ориентир",
     "pending_methodology_confirmation": "Ожидает подтверждения методики",
     "preliminary_ytd": "Предварительно, с начала года",
@@ -135,6 +151,11 @@ TAX_LOAD_VALUE_LABELS = {
     "insurance_contribution": "Страховые взносы",
     "unclassified": "Не классифицировано",
     "agent_payment": "Агентский платёж",
+    "osno": "ОСНО",
+    "usn_income": "УСН «Доходы»",
+    "usn_income_expense": "УСН «Доходы минус расходы»",
+    "усн доходы": "УСН «Доходы»",
+    "усн доходы минус расходы": "УСН «Доходы минус расходы»",
 }
 
 TAX_LOAD_SOURCE_LABELS = {
@@ -173,6 +194,8 @@ TAX_LOAD_SOURCE_LABELS = {
 TAX_LOAD_DATE_FIELDS = {
     "periodStart",
     "periodEnd",
+    "ytdStart",
+    "ytdEnd",
     "generatedAt",
     "dueDate",
     "asOfDate",
@@ -197,7 +220,112 @@ TAX_LOAD_ENUM_FIELDS = {
     "confirmationStatus",
     "status",
     "severity",
+    "taxSystem",
+    "profileStatus",
+    "accountantApprovalStatus",
 }
+
+TAX_LOAD_CURRENCY_FIELDS = {
+    "numeratorValue",
+    "denominatorValue",
+    "usnIncomeValue",
+    "taxBase",
+    "accrued",
+    "paid",
+    "balance",
+    "amount",
+    "outputVat",
+    "inputVat",
+    "payableVat",
+}
+TAX_LOAD_PERCENT_FIELDS = {
+    "fnsTaxBurdenRatio",
+    "benchmarkValue",
+    "usnIncomeTaxBurden",
+    "revenueTaxRate",
+}
+TAX_LOAD_OVERVIEW_FIELDS = (
+    "clientName",
+    "organizationName",
+    "reportKind",
+    "taxSystem",
+    "profileStatus",
+    "revenueTaxRate",
+    "periodStart",
+    "periodEnd",
+    "ytdStart",
+    "ytdEnd",
+    "numeratorValue",
+    "denominatorValue",
+    "fnsTaxBurdenRatio",
+    "usnIncomeValue",
+    "usnIncomeTaxBurden",
+    "usnIncomeStatus",
+    "methodologyStatus",
+    "businessStatus",
+    "accountantApprovalStatus",
+    "generatedAt",
+    "methodologyVersion",
+    "reportId",
+)
+TAX_LOAD_ROW_FIELDS = {
+    "Налоги": (
+        "taxName",
+        "periodKind",
+        "taxBase",
+        "accrued",
+        "paid",
+        "balance",
+        "dueDate",
+        "includedInFnsTaxBurden",
+        "exclusionReason",
+        "evidenceStatus",
+        "sourceKind",
+    ),
+    "График платежей": (
+        "taxName",
+        "dueDate",
+        "amount",
+        "confirmationStatus",
+    ),
+    "Источники и статус": (
+        "sourceKind",
+        "periodStart",
+        "periodEnd",
+        "status",
+    ),
+    "Дозапросы": ("severity", "section", "message", "nextAction"),
+}
+TAX_LOAD_SUMMARY_FIELDS = {
+    "НДС": ("status", "outputVat", "inputVat", "payableVat", "sourceKind"),
+    "ЕНС": ("status", "balance", "asOfDate"),
+}
+TAX_LOAD_TABLE_NAMES = {
+    "Обзор": "TaxLoadOverview",
+    "Налоги": "TaxLoadTaxes",
+    "График платежей": "TaxLoadSchedule",
+    "НДС": "TaxLoadVat",
+    "ЕНС": "TaxLoadEns",
+    "Источники и статус": "TaxLoadSources",
+    "Дозапросы": "TaxLoadIssues",
+}
+
+TAX_LOAD_CURRENCY_FORMAT = "#,##0.00 [$₽-419]"
+TAX_LOAD_PERCENT_FORMAT = '0.00 " %"'
+TAX_LOAD_DATE_FORMAT = "DD.MM.YYYY"
+TAX_LOAD_DATETIME_FORMAT = "DD.MM.YYYY HH:MM"
+FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+HEADER_FILL = PatternFill("solid", fgColor="0F6B78")
+LABEL_FILL = PatternFill("solid", fgColor="E8F3F5")
+HEADER_FONT = Font(bold=True, color="FFFFFF")
+LABEL_FONT = Font(bold=True, color="17324D")
+THIN_BORDER = Border(
+    left=Side(style="thin", color="D5E1E5"),
+    right=Side(style="thin", color="D5E1E5"),
+    top=Side(style="thin", color="D5E1E5"),
+    bottom=Side(style="thin", color="D5E1E5"),
+)
 
 
 def _cell(value: Any) -> Any:
@@ -206,25 +334,34 @@ def _cell(value: Any) -> Any:
     return value
 
 
+def _append_safe_row(sheet: Any, values: Iterable[Any]) -> None:
+    sheet.append(list(values))
+    for cell in sheet[sheet.max_row]:
+        if isinstance(cell.value, str) and cell.value.lstrip().startswith(
+            FORMULA_PREFIXES
+        ):
+            cell.data_type = "s"
+
+
 def _write_mapping(sheet: Any, value: Mapping[str, Any]) -> None:
-    sheet.append(["Показатель", "Значение"])
+    _append_safe_row(sheet, ["Показатель", "Значение"])
     for key, item in value.items():
-        sheet.append([key, _cell(item)])
+        _append_safe_row(sheet, [key, _cell(item)])
 
 
 def _write_rows(sheet: Any, rows: Iterable[Mapping[str, Any]]) -> None:
     normalized = list(rows)
     if not normalized:
-        sheet.append(["Нет подтвержденных данных"])
+        _append_safe_row(sheet, ["Нет подтвержденных данных"])
         return
     headers: list[str] = []
     for row in normalized:
         for key in row:
             if key not in headers:
                 headers.append(key)
-    sheet.append(headers)
+    _append_safe_row(sheet, headers)
     for row in normalized:
-        sheet.append([_cell(row.get(key)) for key in headers])
+        _append_safe_row(sheet, [_cell(row.get(key)) for key in headers])
 
 
 def _tax_load_field_label(key: str) -> str:
@@ -234,16 +371,32 @@ def _tax_load_field_label(key: str) -> str:
         raise ValueError(f"tax-load Excel label is missing for field {key!r}") from exc
 
 
-def _tax_load_date(value: Any) -> Any:
-    if not isinstance(value, str) or not value.strip():
+def _tax_load_date(value: Any) -> date | datetime | None:
+    if isinstance(value, datetime):
         return value
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
-        return value
+        return None
     if "T" in value or " " in value:
-        return parsed.strftime("%d.%m.%Y %H:%M")
-    return parsed.strftime("%d.%m.%Y")
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
+    return parsed.date()
+
+
+def _tax_load_decimal(value: Any) -> Decimal | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    normalized = str(value).replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    try:
+        return Decimal(normalized)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _tax_load_cell(key: str, value: Any) -> Any:
@@ -253,38 +406,65 @@ def _tax_load_cell(key: str, value: Any) -> Any:
         return "Да" if value else "Нет"
     if key in TAX_LOAD_DATE_FIELDS:
         return _tax_load_date(value)
+    if key in TAX_LOAD_CURRENCY_FIELDS or key in TAX_LOAD_PERCENT_FIELDS:
+        return _tax_load_decimal(value)
     if key == "sourceKind":
         normalized = str(value).strip().casefold()
         if normalized in TAX_LOAD_SOURCE_LABELS:
             return TAX_LOAD_SOURCE_LABELS[normalized]
-        return "Источник 1С" if normalized.startswith("onec_") else "Источник отчёта"
+        return "Не определено"
     if key in TAX_LOAD_ENUM_FIELDS:
         normalized = str(value).strip().casefold()
         return TAX_LOAD_VALUE_LABELS.get(normalized, "Не определено")
     return _cell(value)
 
 
-def _write_tax_load_mapping(sheet: Any, value: Mapping[str, Any]) -> None:
-    sheet.append(["Показатель", "Значение"])
-    for key, item in value.items():
-        sheet.append([_tax_load_field_label(key), _tax_load_cell(key, item)])
+def _format_tax_load_cell(cell: Any, key: str) -> None:
+    if key in TAX_LOAD_CURRENCY_FIELDS:
+        cell.number_format = TAX_LOAD_CURRENCY_FORMAT
+    elif key in TAX_LOAD_PERCENT_FIELDS:
+        cell.number_format = TAX_LOAD_PERCENT_FORMAT
+    elif key == "generatedAt":
+        cell.number_format = TAX_LOAD_DATETIME_FORMAT
+    elif key in TAX_LOAD_DATE_FIELDS:
+        cell.number_format = TAX_LOAD_DATE_FORMAT
+
+
+def _write_tax_load_mapping(
+    sheet: Any,
+    value: Mapping[str, Any],
+    fields: Iterable[str],
+) -> None:
+    _append_safe_row(sheet, ["Показатель", "Значение"])
+    for key in fields:
+        _append_safe_row(
+            sheet,
+            [_tax_load_field_label(key), _tax_load_cell(key, value.get(key))],
+        )
+        _format_tax_load_cell(sheet.cell(row=sheet.max_row, column=2), key)
 
 
 def _write_tax_load_rows(
-    sheet: Any, rows: Iterable[Mapping[str, Any]]
+    sheet: Any,
+    rows: Iterable[Mapping[str, Any]],
+    fields: Iterable[str],
 ) -> None:
+    headers = tuple(fields)
     normalized = list(rows)
+    _append_safe_row(sheet, [_tax_load_field_label(key) for key in headers])
     if not normalized:
-        sheet.append(["Нет подтверждённых данных"])
+        _append_safe_row(
+            sheet,
+            ["Нет подтверждённых данных", *([None] * (len(headers) - 1))],
+        )
         return
-    headers: list[str] = []
     for row in normalized:
-        for key in row:
-            if key not in headers:
-                headers.append(key)
-    sheet.append([_tax_load_field_label(key) for key in headers])
-    for row in normalized:
-        sheet.append([_tax_load_cell(key, row.get(key)) for key in headers])
+        _append_safe_row(
+            sheet,
+            [_tax_load_cell(key, row.get(key)) for key in headers],
+        )
+        for column, key in enumerate(headers, start=1):
+            _format_tax_load_cell(sheet.cell(row=sheet.max_row, column=column), key)
 
 
 def _style(workbook: Workbook) -> None:
@@ -299,8 +479,91 @@ def _style(workbook: Workbook) -> None:
             sheet.column_dimensions[column[0].column_letter].width = max(width, 12)
 
 
+def _style_tax_load(workbook: Workbook) -> None:
+    for sheet in workbook.worksheets:
+        sheet.freeze_panes = "A2"
+        sheet.sheet_view.showGridLines = False
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.page_setup.orientation = "landscape"
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.print_title_rows = "1:1"
+        sheet.sheet_properties.tabColor = "0F6B78"
+        sheet.row_dimensions[1].height = 28
+
+        for cell in sheet[1]:
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
+
+        for row in sheet.iter_rows():
+            for cell in row:
+                cell.border = THIN_BORDER
+                if cell.row > 1:
+                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        if sheet.title in {"Обзор", "НДС", "ЕНС"}:
+            for row in range(2, sheet.max_row + 1):
+                label = sheet.cell(row=row, column=1)
+                label.font = LABEL_FONT
+                label.fill = LABEL_FILL
+
+        for column_index in range(1, sheet.max_column + 1):
+            column_letter = get_column_letter(column_index)
+            values = [
+                str(sheet.cell(row=row, column=column_index).value or "")
+                for row in range(1, min(sheet.max_row, 200) + 1)
+            ]
+            header = str(sheet.cell(row=1, column=column_index).value or "")
+            maximum = 58 if header in {"Что найдено", "Что сделать"} else 38
+            minimum = 22 if header in {"Налог", "Источник"} else 12
+            content_width = max((len(item) for item in values), default=0) + 2
+            width = min(max(content_width, minimum), maximum)
+            sheet.column_dimensions[column_letter].width = width
+
+        if sheet.max_row >= 2 and sheet.max_column >= 2:
+            reference = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
+            table = Table(
+                displayName=TAX_LOAD_TABLE_NAMES[sheet.title],
+                ref=reference,
+            )
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            sheet.add_table(table)
+
+
+def _save_workbook_atomic(workbook: Workbook, output_path: Path) -> None:
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            dir=output_path.parent,
+            prefix=f".{output_path.stem}-",
+            suffix=".xlsx",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        workbook.save(temporary_path)
+        os.replace(temporary_path, output_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            with suppress(FileNotFoundError):
+                temporary_path.unlink()
+
+
 def write_scenario_excel(
-    payload: Mapping[str, Any], payload_sha256: str, output_path: Path
+    payload: Mapping[str, Any],
+    payload_sha256: str,
+    output_path: Path,
+    *,
+    export_context: Mapping[str, Any] | None = None,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -333,32 +596,69 @@ def write_scenario_excel(
         )
         _write_rows(workbook["Подтверждения"], payload.get("confirmations") or [])
         _write_rows(workbook["Риски и дозапросы"], payload.get("issues") or [])
-        _write_rows(
-            workbook["Источники и статус"], payload.get("sourceCoverage") or []
-        )
+        _write_rows(workbook["Источники и статус"], payload.get("sourceCoverage") or [])
     elif report_kind == "tax_load":
         for title in TAX_LOAD_SHEETS:
             workbook.create_sheet(title)
+        meta = dict(payload.get("meta") or {})
+        profile = dict(payload.get("taxProfile") or {})
+        summary = dict(payload.get("taxLoadSummary") or {})
+        approval = payload.get("accountantApproval")
+        context = dict(export_context or {})
         overview = {
-            **dict(payload.get("meta") or {}),
-            **dict(payload.get("taxLoadSummary") or {}),
+            "clientName": context.get("clientName") or "Не указано",
+            "organizationName": context.get("organizationName") or "Не указано",
+            "reportKind": meta.get("reportKind") or payload.get("reportKind"),
+            "taxSystem": profile.get("taxSystem"),
+            "profileStatus": profile.get("profileStatus"),
+            "revenueTaxRate": profile.get("revenueTaxRate"),
+            "periodStart": meta.get("periodStart"),
+            "periodEnd": meta.get("periodEnd"),
+            "ytdStart": payload.get("ytdStart"),
+            "ytdEnd": payload.get("ytdEnd"),
+            "numeratorValue": summary.get("numeratorValue"),
+            "denominatorValue": summary.get("denominatorValue"),
+            "fnsTaxBurdenRatio": summary.get("fnsTaxBurdenRatio"),
+            "usnIncomeValue": summary.get("usnIncomeValue"),
+            "usnIncomeTaxBurden": summary.get("usnIncomeTaxBurden"),
+            "usnIncomeStatus": summary.get("usnIncomeStatus"),
+            "methodologyStatus": summary.get("methodologyStatus"),
             "businessStatus": payload.get("businessStatus"),
-            "contractVersion": payload.get("contractVersion"),
-            "payloadSha256": payload_sha256,
+            "accountantApprovalStatus": (
+                approval.get("status") or "confirmed"
+                if isinstance(approval, Mapping)
+                else "not_confirmed"
+            ),
+            "generatedAt": meta.get("generatedAt"),
+            "methodologyVersion": meta.get("methodologyVersion"),
+            "reportId": meta.get("reportId"),
         }
-        _write_tax_load_mapping(workbook["Обзор"], overview)
-        _write_tax_load_rows(workbook["Налоги"], payload.get("taxRows") or [])
-        _write_tax_load_rows(
-            workbook["График платежей"], payload.get("paymentSchedule") or []
-        )
-        _write_tax_load_mapping(workbook["НДС"], payload.get("vatSummary") or {})
-        _write_tax_load_mapping(workbook["ЕНС"], payload.get("ensSummary") or {})
-        _write_tax_load_rows(
-            workbook["Источники и статус"], payload.get("sourceCoverage") or []
-        )
-        _write_tax_load_rows(workbook["Дозапросы"], payload.get("issues") or [])
+        _write_tax_load_mapping(workbook["Обзор"], overview, TAX_LOAD_OVERVIEW_FIELDS)
+        row_payloads = {
+            "Налоги": payload.get("taxRows") or [],
+            "График платежей": payload.get("paymentSchedule") or [],
+            "Источники и статус": payload.get("sourceCoverage") or [],
+            "Дозапросы": payload.get("issues") or [],
+        }
+        for title, fields in TAX_LOAD_ROW_FIELDS.items():
+            _write_tax_load_rows(workbook[title], row_payloads[title], fields)
+        summary_payloads = {
+            "НДС": payload.get("vatSummary") or {},
+            "ЕНС": payload.get("ensSummary") or {},
+        }
+        for title, fields in TAX_LOAD_SUMMARY_FIELDS.items():
+            _write_tax_load_mapping(workbook[title], summary_payloads[title], fields)
     else:
         raise ValueError("unsupported scenario report kind")
-    _style(workbook)
-    workbook.save(output_path)
+    if report_kind == "tax_load":
+        workbook.properties.title = "Налоговая нагрузка"
+        workbook.properties.subject = "Налоговый отчёт с начала года"
+        workbook.properties.creator = "Шумейко и партнёры"
+        _style_tax_load(workbook)
+    else:
+        _style(workbook)
+    try:
+        _save_workbook_atomic(workbook, output_path)
+    finally:
+        workbook.close()
     return output_path
