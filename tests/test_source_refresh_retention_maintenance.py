@@ -48,6 +48,7 @@ def test_parse_args_accepts_s3_config() -> None:
 
     assert args.apply is True
     assert args.s3_config == Path("/root/.config/shumeyko/s3-backup.json")
+    assert args.tenant == ""
 
 
 def test_dry_run_checks_report_drafts_before_raw_and_filesystem(
