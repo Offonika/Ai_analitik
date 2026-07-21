@@ -371,6 +371,24 @@ def _tax_load_evidence(
         "sourceKind": "onec_official_financial_results",
         "snapshotId": income_source.snapshot_id if income_source else "",
     }
+    # Доход-база по УСН без НДС из КУДиР (AccumulationRegister
+    # КнигаУчетаДоходовИРасходов, ресурс ДоходБаза) — управленческий знаменатель
+    # для ИП на УСН, у которого нет отчета о финансовых результатах (spec: Tax
+    # Methodology Boundary, решение от 21.07.2026).
+    usn_income_source = sources.get("onec_kudir")
+    usn_income_rows = _organization_period_rows(
+        usn_income_source,
+        organization_id,
+        period_start.replace(month=1, day=1),
+        period_end,
+        date_fields=("Period", "Date", "Дата"),
+    )
+    usn_income_evidence = {
+        "value": _sum_rows(usn_income_rows, ("ДоходБаза", "ДоходВсего")),
+        "status": _source_status(usn_income_source),
+        "sourceKind": "onec_kudir",
+        "snapshotId": usn_income_source.snapshot_id if usn_income_source else "",
+    }
     issues = _source_gap_issues(
         sources,
         {
@@ -400,6 +418,7 @@ def _tax_load_evidence(
         ),
         "taxRows": tax_rows,
         "incomeEvidence": income_evidence,
+        "usnIncomeEvidence": usn_income_evidence,
         "vatSummary": {
             "status": _combined_status(
                 sources.get("onec_vat_sales_book"),

@@ -145,6 +145,20 @@
       node("p", "", nextAction),
     );
 
+    const usnManagement = isPresent(summary.usnIncomeStatus);
+    const overviewMetrics = [
+      ["Нагрузка по методике ФНС", formatRatio(summary.fnsTaxBurdenRatio), ratioReady ? "" : "is-warning"],
+      ["Уплаченные собственные налоги", formatMoney(summary.numeratorValue)],
+      ["Доход для расчёта", formatMoney(summary.denominatorValue)],
+      ["Налоговый режим", taxSystemLabel(profile.taxSystem), profile.profileStatus === "missing" ? "is-warning" : ""],
+    ];
+    if (usnManagement) {
+      overviewMetrics.push(
+        ["Управленческая нагрузка (УСН, от поступлений)", formatRatio(summary.usnIncomeTaxBurden), isPresent(summary.usnIncomeTaxBurden) ? "" : "is-warning"],
+        ["Доход УСН без НДС (поступления)", formatMoney(summary.usnIncomeValue)],
+      );
+    }
+
     panels.overview.append(
       title("Обзор расчёта", statusLabel(payload.businessStatus)),
       node(
@@ -153,12 +167,7 @@
         `Отчётный месяц: ${formatDate(meta.periodStart)} — ${formatDate(meta.periodEnd)}. `
           + `С начала года: ${formatDate(payload.ytdStart)} — ${formatDate(payload.ytdEnd)}.`,
       ),
-      metricGrid([
-        ["Нагрузка по методике ФНС", formatRatio(summary.fnsTaxBurdenRatio), ratioReady ? "" : "is-warning"],
-        ["Уплаченные собственные налоги", formatMoney(summary.numeratorValue)],
-        ["Доход для расчёта", formatMoney(summary.denominatorValue)],
-        ["Налоговый режим", taxSystemLabel(profile.taxSystem), profile.profileStatus === "missing" ? "is-warning" : ""],
-      ]),
+      metricGrid(overviewMetrics),
       nextActionBlock,
       node(
         "p",
@@ -166,6 +175,16 @@
         "Сравнение со среднеотраслевым показателем пока не используется: сопоставимость методик ещё не подтверждена.",
       ),
     );
+
+    if (usnManagement) {
+      panels.overview.append(
+        node(
+          "p",
+          "scenario-note",
+          "Управленческая нагрузка по УСН считается от дохода из поступлений без НДС и служит ориентиром для ИП, а не официальным коэффициентом ФНС организации.",
+        ),
+      );
+    }
 
     const issueBlock = issues.length
       ? table(issues, {
