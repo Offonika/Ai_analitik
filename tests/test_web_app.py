@@ -18,9 +18,11 @@ from sqlalchemy import event, select, text
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
+    LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
+    build_dimension_rows,
     build_logistics_analysis,
 )
 from wb_unit_economics.web import dashboard_payload, integrations, repository
@@ -1484,7 +1486,7 @@ def _ensure_logistics_dimensions(
         db.flush()
 
 
-def _logistics_fixture_result(report):
+def _logistics_fixture_result(report, *, product_count: int = 1):
     source_rows = [
         LogisticsSourceRow(
             tenant_id=report.tenant_id,
@@ -1530,7 +1532,63 @@ def _logistics_fixture_result(report):
             logistics=Decimal("10"),
         )
     ]
+    for index in range(2, product_count + 1):
+        nm_id = str(100 + index)
+        source_rows.append(
+            replace(
+                source_rows[0],
+                source_row_id=f"logistics-{index}",
+                source_hash=f"safe-source-hash-{index}",
+                order_uid=f"external-order-{index}",
+                nm_id=nm_id,
+                sku=f"sku-{nm_id}",
+                vendor_code=f"A-{nm_id}",
+                product=f"Товар {nm_id}",
+            )
+        )
+        unit_rows.append(
+            replace(
+                unit_rows[0],
+                nm_id=nm_id,
+                sku=f"sku-{nm_id}",
+                vendor_code=f"A-{nm_id}",
+                product=f"Товар {nm_id}",
+            )
+        )
     return build_logistics_analysis(source_rows, unit_rows)
+
+
+def _dimension_context(report, rows, *, data_status: str = "ready"):
+    return {
+        "tenant_id": report.tenant_id,
+        "client_id": report.client_id,
+        "factor_methodology_version": LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+        "data_status": data_status,
+        "input_hash": "safe-dimension-input-hash",
+        "source_snapshot_hash": "safe-card-snapshot-hash",
+        "source_loaded_at": datetime(2026, 7, 20, 12, 0),
+        "source_row_count": len(rows),
+        "dimension_row_count": len(rows),
+        "matched_product_count": sum(
+            row["coverage_status"] == "ready" for row in rows
+        ),
+        "missing_product_count": sum(
+            row["coverage_status"] == "missing_dimensions" for row in rows
+        ),
+        "invalid_product_count": sum(
+            row["coverage_status"] in {"invalid_dimensions", "identity_conflict"}
+            for row in rows
+        ),
+        "conflicting_product_count": sum(
+            row["coverage_status"] == "conflicting_dimensions" for row in rows
+        ),
+        "signal_product_count": sum(
+            row["dimensions_valid"] is False for row in rows
+        ),
+        "blocking_reasons": [],
+        "review_reasons": [] if data_status == "ready" else ["test_partial"],
+        "created_at": datetime(2026, 7, 20, 12, 1),
+    }
 
 
 def persist_logistics_fixture(client: TestClient) -> None:
@@ -1544,6 +1602,265 @@ def persist_logistics_fixture(client: TestClient) -> None:
             _logistics_fixture_result(report),
         )
         db.commit()
+
+
+def test_dimension_mart_persist_round_trip(tmp_path: Path) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        result = _logistics_fixture_result(report)
+        card_rows = [
+            {
+                "wb_cabinet_id": "cabinet-logistics",
+                "nm_id": "101",
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "weight_brutto_kg": 2,
+                "dimensions_valid": False,
+            }
+        ]
+        rows = build_dimension_rows(result.sku_rows, card_rows)
+        _ensure_logistics_dimensions(db, report)
+
+        context = repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows),
+            rows=rows,
+        )
+        db.commit()
+        assert context.dimension_row_count == len(rows)
+
+        stored = repository.report_logistics_dimension_rows(db, report.id)
+        by_nm = {row.nm_id: row for row in stored}
+        assert "101" in by_nm
+        assert by_nm["101"].length_cm == Decimal("30")
+        assert by_nm["101"].volume_l == Decimal("6")
+        assert by_nm["101"].dimensions_valid is False
+        assert by_nm["101"].evidence_type == "fact"
+        assert by_nm["101"].measured_penalty_amount is None
+
+        # повторная запись перезаписывает срез (delete + insert)
+        repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows),
+            rows=rows,
+        )
+        db.commit()
+        assert len(repository.report_logistics_dimension_rows(db, report.id)) == len(
+            rows
+        )
+
+
+def test_logistics_dimensions_api_returns_persisted_mart(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        result = _logistics_fixture_result(report)
+        rows = build_dimension_rows(
+            result.sku_rows,
+            [
+                {
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "nm_id": "101",
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_brutto_kg": 2,
+                    "dimensions_valid": False,
+                }
+            ],
+        )
+        _ensure_logistics_dimensions(db, report)
+        repository.replace_report_logistics_analysis(db, report, result)
+        repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows),
+            rows=rows,
+        )
+        db.commit()
+
+    response = client.get("/api/reports/report-1/logistics/dimensions")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reportId"] == "report-1"
+    assert body["coverage"]["total"] >= 1
+    row = next(item for item in body["rows"] if item["nmId"] == "101")
+    assert Decimal(row["lengthCm"]) == Decimal("30")
+    assert Decimal(row["volumeL"]) == Decimal("6")
+    assert row["dimensionsValid"] is False
+    assert row["evidenceType"] == "fact"
+    assert row["measuredPenaltyAmount"] is None
+
+
+def test_logistics_dimensions_api_is_feature_gated(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    response = client.get("/api/reports/report-1/logistics/dimensions")
+    assert response.status_code == 404
+
+
+def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report, product_count=2)
+        repository.replace_report_logistics_analysis(db, report, result)
+        rows = build_dimension_rows(
+            result.sku_rows,
+            [
+                {
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "nm_id": "101",
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_brutto_kg": 2,
+                    "dimensions_valid": False,
+                }
+            ],
+        )
+        repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/reports/report-1/logistics/dimensions",
+        params={"limit": 1, "sortBy": "product", "sortOrder": "asc"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataStatus"] == "partial"
+    assert body["sliceStatus"] == "partial"
+    assert body["total"] == 2
+    assert len(body["rows"]) == 1
+    assert body["coverage"] == {
+        "total": 2,
+        "withDimensions": 1,
+        "missingDimensions": 1,
+        "invalidDimensions": 0,
+        "conflictingDimensions": 0,
+        "signalCount": 1,
+        "coveragePct": 50,
+    }
+    assert {item["evidenceType"] for item in body["recommendations"]} == {
+        "limitation",
+        "data_unavailable",
+    }
+    assert "sourceHashDigest" not in body["rows"][0]
+    assert "sourceSnapshotHash" not in body
+
+    empty = client.get(
+        "/api/reports/report-1/logistics/dimensions",
+        params={"periodStart": "2026-06-01", "periodEnd": "2026-06-07"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["coverage"]["total"] == 0
+
+    filtered = client.get(
+        "/api/reports/report-1/logistics/dimensions",
+        params={"product": "102"},
+    ).json()
+    assert filtered["total"] == 1
+    assert filtered["rows"][0]["nmId"] == "102"
+    assert filtered["coverage"]["missingDimensions"] == 1
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsDimensionContext, "report-1")
+        assert context is not None
+        context.tenant_id = "other"
+        db.commit()
+    blocked = client.get("/api/reports/report-1/logistics/dimensions").json()
+    assert blocked["dataStatus"] == "blocked"
+    assert blocked["sliceStatus"] == "blocked"
+    assert blocked["rows"] == []
+
+
+def test_logistics_dimensions_role_and_flag_matrix(tmp_path: Path) -> None:
+    staff_path = tmp_path / "staff"
+    client_path = tmp_path / "client"
+    staff_path.mkdir()
+    client_path.mkdir()
+    staff = make_client(
+        staff_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+        },
+    )
+    login(staff)
+    assert staff.get("/api/reports/report-1/logistics/dimensions").status_code == 200
+    assert staff.get("/api/me").json()["logisticsFactorsEnabled"] is True
+
+    client = make_client(
+        client_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_analysis_client_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_factors_client_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="factor-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "factor-client@example.com", "secret")
+    assert client.get("/api/reports/report-1/logistics/dimensions").status_code == 404
+    assert client.get("/api/me").json()["logisticsFactorsEnabled"] is False
+
+    client.app.state.settings.logistics_factors_client_enabled = True
+    assert client.get("/api/reports/report-1/logistics/dimensions").status_code == 200
+    assert client.get("/api/me").json()["logisticsFactorsEnabled"] is True
+
+
+def test_published_dimension_mart_is_immutable(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        with pytest.raises(ValueError, match="published logistics dimension"):
+            repository.replace_report_logistics_dimension_analysis(
+                db,
+                report,
+                context=_dimension_context(report, []),
+                rows=[],
+            )
 
 
 def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
@@ -1588,6 +1905,7 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
 
     cabinet = client.get("/cabinet")
     script = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
     assert 'data-workspace-nav="logistics"' not in cabinet.text
     assert 'data-workspace-nav="tables"' in cabinet.text
     assert 'id="logistics-scenario-nav"' in cabinet.text
@@ -1604,6 +1922,18 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-state-action"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
+    assert 'id="logistics-dimensions"' in cabinet.text
+    assert 'id="logistics-dimensions-coverage"' in cabinet.text
+    assert 'id="logistics-dimensions-rows"' in cabinet.text
+    assert 'id="logistics-dimensions-pagination"' in cabinet.text
+    assert "Габариты в карточке WB" in cabinet.text
+    assert "не исторический" in cabinet.text
+    assert ".logistics-dimensions-table {" in styles.text
+    assert "table-layout: fixed;" in styles.text
+    assert ".logistics-dimensions-table th:nth-child(5)" in styles.text
+    assert cabinet.text.index('id="logistics-dimensions"') < cabinet.text.index(
+        'aria-labelledby="logistics-products-title"'
+    )
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
     assert cabinet.text.index('id="logistics-kpi-grid"') < cabinet.text.index(
@@ -1621,6 +1951,10 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     # (1 организация = 1 кабинет), поэтому отдельный контрол не выводится.
     assert 'id="logistics-organization-filter"' not in cabinet.text
     assert "logisticsOrganizationFilter" not in script.text
+    assert "function loadLogisticsDimensions" in script.text
+    assert "function resetLogisticsDimensions" in script.text
+    assert "Основная логистика продолжает работать" in script.text
+    assert "measuredPenaltyAmount" not in script.text
     assert "loadLogisticsAnalysis" in script.text
     assert "function renderTableScenarioSummary" in script.text
     assert "Текущий отчёт собран до появления витрины логистики v5" in script.text
@@ -1971,12 +2305,15 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
 def test_logistics_api_rejects_inverted_and_outside_periods(tmp_path: Path) -> None:
     client = make_client(
         tmp_path,
-        settings_overrides={"logistics_analysis_enabled": True},
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+        },
     )
     persist_logistics_fixture(client)
     login(client)
 
-    for endpoint in ("summary", "products", "orders"):
+    for endpoint in ("summary", "products", "dimensions", "orders"):
         inverted = client.get(
             f"/api/reports/report-1/logistics/{endpoint}",
             params={"periodStart": "2026-04-12", "periodEnd": "2026-04-06"},
@@ -1991,7 +2328,7 @@ def test_logistics_api_rejects_inverted_and_outside_periods(tmp_path: Path) -> N
         assert outside.json()["detail"]["code"] == "invalid_logistics_period"
 
     openapi = client.get("/openapi.json").json()
-    for endpoint in ("summary", "products", "orders"):
+    for endpoint in ("summary", "products", "dimensions", "orders"):
         operation = openapi["paths"][
             f"/api/reports/{{report_id}}/logistics/{endpoint}"
         ]["get"]
@@ -2705,6 +3042,114 @@ def test_required_logistics_context_missing_or_outdated_blocks_publication(
     assert payload["chainKeyVersion"] == CHAIN_KEY_VERSION
     assert payload["kpis"]["logisticsTotal"] is None
 
+
+def test_required_dimension_context_controls_publication_readiness(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.logistics_dimensions_required = True
+        missing = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item for item in missing if item["code"] == "logistics_dimensions_missing"
+        )
+        assert blocker["nonOverridable"] is True
+        db.rollback()
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        rows = build_dimension_rows(result.sku_rows, [])
+        repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        assert not any(
+            item["code"].startswith("logistics_dimensions_")
+            for item in readiness["blockingReasons"]
+        )
+        assert any(
+            item["code"] == "logistics_dimensions_partial"
+            for item in readiness["reviewReasons"]
+        )
+
+        context = db.get(repository.ReportLogisticsDimensionContext, report.id)
+        assert context is not None
+        context.dimension_row_count += 1
+        mismatch = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in mismatch
+            if item["code"] == "logistics_dimensions_row_count_mismatch"
+        )
+        assert blocker["nonOverridable"] is True
+
+        context.dimension_row_count -= 1
+        context.factor_methodology_version = "wb-logistics-factors-legacy"
+        outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in outdated
+            if item["code"] == "logistics_dimensions_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+
+def test_dimension_context_and_rows_validation_is_atomic(tmp_path: Path) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        rows = build_dimension_rows(
+            result.sku_rows,
+            [
+                {
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "nm_id": "101",
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_brutto_kg": 2,
+                    "dimensions_valid": True,
+                }
+            ],
+        )
+        repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows),
+            rows=rows,
+        )
+        db.flush()
+        original_uid = repository.report_logistics_dimension_rows(db, report.id)[
+            0
+        ].row_uid
+
+        foreign = [{**rows[0], "tenant_id": "other"}]
+        with pytest.raises(ValueError, match="tenant does not match report"):
+            repository.replace_report_logistics_dimension_analysis(
+                db,
+                report,
+                context=_dimension_context(report, foreign),
+                rows=foreign,
+            )
+
+        persisted = repository.report_logistics_dimension_rows(db, report.id)
+        context = db.get(repository.ReportLogisticsDimensionContext, report.id)
+        assert [row.row_uid for row in persisted] == [original_uid]
+        assert context is not None
+        assert context.input_hash == "safe-dimension-input-hash"
 
 def test_report_with_logistics_context_cannot_be_reimported_in_place(
     tmp_path: Path,
@@ -3994,10 +4439,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260718-logistics-v5-global-table-sorting-v1"
+        "20260720-logistics-f1-dimensions-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260718-logistics-v5-global-table-sorting-v1"
+        "20260720-logistics-f1-dimensions-v1"
     )
 
     page = client.get("/")
@@ -4148,11 +4593,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260718-logistics-v5-global-table-sorting-v1"
+            "styles.css?v=20260720-logistics-f1-dimensions-v1"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260718-logistics-v5-global-table-sorting-v1"
+            "app.js?v=20260720-logistics-f1-dimensions-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -4347,6 +4792,7 @@ def test_all_web_tables_use_shared_accessible_column_sorting(tmp_path: Path) -> 
     assert 'data-sort-disabled="true"' in cabinet.text
     assert "sort_by: state.rowsSortBy" in app_script.text
     assert "sortBy: state.logisticsProductsSortBy" in app_script.text
+    assert "sortBy: state.logisticsDimensionsSortBy" in app_script.text
     assert "sortBy: state.logisticsOrdersSortBy" in app_script.text
     assert 'table.dataset.sortScope = "tax-input"' in app_script.text
     assert "function sortTaxInputRows(rows)" in app_script.text

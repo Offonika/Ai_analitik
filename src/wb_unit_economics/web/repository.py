@@ -58,6 +58,7 @@ from wb_unit_economics.liquidity import (
 from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
+    LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
@@ -96,6 +97,8 @@ from wb_unit_economics.web.models import (
     ReportDocumentReconciliationRow,
     ReportGenerationRequest,
     ReportLogisticsAnalysisContext,
+    ReportLogisticsDimensionContext,
+    ReportLogisticsDimensionRow,
     ReportLogisticsOrderRow,
     ReportLogisticsSkuRow,
     ReportLostSalesRow,
@@ -188,6 +191,9 @@ LOGISTICS_ORDER_SORT_KEYS = frozenset(
         "classificationStatus",
         "product",
     }
+)
+LOGISTICS_DIMENSION_SORT_KEYS = frozenset(
+    {"product", "volumeL", "weightBruttoKg", "coverageStatus"}
 )
 REPORT_ROW_SORT_KEYS = frozenset(
     {
@@ -13235,6 +13241,504 @@ def replace_report_logistics_analysis(
     return persisted
 
 
+def replace_report_logistics_dimension_rows(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> int:
+    """Persist F-1 rows внутри ещё не опубликованного immutable report run.
+
+    Габариты/вес/объём/штраф сохраняются как есть, включая ``None`` — пропуск
+    остаётся явным, а не нулём.
+    """
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics dimension mart is immutable")
+    db.execute(
+        delete(ReportLogisticsDimensionRow).where(
+            ReportLogisticsDimensionRow.report_run_id == report.id
+        )
+    )
+    count = 0
+    for row in rows:
+        db.add(
+            ReportLogisticsDimensionRow(
+                report_run_id=report.id,
+                tenant_id=str(row.get("tenant_id") or report.tenant_id),
+                client_id=str(row.get("client_id") or report.client_id),
+                row_uid=str(row["row_uid"]),
+                wb_cabinet_id=str(row.get("wb_cabinet_id", "")),
+                client_company_id=str(row.get("client_company_id", "")),
+                scheme=str(row.get("scheme", "")),
+                product_ref=str(row.get("product_ref", "")),
+                product_key=str(row.get("product_key", "")),
+                nm_id=str(row.get("nm_id", "")),
+                sku=str(row.get("sku", "")),
+                vendor_code=str(row.get("vendor_code", "")),
+                product=str(row.get("product", "")),
+                length_cm=row.get("length_cm"),
+                width_cm=row.get("width_cm"),
+                height_cm=row.get("height_cm"),
+                weight_brutto_kg=row.get("weight_brutto_kg"),
+                volume_l=row.get("volume_l"),
+                dimensions_valid=row.get("dimensions_valid"),
+                measured_penalty_amount=row.get("measured_penalty_amount"),
+                evidence_type=str(row.get("evidence_type", "")),
+                coverage_status=str(row.get("coverage_status", "")),
+                data_quality_status=str(row.get("data_quality_status", "")),
+                source_hash_digest=str(row.get("source_hash_digest", "")),
+            )
+        )
+        count += 1
+    db.flush()
+    return count
+
+
+def replace_report_logistics_dimension_analysis(
+    db: Session,
+    report: ReportRun,
+    *,
+    context: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+) -> ReportLogisticsDimensionContext:
+    """Atomically stage F-1 context and rows for a draft report."""
+
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics dimension analysis is immutable")
+    if str(context.get("tenant_id") or "") != report.tenant_id:
+        raise ValueError("dimension context tenant does not match report")
+    if str(context.get("client_id") or "") != report.client_id:
+        raise ValueError("dimension context client does not match report")
+    status = str(context.get("data_status") or "")
+    if status not in {"ready", "partial", "blocked"}:
+        raise ValueError("unsupported dimension context status")
+    if status == "blocked" and rows:
+        raise ValueError("blocked dimension context cannot persist mart rows")
+    _validate_logistics_dimension_rows_scope(db, report, rows)
+    expected_count = int(context.get("dimension_row_count") or 0)
+    if expected_count != len(rows):
+        raise ValueError("dimension context row count does not match mart")
+
+    db.execute(
+        delete(ReportLogisticsDimensionContext).where(
+            ReportLogisticsDimensionContext.report_run_id == report.id
+        )
+    )
+    replace_report_logistics_dimension_rows(db, report, rows)
+    persisted = ReportLogisticsDimensionContext(
+        report_run_id=report.id,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        factor_methodology_version=str(context["factor_methodology_version"]),
+        data_status=status,
+        input_hash=str(context.get("input_hash") or ""),
+        source_snapshot_hash=str(context.get("source_snapshot_hash") or ""),
+        source_loaded_at=context.get("source_loaded_at"),
+        source_row_count=int(context.get("source_row_count") or 0),
+        dimension_row_count=expected_count,
+        matched_product_count=int(context.get("matched_product_count") or 0),
+        missing_product_count=int(context.get("missing_product_count") or 0),
+        invalid_product_count=int(context.get("invalid_product_count") or 0),
+        conflicting_product_count=int(
+            context.get("conflicting_product_count") or 0
+        ),
+        signal_product_count=int(context.get("signal_product_count") or 0),
+        blocking_reasons=list(context.get("blocking_reasons") or []),
+        review_reasons=list(context.get("review_reasons") or []),
+        created_at=context.get("created_at") or datetime.now(UTC),
+    )
+    db.add(persisted)
+    report.logistics_dimensions_required = True
+    audit(
+        db,
+        action="report_logistics_dimensions_saved",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "dataStatus": status,
+            "factorMethodologyVersion": persisted.factor_methodology_version,
+            "dimensionRows": expected_count,
+        },
+    )
+    db.flush()
+    return persisted
+
+
+def report_logistics_dimension_rows(
+    db: Session, report_run_id: str
+) -> list[ReportLogisticsDimensionRow]:
+    return list(
+        db.scalars(
+            select(ReportLogisticsDimensionRow)
+            .where(ReportLogisticsDimensionRow.report_run_id == report_run_id)
+            .order_by(ReportLogisticsDimensionRow.product_ref)
+        )
+    )
+
+
+def report_logistics_dimensions_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+    sort_by: str = "product",
+    sort_order: str = "asc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
+    context = db.get(ReportLogisticsDimensionContext, report.id)
+    state = _logistics_dimension_context_state(report, context)
+    base_state = _logistics_context_state(report, logistics_context)
+    filter_context = {
+        "periodStart": period_start.isoformat() if period_start else None,
+        "periodEnd": period_end.isoformat() if period_end else None,
+        "wbCabinetId": wb_cabinet_id or None,
+        "clientCompanyId": client_company_id or None,
+        "scheme": scheme.casefold() or None,
+        "product": product_query.strip() or None,
+        "dateGrain": "calendar_day",
+    }
+    meta = {
+        "reportId": report.id,
+        "dataStatus": "needs_rebuild",
+        "sliceStatus": "needs_rebuild",
+        "methodologyVersion": (
+            logistics_context.methodology_version
+            if logistics_context is not None
+            else LOGISTICS_METHODOLOGY_VERSION
+        ),
+        "factorMethodologyVersion": LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+        "generatedAt": (
+            context.created_at.isoformat()
+            if context is not None
+            else report.generated_at.isoformat()
+        ),
+        "sourceCoverageEnd": (
+            report.source_coverage_end.isoformat()
+            if report.source_coverage_end
+            else None
+        ),
+        "factorSnapshotAt": (
+            context.source_loaded_at.isoformat()
+            if context is not None and context.source_loaded_at is not None
+            else None
+        ),
+        "valueType": "fact",
+        "filterContext": filter_context,
+    }
+    empty_payload = {
+        **meta,
+        "coverage": _empty_logistics_dimension_coverage(),
+        "rows": [],
+        "total": 0,
+        "offset": offset,
+        "limit": limit,
+        "recommendations": [],
+    }
+    if base_state == "blocked" or state in {"blocked", "scope_mismatch"}:
+        return _logistics_json_safe(
+            {**empty_payload, "dataStatus": "blocked", "sliceStatus": "blocked"}
+        )
+    if base_state not in {"ready", "partial"} or state not in {"ready", "partial"}:
+        return _logistics_json_safe(empty_payload)
+
+    order_conditions = _logistics_order_conditions(
+        report,
+        period_start=period_start,
+        period_end=period_end,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        product_query=product_query,
+    )
+    active_product_refs = (
+        select(ReportLogisticsOrderRow.product_ref)
+        .where(*order_conditions)
+        .distinct()
+    )
+    conditions: list[Any] = [
+        ReportLogisticsDimensionRow.report_run_id == report.id,
+        ReportLogisticsDimensionRow.product_ref.in_(active_product_refs),
+    ]
+    if wb_cabinet_id:
+        conditions.append(ReportLogisticsDimensionRow.wb_cabinet_id == wb_cabinet_id)
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsDimensionRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(ReportLogisticsDimensionRow.scheme == scheme.casefold())
+
+    stats = db.execute(
+        select(
+            func.count(),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReportLogisticsDimensionRow.coverage_status == "ready", 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsDimensionRow.coverage_status
+                            == "missing_dimensions",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsDimensionRow.coverage_status.in_(
+                                {"invalid_dimensions", "identity_conflict"}
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsDimensionRow.coverage_status
+                            == "conflicting_dimensions",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (ReportLogisticsDimensionRow.dimensions_valid.is_(False), 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).where(*conditions)
+    ).one()
+    total = int(stats[0] or 0)
+    with_dimensions = int(stats[1] or 0)
+    missing = int(stats[2] or 0)
+    invalid = int(stats[3] or 0)
+    conflicting = int(stats[4] or 0)
+    signals = int(stats[5] or 0)
+    coverage = {
+        "total": total,
+        "withDimensions": with_dimensions,
+        "missingDimensions": missing,
+        "invalidDimensions": invalid,
+        "conflictingDimensions": conflicting,
+        "signalCount": signals,
+        "coveragePct": (
+            Decimal(with_dimensions) * Decimal("100") / Decimal(total)
+            if total
+            else None
+        ),
+    }
+    if total == 0:
+        return _logistics_json_safe(
+            {
+                **empty_payload,
+                "dataStatus": context.data_status,
+                "sliceStatus": "empty",
+                "coverage": coverage,
+            }
+        )
+    sort_fields = {
+        "product": ReportLogisticsDimensionRow.product,
+        "volumeL": ReportLogisticsDimensionRow.volume_l,
+        "weightBruttoKg": ReportLogisticsDimensionRow.weight_brutto_kg,
+        "coverageStatus": ReportLogisticsDimensionRow.coverage_status,
+    }
+    sort_column = sort_fields[sort_by]
+    direction = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    rows = list(
+        db.scalars(
+            select(ReportLogisticsDimensionRow)
+            .where(*conditions)
+            .order_by(
+                case((sort_column.is_(None), 1), else_=0),
+                direction,
+                ReportLogisticsDimensionRow.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    slice_status = (
+        "partial"
+        if context.data_status == "partial" or missing or invalid or conflicting
+        else "ready"
+    )
+    recommendations: list[dict[str, Any]] = []
+    if signals:
+        recommendations.append(
+            {
+                "code": "dimension_card_signal",
+                "priority": 30,
+                "title": "Проверить упаковку и карточку товара",
+                "message": (
+                    "WB отметил часть карточек сигналом isValid=false. "
+                    "Это ограничение данных, а не подтверждённый штраф."
+                ),
+                "impactAmount": None,
+                "evidenceType": "limitation",
+                "actionTarget": "#logistics-dimensions",
+                "actionLabel": "Посмотреть габариты",
+                "evidence": {"productCount": signals},
+            }
+        )
+    unavailable = missing + invalid + conflicting
+    if unavailable:
+        recommendations.append(
+            {
+                "code": "dimension_data_unavailable",
+                "priority": 40,
+                "title": "Проверить данные габаритов",
+                "message": (
+                    "Для части товаров габариты отсутствуют, невалидны или "
+                    "конфликтуют; значения не подставлены нулями."
+                ),
+                "impactAmount": None,
+                "evidenceType": "data_unavailable",
+                "actionTarget": "#logistics-dimensions",
+                "actionLabel": "Проверить источник",
+                "evidence": {"productCount": unavailable},
+            }
+        )
+    return _logistics_json_safe(
+        {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "rows": [_logistics_dimension_row_payload(row) for row in rows],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "recommendations": recommendations,
+        }
+    )
+
+
+def _logistics_dimension_context_state(
+    report: ReportRun,
+    context: ReportLogisticsDimensionContext | None,
+) -> str:
+    if context is None:
+        return "missing"
+    if context.factor_methodology_version != LOGISTICS_FACTORS_METHODOLOGY_VERSION:
+        return "outdated_methodology"
+    if context.tenant_id != report.tenant_id or context.client_id != report.client_id:
+        return "scope_mismatch"
+    if context.data_status not in {"ready", "partial", "blocked"}:
+        return "invalid_status"
+    return context.data_status
+
+
+def _empty_logistics_dimension_coverage() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "withDimensions": 0,
+        "missingDimensions": 0,
+        "invalidDimensions": 0,
+        "conflictingDimensions": 0,
+        "signalCount": 0,
+        "coveragePct": None,
+    }
+
+
+def _logistics_dimension_row_payload(
+    row: ReportLogisticsDimensionRow,
+) -> dict[str, Any]:
+    return {
+        "productRef": row.product_ref,
+        "nmId": row.nm_id,
+        "product": row.product,
+        "vendorCode": row.vendor_code,
+        "scheme": row.scheme,
+        "lengthCm": row.length_cm,
+        "widthCm": row.width_cm,
+        "heightCm": row.height_cm,
+        "weightBruttoKg": row.weight_brutto_kg,
+        "volumeL": row.volume_l,
+        "dimensionsValid": row.dimensions_valid,
+        "measuredPenaltyAmount": row.measured_penalty_amount,
+        "evidenceType": row.evidence_type,
+        "coverageStatus": row.coverage_status,
+        "dataQualityStatus": row.data_quality_status,
+    }
+
+
+def _validate_logistics_dimension_rows_scope(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    cabinet_ids: set[str] = set()
+    company_ids: set[str] = set()
+    for row in rows:
+        if str(row.get("tenant_id") or "") != report.tenant_id:
+            raise ValueError("dimension row tenant does not match report")
+        if str(row.get("client_id") or "") != report.client_id:
+            raise ValueError("dimension row client does not match report")
+        cabinet_id = str(row.get("wb_cabinet_id") or "")
+        company_id = str(row.get("client_company_id") or "")
+        if cabinet_id:
+            cabinet_ids.add(cabinet_id)
+        if company_id:
+            company_ids.add(company_id)
+    cabinets = {
+        item.id: item
+        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
+    } if cabinet_ids else {}
+    companies = {
+        item.id: item
+        for item in db.scalars(
+            select(ClientCompany).where(ClientCompany.id.in_(company_ids))
+        )
+    } if company_ids else {}
+    for row in rows:
+        cabinet_id = str(row.get("wb_cabinet_id") or "")
+        company_id = str(row.get("client_company_id") or "")
+        cabinet = cabinets.get(cabinet_id)
+        company = companies.get(company_id)
+        if (
+            cabinet is None
+            or company is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+            or cabinet.client_company_id != company_id
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            raise ValueError(
+                "dimension row cabinet/company scope does not match report"
+            )
+
+
 def _validate_logistics_result_scope(
     db: Session,
     report: ReportRun,
@@ -16034,6 +16538,66 @@ def report_readiness_payload(
                 )
             )
             score -= 10
+
+    dimension_context = db.get(ReportLogisticsDimensionContext, report.id)
+    if report.logistics_dimensions_required:
+        dimension_state = _logistics_dimension_context_state(
+            report, dimension_context
+        )
+        dimension_blockers = {
+            "missing": (
+                "logistics_dimensions_missing",
+                "Обязательный контекст габаритов отсутствует; нужен новый report run.",
+            ),
+            "outdated_methodology": (
+                "logistics_dimensions_outdated",
+                "Контекст габаритов построен по устаревшей методике.",
+            ),
+            "scope_mismatch": (
+                "logistics_dimensions_scope_mismatch",
+                "Контекст габаритов принадлежит другому tenant или клиенту.",
+            ),
+            "invalid_status": (
+                "logistics_dimensions_invalid_status",
+                "Контекст габаритов имеет неизвестный статус.",
+            ),
+            "blocked": (
+                "logistics_dimensions_blocked",
+                "Проверка целостности snapshot габаритов не пройдена.",
+            ),
+        }
+        if dimension_state in dimension_blockers:
+            code, message = dimension_blockers[dimension_state]
+            blocking_reasons.append(
+                _readiness_reason(code, message, nonOverridable=True)
+            )
+            score = min(score, 40)
+        elif dimension_context is not None:
+            actual_dimension_rows = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReportLogisticsDimensionRow)
+                    .where(ReportLogisticsDimensionRow.report_run_id == report.id)
+                )
+                or 0
+            )
+            if actual_dimension_rows != dimension_context.dimension_row_count:
+                blocking_reasons.append(
+                    _readiness_reason(
+                        "logistics_dimensions_row_count_mismatch",
+                        "Количество строк витрины габаритов не совпадает с context.",
+                        nonOverridable=True,
+                    )
+                )
+                score = min(score, 40)
+            elif dimension_state == "partial":
+                review_reasons.append(
+                    _readiness_reason(
+                        "logistics_dimensions_partial",
+                        "Часть габаритов отсутствует или требует проверки.",
+                    )
+                )
+                score -= 5
 
     company_cabinet_mismatch_count = (
         int(row_stats.get("company_cabinet_mismatch_rows") or 0)

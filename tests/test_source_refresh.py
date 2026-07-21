@@ -978,6 +978,289 @@ def test_logistics_analysis_reads_verified_file_authoritative_snapshot(
     assert sku_rows[0].logistics_total == Decimal("50")
 
 
+def test_dimension_snapshot_db_and_file_authoritative_are_equivalent(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        cards = [_dimension_card("1001")]
+        db_run, _db_collection = _add_dimension_database_snapshot(
+            db,
+            report,
+            snapshot_set_id="dimensions-db",
+            cabinet_id=cabinet_id,
+            cards=cards,
+        )
+        file_run, _file_collection, _flat_path = _add_dimension_file_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="dimensions-file",
+            cabinet_id=cabinet_id,
+            cards=cards,
+        )
+
+        db_selection = source_refresh._select_dimension_snapshot(
+            db, report, roles=[(0, db_run)]
+        )
+        file_selection = source_refresh._select_dimension_snapshot(
+            db, report, roles=[(0, file_run)]
+        )
+
+    assert db_selection.blocking_reasons == ()
+    assert file_selection.blocking_reasons == ()
+    assert db_selection.card_rows == file_selection.card_rows
+    assert db_selection.source_row_count == file_selection.source_row_count == 1
+
+
+def test_dimension_snapshot_uses_primary_before_base_and_blocks_peer_conflict(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        primary, _ = _add_dimension_database_snapshot(
+            db,
+            report,
+            snapshot_set_id="dimensions-primary",
+            cabinet_id=cabinet_id,
+            cards=[_dimension_card("1001", length=30)],
+        )
+        base, _ = _add_dimension_database_snapshot(
+            db,
+            report,
+            snapshot_set_id="dimensions-base",
+            cabinet_id=cabinet_id,
+            cards=[_dimension_card("1001", length=99)],
+        )
+        peer, _ = _add_dimension_database_snapshot(
+            db,
+            report,
+            snapshot_set_id="dimensions-peer",
+            cabinet_id=cabinet_id,
+            cards=[_dimension_card("1001", length=41)],
+        )
+
+        selected = source_refresh._select_dimension_snapshot(
+            db, report, roles=[(0, primary), (1, base)]
+        )
+        conflicted = source_refresh._select_dimension_snapshot(
+            db, report, roles=[(0, primary), (0, peer)]
+        )
+
+    assert selected.blocking_reasons == ()
+    assert selected.card_rows[0]["length_cm"] == 30
+    assert conflicted.card_rows == ()
+    assert conflicted.blocking_reasons == ("dimension_source_revision_conflict",)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("database_hash", "dimension_source_payload_hash_mismatch"),
+        ("database_row_count", "dimension_database_row_count_mismatch"),
+        ("snapshot_hash", "dimension_source_snapshot_hash_mismatch"),
+        ("tenant_scope", "dimension_source_scope_mismatch"),
+        ("storage_ambiguity", "dimension_source_storage_ambiguity"),
+        ("file_tamper", "dimension_file_snapshot_invalid"),
+        ("path_traversal", "dimension_file_snapshot_invalid"),
+    ],
+)
+def test_dimension_snapshot_integrity_failures_are_blocking(
+    tmp_path: Path,
+    failure: str,
+    expected_code: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        cards = [_dimension_card("1001")]
+        if failure in {"storage_ambiguity", "file_tamper", "path_traversal"}:
+            run, collection, flat_path = _add_dimension_file_snapshot(
+                db,
+                report,
+                settings=settings,
+                snapshot_set_id=f"dimensions-{failure}",
+                cabinet_id=cabinet_id,
+                cards=cards,
+            )
+            if failure == "storage_ambiguity":
+                repository.add_source_snapshot_row(
+                    db,
+                    collection,
+                    row_number=1,
+                    raw_payload_hash=source_refresh._hash_payload(cards[0]),
+                    source_row_id="1001",
+                    wb_cabinet_id=cabinet_id,
+                    row_payload=cards[0],
+                )
+            elif failure == "file_tamper":
+                flat_path.write_text(
+                    json.dumps([_dimension_card("1001", length=77)]),
+                    encoding="utf-8",
+                )
+            else:
+                results = list(collection.payload["results"])
+                results[0] = {**results[0], "flatOutputFile": "../cards.flat.json"}
+                collection.snapshot_hash = source_refresh._hash_payload(results)
+                collection.payload = {**collection.payload, "results": results}
+        else:
+            run, collection = _add_dimension_database_snapshot(
+                db,
+                report,
+                snapshot_set_id=f"dimensions-{failure}",
+                cabinet_id=cabinet_id,
+                cards=cards,
+            )
+            if failure == "database_hash":
+                snapshot_row = (
+                    db.query(SourceSnapshotRow)
+                    .filter_by(collection_id=collection.id)
+                    .one()
+                )
+                snapshot_row.raw_payload_hash = "changed"
+            elif failure == "database_row_count":
+                collection.row_count = 2
+                results = [{**collection.payload["results"][0], "rowCount": 2}]
+                collection.snapshot_hash = source_refresh._hash_payload(results)
+                collection.payload = {**collection.payload, "results": results}
+            elif failure == "snapshot_hash":
+                collection.snapshot_hash = "changed"
+            elif failure == "tenant_scope":
+                collection.tenant_id = "other"
+
+        selection = source_refresh._select_dimension_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.card_rows == ()
+    assert expected_code in selection.blocking_reasons
+
+
+def test_dimension_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        run, collection = _add_dimension_database_snapshot(
+            db,
+            report,
+            snapshot_set_id="dimensions-partial",
+            cabinet_id=cabinet_id,
+            cards=[_dimension_card("1001")],
+        )
+        collection.status = "partial_source"
+
+        selection = source_refresh._select_dimension_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.blocking_reasons == ()
+    assert selection.review_reasons == ("dimension_source_partial",)
+    assert len(selection.card_rows) == 1
+
+
+def test_dimension_context_and_rows_are_built_for_new_draft(tmp_path: Path) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        report.publication_status = "draft"
+        report.is_current = False
+        unit_row = db.query(repository.ReportUnitRow).one()
+        finance_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="dimensions-end-to-end-finance",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="dimension end-to-end test",
+            enforce_active_check=False,
+        )
+        finance_collection = repository.add_source_refresh_collection(
+            db,
+            finance_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        finance_payload = {
+            "rrdId": "dimension-finance-1",
+            "rrDate": "2026-04-06",
+            "orderDt": "2026-04-05",
+            "orderUid": "dimension-order-1",
+            "nmId": "1001",
+            "sku": "BAR-1",
+            "vendorCode": "WB-1",
+            "title": "Товар",
+            "deliveryMethod": "FBO",
+            "docTypeName": "Логистика",
+            "sellerOperName": "Логистика",
+            "deliveryService": "50",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        }
+        repository.add_source_snapshot_row(
+            db,
+            finance_collection,
+            row_number=1,
+            raw_payload_hash=source_refresh._hash_payload(finance_payload),
+            source_row_id="dimension-finance-1",
+            wb_cabinet_id=unit_row.wb_cabinet_id,
+            row_payload=finance_payload,
+        )
+        cards_run, _collection = _add_dimension_database_snapshot(
+            db,
+            report,
+            snapshot_set_id="dimensions-end-to-end-cards",
+            cabinet_id=unit_row.wb_cabinet_id,
+            cards=[_dimension_card("1001")],
+        )
+
+        logistics_result = source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=finance_run,
+        )
+        source_refresh._build_and_persist_logistics_dimensions(
+            db,
+            report,
+            logistics_result=logistics_result,
+            primary_refresh_run=finance_run,
+            contributing_runs=[cards_run],
+        )
+        db.commit()
+
+        context = db.get(repository.ReportLogisticsDimensionContext, report.id)
+        rows = repository.report_logistics_dimension_rows(db, report.id)
+
+    assert report.logistics_dimensions_required is True
+    assert context is not None
+    assert context.data_status == "ready"
+    assert context.dimension_row_count == 1
+    assert len(rows) == 1
+    assert rows[0].volume_l == Decimal("6")
+
+
 def test_logistics_analysis_blocks_undated_report_row_without_losing_total(
     tmp_path: Path,
 ) -> None:
@@ -6255,6 +6538,146 @@ def _source_refresh_context(
 
 def _session_user_report(db, user, report):
     return db.get(repository.User, user.id), db.get(ReportRun, report.id)
+
+
+def _dimension_card(nm_id: str, *, length: int = 30) -> dict[str, object]:
+    return {
+        "nm_id": nm_id,
+        "length_cm": length,
+        "width_cm": 20,
+        "height_cm": 10,
+        "weight_brutto_kg": 2,
+        "dimensions_valid": True,
+    }
+
+
+def _add_dimension_database_snapshot(
+    db,
+    report,
+    *,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    cards: list[dict[str, object]],
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="dimension source test",
+        enforce_active_check=False,
+    )
+    results = [
+        {
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 1,
+            "status": "loaded",
+            "ok": True,
+            "rowCount": len(cards),
+            "flatPayloadHash": source_refresh._hash_payload(cards),
+        }
+    ]
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type="wb_product_cards",
+        source_label="WB cards",
+        required=True,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(cards),
+        payload={"results": results},
+    )
+    for row_number, card in enumerate(cards, start=1):
+        repository.add_source_snapshot_row(
+            db,
+            collection,
+            row_number=row_number,
+            raw_payload_hash=source_refresh._hash_payload(card),
+            source_row_id=str(card["nm_id"]),
+            wb_cabinet_id=cabinet_id,
+            row_payload=card,
+        )
+    return run, collection
+
+
+def _add_dimension_file_snapshot(
+    db,
+    report,
+    *,
+    settings: WebSettings,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    cards: list[dict[str, object]],
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="file dimension source test",
+        enforce_active_check=False,
+    )
+    run_root = settings.source_refresh_root_path / snapshot_set_id
+    raw_dir = run_root / "wb_product_cards"
+    raw_dir.mkdir(parents=True)
+    run.root_dir = str(run_root)
+    raw_payload = {"cards": []}
+    raw_path = raw_dir / "cards.raw.json"
+    flat_path = raw_dir / "cards.flat.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    flat_path.write_text(json.dumps(cards), encoding="utf-8")
+    results = [
+        {
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 1,
+            "status": "loaded",
+            "ok": True,
+            "rowCount": len(cards),
+            "rawPayloadHash": source_refresh._hash_payload(raw_payload),
+            "flatPayloadHash": source_refresh._hash_payload(cards),
+            "outputFile": raw_path.name,
+            "flatOutputFile": flat_path.name,
+        }
+    ]
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({"results": results}),
+        encoding="utf-8",
+    )
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type="wb_product_cards",
+        source_label="WB cards",
+        required=True,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(cards),
+        raw_path=str(raw_dir),
+        payload={
+            "results": results,
+            "rowPersistence": {
+                "status": "file_authoritative",
+                "rawFilesAuthoritative": True,
+            },
+        },
+    )
+    source_refresh._attach_collection_raw_integrity(
+        collection,
+        source_root=settings.source_refresh_root_path,
+    )
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    return run, collection, flat_path
 
 
 def _save_encrypted_integrations(db, *, settings: WebSettings, user) -> None:

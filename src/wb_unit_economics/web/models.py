@@ -498,6 +498,9 @@ class ReportRun(Base):
     logistics_analysis_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    logistics_dimensions_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -534,6 +537,13 @@ class ReportRun(Base):
     logistics_dimension_rows: Mapped[list[ReportLogisticsDimensionRow]] = relationship(
         back_populates="report",
         cascade="all, delete-orphan",
+    )
+    logistics_dimension_context: Mapped[
+        ReportLogisticsDimensionContext | None
+    ] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        uselist=False,
     )
     logistics_route_rows: Mapped[list[ReportLogisticsRouteRow]] = relationship(
         back_populates="report",
@@ -870,6 +880,69 @@ class ReportLogisticsAnalysisContext(Base):
     report: Mapped[ReportRun] = relationship(back_populates="logistics_context")
 
 
+class ReportLogisticsDimensionContext(Base):
+    """Версионированный F-1 context выбора Content snapshot и dimension mart."""
+
+    __tablename__ = "report_logistics_dimension_contexts"
+    __table_args__ = (
+        Index(
+            "ix_report_logistics_dimension_context_status",
+            "tenant_id",
+            "data_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    factor_methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    data_status: Mapped[str] = mapped_column(String, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dimension_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    matched_product_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    missing_product_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    invalid_product_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    conflicting_product_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    signal_product_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    blocking_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    review_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_dimension_context"
+    )
+
+
 class ReportLogisticsOrderRow(Base):
     __tablename__ = "report_logistics_order_rows"
     __table_args__ = (
@@ -1082,7 +1155,7 @@ class ReportLogisticsSkuRow(Base):
 
 
 class ReportLogisticsDimensionRow(Base):
-    """Витрина габаритов/веса товара (F-2 факторы), additive и неизменяемая.
+    """Витрина габаритов/веса товара (F-1 факторы), additive и неизменяемая.
 
     Габариты/вес/объём и штраф nullable: отсутствие остаётся явным, а не нулём.
     `dimensions_valid` — сигнал расхождения карточки, не факт замера WB.

@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
 LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
+LOGISTICS_FACTORS_METHODOLOGY_VERSION = "wb-logistics-factors-v1"
 CHAIN_KEY_VERSION = "wb-order-product-v1"
 RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
@@ -1679,11 +1680,13 @@ def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def _dimension_decimal(value: Any) -> Decimal | None:
+def _dimension_decimal(value: Any) -> tuple[Decimal | None, bool]:
     if value is None or value == "":
-        return None
-    parsed, _error = _parse_decimal(value, required=False)
-    return parsed
+        return None, False
+    parsed, status = _parse_decimal(value, required=False)
+    if status != "ready" or parsed is None or not parsed.is_finite() or parsed <= 0:
+        return None, True
+    return parsed, False
 
 
 def _volume_liters(
@@ -1694,67 +1697,175 @@ def _volume_liters(
     return (length * width * height) / Decimal("1000")
 
 
-def _dimension_row_uid(row: LogisticsSkuRow) -> str:
+def _dimension_row_uid(identity: Sequence[str]) -> str:
     identity = "\x1f".join(
-        _text(part)
-        for part in (
-            row.tenant_id,
-            row.client_id,
-            row.wb_cabinet_id,
-            row.client_company_id,
-            row.scheme,
-            row.product_ref,
-            row.nm_id,
-        )
+        _text(part) for part in identity
     )
     return "dim:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _dimension_source_hash(row: Mapping[str, Any]) -> str:
+    explicit = _text(row.get("source_hash") or row.get("raw_payload_hash"))
+    if explicit:
+        return explicit
+    payload = {
+        key: row.get(key)
+        for key in (
+            "wb_cabinet_id",
+            "nm_id",
+            "length_cm",
+            "width_cm",
+            "height_cm",
+            "weight_brutto_kg",
+            "dimensions_valid",
+        )
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _dimension_display_value(rows: Sequence[LogisticsSkuRow], field: str) -> str:
+    values = sorted(
+        {
+            _text(getattr(row, field))
+            for row in rows
+            if _text(getattr(row, field))
+        }
+    )
+    if not values:
+        return ""
+    return values[0] if len(values) == 1 else "mixed"
 
 
 def build_dimension_rows(
     sku_rows: Sequence[LogisticsSkuRow],
     card_rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Витрина габаритов (F-2): привязка `dimensions` карточки к SKU по `nm_id`.
+    """Витрина габаритов F-1 из SKU и текущего Content snapshot.
 
-    Отсутствие габаритов -> ``evidence_type=data_unavailable`` и поля ``None``
-    (пропуск остаётся явным, а не нулём). ``dimensions_valid`` — сигнал
-    расхождения карточки, а не факт замера WB. Фактический штраф (F-4) пока не
-    подключён и остаётся ``None``.
+    Join выполняется строго по ``(wb_cabinet_id, nm_id)``. Недельные SKU и
+    одинаковые size-строки схлопываются; конфликт не разрешается выбором первой
+    строки. Пропуск остаётся явным, а ``dimensions_valid`` — сигнал карточки,
+    не факт замера WB.
     """
 
-    dims_by_nm: dict[str, Mapping[str, Any]] = {}
+    cards_by_key: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for card in card_rows:
+        cabinet = _text(card.get("wb_cabinet_id"))
         nm = _text(card.get("nm_id"))
-        if not nm or nm in dims_by_nm:
+        if not cabinet or not nm:
             continue
-        has_dimension = _dimension_decimal(card.get("length_cm")) is not None
-        has_weight = _dimension_decimal(card.get("weight_brutto_kg")) is not None
-        if not has_dimension and not has_weight:
-            continue
-        dims_by_nm[nm] = card
+        cards_by_key[(cabinet, nm)].append(card)
+
+    sku_groups: dict[tuple[str, ...], list[LogisticsSkuRow]] = defaultdict(list)
+    for row in sku_rows:
+        identity = (
+            row.tenant_id,
+            row.client_id,
+            row.wb_cabinet_id,
+            row.client_company_id,
+            row.scheme,
+            row.product_ref,
+        )
+        sku_groups[identity].append(row)
 
     result: list[dict[str, Any]] = []
-    for sku in sku_rows:
-        dims = dims_by_nm.get(_text(sku.nm_id))
-        length = _dimension_decimal(dims.get("length_cm")) if dims else None
-        width = _dimension_decimal(dims.get("width_cm")) if dims else None
-        height = _dimension_decimal(dims.get("height_cm")) if dims else None
-        weight = _dimension_decimal(dims.get("weight_brutto_kg")) if dims else None
-        raw_valid = dims.get("dimensions_valid") if dims else None
-        valid = raw_valid if isinstance(raw_valid, bool) else None
+    for identity in sorted(sku_groups):
+        rows = sku_groups[identity]
+        nm_ids = sorted({_text(row.nm_id) for row in rows if _text(row.nm_id)})
+        product_keys = sorted(
+            {_text(row.product_key) for row in rows if _text(row.product_key)}
+        )
+        identity_conflict = len(nm_ids) != 1 or len(product_keys) > 1
+        card_candidates = (
+            cards_by_key.get((identity[2], nm_ids[0]), [])
+            if len(nm_ids) == 1
+            else []
+        )
+        parsed_candidates: list[
+            tuple[
+                Decimal | None,
+                Decimal | None,
+                Decimal | None,
+                Decimal | None,
+                bool | None,
+            ]
+        ] = []
+        invalid_value = False
+        for card in card_candidates:
+            length, length_invalid = _dimension_decimal(card.get("length_cm"))
+            width, width_invalid = _dimension_decimal(card.get("width_cm"))
+            height, height_invalid = _dimension_decimal(card.get("height_cm"))
+            weight, weight_invalid = _dimension_decimal(card.get("weight_brutto_kg"))
+            raw_valid = card.get("dimensions_valid")
+            valid = raw_valid if isinstance(raw_valid, bool) else None
+            invalid_value = invalid_value or any(
+                (length_invalid, width_invalid, height_invalid, weight_invalid)
+            )
+            parsed_candidates.append((length, width, height, weight, valid))
+
+        signatures = set(parsed_candidates)
+        card_conflict = len(signatures) > 1
+        selected = next(iter(signatures)) if len(signatures) == 1 else None
+        if selected is None:
+            length = width = height = weight = None
+            valid = None
+        else:
+            length, width, height, weight, valid = selected
+
+        complete = all(value is not None for value in (length, width, height, weight))
+        any_value = any(value is not None for value in (length, width, height, weight))
+        if identity_conflict:
+            quality = "identity_conflict"
+        elif card_conflict:
+            quality = "conflicting_dimensions"
+        elif invalid_value:
+            quality = "invalid_dimensions"
+        elif not complete:
+            quality = "missing_dimensions"
+        else:
+            quality = "ready"
+        if quality in {"identity_conflict", "conflicting_dimensions"}:
+            length = width = height = weight = None
+            valid = None
+            any_value = False
+
+        card_hashes = sorted({_dimension_source_hash(card) for card in card_candidates})
+        sku_hashes = sorted({_text(row.source_hash_digest) for row in rows})
+        source_hash_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "factorMethodologyVersion": LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+                    "identity": identity,
+                    "skuSourceHashes": sku_hashes,
+                    "cardSourceHashes": card_hashes,
+                    "dataQualityStatus": quality,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         result.append(
             {
-                "tenant_id": sku.tenant_id,
-                "client_id": sku.client_id,
-                "wb_cabinet_id": sku.wb_cabinet_id,
-                "client_company_id": sku.client_company_id,
-                "scheme": sku.scheme,
-                "product_ref": sku.product_ref,
-                "product_key": sku.product_key,
-                "nm_id": sku.nm_id,
-                "sku": sku.sku,
-                "vendor_code": sku.vendor_code,
-                "product": sku.product,
+                "tenant_id": identity[0],
+                "client_id": identity[1],
+                "wb_cabinet_id": identity[2],
+                "client_company_id": identity[3],
+                "scheme": identity[4],
+                "product_ref": identity[5],
+                "product_key": product_keys[0] if len(product_keys) == 1 else "",
+                "nm_id": nm_ids[0] if len(nm_ids) == 1 else "",
+                "sku": _dimension_display_value(rows, "sku"),
+                "vendor_code": _dimension_display_value(rows, "vendor_code"),
+                "product": _dimension_display_value(rows, "product"),
                 "length_cm": length,
                 "width_cm": width,
                 "height_cm": height,
@@ -1762,10 +1873,11 @@ def build_dimension_rows(
                 "volume_l": _volume_liters(length, width, height),
                 "dimensions_valid": valid,
                 "measured_penalty_amount": None,
-                "evidence_type": "fact" if dims else "data_unavailable",
-                "coverage_status": "ready" if dims else "missing_dimensions",
-                "row_uid": _dimension_row_uid(sku),
-                "source_hash_digest": sku.source_hash_digest,
+                "evidence_type": "fact" if any_value else "data_unavailable",
+                "coverage_status": quality,
+                "data_quality_status": quality,
+                "row_uid": _dimension_row_uid(identity),
+                "source_hash_digest": source_hash_digest,
             }
         )
     return result

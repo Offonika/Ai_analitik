@@ -96,7 +96,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260718-logistics-v5-global-table-sorting-v1"
+WEB_BUILD_ID = "20260720-logistics-f1-dimensions-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -755,6 +755,10 @@ def create_app(
             logistics_analysis_client_enabled=(
                 runtime_settings.logistics_analysis_client_enabled
             ),
+            logistics_factors_enabled=runtime_settings.logistics_factors_enabled,
+            logistics_factors_client_enabled=(
+                runtime_settings.logistics_factors_client_enabled
+            ),
         )
 
     @app.post("/api/auth/logout")
@@ -785,6 +789,10 @@ def create_app(
             logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
             logistics_analysis_client_enabled=(
                 runtime_settings.logistics_analysis_client_enabled
+            ),
+            logistics_factors_enabled=runtime_settings.logistics_factors_enabled,
+            logistics_factors_client_enabled=(
+                runtime_settings.logistics_factors_client_enabled
             ),
         )
 
@@ -2762,6 +2770,51 @@ def create_app(
         )
 
     @app.get(
+        "/api/reports/{report_id}/logistics/dimensions",
+        responses=LOGISTICS_PERIOD_ERROR_OPENAPI,
+    )
+    def report_logistics_dimensions(
+        report_id: str,
+        current: CurrentUser,
+        db: DbSession,
+        periodStart: date | None = None,
+        periodEnd: date | None = None,
+        wbCabinetId: str = "",
+        clientCompanyId: str = "",
+        scheme: str = "",
+        product: str = "",
+        sortBy: str = "product",
+        sortOrder: str = "asc",
+        offset: int = 0,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_logistics_factors_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+        period_start, period_end = _logistics_period(report, periodStart, periodEnd)
+        if sortBy not in repository.LOGISTICS_DIMENSION_SORT_KEYS:
+            raise HTTPException(status_code=400, detail="unsupported sortBy")
+        if sortOrder not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="unsupported sortOrder")
+        return repository.report_logistics_dimensions_payload(
+            db,
+            report,
+            period_start=period_start,
+            period_end=period_end,
+            wb_cabinet_id=wbCabinetId,
+            client_company_id=clientCompanyId,
+            scheme=scheme,
+            product_query=product,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+            offset=max(offset, 0),
+            limit=min(max(limit, 1), 1000),
+        )
+
+    @app.get(
         "/api/reports/{report_id}/logistics/orders",
         responses=LOGISTICS_PERIOD_ERROR_OPENAPI,
     )
@@ -3958,6 +4011,8 @@ def me_payload(
     accounting_workflow_enabled: bool = False,
     logistics_analysis_enabled: bool = False,
     logistics_analysis_client_enabled: bool = False,
+    logistics_factors_enabled: bool = False,
+    logistics_factors_client_enabled: bool = False,
 ) -> dict[str, Any]:
     tenants = [
         {
@@ -3985,6 +4040,19 @@ def me_payload(
         ),
         "logisticsOrdersEnabled": logistics_analysis_enabled
         and any(item.role in repository.STAFF_ROLES for item in user.access),
+        "logisticsFactorsEnabled": logistics_analysis_enabled
+        and logistics_factors_enabled
+        and (
+            any(item.role in repository.STAFF_ROLES for item in user.access)
+            or (
+                logistics_analysis_client_enabled
+                and logistics_factors_client_enabled
+            )
+        ),
+        "logisticsFactorsClientEnabled": logistics_analysis_enabled
+        and logistics_analysis_client_enabled
+        and logistics_factors_enabled
+        and logistics_factors_client_enabled,
     }
 
 
@@ -4271,6 +4339,27 @@ def _require_logistics_access_or_404(
     )
     if not allowed:
         raise HTTPException(status_code=404, detail="logistics analysis not found")
+
+
+def _require_logistics_factors_access_or_404(
+    user: User,
+    tenant_id: str,
+    settings: WebSettings,
+) -> None:
+    is_staff = repository.has_role(user, repository.STAFF_ROLES, tenant_id)
+    allowed = (
+        settings.logistics_analysis_enabled
+        and settings.logistics_factors_enabled
+        and (
+            is_staff
+            or (
+                settings.logistics_analysis_client_enabled
+                and settings.logistics_factors_client_enabled
+            )
+        )
+    )
+    if not allowed:
+        raise HTTPException(status_code=404, detail="logistics factors not found")
 
 
 def _reject_client_financial_recommendations(db: Session, user: User, thread) -> None:

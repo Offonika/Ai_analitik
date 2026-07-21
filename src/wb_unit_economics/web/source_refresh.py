@@ -33,9 +33,12 @@ from wb_unit_economics.contracts import (
     WbSalesReportSummaryRow,
 )
 from wb_unit_economics.logistics_analysis import (
+    LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LogisticsAnalysisResult,
     LogisticsInputDiagnostics,
     LogisticsSourceRow,
     UnitEconomicsSlice,
+    build_dimension_rows,
     build_logistics_analysis,
     source_row_from_payload,
 )
@@ -107,9 +110,24 @@ from wb_unit_economics.wb_finance import (
     resume_wb_finance_export,
     wb_finance_export_is_complete,
 )
+from wb_unit_economics.wb_goods_return import (
+    WbGoodsReturnClient,
+    WbGoodsReturnExportResult,
+    export_wb_goods_return,
+)
 from wb_unit_economics.wb_stocks import (
     WbStockExportResult,
     export_wb_stock_history_daily,
+)
+from wb_unit_economics.wb_supplier_sales import (
+    WbSupplierSalesClient,
+    WbSupplierSalesExportResult,
+    export_wb_supplier_sales,
+)
+from wb_unit_economics.wb_tariffs import (
+    WbTariffsClient,
+    WbTariffsExportResult,
+    export_wb_tariffs,
 )
 from wb_unit_economics.web import integrations, mapping_service, repository, security
 from wb_unit_economics.web.dashboard_payload import build_dashboard_payload
@@ -215,6 +233,63 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 WB_FINANCE_MAX_PAGES_ISSUE = "max_pages_reached_with_next_rrd_id"
 WB_REPORT_LIST_MAX_PAGES_ISSUE = "max_pages_reached_with_full_report_list_page"
 WB_PRODUCT_CARDS_MAX_PAGES_ISSUE = "max_pages_reached_with_full_cards_page"
+WB_GOODS_RETURN_MAX_DAYS = 31
+
+
+def _default_wb_tariffs_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbTariffsExportResult]:
+    results: list[WbTariffsExportResult] = []
+    for account in accounts:
+        client = WbTariffsClient(api_key=account.api_key)
+        account_dir = output_dir / str(account.seller_account_id).lower()
+        results.append(
+            export_wb_tariffs(client, account_dir, target_date=period_end)
+        )
+    return results
+
+
+def _default_wb_goods_return_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbGoodsReturnExportResult]:
+    date_from = max(
+        period_start, period_end - timedelta(days=WB_GOODS_RETURN_MAX_DAYS)
+    )
+    results: list[WbGoodsReturnExportResult] = []
+    for account in accounts:
+        client = WbGoodsReturnClient(api_key=account.api_key)
+        account_dir = output_dir / str(account.seller_account_id).lower()
+        results.append(
+            export_wb_goods_return(
+                client, account_dir, date_from=date_from, date_to=period_end
+            )
+        )
+    return results
+
+
+def _default_wb_supplier_sales_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbSupplierSalesExportResult]:
+    results: list[WbSupplierSalesExportResult] = []
+    for account in accounts:
+        client = WbSupplierSalesClient(api_key=account.api_key)
+        account_dir = output_dir / str(account.seller_account_id).lower()
+        results.append(
+            export_wb_supplier_sales(client, account_dir, date_from=period_start)
+        )
+    return results
 
 
 class SourceRefreshDisabledError(RuntimeError):
@@ -296,6 +371,15 @@ class SourceRefreshService:
         wb_stock_history_exporter: Callable[
             ..., list[WbStockExportResult]
         ] = export_wb_stock_history_daily,
+        wb_tariffs_exporter: Callable[
+            ..., list[WbTariffsExportResult]
+        ] = _default_wb_tariffs_exporter,
+        wb_goods_return_exporter: Callable[
+            ..., list[WbGoodsReturnExportResult]
+        ] = _default_wb_goods_return_exporter,
+        wb_supplier_sales_exporter: Callable[
+            ..., list[WbSupplierSalesExportResult]
+        ] = _default_wb_supplier_sales_exporter,
         ozon_cash_flow_exporter: Callable[..., list[OzonPageResult]] = (
             export_ozon_cash_flow
         ),
@@ -349,6 +433,9 @@ class SourceRefreshService:
         self._wb_documents_exporter = wb_documents_exporter
         self._wb_product_cards_exporter = wb_product_cards_exporter
         self._wb_stock_history_exporter = wb_stock_history_exporter
+        self._wb_tariffs_exporter = wb_tariffs_exporter
+        self._wb_goods_return_exporter = wb_goods_return_exporter
+        self._wb_supplier_sales_exporter = wb_supplier_sales_exporter
         self._ozon_cash_flow_exporter = ozon_cash_flow_exporter
         self._ozon_realization_exporter = ozon_realization_exporter
         self._ozon_realization_posting_exporter = ozon_realization_posting_exporter
@@ -1947,6 +2034,30 @@ class SourceRefreshService:
                 modes=frozenset({"incremental", "weekly", "full"}),
                 roles=frozenset(WB_STOCK_HISTORY_REFRESH_ROLES),
                 collect=_collect_wb_stock_history,
+            ),
+            SourceCollector(
+                source_type="wb_tariffs",
+                label="WB box/pallet tariffs",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_tariffs,
+            ),
+            SourceCollector(
+                source_type="wb_goods_return",
+                label="WB goods return reasons",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_goods_return,
+            ),
+            SourceCollector(
+                source_type="wb_supplier_sales",
+                label="WB supplier sales (warehouse & direction)",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_supplier_sales,
             ),
             SourceCollector(
                 source_type="ozon_finance_cash_flow",
@@ -3912,13 +4023,22 @@ class SourceRefreshService:
         )
         if self.settings.logistics_analysis_enabled:
             report.logistics_analysis_required = True
-            _build_and_persist_logistics_analysis(
+            logistics_result = _build_and_persist_logistics_analysis(
                 db,
                 report,
                 primary_refresh_run=refresh_run,
                 base_refresh_run=base_refresh_run,
                 contributing_runs=contributing_runs,
             )
+            if self.settings.logistics_factors_enabled:
+                _build_and_persist_logistics_dimensions(
+                    db,
+                    report,
+                    logistics_result=logistics_result,
+                    primary_refresh_run=refresh_run,
+                    base_refresh_run=base_refresh_run,
+                    contributing_runs=contributing_runs,
+                )
         _validate_marts(build["payload"])
         db.commit()
         artifact_payload = repository.report_full_payload(db, report)
@@ -4517,6 +4637,54 @@ def _collect_wb_stock_history(
         actual_period_end=provider_period_end,
     )
     return CollectorResult(collection=collection, output_dir=output_dir)
+
+
+def _collect_wb_tariffs(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_tariffs"
+    service._wb_tariffs_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_wb_goods_return(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_goods_return"
+    service._wb_goods_return_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(output_dir=output_dir)
+
+
+def _collect_wb_supplier_sales(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_supplier_sales"
+    service._wb_supplier_sales_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(output_dir=output_dir)
 
 
 def _collect_ozon_cash_flow(
@@ -6129,7 +6297,7 @@ def _build_and_persist_logistics_analysis(
     base_refresh_run: SourceRefreshRun | None = None,
     contributing_runs: Iterable[SourceRefreshRun] = (),
     refresh_runs: Iterable[SourceRefreshRun] = (),
-) -> None:
+) -> Any:
     # `refresh_runs` remains as a compatibility bridge for existing internal
     # callers. Production passes explicit lineage roles so revision ownership
     # is deterministic.
@@ -6222,6 +6390,340 @@ def _build_and_persist_logistics_analysis(
         ),
     )
     repository.replace_report_logistics_analysis(db, report, result)
+    return result
+
+
+@dataclass(frozen=True)
+class _DimensionSnapshotSelection:
+    card_rows: tuple[dict[str, Any], ...] = ()
+    source_snapshot_hash: str = ""
+    source_loaded_at: datetime | None = None
+    source_row_count: int = 0
+    blocking_reasons: tuple[str, ...] = ()
+    review_reasons: tuple[str, ...] = ()
+
+
+def _build_and_persist_logistics_dimensions(
+    db: Session,
+    report: ReportRun,
+    *,
+    logistics_result: LogisticsAnalysisResult,
+    primary_refresh_run: SourceRefreshRun | None = None,
+    base_refresh_run: SourceRefreshRun | None = None,
+    contributing_runs: Iterable[SourceRefreshRun] = (),
+) -> None:
+    roles: list[tuple[int, SourceRefreshRun]] = []
+    if primary_refresh_run is not None:
+        roles.append((0, primary_refresh_run))
+    if base_refresh_run is not None and all(
+        run.id != base_refresh_run.id for _, run in roles
+    ):
+        roles.append((1, base_refresh_run))
+    for run in contributing_runs:
+        if all(existing.id != run.id for _, existing in roles):
+            roles.append((2, run))
+    selection = _select_dimension_snapshot(db, report, roles=roles)
+    blocking = list(selection.blocking_reasons)
+    review = list(selection.review_reasons)
+    if logistics_result.context.data_status == "blocked":
+        blocking.append("logistics_analysis_blocked")
+    rows = (
+        build_dimension_rows(logistics_result.sku_rows, selection.card_rows)
+        if not blocking
+        else []
+    )
+    missing = sum(
+        row["data_quality_status"] == "missing_dimensions" for row in rows
+    )
+    invalid = sum(
+        row["data_quality_status"] in {"invalid_dimensions", "identity_conflict"}
+        for row in rows
+    )
+    conflicting = sum(
+        row["data_quality_status"] == "conflicting_dimensions" for row in rows
+    )
+    matched = sum(row["evidence_type"] == "fact" for row in rows)
+    signals = sum(row.get("dimensions_valid") is False for row in rows)
+    if missing:
+        review.append("dimension_values_missing")
+    if invalid:
+        review.append("dimension_values_invalid")
+    if conflicting:
+        review.append("dimension_values_conflicting")
+    data_status = "blocked" if blocking else "partial" if review else "ready"
+    input_hash = _hash_payload(
+        {
+            "factorMethodologyVersion": LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+            "sourceSnapshotHash": selection.source_snapshot_hash,
+            "cardSourceHashes": sorted(
+                str(row.get("source_hash") or "") for row in selection.card_rows
+            ),
+            "skuSourceHashes": sorted(
+                row.source_hash_digest for row in logistics_result.sku_rows
+            ),
+            "blockingReasons": sorted(set(blocking)),
+            "reviewReasons": sorted(set(review)),
+        }
+    )
+    repository.replace_report_logistics_dimension_analysis(
+        db,
+        report,
+        context={
+            "tenant_id": report.tenant_id,
+            "client_id": report.client_id,
+            "factor_methodology_version": LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+            "data_status": data_status,
+            "input_hash": input_hash,
+            "source_snapshot_hash": selection.source_snapshot_hash,
+            "source_loaded_at": selection.source_loaded_at,
+            "source_row_count": selection.source_row_count,
+            "dimension_row_count": len(rows),
+            "matched_product_count": matched,
+            "missing_product_count": missing,
+            "invalid_product_count": invalid,
+            "conflicting_product_count": conflicting,
+            "signal_product_count": signals,
+            "blocking_reasons": sorted(set(blocking)),
+            "review_reasons": sorted(set(review)),
+            "created_at": datetime.now(tz=ZoneInfo("UTC")),
+        },
+        rows=rows,
+    )
+
+
+def _select_dimension_snapshot(
+    db: Session,
+    report: ReportRun,
+    *,
+    roles: Iterable[tuple[int, SourceRefreshRun]],
+) -> _DimensionSnapshotSelection:
+    candidates: list[tuple[int, SourceRefreshRun, SourceRefreshCollection]] = []
+    for priority, run in roles:
+        for collection in run.collections:
+            if collection.source_type == "wb_product_cards":
+                candidates.append((priority, run, collection))
+    if not candidates:
+        return _DimensionSnapshotSelection(
+            review_reasons=("dimension_source_missing",)
+        )
+    selected_priority = min(item[0] for item in candidates)
+    selected = [item for item in candidates if item[0] == selected_priority]
+    snapshot_hashes = {item[2].snapshot_hash for item in selected}
+    if len(snapshot_hashes) != 1:
+        return _DimensionSnapshotSelection(
+            blocking_reasons=("dimension_source_revision_conflict",)
+        )
+    _priority, run, collection = sorted(
+        selected,
+        key=lambda item: (
+            _dimension_loaded_at_timestamp(item[2].loaded_at),
+            item[1].id,
+            item[2].id,
+        ),
+        reverse=True,
+    )[0]
+    if (
+        collection.tenant_id != report.tenant_id
+        or collection.client_id != report.client_id
+    ):
+        return _DimensionSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            blocking_reasons=("dimension_source_scope_mismatch",),
+        )
+    rows = list(
+        db.scalars(
+            select(SourceSnapshotRow)
+            .where(
+                SourceSnapshotRow.refresh_run_id == run.id,
+                SourceSnapshotRow.collection_id == collection.id,
+                SourceSnapshotRow.source_type == "wb_product_cards",
+            )
+            .order_by(SourceSnapshotRow.row_number)
+        )
+    )
+    collection_payload = collection.payload or {}
+    collection_results = collection_payload.get("results")
+    if (
+        not isinstance(collection_results, list)
+        or not all(isinstance(item, Mapping) for item in collection_results)
+    ):
+        return _DimensionSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("dimension_source_manifest_invalid",),
+        )
+    if _hash_payload(collection_results) != collection.snapshot_hash:
+        return _DimensionSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("dimension_source_snapshot_hash_mismatch",),
+        )
+    try:
+        declared_row_count = sum(
+            int(item.get("rowCount") or item.get("flat_row_count") or 0)
+            for item in collection_results
+        )
+    except (TypeError, ValueError):
+        declared_row_count = -1
+    if declared_row_count != collection.row_count:
+        return _DimensionSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("dimension_source_manifest_row_count_mismatch",),
+        )
+    persistence = collection_payload.get("rowPersistence") or {}
+    file_authoritative = (
+        persistence.get("status") in {"file_authoritative", "skipped_large_snapshot"}
+        and persistence.get("rawFilesAuthoritative") is True
+    )
+    if file_authoritative and rows:
+        return _DimensionSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("dimension_source_storage_ambiguity",),
+        )
+    blocking: list[str] = []
+    card_rows: list[dict[str, Any]] = []
+    if file_authoritative:
+        try:
+            card_rows.extend(
+                _iter_file_authoritative_dimension_rows(
+                    collection,
+                    refresh_run=run,
+                )
+            )
+        except (OSError, TypeError, ValueError, RawIntegrityError):
+            blocking.append("dimension_file_snapshot_invalid")
+    else:
+        if len(rows) != collection.row_count:
+            blocking.append("dimension_database_row_count_mismatch")
+        for snapshot in rows:
+            payload = snapshot.row_payload
+            if not isinstance(payload, Mapping):
+                blocking.append("dimension_source_payload_invalid")
+                continue
+            if snapshot.raw_payload_hash != _hash_payload(payload):
+                blocking.append("dimension_source_payload_hash_mismatch")
+                continue
+            card_rows.append(
+                _dimension_card_input(payload, wb_cabinet_id=snapshot.wb_cabinet_id)
+            )
+    blocking.extend(_dimension_card_scope_errors(db, report, card_rows))
+    review: list[str] = []
+    if collection.status == "partial_source":
+        review.append("dimension_source_partial")
+    if collection.status not in {"loaded", "partial_source"}:
+        review.append("dimension_source_unavailable")
+    return _DimensionSnapshotSelection(
+        card_rows=tuple(card_rows) if not blocking else (),
+        source_snapshot_hash=collection.snapshot_hash,
+        source_loaded_at=collection.loaded_at,
+        source_row_count=len(card_rows),
+        blocking_reasons=tuple(dict.fromkeys(blocking)),
+        review_reasons=tuple(dict.fromkeys(review)),
+    )
+
+
+def _dimension_loaded_at_timestamp(value: datetime) -> float:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(ZoneInfo("UTC")).timestamp()
+
+
+def _iter_file_authoritative_dimension_rows(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+) -> Iterable[dict[str, Any]]:
+    payload = collection.payload or {}
+    if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+        raise RawIntegrityError("product card raw integrity is not verified")
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RawIntegrityError("product card results are missing")
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    verify_raw_directory(
+        raw_dir,
+        source_type="wb_product_cards",
+        source_root=source_root,
+        collection_results=[item for item in results if isinstance(item, Mapping)],
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    count = 0
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise RawIntegrityError("product card result is not an object")
+        output_name = str(result.get("flatOutputFile") or "").strip()
+        if not output_name:
+            continue
+        if Path(output_name).name != output_name:
+            raise RawIntegrityError("product card flat output path is unsafe")
+        output_path = (raw_dir / output_name).resolve()
+        if not output_path.is_relative_to(raw_dir.resolve()):
+            raise RawIntegrityError("product card flat output path is unsafe")
+        wb_cabinet_id = str(result.get("wbCabinetId") or "").strip()
+        for row in iter_json_array(output_path):
+            if not isinstance(row, Mapping):
+                raise RawIntegrityError("product card row is not an object")
+            count += 1
+            yield _dimension_card_input(row, wb_cabinet_id=wb_cabinet_id)
+    if count != collection.row_count:
+        raise RawIntegrityError("product card row count changed")
+
+
+def _dimension_card_input(
+    payload: Mapping[str, Any],
+    *,
+    wb_cabinet_id: str,
+) -> dict[str, Any]:
+    normalized = {
+        "wb_cabinet_id": str(wb_cabinet_id or "").strip(),
+        "nm_id": str(payload.get("nm_id") or "").strip(),
+        "length_cm": payload.get("length_cm"),
+        "width_cm": payload.get("width_cm"),
+        "height_cm": payload.get("height_cm"),
+        "weight_brutto_kg": payload.get("weight_brutto_kg"),
+        "dimensions_valid": payload.get("dimensions_valid"),
+    }
+    normalized["source_hash"] = _hash_payload(normalized)
+    return normalized
+
+
+def _dimension_card_scope_errors(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[Mapping[str, Any]],
+) -> list[str]:
+    cabinet_ids = {str(row.get("wb_cabinet_id") or "") for row in rows}
+    if "" in cabinet_ids:
+        return ["dimension_source_cabinet_missing"]
+    cabinets = {
+        item.id: item
+        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
+    }
+    for cabinet_id in cabinet_ids:
+        cabinet = cabinets.get(cabinet_id)
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+        ):
+            return ["dimension_source_scope_mismatch"]
+        company = db.get(ClientCompany, cabinet.client_company_id)
+        if (
+            company is None
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            return ["dimension_source_scope_mismatch"]
+    return []
 
 
 def _select_logistics_source_rows(

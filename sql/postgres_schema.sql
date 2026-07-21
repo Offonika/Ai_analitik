@@ -430,6 +430,72 @@ CREATE INDEX IF NOT EXISTS ix_accounting_workflow_audit_tenant
 ALTER TABLE IF EXISTS wb_unit_economics.report_runs
     ADD COLUMN IF NOT EXISTS logistics_analysis_required boolean NOT NULL DEFAULT false;
 
+ALTER TABLE IF EXISTS wb_unit_economics.report_runs
+    ADD COLUMN IF NOT EXISTS logistics_dimensions_required boolean NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_rows (
+    id bigserial PRIMARY KEY,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    row_uid text NOT NULL,
+    wb_cabinet_id text NOT NULL DEFAULT '',
+    client_company_id text NOT NULL DEFAULT '',
+    scheme text NOT NULL DEFAULT '',
+    product_ref text NOT NULL DEFAULT '',
+    product_key text NOT NULL DEFAULT '',
+    nm_id text NOT NULL DEFAULT '',
+    sku text NOT NULL DEFAULT '',
+    vendor_code text NOT NULL DEFAULT '',
+    product text NOT NULL DEFAULT '',
+    length_cm numeric,
+    width_cm numeric,
+    height_cm numeric,
+    weight_brutto_kg numeric,
+    volume_l numeric,
+    dimensions_valid boolean,
+    measured_penalty_amount numeric,
+    evidence_type text NOT NULL DEFAULT '',
+    coverage_status text NOT NULL DEFAULT '',
+    data_quality_status text NOT NULL DEFAULT '',
+    source_hash_digest text NOT NULL DEFAULT '',
+    CONSTRAINT uq_report_logistics_dimension_row UNIQUE (report_run_id, row_uid)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_dimension_filter
+    ON wb_unit_economics.report_logistics_dimension_rows (
+        report_run_id, wb_cabinet_id, client_company_id, scheme
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_dimension_product
+    ON wb_unit_economics.report_logistics_dimension_rows (
+        report_run_id, product_ref, nm_id
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_contexts (
+    report_run_id text PRIMARY KEY REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    factor_methodology_version text NOT NULL,
+    data_status text NOT NULL,
+    input_hash text NOT NULL,
+    source_snapshot_hash text NOT NULL DEFAULT '',
+    source_loaded_at timestamptz,
+    source_row_count integer NOT NULL DEFAULT 0,
+    dimension_row_count integer NOT NULL DEFAULT 0,
+    matched_product_count integer NOT NULL DEFAULT 0,
+    missing_product_count integer NOT NULL DEFAULT 0,
+    invalid_product_count integer NOT NULL DEFAULT 0,
+    conflicting_product_count integer NOT NULL DEFAULT 0,
+    signal_product_count integer NOT NULL DEFAULT 0,
+    blocking_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_dimension_context_status
+    ON wb_unit_economics.report_logistics_dimension_contexts (tenant_id, data_status);
+
 ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts
     ADD COLUMN IF NOT EXISTS source_quality_status text NOT NULL DEFAULT 'ready',
     ADD COLUMN IF NOT EXISTS invalid_source_row_count integer NOT NULL DEFAULT 0,
