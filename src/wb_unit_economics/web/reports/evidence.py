@@ -830,15 +830,17 @@ def _date_text(value: Any) -> str | None:
 
 def _parse_date(value: Any) -> date | None:
     if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if not value:
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    elif value:
+        try:
+            parsed = date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+    else:
         return None
-    try:
-        return date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return None
+    return parsed if parsed.year >= 1900 else None
 
 
 def _source_status(source: AccountingEvidenceSource | None) -> str:

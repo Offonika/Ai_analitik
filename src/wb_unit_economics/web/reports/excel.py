@@ -44,6 +44,7 @@ TAX_LOAD_FIELD_LABELS = {
     "tenantId": "ID контура",
     "clientId": "ID клиента",
     "reportKind": "Вид отчёта",
+    "selectedMonth": "Выбранный месяц",
     "organizationId": "ID организации 1С",
     "periodStart": "Начало отчётного периода",
     "periodEnd": "Окончание отчётного периода",
@@ -248,6 +249,8 @@ TAX_LOAD_OVERVIEW_FIELDS = (
     "clientName",
     "organizationName",
     "reportKind",
+    "selectedMonth",
+    "calculationPeriodKind",
     "taxSystem",
     "profileStatus",
     "revenueTaxRate",
@@ -315,6 +318,21 @@ TAX_LOAD_PERCENT_FORMAT = '0.00 " %"'
 TAX_LOAD_DATE_FORMAT = "DD.MM.YYYY"
 TAX_LOAD_DATETIME_FORMAT = "DD.MM.YYYY HH:MM"
 FORMULA_PREFIXES = ("=", "+", "-", "@")
+RUSSIAN_MONTHS = (
+    "",
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+)
 
 HEADER_FILL = PatternFill("solid", fgColor="0F6B78")
 LABEL_FILL = PatternFill("solid", fgColor="E8F3F5")
@@ -373,20 +391,32 @@ def _tax_load_field_label(key: str) -> str:
 
 def _tax_load_date(value: Any) -> date | datetime | None:
     if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return value
-    if not isinstance(value, str) or not value.strip():
+        parsed = value
+        has_time = True
+    elif isinstance(value, date):
+        return value if value.year >= 1900 else None
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        has_time = "T" in value or " " in value
+    else:
         return None
-    try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
+    if parsed.year < 1900:
         return None
-    if "T" in value or " " in value:
+    if has_time:
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone(UTC).replace(tzinfo=None)
         return parsed
     return parsed.date()
+
+
+def _tax_load_month_label(value: Any) -> str:
+    parsed = _tax_load_date(value)
+    if parsed is None:
+        return "Не указано"
+    return f"{RUSSIAN_MONTHS[parsed.month]} {parsed.year}"
 
 
 def _tax_load_decimal(value: Any) -> Decimal | None:
@@ -405,7 +435,7 @@ def _tax_load_cell(key: str, value: Any) -> Any:
     if isinstance(value, bool):
         return "Да" if value else "Нет"
     if key in TAX_LOAD_DATE_FIELDS:
-        return _tax_load_date(value)
+        return _tax_load_date(value) or "Не указано"
     if key in TAX_LOAD_CURRENCY_FIELDS or key in TAX_LOAD_PERCENT_FIELDS:
         return _tax_load_decimal(value)
     if key == "sourceKind":
@@ -609,6 +639,8 @@ def write_scenario_excel(
             "clientName": context.get("clientName") or "Не указано",
             "organizationName": context.get("organizationName") or "Не указано",
             "reportKind": meta.get("reportKind") or payload.get("reportKind"),
+            "selectedMonth": _tax_load_month_label(meta.get("periodStart")),
+            "calculationPeriodKind": summary.get("calculationPeriodKind"),
             "taxSystem": profile.get("taxSystem"),
             "profileStatus": profile.get("profileStatus"),
             "revenueTaxRate": profile.get("revenueTaxRate"),
