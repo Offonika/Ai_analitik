@@ -467,7 +467,7 @@ def test_tax_load_ip_usn_without_financial_results_keeps_ratio_null_without_zero
     payload = build_tax_load_payload(
         _report("tax_load"),
         tax_profile={
-            "taxSystem": "usn_income",
+            "taxSystem": "УСН Доходы",
             "profileStatus": "ready",
             "revenueTaxRate": "1",
             "sourceKind": "1c",
@@ -523,6 +523,29 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
     assert summary["usnIncomeStatus"] == "management_reference"
     assert summary["usnIncomeDenominatorKind"] == "usn_income_receipts_excluding_vat"
     assert payload["businessStatus"] == "preliminary"
+
+
+def test_tax_load_usn_income_minus_expenses_has_no_management_ratio() -> None:
+    evidence = _usn_tax_evidence()
+    evidence["usnIncomeEvidence"] = {
+        "value": "2000",
+        "status": "confirmed",
+        "sourceKind": "onec_kudir",
+    }
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы минус расходы",
+            "profileStatus": "ready",
+        },
+        evidence=evidence,
+    )
+
+    summary = payload["taxLoadSummary"]
+    assert summary["usnIncomeValue"] is None
+    assert summary["usnIncomeTaxBurden"] is None
+    assert summary["usnIncomeStatus"] is None
 
 
 def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
