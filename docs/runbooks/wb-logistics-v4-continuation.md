@@ -247,6 +247,62 @@ client-role блок скрыт и запрос tariffs не выполняет�
 возвращён на предшествующий параллельный immutable runtime. Additive schema и
 неопубликованный F-2 draft сохранены; production и client enable не выполнялись.
 
+# Operational evidence F-3 «Склады и направления» на test — 21 июля 2026 года
+
+Проверка выполнена только на test-контуре из ветки
+`codex/logistics-routes-end-to-end`, ревизия `b343592`. Для приёмки собран
+immutable release `runtime-logistics-f3-routes-b343592-20260721`. Public health
+во время проверки подтвердил `runtimeEnvironment=test`, совпадающие
+backend/static build `20260721-logistics-f3-routes-v1`, additive schema
+`2026_07_21_logistics_routes_context_v1` и `status=ok`. В PR №45 оба
+обязательных job `quality` и `tests` завершились успешно.
+
+На test временно были включены factor master и routes master. Оба client-флага
+оставались `false`; code defaults не менялись. Client login включался отдельным
+временным override только для role-проверки. Production runtime, production
+configuration и клиентское включение факторов этой работой не изменялись.
+
+Read-only full source refresh завершился состоянием `needs_review` из-за
+явного неполного покрытия отдельных коллекций. Коллекция
+`wb_supplier_sales` сохранена как `partial_source` с повторно проверенным
+manifest, snapshot hash, flat hashes и row count. Стандартный worker template
+не нашёл test-run в своём default-контексте до начала внешнего чтения, поэтому
+тот же queued run был обработан синхронно в изолированном test environment;
+повторного внешнего чтения не выполнялось.
+
+Создан новый неопубликованный immutable draft. Route context записан с
+методикой `wb-logistics-routes-v1` и состоянием `partial`; blocking reasons
+пусты. Mart не пуст, фактическое число строк согласовано с context, а сумма
+связанной и несвязанной логистики сверена с исходным логистическим срезом без
+расхождения. Идентификаторы, клиентские объёмы, названия складов и направлений,
+денежные значения и source hashes в evidence не перенесены.
+
+Live API smoke подтвердил:
+
+- staff `/api/me` разрешает analysis/factors/routes, основной logistics API и
+  `/logistics/routes` возвращают HTTP 200; срез имеет `partial`, обе версии
+  методики, factor snapshot, coverage полного фильтрованного среза,
+  SQL-pagination и все разрешённые сортировки;
+- route rows не раскрывают hash/raw identifiers; `financialEffect=null`, а
+  рекомендации также не содержат денежного эффекта;
+- client `/api/me` сохраняет основную логистику, но не разрешает factors/routes;
+  factor API возвращает HTTP 404.
+
+Browser smoke выполнен по прямому `#tables/logistics` на desktop 1440×900 и
+mobile 390×844. Блок F-3 расположен после тарифов и перед рейтингом товаров,
+строки на mobile имеют подписи, horizontal/page overflow отсутствует. Финальный
+pass не выявил application console, page или network errors. Под client-role
+блок скрыт, запрос `/logistics/routes` не выполняется. Public proxy отдельно
+подтверждён через health; клиентские значения и browser screenshots не
+сохранялись в Git или Markdown.
+
+После приёмки synthetic users деактивированы, их пароли сброшены; credentials,
+cookies, responses, screenshots и временный browser script удалены. Routes
+drop-in и временный client login удалены, test symlink возвращён на
+`runtime-fcfc52b-tax-profile-configured-20260721`. Additive schema и
+неопубликованный F-3 draft сохранены. Production и client enable не
+выполнялись.
+
 # Последнее UX-решение
 
 Пользователь подтвердил, что текущая структура интерфейса непонятна: она
@@ -542,11 +598,11 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-Обновление 2026-07-20: F-1 «Габариты» принят на staff-only test. Factor-spec
-остаётся `accepted`, потому что вторая очередь ещё не завершена. Следующие
-отдельные implementation slices — F-2 тарифы, F-3 маршруты и F-4 фактические
-замеры/штрафы; каждый требует собственного source gate и test-rollout. Общий
-операционный чеклист проверки источников —
+Обновление 2026-07-21: F-1 «Габариты», F-2 «Тарифы» и F-3 «Склады и
+направления» приняты на staff-only test. Factor-spec остаётся `accepted`, потому
+что вторая очередь ещё не завершена. Следующий отдельный implementation slice —
+F-4 фактические замеры/штрафы; он требует собственного source gate и
+test-rollout. Общий операционный чеклист проверки источников —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
 `monthly_reconciliation_unresolved` остаётся advisory (PR №22).
 
@@ -567,7 +623,7 @@ deployment и без write-операций во внешние системы:
 
 - Excel-экспорт анализа логистики;
 - фактические контрольные замеры и штрафы;
-- маршруты и локализация складов;
+- маршрутная оптимизация и географический калькулятор;
 - тарифный калькулятор;
 - калькулятор маржинального дохода;
 - production client rollout;

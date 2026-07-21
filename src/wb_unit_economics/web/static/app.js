@@ -82,6 +82,12 @@ const state = {
   logisticsTariffsSortDirection: "asc",
   logisticsTariffsRequestKey: "",
   logisticsTariffsRequestId: 0,
+  logisticsRoutes: null,
+  logisticsRoutesOffset: 0,
+  logisticsRoutesSortBy: "logisticsTotal",
+  logisticsRoutesSortDirection: "desc",
+  logisticsRoutesRequestKey: "",
+  logisticsRoutesRequestId: 0,
   logisticsOrders: [],
   logisticsOrdersTotal: 0,
   logisticsOrdersOffset: 0,
@@ -227,6 +233,20 @@ const els = {
   logisticsTariffsPrev: document.querySelector("#logistics-tariffs-prev"),
   logisticsTariffsPage: document.querySelector("#logistics-tariffs-page"),
   logisticsTariffsNext: document.querySelector("#logistics-tariffs-next"),
+  logisticsRoutesSection: document.querySelector("#logistics-routes"),
+  logisticsRoutesStatus: document.querySelector("#logistics-routes-status"),
+  logisticsRoutesCoverage: document.querySelector("#logistics-routes-coverage"),
+  logisticsRoutesRecommendations: document.querySelector(
+    "#logistics-routes-recommendations",
+  ),
+  logisticsRoutesTable: document.querySelector("#logistics-routes-table"),
+  logisticsRoutesRows: document.querySelector("#logistics-routes-rows"),
+  logisticsRoutesPagination: document.querySelector(
+    "#logistics-routes-pagination",
+  ),
+  logisticsRoutesPrev: document.querySelector("#logistics-routes-prev"),
+  logisticsRoutesPage: document.querySelector("#logistics-routes-page"),
+  logisticsRoutesNext: document.querySelector("#logistics-routes-next"),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
   logisticsOrdersTable: document.querySelector("#logistics-orders-table"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
@@ -657,6 +677,7 @@ function init() {
     state.logisticsProductsOffset = 0;
     state.logisticsDimensionsOffset = 0;
     state.logisticsTariffsOffset = 0;
+    state.logisticsRoutesOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
@@ -717,6 +738,25 @@ function init() {
     }
     state.logisticsTariffsOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsTariffs({ force: true });
+  });
+  els.logisticsRoutesPrev?.addEventListener("click", () => {
+    if (state.logisticsRoutesOffset <= 0) {
+      return;
+    }
+    state.logisticsRoutesOffset = Math.max(
+      0,
+      state.logisticsRoutesOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsRoutes({ force: true });
+  });
+  els.logisticsRoutesNext?.addEventListener("click", () => {
+    const payload = state.logisticsRoutes || {};
+    const itemCount = asArray(payload.rows).length;
+    if (state.logisticsRoutesOffset + itemCount >= Number(payload.total || 0)) {
+      return;
+    }
+    state.logisticsRoutesOffset += LOGISTICS_PAGE_SIZE;
+    loadLogisticsRoutes({ force: true });
   });
   els.logisticsOrdersClose?.addEventListener("click", closeLogisticsOrders);
   els.logisticsOrdersPrev?.addEventListener("click", () => {
@@ -1036,6 +1076,11 @@ function syncRemoteTableSortState() {
     state.logisticsTariffsSortDirection,
   );
   setRemoteTableSortState(
+    els.logisticsRoutesTable,
+    state.logisticsRoutesSortBy,
+    state.logisticsRoutesSortDirection,
+  );
+  setRemoteTableSortState(
     els.reportRowsTable,
     state.rowsSortBy,
     state.rowsSortDirection,
@@ -1075,6 +1120,13 @@ function onRemoteTableSort(event) {
     state.logisticsTariffsSortDirection = direction;
     state.logisticsTariffsOffset = 0;
     loadLogisticsTariffs({ force: true });
+    return;
+  }
+  if (table === els.logisticsRoutesTable) {
+    state.logisticsRoutesSortBy = sortKey;
+    state.logisticsRoutesSortDirection = direction;
+    state.logisticsRoutesOffset = 0;
+    loadLogisticsRoutes({ force: true });
     return;
   }
   if (table === els.logisticsOrdersTable) {
@@ -4779,6 +4831,11 @@ async function loadLogisticsAnalysis(options = {}) {
   } else {
     resetLogisticsTariffs({ hide: true });
   }
+  if (logisticsRoutesAvailable()) {
+    loadLogisticsRoutes({ force: options.force });
+  } else {
+    resetLogisticsRoutes({ hide: true });
+  }
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
     const [summary, products] = await Promise.all([
@@ -4932,6 +4989,60 @@ async function loadLogisticsTariffs(options = {}) {
   }
 }
 
+async function loadLogisticsRoutes(options = {}) {
+  if (
+    !logisticsRoutesAvailable() ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
+    !state.reportId
+  ) {
+    resetLogisticsRoutes({ hide: true });
+    return;
+  }
+  const reportId = state.reportId;
+  const params = logisticsFilterParams({
+    sortBy: state.logisticsRoutesSortBy,
+    sortOrder: state.logisticsRoutesSortDirection,
+    offset: state.logisticsRoutesOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${params}`;
+  if (!options.force && requestKey === state.logisticsRoutesRequestKey) {
+    renderLogisticsRoutes();
+    return;
+  }
+  state.logisticsRoutesRequestKey = requestKey;
+  const requestId = ++state.logisticsRoutesRequestId;
+  els.logisticsRoutesSection.hidden = false;
+  els.logisticsRoutesStatus.textContent = "Загружаем маршруты…";
+  els.logisticsRoutesStatus.dataset.status = "loading";
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/routes?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRoutesRequestKey !== requestKey ||
+      state.logisticsRoutesRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsRoutes = payload;
+    renderLogisticsRoutes();
+  } catch (error) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRoutesRequestKey !== requestKey ||
+      state.logisticsRoutesRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsRoutes = { error: true, rows: [], total: 0 };
+    state.logisticsRoutesRequestKey = "";
+    renderLogisticsRoutes();
+  }
+}
+
 function resetLogisticsWorkspace() {
   if (!els.logisticsDataStatus) {
     return;
@@ -4961,6 +5072,7 @@ function resetLogisticsWorkspace() {
   );
   resetLogisticsDimensions({ hide: !logisticsFactorsAvailable() });
   resetLogisticsTariffs({ hide: !logisticsTariffsAvailable() });
+  resetLogisticsRoutes({ hide: !logisticsRoutesAvailable() });
   closeLogisticsOrders();
 }
 
@@ -5004,6 +5116,28 @@ function resetLogisticsTariffs(options = {}) {
     els.logisticsTariffsPrev,
     els.logisticsTariffsPage,
     els.logisticsTariffsNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
+}
+
+function resetLogisticsRoutes(options = {}) {
+  state.logisticsRoutes = null;
+  state.logisticsRoutesRequestKey = "";
+  state.logisticsRoutesRequestId += 1;
+  if (!els.logisticsRoutesSection) {
+    return;
+  }
+  els.logisticsRoutesSection.hidden = Boolean(options.hide);
+  els.logisticsRoutesStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsRoutesStatus.dataset.status = "empty";
+  els.logisticsRoutesCoverage.replaceChildren();
+  els.logisticsRoutesRecommendations.replaceChildren();
+  els.logisticsRoutesRows.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsRoutesPagination,
+    els.logisticsRoutesPrev,
+    els.logisticsRoutesPage,
+    els.logisticsRoutesNext,
     { offset: 0, itemCount: 0, total: 0 },
   );
 }
@@ -5612,6 +5746,148 @@ function renderLogisticsTariffRows(items, emptyText) {
       });
       const badge = document.createElement("span");
       badge.className = evidence === "Факт"
+        ? "logistics-quality-badge"
+        : "logistics-quality-badge is-warning";
+      badge.textContent = evidence;
+      cells[5].replaceChildren(badge);
+      row.append(...cells);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsRoutes() {
+  if (!logisticsRoutesAvailable()) {
+    resetLogisticsRoutes({ hide: true });
+    return;
+  }
+  const payload = state.logisticsRoutes || {};
+  els.logisticsRoutesSection.hidden = false;
+  if (payload.error) {
+    els.logisticsRoutesStatus.textContent =
+      "Маршруты временно недоступны. Основная логистика, габариты и тарифы продолжают работать.";
+    els.logisticsRoutesStatus.dataset.status = "error";
+    renderLogisticsRouteCoverage({});
+    renderLogisticsRouteRecommendations([]);
+    renderLogisticsRouteRows([], "Не удалось загрузить маршрутный срез.");
+    return;
+  }
+  const status = normalize(payload.sliceStatus || payload.dataStatus);
+  const statusCopy = {
+    ready: "Маршруты подтверждены",
+    partial: "Часть маршрутов недоступна",
+    empty: "В выбранном срезе нет цепочек",
+    needs_rebuild: "Нужна новая ревизия отчёта",
+    blocked: "Проверка снимка не пройдена",
+  }[status] || "Маршруты ещё не загружены";
+  const snapshot = payload.factorSnapshotAt
+    ? ` · снимок ${formatCompactDate(payload.factorSnapshotAt)}`
+    : "";
+  els.logisticsRoutesStatus.textContent = `${statusCopy}${snapshot}`;
+  els.logisticsRoutesStatus.dataset.status = status || "empty";
+  renderLogisticsRouteCoverage(payload.coverage || {});
+  renderLogisticsRouteRecommendations(asArray(payload.recommendations));
+  const emptyText = {
+    empty: "В выбранном периоде и фильтрах нет маршрутных цепочек.",
+    needs_rebuild: "Старый отчёт не содержит контекст маршрутов F‑3.",
+    blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
+  }[status] || "Нет маршрутов для выбранного среза.";
+  renderLogisticsRouteRows(asArray(payload.rows), emptyText);
+  renderLogisticsPagination(
+    els.logisticsRoutesPagination,
+    els.logisticsRoutesPrev,
+    els.logisticsRoutesPage,
+    els.logisticsRoutesNext,
+    {
+      offset: state.logisticsRoutesOffset,
+      itemCount: asArray(payload.rows).length,
+      total: Number(payload.total || 0),
+    },
+  );
+}
+
+function renderLogisticsRouteCoverage(coverage) {
+  const cards = [
+    ["Цепочек", coverage.totalChains],
+    ["С маршрутом", coverage.matchedChains],
+    ["Недоступно", coverage.missingChains],
+    ["Конфликт", coverage.conflictingChains],
+    ["Складов", coverage.warehouses],
+    ["Покрытие", coverage.coveragePct],
+  ];
+  els.logisticsRoutesCoverage.replaceChildren(
+    ...cards.map(([labelText, value]) => {
+      const card = document.createElement("span");
+      const label = document.createElement("small");
+      const strong = document.createElement("strong");
+      label.textContent = labelText;
+      strong.textContent = value === null || value === undefined
+        ? "—"
+        : labelText === "Покрытие"
+          ? logisticsPercent(value)
+          : number(value);
+      card.append(label, strong);
+      return card;
+    }),
+  );
+}
+
+function renderLogisticsRouteRecommendations(items) {
+  if (!items.length) {
+    els.logisticsRoutesRecommendations.replaceChildren();
+    return;
+  }
+  els.logisticsRoutesRecommendations.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("li");
+      const title = document.createElement("strong");
+      const message = document.createElement("span");
+      title.textContent = item.title || "Проверить маршруты";
+      message.textContent = item.message || "";
+      row.append(title, message);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsRouteRows(items, emptyText) {
+  if (!items.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 6;
+    cell.className = "muted";
+    cell.textContent = emptyText;
+    row.append(cell);
+    els.logisticsRoutesRows.replaceChildren(row);
+    return;
+  }
+  els.logisticsRoutesRows.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("tr");
+      const ready = normalize(item.evidenceType) === "fact";
+      const evidence = ready ? "Факт" : "Данные недоступны";
+      const cells = [
+        ["Склад", item.warehouse || "Данные недоступны"],
+        ["Направление", item.destination || "Данные недоступны"],
+        ["Логистика", money(item.logisticsTotal || 0)],
+        [
+          "Цепочки",
+          `${number(item.chainCount || 0)}${item.lowSample ? " · мало данных" : ""}`,
+        ],
+        [
+          "Box недели",
+          item.weekCoefficient == null
+            ? "—"
+            : logisticsPercent(item.weekCoefficient),
+        ],
+        ["Основание", evidence],
+      ].map(([label, value]) => {
+        const cell = logisticsTableCell(value);
+        cell.dataset.label = label;
+        return cell;
+      });
+      const badge = document.createElement("span");
+      badge.className = ready
         ? "logistics-quality-badge"
         : "logistics-quality-badge is-warning";
       badge.textContent = evidence;
@@ -16119,6 +16395,12 @@ function logisticsFactorsAvailable() {
 function logisticsTariffsAvailable() {
   return Boolean(
     logisticsFactorsAvailable() && state.user?.logisticsTariffsEnabled,
+  );
+}
+
+function logisticsRoutesAvailable() {
+  return Boolean(
+    logisticsFactorsAvailable() && state.user?.logisticsRoutesEnabled,
   );
 }
 

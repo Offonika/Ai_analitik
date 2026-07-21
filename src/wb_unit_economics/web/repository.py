@@ -60,6 +60,7 @@ from wb_unit_economics.logistics_analysis import (
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
+    LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
@@ -101,6 +102,8 @@ from wb_unit_economics.web.models import (
     ReportLogisticsDimensionContext,
     ReportLogisticsDimensionRow,
     ReportLogisticsOrderRow,
+    ReportLogisticsRouteContext,
+    ReportLogisticsRouteRow,
     ReportLogisticsSkuRow,
     ReportLogisticsTariffContext,
     ReportLogisticsTariffRow,
@@ -13409,6 +13412,132 @@ def replace_report_logistics_tariff_analysis(
     return persisted
 
 
+def replace_report_logistics_route_rows(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> int:
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics route mart is immutable")
+    db.execute(
+        delete(ReportLogisticsRouteRow).where(
+            ReportLogisticsRouteRow.report_run_id == report.id
+        )
+    )
+    for row in rows:
+        db.add(
+            ReportLogisticsRouteRow(
+                report_run_id=report.id,
+                tenant_id=str(row.get("tenant_id") or report.tenant_id),
+                client_id=str(row.get("client_id") or report.client_id),
+                row_uid=str(row["row_uid"]),
+                wb_cabinet_id=str(row.get("wb_cabinet_id") or ""),
+                client_company_id=str(row.get("client_company_id") or ""),
+                scheme=str(row.get("scheme") or ""),
+                financial_date=row["financial_date"],
+                financial_week_start=row["financial_week_start"],
+                product_ref=str(row.get("product_ref") or ""),
+                product=str(row.get("product") or ""),
+                vendor_code=str(row.get("vendor_code") or ""),
+                chain_key=str(row.get("chain_key") or ""),
+                warehouse=str(row.get("warehouse") or ""),
+                warehouse_status=str(row.get("warehouse_status") or "missing"),
+                destination=str(row.get("destination") or ""),
+                destination_status=str(
+                    row.get("destination_status") or "missing"
+                ),
+                logistics_total=row.get("logistics_total") or Decimal("0"),
+                chain_count=int(row.get("chain_count") or 0),
+                low_sample=bool(row.get("low_sample", True)),
+                week_coefficient=row.get("week_coefficient"),
+                coefficient_status=str(
+                    row.get("coefficient_status") or "data_unavailable"
+                ),
+                evidence_type=str(row.get("evidence_type") or ""),
+                coverage_status=str(row.get("coverage_status") or ""),
+                data_quality_status=str(row.get("data_quality_status") or ""),
+                source_hash_digest=str(row.get("source_hash_digest") or ""),
+            )
+        )
+    db.flush()
+    return len(rows)
+
+
+def replace_report_logistics_route_analysis(
+    db: Session,
+    report: ReportRun,
+    *,
+    context: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+) -> ReportLogisticsRouteContext:
+    """Atomically stage F-3 context and rows for an unpublished report."""
+
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics route analysis is immutable")
+    if str(context.get("tenant_id") or "") != report.tenant_id:
+        raise ValueError("route context tenant does not match report")
+    if str(context.get("client_id") or "") != report.client_id:
+        raise ValueError("route context client does not match report")
+    status = str(context.get("data_status") or "")
+    if status not in {"ready", "partial", "blocked"}:
+        raise ValueError("unsupported route context status")
+    if status == "blocked" and rows:
+        raise ValueError("blocked route context cannot persist mart rows")
+    _validate_logistics_route_rows_scope(db, report, rows)
+    expected_count = int(context.get("route_row_count") or 0)
+    if expected_count != len(rows):
+        raise ValueError("route context row count does not match mart")
+
+    db.execute(
+        delete(ReportLogisticsRouteContext).where(
+            ReportLogisticsRouteContext.report_run_id == report.id
+        )
+    )
+    replace_report_logistics_route_rows(db, report, rows)
+    persisted = ReportLogisticsRouteContext(
+        report_run_id=report.id,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        factor_methodology_version=str(context["factor_methodology_version"]),
+        data_status=status,
+        input_hash=str(context.get("input_hash") or ""),
+        source_snapshot_hash=str(context.get("source_snapshot_hash") or ""),
+        source_loaded_at=context.get("source_loaded_at"),
+        source_coverage_start=context.get("source_coverage_start"),
+        source_coverage_end=context.get("source_coverage_end"),
+        source_row_count=int(context.get("source_row_count") or 0),
+        route_row_count=expected_count,
+        total_chain_count=int(context.get("total_chain_count") or 0),
+        matched_chain_count=int(context.get("matched_chain_count") or 0),
+        missing_chain_count=int(context.get("missing_chain_count") or 0),
+        conflicting_chain_count=int(context.get("conflicting_chain_count") or 0),
+        warehouse_count=int(context.get("warehouse_count") or 0),
+        destination_count=int(context.get("destination_count") or 0),
+        total_logistics=context.get("total_logistics") or Decimal("0"),
+        linked_logistics=context.get("linked_logistics") or Decimal("0"),
+        reconciliation_delta=context.get("reconciliation_delta") or Decimal("0"),
+        blocking_reasons=list(context.get("blocking_reasons") or []),
+        review_reasons=list(context.get("review_reasons") or []),
+        created_at=context.get("created_at") or datetime.now(UTC),
+    )
+    db.add(persisted)
+    report.logistics_routes_required = True
+    audit(
+        db,
+        action="report_logistics_routes_saved",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "dataStatus": status,
+            "factorMethodologyVersion": persisted.factor_methodology_version,
+            "routeRows": expected_count,
+        },
+    )
+    db.flush()
+    return persisted
+
+
 def report_logistics_dimensions_payload(
     db: Session,
     report: ReportRun,
@@ -14210,6 +14339,394 @@ def _validate_logistics_tariff_rows_scope(
             or company.client_id != report.client_id
         ):
             raise ValueError("tariff row cabinet/company scope does not match report")
+
+
+def _validate_logistics_route_rows_scope(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    try:
+        _validate_logistics_tariff_rows_scope(db, report, rows)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("tariff row", "route row")) from exc
+
+
+LOGISTICS_ROUTE_SORT_KEYS = {
+    "warehouse",
+    "destination",
+    "logisticsTotal",
+    "chainCount",
+    "coverageStatus",
+}
+
+
+def report_logistics_routes_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+    warehouse: str = "",
+    destination: str = "",
+    sort_by: str = "logisticsTotal",
+    sort_order: str = "desc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
+    context = db.get(ReportLogisticsRouteContext, report.id)
+    state = _logistics_route_context_state(report, context)
+    base_state = _logistics_context_state(report, logistics_context)
+    filter_context = {
+        "periodStart": period_start.isoformat() if period_start else None,
+        "periodEnd": period_end.isoformat() if period_end else None,
+        "wbCabinetId": wb_cabinet_id or None,
+        "clientCompanyId": client_company_id or None,
+        "scheme": scheme.casefold() or None,
+        "product": product_query.strip() or None,
+        "warehouse": warehouse.strip() or None,
+        "destination": destination.strip() or None,
+        "dateGrain": "calendar_day",
+    }
+    meta = {
+        "reportId": report.id,
+        "dataStatus": "needs_rebuild",
+        "sliceStatus": "needs_rebuild",
+        "methodologyVersion": (
+            logistics_context.methodology_version
+            if logistics_context is not None
+            else LOGISTICS_METHODOLOGY_VERSION
+        ),
+        "factorMethodologyVersion": LOGISTICS_ROUTES_METHODOLOGY_VERSION,
+        "generatedAt": (
+            context.created_at.isoformat()
+            if context is not None
+            else report.generated_at.isoformat()
+        ),
+        "sourceCoverageStart": (
+            context.source_coverage_start.isoformat()
+            if context is not None and context.source_coverage_start is not None
+            else None
+        ),
+        "sourceCoverageEnd": (
+            context.source_coverage_end.isoformat()
+            if context is not None and context.source_coverage_end is not None
+            else None
+        ),
+        "factorSnapshotAt": (
+            context.source_loaded_at.isoformat()
+            if context is not None and context.source_loaded_at is not None
+            else None
+        ),
+        "valueType": "fact_or_data_unavailable",
+        "financialEffect": None,
+        "filterContext": filter_context,
+    }
+    empty_coverage = {
+        "totalChains": 0,
+        "matchedChains": 0,
+        "missingChains": 0,
+        "conflictingChains": 0,
+        "linkedLogistics": Decimal("0"),
+        "unlinkedLogistics": Decimal("0"),
+        "warehouses": 0,
+        "destinations": 0,
+        "coveragePct": None,
+    }
+    empty_payload = {
+        **meta,
+        "coverage": empty_coverage,
+        "rows": [],
+        "total": 0,
+        "offset": offset,
+        "limit": limit,
+        "recommendations": [],
+    }
+    if base_state == "blocked" or state in {"blocked", "scope_mismatch"}:
+        return _logistics_json_safe(
+            {**empty_payload, "dataStatus": "blocked", "sliceStatus": "blocked"}
+        )
+    if base_state not in {"ready", "partial"} or state not in {"ready", "partial"}:
+        return _logistics_json_safe(empty_payload)
+
+    conditions: list[Any] = [ReportLogisticsRouteRow.report_run_id == report.id]
+    if period_start:
+        conditions.append(ReportLogisticsRouteRow.financial_date >= period_start)
+    if period_end:
+        conditions.append(ReportLogisticsRouteRow.financial_date <= period_end)
+    if wb_cabinet_id:
+        conditions.append(ReportLogisticsRouteRow.wb_cabinet_id == wb_cabinet_id)
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsRouteRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(ReportLogisticsRouteRow.scheme == scheme.casefold())
+    if product_query.strip():
+        product_pattern = f"%{product_query.strip()}%"
+        conditions.append(
+            or_(
+                ReportLogisticsRouteRow.product.ilike(product_pattern),
+                ReportLogisticsRouteRow.vendor_code.ilike(product_pattern),
+            )
+        )
+    if warehouse.strip():
+        conditions.append(
+            ReportLogisticsRouteRow.warehouse.ilike(f"%{warehouse.strip()}%")
+        )
+    if destination.strip():
+        conditions.append(
+            ReportLogisticsRouteRow.destination.ilike(f"%{destination.strip()}%")
+        )
+
+    chain_slice = (
+        select(
+            ReportLogisticsRouteRow.chain_key.label("chain_key"),
+            func.sum(ReportLogisticsRouteRow.logistics_total).label(
+                "logistics_total"
+            ),
+            func.max(
+                case(
+                    (ReportLogisticsRouteRow.coverage_status == "ready", 1),
+                    else_=0,
+                )
+            ).label("matched"),
+            func.max(
+                case(
+                    (
+                        ReportLogisticsRouteRow.coverage_status
+                        == "conflicting_route",
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("conflicting"),
+        )
+        .where(*conditions)
+        .group_by(ReportLogisticsRouteRow.chain_key)
+        .subquery()
+    )
+    chain_stats = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(chain_slice.c.matched), 0),
+            func.coalesce(func.sum(chain_slice.c.conflicting), 0),
+            func.coalesce(func.sum(chain_slice.c.logistics_total), 0),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (chain_slice.c.matched == 1, chain_slice.c.logistics_total),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).select_from(chain_slice)
+    ).one()
+    total_chains = int(chain_stats[0] or 0)
+    matched_chains = int(chain_stats[1] or 0)
+    conflicting_chains = int(chain_stats[2] or 0)
+    missing_chains = max(0, total_chains - matched_chains - conflicting_chains)
+    total_logistics = decimal_value(chain_stats[3])
+    linked_logistics = decimal_value(chain_stats[4])
+    place_stats = db.execute(
+        select(
+            func.count(func.distinct(ReportLogisticsRouteRow.warehouse)),
+            func.count(func.distinct(ReportLogisticsRouteRow.destination)),
+        ).where(
+            *conditions,
+            ReportLogisticsRouteRow.coverage_status == "ready",
+        )
+    ).one()
+    coverage = {
+        "totalChains": total_chains,
+        "matchedChains": matched_chains,
+        "missingChains": missing_chains,
+        "conflictingChains": conflicting_chains,
+        "linkedLogistics": linked_logistics,
+        "unlinkedLogistics": total_logistics - linked_logistics,
+        "warehouses": int(place_stats[0] or 0),
+        "destinations": int(place_stats[1] or 0),
+        "coveragePct": (
+            Decimal(matched_chains) * Decimal("100") / Decimal(total_chains)
+            if total_chains
+            else None
+        ),
+    }
+    if total_chains == 0:
+        return _logistics_json_safe(
+            {
+                **empty_payload,
+                "dataStatus": context.data_status,
+                "sliceStatus": "empty",
+                "coverage": coverage,
+            }
+        )
+
+    grouped = (
+        select(
+            ReportLogisticsRouteRow.warehouse.label("warehouse"),
+            ReportLogisticsRouteRow.destination.label("destination"),
+            func.sum(ReportLogisticsRouteRow.logistics_total).label(
+                "logistics_total"
+            ),
+            func.count(func.distinct(ReportLogisticsRouteRow.chain_key)).label(
+                "chain_count"
+            ),
+            func.count(
+                func.distinct(ReportLogisticsRouteRow.week_coefficient)
+            ).label("coefficient_count"),
+            func.min(ReportLogisticsRouteRow.week_coefficient).label(
+                "week_coefficient"
+            ),
+            func.sum(
+                case(
+                    (ReportLogisticsRouteRow.coefficient_status != "ready", 1),
+                    else_=0,
+                )
+            ).label("coefficient_issues"),
+            func.sum(
+                case(
+                    (ReportLogisticsRouteRow.coverage_status != "ready", 1),
+                    else_=0,
+                )
+            ).label("coverage_issues"),
+        )
+        .where(*conditions)
+        .group_by(
+            ReportLogisticsRouteRow.warehouse,
+            ReportLogisticsRouteRow.destination,
+        )
+        .subquery()
+    )
+    total = int(db.scalar(select(func.count()).select_from(grouped)) or 0)
+    coverage_expr = case((grouped.c.coverage_issues == 0, 0), else_=1)
+    sort_fields = {
+        "warehouse": grouped.c.warehouse,
+        "destination": grouped.c.destination,
+        "logisticsTotal": grouped.c.logistics_total,
+        "chainCount": grouped.c.chain_count,
+        "coverageStatus": coverage_expr,
+    }
+    sort_column = sort_fields[sort_by]
+    direction = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    page = db.execute(
+        select(grouped)
+        .order_by(direction, grouped.c.warehouse.asc(), grouped.c.destination.asc())
+        .offset(offset)
+        .limit(limit)
+    ).mappings()
+    rows: list[dict[str, Any]] = []
+    for row in page:
+        coefficient_count = int(row["coefficient_count"] or 0)
+        coefficient_issues = int(row["coefficient_issues"] or 0)
+        coefficient_status = (
+            "ready"
+            if coefficient_count == 1 and coefficient_issues == 0
+            else "mixed"
+            if coefficient_count > 1
+            else "data_unavailable"
+        )
+        chain_count = int(row["chain_count"] or 0)
+        route_ready = int(row["coverage_issues"] or 0) == 0
+        rows.append(
+            {
+                "warehouse": row["warehouse"] or None,
+                "destination": row["destination"] or None,
+                "logisticsTotal": decimal_value(row["logistics_total"]),
+                "chainCount": chain_count,
+                "lowSample": chain_count < LOW_SAMPLE_THRESHOLD,
+                "weekCoefficient": (
+                    row["week_coefficient"]
+                    if coefficient_status == "ready"
+                    else None
+                ),
+                "coefficientStatus": coefficient_status,
+                "evidenceType": "fact" if route_ready else "data_unavailable",
+                "coverageStatus": "ready" if route_ready else "data_unavailable",
+                "financialEffect": None,
+            }
+        )
+    recommendations: list[dict[str, Any]] = []
+    leader = db.execute(
+        select(grouped)
+        .where(grouped.c.coverage_issues == 0)
+        .order_by(grouped.c.logistics_total.desc())
+        .limit(1)
+    ).mappings().first()
+    if leader is not None:
+        recommendations.append(
+            {
+                "code": "route_distribution_review",
+                "priority": 30,
+                "title": "Проверить распределение по маршрутам",
+                "message": (
+                    "Показан крупнейший подтверждённый маршрутный срез; это "
+                    "факт затрат, а не обещание экономии."
+                ),
+                "impactAmount": None,
+                "evidenceType": "fact",
+                "actionTarget": "#logistics-routes",
+                "actionLabel": "Посмотреть маршруты",
+                "evidence": {"chainCount": int(leader["chain_count"] or 0)},
+            }
+        )
+    unavailable = missing_chains + conflicting_chains
+    if unavailable:
+        recommendations.append(
+            {
+                "code": "route_data_unavailable",
+                "priority": 40,
+                "title": "Проверить покрытие маршрутов",
+                "message": (
+                    "Для части цепочек склад или направление отсутствуют либо "
+                    "конфликтуют; маршрут не выбран случайно."
+                ),
+                "impactAmount": None,
+                "evidenceType": "data_unavailable",
+                "actionTarget": "#logistics-routes",
+                "actionLabel": "Проверить источник",
+                "evidence": {"chainCount": unavailable},
+            }
+        )
+    slice_status = (
+        "partial"
+        if context.data_status == "partial" or missing_chains or conflicting_chains
+        else "ready"
+    )
+    return _logistics_json_safe(
+        {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "rows": rows,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "recommendations": recommendations,
+        }
+    )
+
+
+def _logistics_route_context_state(
+    report: ReportRun,
+    context: ReportLogisticsRouteContext | None,
+) -> str:
+    if context is None:
+        return "missing"
+    if context.factor_methodology_version != LOGISTICS_ROUTES_METHODOLOGY_VERSION:
+        return "outdated_methodology"
+    if context.tenant_id != report.tenant_id or context.client_id != report.client_id:
+        return "scope_mismatch"
+    if context.data_status not in {"ready", "partial", "blocked"}:
+        return "invalid_status"
+    return context.data_status
 
 
 def _validate_logistics_result_scope(
@@ -17126,6 +17643,86 @@ def report_readiness_payload(
                     _readiness_reason(
                         "logistics_tariffs_partial",
                         "Часть архивных тарифов недоступна или требует проверки.",
+                    )
+                )
+                score -= 5
+
+    route_context = db.get(ReportLogisticsRouteContext, report.id)
+    if report.logistics_routes_required:
+        route_state = _logistics_route_context_state(report, route_context)
+        route_blockers = {
+            "missing": (
+                "logistics_routes_missing",
+                "Обязательный контекст маршрутов отсутствует; нужен новый report run.",
+            ),
+            "outdated_methodology": (
+                "logistics_routes_outdated",
+                "Контекст маршрутов построен по устаревшей методике.",
+            ),
+            "scope_mismatch": (
+                "logistics_routes_scope_mismatch",
+                "Контекст маршрутов принадлежит другому tenant или клиенту.",
+            ),
+            "invalid_status": (
+                "logistics_routes_invalid_status",
+                "Контекст маршрутов имеет неизвестный статус.",
+            ),
+            "blocked": (
+                "logistics_routes_blocked",
+                "Проверка целостности snapshot маршрутов не пройдена.",
+            ),
+        }
+        if route_state in route_blockers:
+            code, message = route_blockers[route_state]
+            blocking_reasons.append(
+                _readiness_reason(code, message, nonOverridable=True)
+            )
+            score = min(score, 40)
+        elif route_context is not None:
+            actual_route_rows = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReportLogisticsRouteRow)
+                    .where(ReportLogisticsRouteRow.report_run_id == report.id)
+                )
+                or 0
+            )
+            actual_route_total = decimal_value(
+                db.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(ReportLogisticsRouteRow.logistics_total), 0
+                        )
+                    )
+                    .where(ReportLogisticsRouteRow.report_run_id == report.id)
+                )
+            )
+            if actual_route_rows != route_context.route_row_count:
+                blocking_reasons.append(
+                    _readiness_reason(
+                        "logistics_routes_row_count_mismatch",
+                        "Количество строк витрины маршрутов не совпадает с context.",
+                        nonOverridable=True,
+                    )
+                )
+                score = min(score, 40)
+            elif (
+                abs(actual_route_total - route_context.total_logistics)
+                > Decimal("0.01")
+            ):
+                blocking_reasons.append(
+                    _readiness_reason(
+                        "logistics_routes_total_mismatch",
+                        "Сумма витрины маршрутов не совпадает с context.",
+                        nonOverridable=True,
+                    )
+                )
+                score = min(score, 40)
+            elif route_state == "partial":
+                review_reasons.append(
+                    _readiness_reason(
+                        "logistics_routes_partial",
+                        "Часть складов или направлений недоступна или конфликтует.",
                     )
                 )
                 score -= 5

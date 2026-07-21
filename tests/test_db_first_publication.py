@@ -107,6 +107,9 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
     assert "logistics_tariffs_required" in {
         column["name"] for column in inspector.get_columns("report_runs")
     }
+    assert "logistics_routes_required" in {
+        column["name"] for column in inspector.get_columns("report_runs")
+    }
     assert {
         "source_quality_status",
         "required_field_error_count",

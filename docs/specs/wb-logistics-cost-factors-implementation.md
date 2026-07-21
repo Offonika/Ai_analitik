@@ -24,22 +24,22 @@ ai_sections:
   tests: "Test Plan"
 code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
-    symbols: ["def build_dimension_rows", "def build_tariff_rows"]
+    symbols: ["def build_dimension_rows", "def build_tariff_rows", "def build_route_rows"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot"]
+    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/web/repository.py
-    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload"]
+    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload"]
 test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_build_dimension_rows_links_by_nm_and_marks_unavailable"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness"]
+    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft"]
+    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_tariffs.py
     symbols: ["def test_build_tariff_snapshot_dates_uses_calendar_weeks", "def test_flatten_box_tariffs_keeps_period_and_none_for_missing"]
   - path: tests/test_logistics_factor_marts.py
-    symbols: ["def test_build_tariff_rows_uses_historical_fact_and_current_estimate", "def test_build_tariff_rows_keeps_missing_and_invalid_values_explicit", "def test_tariff_analysis_is_atomic_and_published_report_is_immutable"]
+    symbols: ["def test_build_tariff_rows_uses_historical_fact_and_current_estimate", "def test_build_route_rows_joins_exact_chain_and_marks_conflicts", "def test_route_analysis_is_atomic_and_published_report_is_immutable"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-21"
@@ -92,14 +92,20 @@ snapshot карточек, атомарно сохраняет dimension context
 state matrix, фильтры, SQL-pagination и coverage полного среза, а factor-блок
 встроен в `#tables/logistics`. Operational evidence находится в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Статус всего factor-spec остаётся `accepted`: сохранение и расчёт тарифов,
-возвратов и продаж, route mart, `/routes`, фактические замеры/штрафы, factor AI
-digest и клиентский/production rollout остаются следующими подпакетами.
+Статус всего factor-spec остаётся `accepted`: причины возвратов, фактические
+замеры/штрафы, factor AI digest и клиентский/production rollout остаются
+следующими подпакетами.
 
-F-2 реализуется отдельным сквозным пакетом после F-1: verified snapshot
-архивных и текущих box/pallet тарифов -> нормализация -> tariff context/mart ->
-read-only `/tariffs` -> staff-only блок в `#tables/logistics`. Отдельный
-tariff-флаг не включает F-3 и не меняет финансовый итог.
+F-2 «Тарифы» реализован сквозным пакетом и принят на staff-only test 21 июля
+2026 года: verified box/pallet snapshot, tariff context/mart, read-only
+`/tariffs` и локальный UI-блок работают за отдельными defaults-off флагами.
+Production и client enable не выполнялись.
+
+F-3 собран локально отдельным пакетом: verified `supplier/sales` snapshot ->
+точная связка цепочки -> route context/mart -> read-only `/routes` ->
+staff-only блок в `#tables/logistics`. Route-флаг не меняет финансовый итог и
+не включает F-4. До merge и dated test evidence этот абзац не является
+утверждением о состоянии среды.
 
 # Цель
 
@@ -405,11 +411,54 @@ context — non-overridable publication blocker, `partial` из-за недос�
 
 ## `report_logistics_route_rows`
 
-Уже зарезервирована каноническим спеком. Гранулярность — склад и доступное
-направление доставки. Создаётся только при достаточном покрытии исходных полей
-(порог покрытия фиксируется по результату probe). Поля: склад, направление,
-фактическая логистика среза, число цепочек, `low_sample`, коэффициент недели
-при наличии, `evidenceType`, source hash.
+F-3 хранит атомарную route evidence на уровне неизменяемого сегмента цепочки:
+`tenant/client/cabinet/company/scheme/financial_date/product_ref/chain_key`.
+Это storage-grain для корректных фильтров; API SQL-агрегирует его до склада и
+направления доставки. Поля: дата и неделя, товар, склад, составное направление
+`country/oblastOkrug/region`, статусы каждого поля, фактическая логистика
+сегмента, `low_sample`, nullable box-коэффициент недели, отдельный статус
+коэффициента, `evidence_type`, `coverage_status` и source hash.
+
+Строка `supplier/sales` связывается только по точной тройке
+`(wb_cabinet_id, srid, nm_id)` с chain key финансовой логистики. Совпадение
+`srid` или `nm_id` отдельно, а также совпадение в другом кабинете не является
+связью. Одинаковые строки одной цепочки схлопываются; разные непустые значения
+склада или направления дают `mixed`, ничего не выбирается случайно. Пропуск
+поля остаётся `missing`, не превращается в пустой маршрут или ноль.
+
+Route mart сохраняет строку и для недоступного маршрута, чтобы полная
+фактическая логистика среза и denominator coverage оставались
+воспроизводимыми. Маршрут считается подтверждённым только когда оба поля имеют
+status `ready`; `mixed`/`missing` получают `data_unavailable`. Поэтому
+отдельного глобального порога нет: допустимость оценивается для каждой цепочки,
+а валидные кабинеты не скрываются из-за частичного source scope другого
+кабинета. Сумма `logistics_total` mart должна точно совпадать с order mart.
+
+`week_coefficient` заполняется только из единственной непротиворечивой
+исторической box-строки F-2 для той же недели, кабинета, организации, схемы и
+нормализованного склада. Current estimate, pallet, missing/conflict или
+неоднозначное имя склада оставляют коэффициент `null`; это не меняет
+фактическую логистику. Hash строки включает `wb-logistics-routes-v1`, hashes
+order segment, всех участвующих supplier-sales строк и связанной tariff-строки.
+
+## `report_logistics_route_contexts`
+
+Один immutable context на report run хранит tenant/client,
+`factor_methodology_version=wb-logistics-routes-v1`, `data_status`, input и
+snapshot hashes, factor snapshot timestamp и coverage window Statistics,
+source/mart/total/matched/missing/conflicting chain counts, linked logistics,
+warehouse/destination counts, reconciliation delta и безопасные
+blocking/review codes.
+
+Источник выбирается из lineage `primary -> base -> contributor`. Две разные
+ревизии одного приоритета, scope mismatch, DB/file ambiguity, неподтверждённый
+manifest, изменившиеся flat hashes/row count или небезопасный путь создают
+`blocked` context без route rows. DB и `file_authoritative` дают одинаковый
+результат. Context и rows сохраняются атомарно только для нового draft;
+published report не изменяется. При включённом route master-флаге report
+получает `logistics_routes_required=true`: missing/outdated/blocked required
+context — non-overridable publication blocker, partial из-за недоступного
+Statistics scope или неполной связки — review и публикацию не блокирует.
 
 # API
 
@@ -465,6 +514,27 @@ seller account identifiers в ответ не входят.
   предупреждение, что это справочный тариф без денежного эффекта. Raw,
   source hashes, account IDs и внутренние row IDs не возвращаются.
 
+Контракт F-3 `/routes`:
+
+- фильтры `periodStart`, `periodEnd`, `wbCabinetId`, `clientCompanyId`, `scheme`,
+  `product`, `warehouse`, `destination` применяются до SQL-агрегации;
+- SQL-pagination `offset`/`limit` и сортировки `warehouse`, `destination`,
+  `logisticsTotal`, `chainCount`, `coverageStatus`;
+- поля `dataStatus`, `sliceStatus`, `methodologyVersion`,
+  `factorMethodologyVersion`, `generatedAt`, `sourceCoverageStart`,
+  `sourceCoverageEnd`, `factorSnapshotAt`, `filterContext`, `coverage`, `rows`,
+  `total`, `offset`, `limit`, `recommendations`;
+- строка API содержит только безопасные warehouse/destination labels,
+  фактическую логистику, chain count, `lowSample`, nullable week coefficient,
+  coefficient/evidence/coverage statuses; raw `srid`, `nmId`, chain/hash и
+  seller identifiers наружу не возвращаются;
+- `coverage` и рекомендации считаются по полному фильтрованному срезу до
+  pagination: total/matched/missing/conflicting chains, linked/unlinked
+  logistics, warehouse/destination counts и coverage percent;
+- `needs_rebuild` — нет совместимого context; `blocked` — integrity/scope или
+  reconciliation failure; `empty` — в разрешённом срезе нет route evidence;
+  `partial` — есть missing/conflicting; иначе `ready`.
+
 # Интерфейс
 
 Блок факторов встраивается в существующий answer-first экран логистики
@@ -514,6 +584,22 @@ F-2 дополнительно закрыт defaults-off флагами
 логистики/factors и tariff master. Client дополнительно требует все три
 client-флага. При запрете API возвращает 404, UI не выполняет запрос.
 
+Синтетический target F-3 фиксируется в
+[`docs/design/wb-logistics-f3-routes-target.html`](../design/wb-logistics-f3-routes-target.html).
+Секция `Факторы стоимости -> Склады и направления` идёт после тарифов и до
+рейтинга товаров: coverage цепочек, склад, направление, фактическая логистика,
+число цепочек, `lowSample` и nullable исторический box-коэффициент. Hashes,
+raw identifiers и внешние seller IDs не выводятся. На mobile строки становятся
+подписанными карточками. Ошибка route API локальна и не ломает F-1/F-2 или
+денежную аналитику первой очереди.
+
+F-3 дополнительно закрыт defaults-off флагами
+`SHUMEYKO_LOGISTICS_ROUTES_ENABLED` и
+`SHUMEYKO_LOGISTICS_ROUTES_CLIENT_ENABLED`. Staff требует master-флаги
+логистики/factors и route master. Client дополнительно требует client-флаги
+логистики/factors/routes. При запрете API возвращает 404, UI не выполняет
+запрос и не показывает секцию.
+
 # Правила рекомендаций
 
 Наследуют формат первой очереди (`code`, `priority`, `title`, `message`,
@@ -544,7 +630,8 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
 - `isValid=false` без финансового факта → только сигнал, не штраф.
 - Нет исторического тарифа за нужную неделю → коэффициент показывается как
   `Оценка` по явно выбранному тарифу, историю им не объясняют.
-- Нет направления доставки → маршрутная витрина не строится (правило канона).
+- Нет направления доставки → route mart сохраняет строку цепочки с
+  `data_unavailable`, чтобы coverage и reconciliation не теряли знаменатель.
 - Несколько складов/направлений в одной цепочке → `mixed`, а не первое
   значение.
 - Разные rate limits источников → после первого 429 серия запросов этого
@@ -566,6 +653,14 @@ nullable `impactAmount`, `evidenceType`, `actionTarget`, `actionLabel`,
   сохраняются.
 - Успешная историческая дата без отдельного склада означает отсутствие этого
   склада в том ответе; F-2 не дополняет её складом из другой архивной даты.
+- Supplier-sales snapshot conflict/integrity/scope обрабатываются теми же
+  fail-closed правилами с кодами `route_*`; при `blocked` строки не
+  сохраняются.
+- Statistics хранит ограниченную историю: непокрытая часть периода даёт
+  `partial/data_unavailable`, не подменяется текущим маршрутом и сама по себе не
+  блокирует публикацию.
+- Один `srid` с разными `nm_id`, одинаковый `srid` другого кабинета и строка
+  без точного product key не связываются по fallback.
 
 # Безопасность и tenant isolation
 
@@ -628,6 +723,12 @@ Design-часть draft считается принятой, когда влад
     fallback маркирует `estimate`, а coverage считается до pagination.
 15. tariff context/rows атомарны, published report immutable, required
     blocked/missing/outdated context блокирует публикацию, partial — нет.
+16. F-3 связывает Statistics только по `(cabinet, srid, nm_id)`, сохраняет
+    missing/mixed явно и полностью reconciles route logistics с order mart.
+17. route coverage считается до pagination, API/UI не возвращают raw IDs или
+    hashes, а локальная ошибка F-3 не ломает F-1/F-2 и первую очередь.
+18. route context/rows атомарны, published report immutable, required
+    blocked/missing/outdated context блокирует публикацию, partial — нет.
 
 # Test Plan
 
@@ -637,6 +738,9 @@ Design-часть draft считается принятой, когда влад
 - unit: календарная сетка дат, locale Decimal, explicit zero, missing/invalid/
   negative, одинаковые и конфликтующие tariff rows, стабильность hashes;
 - unit: агрегация склад/направление, `mixed` при конфликте;
+- unit: exact `(cabinet, srid, nm_id)` join, одинаковый `srid` между кабинетами,
+  duplicate/conflicting supplier-sales, missing route, стабильность hashes,
+  order/route logistics reconciliation и nullable historical box coefficient;
 - unit: `evidenceType` факторов и запрет нулевой подстановки;
 - integration: сборка витрин `report_logistics_dimension_rows` и
   `report_logistics_route_rows` из обезличенного снимка, lineage и hash;
@@ -650,6 +754,9 @@ Design-часть draft считается принятой, когда влад
 - persistence/API: atomic tariff context+rows, published immutability,
   row-count reconciliation, все states/filters/sort/pagination, full-slice
   coverage, role/flag matrix и отсутствие raw/hash полей;
+- persistence/API: atomic route context+rows, published immutability,
+  reconciliation, publication blocker, role/flag matrix, filters,
+  SQL-pagination/sorting и coverage полного среза;
 - browser: staff-only deep-link на desktop/mobile, client 404/скрытый блок,
   отсутствие overflow и console/page/network errors.
 
@@ -679,6 +786,14 @@ Client API обязан вернуть 404, секция отсутствова�
 enable не выполняются; operational evidence не содержит объёмов, складов или
 идентификаторов клиента.
 
+Для F-3 применяется additive migration и immutable runtime. На test включаются
+factor master и `SHUMEYKO_LOGISTICS_ROUTES_ENABLED`; route client-флаг остаётся
+`false`. Новый report run строится из verified supplier-sales snapshot,
+staff API/UI проверяются на desktop 1440x900 и mobile 390x844. Client API
+обязан вернуть 404, секция отсутствовать. Production и client enable не
+выполняются; operational evidence не содержит объёмов, складов, направлений или
+идентификаторов клиента.
+
 Rollback отключает новые API-маршруты и факторный блок, не изменяя существующие
 отчёты и первую очередь. Новые витрины additive и неизменяемы. Внешние источники
 при rollout и rollback не изменяются. Отключение флага не снимает publication
@@ -706,17 +821,21 @@ blocker с report run, который обязан был пройти gate, н�
   `penalty`, `warehouseName`) — сверить по Swagger finances (требует live).
 - Глубина архива тарифов не гарантирована provider contract и измеряется
   статусами отдельных дат, а не считается настройкой F-2.
-- Порог покрытия, при котором строится `report_logistics_route_rows`.
-- Нужно ли начать сохранять Statistics `supplier/sales` (склад/направление):
-  сейчас этих полей в сохранённом снимке нет — probe подтвердил.
 - Отдельный retention для tariff snapshot не вводится: действует retention
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
-Частично закрытые probe (2026-07-19): габариты — источник подтверждён и F-1
-начат; минимальный состав первой поставки — начинать с F-1 (габариты), так как
-данные уже есть, остальные подпакеты после живого probe.
+Частично закрытые probe (2026-07-19): габариты, тарифы и supplier-sales
+подтверждены read-only проверками. F-1 и F-2 приняты на staff-only test; F-3
+собран локально и требует merge/CI/test evidence.
 
 # Changelog
+
+- 2026-07-21 — принят точный контракт F-3 «Склады и маршруты»: verified
+  `supplier/sales`, exact cabinet/srid/nm join, explicit missing/mixed,
+  route context/mart reconciliation, `/routes`, defaults-off flags и
+  staff-only visual target. Глобальный coverage threshold снят в пользу
+  per-chain admissibility, чтобы частичный scope одного кабинета не скрывал
+  валидный другой кабинет.
 
 - 2026-07-21 — принят точный контракт F-2 «Тарифы»: официальный WB contract
   повторно проверен (обязательный `date`, текущие/архивные box/pallet,
@@ -724,7 +843,7 @@ blocker с report run, который обязан был пройти gate, н�
   verified lineage/DB-file rules, `wb-logistics-tariffs-v1` context/mart,
   `/logistics/tariffs`, states/coverage/recommendations, отдельные defaults-off
   flags, visual target и staff-only test rollout. Общий spec остаётся
-  `accepted`; F-3–F-5 и client/production enable не входят.
+  `accepted`; F-4–F-5 и client/production enable не входят.
 
 - 2026-07-20 — F-1 «Габариты» доведён до staff-only test: добавлены flags и
   role matrix, авторитетный Content snapshot selector с DB/file parity и

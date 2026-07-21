@@ -436,6 +436,9 @@ ALTER TABLE IF EXISTS wb_unit_economics.report_runs
 ALTER TABLE IF EXISTS wb_unit_economics.report_runs
     ADD COLUMN IF NOT EXISTS logistics_tariffs_required boolean NOT NULL DEFAULT false;
 
+ALTER TABLE IF EXISTS wb_unit_economics.report_runs
+    ADD COLUMN IF NOT EXISTS logistics_routes_required boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_rows (
     id bigserial PRIMARY KEY,
     report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
@@ -567,6 +570,92 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_tariff_contexts (
 
 CREATE INDEX IF NOT EXISTS ix_report_logistics_tariff_context_status
     ON wb_unit_economics.report_logistics_tariff_contexts (tenant_id, data_status);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_route_rows (
+    id bigserial PRIMARY KEY,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    row_uid text NOT NULL,
+    wb_cabinet_id text NOT NULL DEFAULT '',
+    client_company_id text NOT NULL DEFAULT '',
+    scheme text NOT NULL DEFAULT '',
+    financial_date date NOT NULL,
+    financial_week_start date NOT NULL,
+    product_ref text NOT NULL DEFAULT '',
+    product text NOT NULL DEFAULT '',
+    vendor_code text NOT NULL DEFAULT '',
+    chain_key text NOT NULL DEFAULT '',
+    warehouse text NOT NULL DEFAULT '',
+    warehouse_status text NOT NULL DEFAULT 'missing',
+    destination text NOT NULL DEFAULT '',
+    destination_status text NOT NULL DEFAULT 'missing',
+    logistics_total numeric NOT NULL DEFAULT 0,
+    chain_count integer NOT NULL DEFAULT 0,
+    low_sample boolean NOT NULL DEFAULT true,
+    week_coefficient numeric,
+    coefficient_status text NOT NULL DEFAULT 'data_unavailable',
+    evidence_type text NOT NULL DEFAULT '',
+    coverage_status text NOT NULL DEFAULT '',
+    data_quality_status text NOT NULL DEFAULT '',
+    source_hash_digest text NOT NULL DEFAULT '',
+    CONSTRAINT uq_report_logistics_route_row UNIQUE (report_run_id, row_uid)
+);
+
+ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_route_rows
+    ADD COLUMN IF NOT EXISTS financial_date date,
+    ADD COLUMN IF NOT EXISTS financial_week_start date,
+    ADD COLUMN IF NOT EXISTS product_ref text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS product text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS vendor_code text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS chain_key text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS coefficient_status text NOT NULL DEFAULT 'data_unavailable',
+    ADD COLUMN IF NOT EXISTS data_quality_status text NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_route_filter
+    ON wb_unit_economics.report_logistics_route_rows (
+        report_run_id, wb_cabinet_id, client_company_id, scheme
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_route_place
+    ON wb_unit_economics.report_logistics_route_rows (
+        report_run_id, warehouse, destination
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_route_calendar_product
+    ON wb_unit_economics.report_logistics_route_rows (
+        report_run_id, financial_date, product_ref
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_route_contexts (
+    report_run_id text PRIMARY KEY REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    factor_methodology_version text NOT NULL,
+    data_status text NOT NULL,
+    input_hash text NOT NULL,
+    source_snapshot_hash text NOT NULL DEFAULT '',
+    source_loaded_at timestamptz,
+    source_coverage_start date,
+    source_coverage_end date,
+    source_row_count integer NOT NULL DEFAULT 0,
+    route_row_count integer NOT NULL DEFAULT 0,
+    total_chain_count integer NOT NULL DEFAULT 0,
+    matched_chain_count integer NOT NULL DEFAULT 0,
+    missing_chain_count integer NOT NULL DEFAULT 0,
+    conflicting_chain_count integer NOT NULL DEFAULT 0,
+    warehouse_count integer NOT NULL DEFAULT 0,
+    destination_count integer NOT NULL DEFAULT 0,
+    total_logistics numeric NOT NULL DEFAULT 0,
+    linked_logistics numeric NOT NULL DEFAULT 0,
+    reconciliation_delta numeric NOT NULL DEFAULT 0,
+    blocking_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_route_context_status
+    ON wb_unit_economics.report_logistics_route_contexts (tenant_id, data_status);
 
 ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts
     ADD COLUMN IF NOT EXISTS source_quality_status text NOT NULL DEFAULT 'ready',

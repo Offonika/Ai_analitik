@@ -20,11 +20,13 @@ from wb_unit_economics.logistics_analysis import (
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
+    LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LogisticsSourceRow,
     UnitEconomicsSlice,
     build_dimension_rows,
     build_logistics_analysis,
+    build_route_rows,
     build_tariff_rows,
 )
 from wb_unit_economics.web import dashboard_payload, integrations, repository
@@ -1640,6 +1642,60 @@ def _tariff_context(report, rows, *, data_status: str = "ready"):
     }
 
 
+def _route_context(report, rows, *, data_status: str = "ready"):
+    chains = {row["chain_key"] for row in rows}
+    matched = {
+        row["chain_key"] for row in rows if row["coverage_status"] == "ready"
+    }
+    conflicting = {
+        row["chain_key"]
+        for row in rows
+        if row["coverage_status"] == "conflicting_route"
+    }
+    total = sum((row["logistics_total"] for row in rows), Decimal("0"))
+    linked = sum(
+        (
+            row["logistics_total"]
+            for row in rows
+            if row["coverage_status"] == "ready"
+        ),
+        Decimal("0"),
+    )
+    return {
+        "tenant_id": report.tenant_id,
+        "client_id": report.client_id,
+        "factor_methodology_version": LOGISTICS_ROUTES_METHODOLOGY_VERSION,
+        "data_status": data_status,
+        "input_hash": "safe-route-input-hash",
+        "source_snapshot_hash": "safe-route-snapshot-hash",
+        "source_loaded_at": datetime(2026, 7, 21, 12, 0),
+        "source_coverage_start": date(2026, 4, 1),
+        "source_coverage_end": date(2026, 4, 30),
+        "source_row_count": len(rows),
+        "route_row_count": len(rows),
+        "total_chain_count": len(chains),
+        "matched_chain_count": len(matched),
+        "missing_chain_count": len(chains - matched - conflicting),
+        "conflicting_chain_count": len(conflicting),
+        "warehouse_count": len(
+            {row["warehouse"] for row in rows if row["warehouse_status"] == "ready"}
+        ),
+        "destination_count": len(
+            {
+                row["destination"]
+                for row in rows
+                if row["destination_status"] == "ready"
+            }
+        ),
+        "total_logistics": total,
+        "linked_logistics": linked,
+        "reconciliation_delta": Decimal("0"),
+        "blocking_reasons": [],
+        "review_reasons": [] if data_status == "ready" else ["test_partial"],
+        "created_at": datetime(2026, 7, 21, 12, 1),
+    }
+
+
 def persist_logistics_fixture(client: TestClient) -> None:
     with client.app.state.session_factory() as db:
         report = db.get(repository.ReportRun, "report-1")
@@ -2085,6 +2141,214 @@ def test_logistics_tariffs_role_and_flag_matrix(tmp_path: Path) -> None:
     client.app.state.settings.logistics_tariffs_client_enabled = True
     assert client.get("/api/reports/report-1/logistics/tariffs").status_code == 200
     assert client.get("/api/me").json()["logisticsTariffsEnabled"] is True
+
+
+def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_routes_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    legacy = client.get("/api/reports/report-1/logistics/routes").json()
+    assert legacy["dataStatus"] == "needs_rebuild"
+    assert legacy["sliceStatus"] == "needs_rebuild"
+    assert legacy["rows"] == []
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report, product_count=2)
+        repository.replace_report_logistics_analysis(db, report, result)
+        rows = build_route_rows(
+            result.order_rows,
+            [
+                {
+                    "tenant_id": report.tenant_id,
+                    "client_id": report.client_id,
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "srid": "external-order-must-not-leak",
+                    "nm_id": "101",
+                    "warehouse_name": "Склад A",
+                    "country_name": "Страна",
+                    "region_name": "Регион A",
+                    "source_hash": "route-source-must-not-leak",
+                }
+            ],
+        )
+        repository.replace_report_logistics_route_analysis(
+            db,
+            report,
+            context=_route_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/reports/report-1/logistics/routes",
+        params={"limit": 1, "sortBy": "logisticsTotal", "sortOrder": "desc"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataStatus"] == "partial"
+    assert body["sliceStatus"] == "partial"
+    assert body["total"] == 2
+    assert len(body["rows"]) == 1
+    assert body["coverage"] == {
+        "totalChains": 2,
+        "matchedChains": 1,
+        "missingChains": 1,
+        "conflictingChains": 0,
+        "linkedLogistics": 10,
+        "unlinkedLogistics": 10,
+        "warehouses": 1,
+        "destinations": 1,
+        "coveragePct": 50,
+    }
+    assert body["financialEffect"] is None
+    assert body["recommendations"][0]["evidenceType"] == "fact"
+    assert body["recommendations"][1]["evidenceType"] == "data_unavailable"
+    serialized = response.text
+    for forbidden in (
+        "external-order-must-not-leak",
+        "route-source-must-not-leak",
+        "sourceHashDigest",
+        "sourceSnapshotHash",
+        "chainKey",
+        "nmId",
+    ):
+        assert forbidden not in serialized
+
+    filtered = client.get(
+        "/api/reports/report-1/logistics/routes",
+        params={"product": "Товар 102"},
+    ).json()
+    assert filtered["coverage"]["totalChains"] == 1
+    assert filtered["coverage"]["missingChains"] == 1
+    assert filtered["rows"][0]["evidenceType"] == "data_unavailable"
+
+    fully_filtered = client.get(
+        "/api/reports/report-1/logistics/routes",
+        params={
+            "periodStart": "2026-04-01",
+            "periodEnd": "2026-04-30",
+            "wbCabinetId": "cabinet-logistics",
+            "clientCompanyId": "company-logistics",
+            "scheme": "fbo",
+            "product": "A-101",
+            "warehouse": "Склад A",
+            "destination": "Регион A",
+            "sortBy": "warehouse",
+            "sortOrder": "asc",
+        },
+    ).json()
+    assert fully_filtered["total"] == 1
+    assert fully_filtered["coverage"]["totalChains"] == 1
+    assert fully_filtered["coverage"]["matchedChains"] == 1
+    assert fully_filtered["rows"][0]["warehouse"] == "Склад A"
+
+    empty = client.get(
+        "/api/reports/report-1/logistics/routes",
+        params={"periodStart": "2026-06-01", "periodEnd": "2026-06-07"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["coverage"]["totalChains"] == 0
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsRouteContext, "report-1")
+        assert context is not None
+        missing_row = (
+            db.query(repository.ReportLogisticsRouteRow)
+            .filter_by(report_run_id="report-1", coverage_status="data_unavailable")
+            .one()
+        )
+        missing_row.warehouse = "Склад B"
+        missing_row.warehouse_status = "ready"
+        missing_row.destination = "Страна · Регион B"
+        missing_row.destination_status = "ready"
+        missing_row.evidence_type = "fact"
+        missing_row.coverage_status = "ready"
+        missing_row.data_quality_status = "ready"
+        context.data_status = "ready"
+        context.matched_chain_count = 2
+        context.missing_chain_count = 0
+        context.review_reasons = []
+        db.commit()
+    ready = client.get("/api/reports/report-1/logistics/routes").json()
+    assert ready["dataStatus"] == "ready"
+    assert ready["sliceStatus"] == "ready"
+    assert ready["coverage"]["coveragePct"] == 100
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsRouteContext, "report-1")
+        assert context is not None
+        context.factor_methodology_version = "wb-logistics-routes-legacy"
+        db.commit()
+    outdated = client.get("/api/reports/report-1/logistics/routes").json()
+    assert outdated["dataStatus"] == "needs_rebuild"
+    assert outdated["rows"] == []
+
+    with client.app.state.session_factory() as db:
+        context = db.get(repository.ReportLogisticsRouteContext, "report-1")
+        assert context is not None
+        context.factor_methodology_version = LOGISTICS_ROUTES_METHODOLOGY_VERSION
+        context.tenant_id = "other"
+        db.commit()
+    blocked = client.get("/api/reports/report-1/logistics/routes").json()
+    assert blocked["dataStatus"] == "blocked"
+    assert blocked["rows"] == []
+
+
+def test_logistics_routes_role_and_flag_matrix(tmp_path: Path) -> None:
+    (tmp_path / "staff").mkdir()
+    (tmp_path / "client").mkdir()
+    staff = make_client(
+        tmp_path / "staff",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_routes_enabled": False,
+        },
+    )
+    login(staff)
+    assert staff.get("/api/reports/report-1/logistics/routes").status_code == 404
+    assert staff.get("/api/me").json()["logisticsRoutesEnabled"] is False
+    staff.app.state.settings.logistics_routes_enabled = True
+    assert staff.get("/api/reports/report-1/logistics/routes").status_code == 200
+    assert staff.get("/api/me").json()["logisticsRoutesEnabled"] is True
+
+    client = make_client(
+        tmp_path / "client",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_analysis_client_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_factors_client_enabled": True,
+            "logistics_routes_enabled": True,
+            "logistics_routes_client_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="route-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "route-client@example.com", "secret")
+    assert client.get("/api/reports/report-1/logistics/routes").status_code == 404
+    assert client.get("/api/me").json()["logisticsRoutesEnabled"] is False
+    client.app.state.settings.logistics_routes_client_enabled = True
+    assert client.get("/api/reports/report-1/logistics/routes").status_code == 200
+    assert client.get("/api/me").json()["logisticsRoutesEnabled"] is True
 
 
 def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
@@ -3399,6 +3663,67 @@ def test_required_tariff_context_controls_publication_readiness(
             item
             for item in outdated
             if item["code"] == "logistics_tariffs_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+
+def test_required_route_context_controls_publication_readiness(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.logistics_routes_required = True
+        missing = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item for item in missing if item["code"] == "logistics_routes_missing"
+        )
+        assert blocker["nonOverridable"] is True
+        db.rollback()
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        rows = build_route_rows(result.order_rows, [])
+        repository.replace_report_logistics_route_analysis(
+            db,
+            report,
+            context=_route_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        assert not any(
+            item["code"].startswith("logistics_routes_")
+            for item in readiness["blockingReasons"]
+        )
+        assert any(
+            item["code"] == "logistics_routes_partial"
+            for item in readiness["reviewReasons"]
+        )
+
+        context = db.get(repository.ReportLogisticsRouteContext, report.id)
+        assert context is not None
+        context.route_row_count += 1
+        mismatch = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in mismatch
+            if item["code"] == "logistics_routes_row_count_mismatch"
+        )
+        assert blocker["nonOverridable"] is True
+
+        context.route_row_count -= 1
+        context.factor_methodology_version = "wb-logistics-routes-legacy"
+        outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in outdated
+            if item["code"] == "logistics_routes_outdated"
         )
         assert blocker["nonOverridable"] is True
 
@@ -4738,10 +5063,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260721-logistics-f2-tariffs-v2"
+        "20260721-logistics-f3-routes-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260721-logistics-f2-tariffs-v2"
+        "20260721-logistics-f3-routes-v1"
     )
 
     page = client.get("/")
@@ -4892,11 +5217,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260721-logistics-f2-tariffs-v2"
+            "styles.css?v=20260721-logistics-f3-routes-v1"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260721-logistics-f2-tariffs-v2"
+            "app.js?v=20260721-logistics-f3-routes-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -5211,7 +5536,17 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "logisticsTariffsAvailable" in app_js.text
     assert 'id="logistics-tariffs"' in cabinet.text
     assert "Тарифы и коэффициенты WB" in cabinet.text
-    assert "20260721-logistics-f2-tariffs-v2" in cabinet.text
+    assert "/logistics/routes" in app_js.text
+    assert "logisticsRoutesAvailable" in app_js.text
+    assert 'id="logistics-routes"' in cabinet.text
+    assert "Склады и направления" in cabinet.text
+    assert cabinet.text.index('id="logistics-tariffs"') < cabinet.text.index(
+        'id="logistics-routes"'
+    )
+    assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
+        'id="logistics-products-title"'
+    )
+    assert "20260721-logistics-f3-routes-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert "/freshness" in app_js.text
     assert "/client-draft" in app_js.text

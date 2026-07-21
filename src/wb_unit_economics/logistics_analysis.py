@@ -14,6 +14,7 @@ LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
 LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
 LOGISTICS_FACTORS_METHODOLOGY_VERSION = "wb-logistics-factors-v1"
 LOGISTICS_TARIFFS_METHODOLOGY_VERSION = "wb-logistics-tariffs-v1"
+LOGISTICS_ROUTES_METHODOLOGY_VERSION = "wb-logistics-routes-v1"
 CHAIN_KEY_VERSION = "wb-order-product-v1"
 RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
@@ -2135,4 +2136,195 @@ def build_tariff_rows(
                         ),
                     }
                 )
+    return result
+
+
+def _route_destination(row: Mapping[str, Any]) -> str:
+    parts = [
+        _text(row.get("country_name")),
+        _text(row.get("oblast_okrug_name")),
+        _text(row.get("region_name")),
+    ]
+    return " · ".join(dict.fromkeys(item for item in parts if item))
+
+
+def _route_field(values: set[str]) -> tuple[str, str]:
+    normalized = {item for item in values if item}
+    if not normalized:
+        return "", "missing"
+    if len(normalized) > 1:
+        return "mixed", "mixed"
+    return next(iter(normalized)), "ready"
+
+
+def _route_source_hash(row: Mapping[str, Any]) -> str:
+    explicit = _text(row.get("source_hash") or row.get("raw_payload_hash"))
+    return explicit or _hash_payload(dict(row))
+
+
+def build_route_rows(
+    order_rows: Sequence[LogisticsOrderRow],
+    supplier_sales_rows: Sequence[Mapping[str, Any]],
+    tariff_rows: Sequence[Mapping[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    """Build immutable F-3 chain-segment evidence with exact route identity."""
+
+    routes_by_chain: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in supplier_sales_rows:
+        cabinet = _text(row.get("wb_cabinet_id"))
+        srid = _text(row.get("srid"))
+        nm_id = _text(row.get("nm_id"))
+        tenant_id = _text(row.get("tenant_id"))
+        client_id = _text(row.get("client_id"))
+        if not all((cabinet, srid, nm_id, tenant_id, client_id)):
+            continue
+        chain_key = logistics_chain_key(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            wb_cabinet_id=cabinet,
+            order_uid=srid,
+            product_key=f"nm:{nm_id}",
+        )
+        routes_by_chain[chain_key].append(row)
+
+    tariffs_by_point: dict[tuple[str, str, str, date, str], list[Mapping[str, Any]]] = (
+        defaultdict(list)
+    )
+    for row in tariff_rows:
+        tariff_type = _text(row.get("tariff_type")).casefold()
+        evidence_type = _text(row.get("evidence_type")).casefold()
+        coverage_status = _text(row.get("coverage_status")).casefold()
+        week_start = row.get("financial_week_start")
+        warehouse = _text(row.get("warehouse")).casefold()
+        if (
+            tariff_type == "box"
+            and evidence_type == "fact"
+            and coverage_status == "ready"
+            and isinstance(week_start, date)
+            and warehouse
+        ):
+            tariffs_by_point[
+                (
+                    _text(row.get("wb_cabinet_id")),
+                    _text(row.get("client_company_id")),
+                    _text(row.get("scheme")).casefold(),
+                    week_start,
+                    warehouse,
+                )
+            ].append(row)
+
+    result: list[dict[str, Any]] = []
+    for order in sorted(
+        order_rows,
+        key=lambda item: (
+            item.financial_date,
+            item.wb_cabinet_id,
+            item.client_company_id,
+            item.scheme,
+            item.chain_segment_key,
+        ),
+    ):
+        source_rows = routes_by_chain.get(order.chain_key, [])
+        warehouse, warehouse_status = _route_field(
+            {_text(item.get("warehouse_name")) for item in source_rows}
+        )
+        destination, destination_status = _route_field(
+            {_route_destination(item) for item in source_rows}
+        )
+        route_ready = warehouse_status == destination_status == "ready"
+        route_conflict = "mixed" in {warehouse_status, destination_status}
+        coverage_status = (
+            "ready"
+            if route_ready
+            else "conflicting_route"
+            if route_conflict
+            else "data_unavailable"
+        )
+        evidence_type = "fact" if route_ready else "data_unavailable"
+
+        tariff_candidates = tariffs_by_point.get(
+            (
+                order.wb_cabinet_id,
+                order.client_company_id,
+                order.scheme.casefold(),
+                order.financial_week_start,
+                warehouse.casefold(),
+            ),
+            [],
+        ) if warehouse_status == "ready" else []
+        coefficient_values = {
+            value
+            for item in tariff_candidates
+            if (value := item.get("delivery_coefficient_pct")) is not None
+        }
+        if len(coefficient_values) == 1:
+            week_coefficient = next(iter(coefficient_values))
+            coefficient_status = "ready"
+        elif len(coefficient_values) > 1:
+            week_coefficient = None
+            coefficient_status = "conflicting"
+        else:
+            week_coefficient = None
+            coefficient_status = "data_unavailable"
+
+        source_hashes = sorted({_route_source_hash(item) for item in source_rows})
+        tariff_hashes = sorted(
+            {
+                _text(item.get("source_hash_digest"))
+                or _route_source_hash(item)
+                for item in tariff_candidates
+            }
+        )
+        row_identity = (
+            order.tenant_id,
+            order.client_id,
+            order.wb_cabinet_id,
+            order.client_company_id,
+            order.scheme,
+            order.financial_date.isoformat(),
+            order.product_ref,
+            order.chain_segment_key,
+        )
+        result.append(
+            {
+                "tenant_id": order.tenant_id,
+                "client_id": order.client_id,
+                "wb_cabinet_id": order.wb_cabinet_id,
+                "client_company_id": order.client_company_id,
+                "scheme": order.scheme,
+                "financial_date": order.financial_date,
+                "financial_week_start": order.financial_week_start,
+                "product_ref": order.product_ref,
+                "product": order.product,
+                "vendor_code": order.vendor_code,
+                "chain_key": order.chain_key,
+                "warehouse": warehouse,
+                "warehouse_status": warehouse_status,
+                "destination": destination,
+                "destination_status": destination_status,
+                "logistics_total": order.logistics_total,
+                "chain_count": 1,
+                "low_sample": True,
+                "week_coefficient": week_coefficient,
+                "coefficient_status": coefficient_status,
+                "evidence_type": evidence_type,
+                "coverage_status": coverage_status,
+                "data_quality_status": coverage_status,
+                "row_uid": "route:"
+                + hashlib.sha256("\x1f".join(row_identity).encode("utf-8")).hexdigest(),
+                "source_hash_digest": _hash_payload(
+                    {
+                        "factorMethodologyVersion": (
+                            LOGISTICS_ROUTES_METHODOLOGY_VERSION
+                        ),
+                        "identity": row_identity,
+                        "orderSourceHash": order.source_hash_digest,
+                        "supplierSalesSourceHashes": source_hashes,
+                        "tariffSourceHashes": tariff_hashes,
+                        "coverageStatus": coverage_status,
+                        "coefficientStatus": coefficient_status,
+                    }
+                ),
+            }
+        )
     return result
