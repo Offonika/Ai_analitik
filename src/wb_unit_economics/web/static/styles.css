@@ -7508,7 +7508,8 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   }
 
   .logistics-dimensions-table-wrap {
-    overflow: visible;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .logistics-dimensions-table {
@@ -7570,7 +7571,8 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   }
 
   .logistics-tariffs-table-wrap {
-    overflow: visible;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .logistics-tariffs-table {
