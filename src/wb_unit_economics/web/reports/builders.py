@@ -265,6 +265,20 @@ def build_tax_load_payload(
         ):
             denominator = _decimal_text(income_evidence.get("value"))
     ratio = fns_tax_burden_ratio(numerator, denominator)
+    # Управленческий показатель нагрузки для УСН: знаменатель — доход по УСН без
+    # НДС из поступлений (для ИП, у которого нет отчета о финансовых результатах;
+    # spec: Tax Methodology Boundary, решение от 21.07.2026). Официальный
+    # fns_tax_burden_ratio при этом не подменяется.
+    tax_system = str(profile.get("taxSystem") or "").strip().lower()
+    is_usn = tax_system.startswith("usn")
+    usn_income_value: str | None = None
+    usn_income_ratio: Decimal | None = None
+    usn_income_evidence = evidence.get("usnIncomeEvidence")
+    if is_usn and isinstance(usn_income_evidence, Mapping):
+        usn_status = str(usn_income_evidence.get("status") or "").strip().lower()
+        if usn_status in CONFIRMED_EVIDENCE_STATUSES:
+            usn_income_value = _decimal_text(usn_income_evidence.get("value"))
+            usn_income_ratio = fns_tax_burden_ratio(numerator, usn_income_value)
     tax_rows = _safe_rows(
         evidence.get("taxRows"),
         (
@@ -361,6 +375,18 @@ def build_tax_load_payload(
             "comparisonStatus": "pending_methodology_confirmation",
             "benchmarkYear": None,
             "benchmarkValue": None,
+            "usnIncomeDenominatorKind": "usn_income_receipts_excluding_vat",
+            "usnIncomeValue": usn_income_value,
+            "usnIncomeTaxBurden": (
+                format(usn_income_ratio, "f")
+                if usn_income_ratio is not None
+                else None
+            ),
+            "usnIncomeStatus": (
+                "management_reference"
+                if usn_income_ratio is not None
+                else ("source_gap" if is_usn else None)
+            ),
         },
         "issues": issues,
         "businessStatus": (

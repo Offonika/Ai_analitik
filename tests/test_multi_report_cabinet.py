@@ -190,6 +190,34 @@ def _tax_evidence() -> dict:
     }
 
 
+def _usn_tax_evidence() -> dict:
+    """УСН-разновидность налоговых фактов: собственный налог УСН + взносы."""
+
+    evidence = _tax_evidence()
+    evidence["taxRows"] = [
+        {
+            "taxCode": "usn_income",
+            "taxName": "УСН доходы",
+            "paid": "100",
+            "balance": "0",
+            "dueDate": "2026-07-28",
+            "paymentKind": "own_tax",
+            "includedInFnsTaxBurden": True,
+            "evidenceStatus": "loaded",
+        },
+        {
+            "taxCode": "insurance",
+            "taxName": "Страховые взносы",
+            "paid": "25",
+            "paymentKind": "insurance_contribution",
+            "includedInFnsTaxBurden": False,
+            "exclusionReason": "insurance_contribution",
+            "evidenceStatus": "loaded",
+        },
+    ]
+    return evidence
+
+
 def test_month_close_prefers_balance_and_turnovers_and_warns_on_any_delta() -> None:
     payload = build_month_close_control_payload(
         _report("month_close_control"), _month_close_evidence()
@@ -397,6 +425,117 @@ def test_tax_load_requires_confirmed_classified_numerator_and_denominator() -> N
     assert denominator["taxLoadSummary"]["numeratorValue"] == "100"
     assert denominator["taxLoadSummary"]["denominatorValue"] is None
     assert denominator["taxLoadSummary"]["fnsTaxBurdenRatio"] is None
+
+
+def test_tax_load_usn_own_tax_counts_in_numerator_and_insurance_excluded() -> None:
+    evidence = _usn_tax_evidence()
+
+    # Налог УСН считается собственным налогом наравне с ОСНО; взносы исключены.
+    assert fns_paid_taxes_numerator(evidence["taxRows"]) == Decimal("100")
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "usn_income",
+            "profileStatus": "ready",
+            "revenueTaxRate": "1",
+            "vatMode": "none",
+            "sourceKind": "1c",
+        },
+        evidence=evidence,
+    )
+
+    summary = payload["taxLoadSummary"]
+    assert summary["numeratorValue"] == "100"
+    assert summary["denominatorValue"] == "1000"
+    assert summary["fnsTaxBurdenRatio"] == "10.0000"
+    assert payload["taxProfile"]["taxSystem"] == "usn_income"
+    assert payload["taxProfile"]["revenueTaxRate"] == "1"
+
+
+def test_tax_load_ip_usn_without_financial_results_keeps_ratio_null_without_zero(
+) -> None:
+    evidence = _usn_tax_evidence()
+    # ИП на УСН не составляет отчет о финансовых результатах: доход пришел из
+    # поступлений УСН, это неофициальный организационный знаменатель. Коэффициент
+    # ФНС не считается, ноль не подставляется, суммы налога УСН показываются.
+    evidence["incomeEvidence"] = {
+        "value": "5000",
+        "status": "confirmed",
+        "sourceKind": "usn_income_receipts",
+    }
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "usn_income",
+            "profileStatus": "ready",
+            "revenueTaxRate": "1",
+            "sourceKind": "1c",
+        },
+        evidence=evidence,
+    )
+
+    summary = payload["taxLoadSummary"]
+    assert summary["numeratorValue"] == "100"
+    assert summary["denominatorValue"] is None
+    assert summary["fnsTaxBurdenRatio"] is None
+    assert payload["businessStatus"] == "preliminary"
+    assert any(
+        issue["code"] == "fns_ratio_source_gap" for issue in payload["issues"]
+    )
+    # Суммы налога УСН сохранены в строках отчета.
+    assert any(row["taxCode"] == "usn_income" for row in payload["taxRows"])
+
+
+def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_results(
+) -> None:
+    evidence = _usn_tax_evidence()
+    # ИП на УСН: официального ОФР нет -> fns_tax_burden_ratio остается null; доход
+    # по УСН без НДС из поступлений дает управленческий ориентир.
+    evidence["incomeEvidence"] = {
+        "value": None,
+        "status": "source_error",
+        "sourceKind": "onec_official_financial_results",
+    }
+    evidence["usnIncomeEvidence"] = {
+        "value": "2000",
+        "status": "confirmed",
+        "sourceKind": "onec_usn_income",
+    }
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "usn_income",
+            "profileStatus": "ready",
+            "revenueTaxRate": "1",
+            "sourceKind": "1c",
+        },
+        evidence=evidence,
+    )
+
+    summary = payload["taxLoadSummary"]
+    # Официальный коэффициент ФНС для ИП не считается.
+    assert summary["fnsTaxBurdenRatio"] is None
+    # Управленческий показатель: 100 / 2000 * 100 = 5.
+    assert summary["usnIncomeValue"] == "2000"
+    assert summary["usnIncomeTaxBurden"] == "5.0000"
+    assert summary["usnIncomeStatus"] == "management_reference"
+    assert summary["usnIncomeDenominatorKind"] == "usn_income_receipts_excluding_vat"
+    assert payload["businessStatus"] == "preliminary"
+
+
+def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
+    # УСН без подтвержденного дохода из поступлений: показатель null, не ноль.
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={"taxSystem": "usn_income", "profileStatus": "ready"},
+        evidence=_usn_tax_evidence(),
+    )
+    summary = payload["taxLoadSummary"]
+    assert summary["usnIncomeValue"] is None
+    assert summary["usnIncomeTaxBurden"] is None
+    assert summary["usnIncomeStatus"] == "source_gap"
 
 
 def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -> None:
