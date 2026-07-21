@@ -693,6 +693,8 @@ def test_tax_profile_collections_are_read_only_and_selectable() -> None:
     by_id = {item.sample_id: item for item in TAX_PROFILE_SAMPLE_COLLECTIONS}
 
     assert {
+        "tax_system_settings",
+        "vat_settings",
         "tax_kinds",
         "tax_accruals",
         "tax_accrual_lines",
@@ -701,6 +703,12 @@ def test_tax_profile_collections_are_read_only_and_selectable() -> None:
         "kudir",
         "tax_registrations",
     } <= set(by_id)
+    assert by_id["tax_system_settings"].period_filter_mode == "none"
+    assert "СтавкаНалога" in by_id["tax_system_settings"].select_fields
+    assert (
+        "СтавкаНалогообложенияПриУСН"
+        in by_id["vat_settings"].select_fields
+    )
     assert "Сумма" not in by_id["tax_accrual_lines"].select_fields
     assert _select_collections(["vat_sales_book"])[0] == by_id["vat_sales_book"]
 

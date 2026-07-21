@@ -94,6 +94,9 @@ class TaxProfile(ProjectModel):
     client_id: str
     organization_id: str
     tax_system: str
+    tax_object: str = ""
+    tax_rate: Decimal = Decimal("0")
+    elevated_tax_rate: Decimal = Decimal("0")
     vat_rate: Decimal = Decimal("0")
     vat_mode: VatMode = VatMode.NONE
     vat_deduction_mode: VatDeductionMode = VatDeductionMode.UNKNOWN
@@ -107,7 +110,13 @@ class TaxProfile(ProjectModel):
     confirmed_by: str = ""
     source_object_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("vat_rate", "revenue_tax_rate", mode="before")
+    @field_validator(
+        "tax_rate",
+        "elevated_tax_rate",
+        "vat_rate",
+        "revenue_tax_rate",
+        mode="before",
+    )
     @classmethod
     def decimal_from_value(cls, value: object) -> Decimal:
         return Decimal(str(value))

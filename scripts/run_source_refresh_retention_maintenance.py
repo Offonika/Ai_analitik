@@ -283,7 +283,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--daily-keep", type=int, default=3)
     parser.add_argument("--full-keep", type=int, default=2)
     parser.add_argument("--grace-hours", type=int, default=24)
-    parser.add_argument("--tenant", default="shumeyko")
+    parser.add_argument(
+        "--tenant",
+        default="",
+        help=(
+            "Optional tenant filter. Empty by default so scheduled retention "
+            "covers all tenants."
+        ),
+    )
     parser.add_argument(
         "--reports-root",
         type=Path,

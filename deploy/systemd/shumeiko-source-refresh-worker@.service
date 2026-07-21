@@ -3,12 +3,14 @@ Description=Shumeyko source refresh worker %i
 After=network-online.target postgresql@16-main.service
 Wants=network-online.target
 Requires=postgresql@16-main.service
+RequiresMountsFor=/data/shumeyko/source_refresh /opt/shumeyko-partners-wb-unit-economics/reports
 
 [Service]
 Type=exec
 WorkingDirectory=/opt/shumeyko-runtime/prod/current
 EnvironmentFile=/etc/shumeiko-web-prod.env
 Environment=SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true
+Environment=SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20
 ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh_worker.py --run-id %i --worker-id systemd:%i --once
 ExecStopPost=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/repair_source_refresh_run.py --run-id %i --failure-code worker_interrupted --apply
 RuntimeMaxSec=2h

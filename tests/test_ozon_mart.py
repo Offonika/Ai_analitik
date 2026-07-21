@@ -115,6 +115,7 @@ def test_ozon_mart_closed_month_calculates_profit_and_keeps_buyout_separate() ->
         "buyoutPeriodOnly": 1,
         "partialExpenses": 0,
         "taxProfileMissing": 1,
+        "taxMethodUnsupported": 0,
         "taxInputVatReview": 0,
     }
     ready_row = payload["rows"][0]
@@ -500,10 +501,50 @@ def test_ozon_unconfirmed_profile_collapses_to_missing_and_surfaces_issue() -> N
         tax_profile=profile,
     )
 
-    # Неподтвержденный профиль (unknown vat deduction) схлопывается в missing.
+    # Неподтвержденный профиль виден, но не участвует в расчёте.
+    assert payload["taxProfile"]["status"] == "unconfirmed"
+    assert payload["taxProfile"]["taxSystem"] == "УСН Доходы"
+    assert payload["taxProfile"]["vatDeductionMode"] == "unknown"
     assert payload["totals"]["taxCompleteness"] == "missing_tax_profile"
     assert payload["summary"]["taxProfileMissing"] == 1
     assert "ozon_mart_tax_profile_missing" in [
+        item["code"] for item in payload["issues"]
+    ]
+
+
+def test_ozon_configured_unsupported_profile_stays_visible_without_tax() -> None:
+    profile = TaxProfile(
+        client_id="client-1",
+        organization_id="org-1",
+        tax_system="УСН Доходы минус расходы",
+        tax_object="income_minus_expenses",
+        tax_rate=Decimal("15"),
+        elevated_tax_rate=Decimal("20"),
+        vat_rate=Decimal("22"),
+        vat_mode=VatMode.INCLUDED,
+        vat_deduction_mode=VatDeductionMode.ALLOWED,
+        revenue_tax_rate=Decimal("0"),
+        source="1C:tax_system_settings+vat_settings",
+    )
+    payload = build_ozon_unit_economics_mart(
+        realization_rows=[_realization_row()],
+        commissioner_rows=[_commissioner_row()],
+        unit_costs={"ITEM-1": Decimal("300")},
+        mapping_resolver=_resolver(),
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        preview_limit=10,
+        tax_profile=profile,
+    )
+
+    assert payload["taxProfile"]["status"] == "ready"
+    assert payload["taxProfile"]["calculationSupported"] is False
+    assert payload["taxProfile"]["taxObject"] == "income_minus_expenses"
+    assert payload["taxProfile"]["taxRate"] == 15.0
+    assert payload["totals"]["taxCompleteness"] == "unsupported_tax_method"
+    assert payload["summary"]["taxProfileMissing"] == 0
+    assert payload["summary"]["taxMethodUnsupported"] == 1
+    assert "ozon_mart_tax_method_unsupported" in [
         item["code"] for item in payload["issues"]
     ]
 

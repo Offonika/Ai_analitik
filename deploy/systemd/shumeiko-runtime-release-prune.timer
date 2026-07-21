@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily retention for inactive Shumeyko runtime releases
+
+[Timer]
+OnCalendar=*-*-* 04:35:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=shumeiko-runtime-release-prune.service
+
+[Install]
+WantedBy=timers.target

@@ -10958,8 +10958,21 @@ function ozonMartMetricItems(mart = {}, reconciliation = {}) {
     [
       "Налоговый профиль",
       taxProfile.taxSystem || "не найден",
-      taxProfile.source || taxProfile.status || "1C",
-      taxProfile.status === "ready" ? "ok" : "warning",
+      [
+        taxProfile.taxRate != null
+          ? `ставка ${number(taxProfile.taxRate)}%`
+          : "",
+        taxProfile.elevatedTaxRate
+          ? `повышенная ${number(taxProfile.elevatedTaxRate)}%`
+          : "",
+        taxProfile.vatRate != null
+          ? `НДС ${number(taxProfile.vatRate)}%`
+          : "",
+        taxProfile.source || taxProfile.status || "1C",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      ["ready", "override"].includes(taxProfile.status) ? "ok" : "warning",
       "Налоговый режим, ставки и правила НДС из подтверждённого профиля организации 1С на период отчёта.",
     ],
   ];

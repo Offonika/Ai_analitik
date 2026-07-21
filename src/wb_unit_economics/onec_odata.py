@@ -244,6 +244,43 @@ DEFAULT_SAMPLE_COLLECTIONS = (
 
 TAX_PROFILE_SAMPLE_COLLECTIONS = (
     OnecSampleCollection(
+        sample_id="tax_system_settings",
+        collection_name="InformationRegister_СистемыНалогообложенияОрганизаций",
+        purpose=(
+            "Периодические настройки системы, объекта и ставки налога "
+            "отдельно по каждой организации 1С."
+        ),
+        page_size=1000,
+        order_by="Period asc,Организация_Key asc",
+        select_fields=(
+            "Period",
+            "Организация_Key",
+            "СистемаНалогообложения",
+            "ПлательщикУСН",
+            "ОбъектНалогообложения",
+            "СтавкаНалога",
+            "ПовышеннаяСтавкаНалога",
+            "ПлательщикНДСПрименяющийУСН",
+            "ПлательщикНДС",
+        ),
+    ),
+    OnecSampleCollection(
+        sample_id="vat_settings",
+        collection_name="InformationRegister_НастройкиУчетаНДС",
+        purpose=(
+            "Периодические настройки освобождения от НДС и вида ставки "
+            "отдельно по каждой организации 1С."
+        ),
+        page_size=1000,
+        order_by="Period asc,Организация_Key asc",
+        select_fields=(
+            "Period",
+            "Организация_Key",
+            "ПрименяетсяОсвобождениеОтУплатыНДС",
+            "СтавкаНалогообложенияПриУСН",
+        ),
+    ),
+    OnecSampleCollection(
         sample_id="tax_kinds",
         collection_name="Catalog_ВидыНалогов",
         purpose="Виды налогов 1С для подтверждения системы и объекта налога.",

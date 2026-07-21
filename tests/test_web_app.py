@@ -4439,10 +4439,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260720-logistics-f1-dimensions-v1"
+        "20260721-ozon-tax-profile-configured-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260720-logistics-f1-dimensions-v1"
+        "20260721-ozon-tax-profile-configured-v2"
     )
 
     page = client.get("/")
@@ -4593,11 +4593,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260720-logistics-f1-dimensions-v1"
+            "styles.css?v=20260721-ozon-tax-profile-configured-v2"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260720-logistics-f1-dimensions-v1"
+            "app.js?v=20260721-ozon-tax-profile-configured-v2"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -5689,9 +5689,9 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
     assert "font-size: clamp(22px, 1.55vw, 26px)" in primary_value_rule
     assert "min-width: 0" in primary_value_rule
     assert "max-width: 100%" in primary_value_rule
-    assert "white-space: nowrap" in primary_value_rule
-    assert "overflow-wrap: normal" in primary_value_rule
-    assert "word-break: keep-all" in primary_value_rule
+    assert "white-space: normal" in primary_value_rule
+    assert "overflow-wrap: anywhere" in primary_value_rule
+    assert "word-break: normal" in primary_value_rule
     assert "font-variant-numeric: tabular-nums" in primary_value_rule
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in tablet_rules
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in mobile_rules
@@ -9511,8 +9511,8 @@ def test_staff_can_link_onec_organization_and_manage_tax_override(
         assert run is not None
         tax_collection = repository.sync_organization_tax_profiles(db, run)
         assert tax_collection.payload["message"] == (
-            "Справочник организаций загружен из 1С, но для части организаций "
-            "OData не опубликовала полный налоговый профиль."
+            "Для части организаций периодические настройки налогообложения "
+            "не найдены в публикации OData."
         )
         company_diagnostic = next(
             item

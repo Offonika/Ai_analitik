@@ -98,6 +98,7 @@ def main() -> int:
                 "shumeyko_wb_excel_mvp.xlsx"
             ),
             "SHUMEYKO_SOURCE_REFRESH_ROOT": "/data/shumeyko/source_refresh",
+            "SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB": "20",
         }
     )
 

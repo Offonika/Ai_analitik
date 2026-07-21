@@ -6,6 +6,10 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from wb_unit_economics.calculation import (
+    tax_profile_is_configured,
+    tax_profile_is_confirmed,
+)
 from wb_unit_economics.contracts import (
     AccountOrgMapping,
     TaxProfile,
@@ -77,6 +81,8 @@ def tax_profiles_from_account_org_mapping(
     account_org_mapping: list[AccountOrgMapping],
     *,
     onec_organization_rows: Iterable[Mapping[str, Any]] | None = None,
+    tax_system_setting_rows: Iterable[Mapping[str, Any]] | None = None,
+    vat_setting_rows: Iterable[Mapping[str, Any]] | None = None,
     special_tax_mode_rows: Iterable[Mapping[str, Any]] | None = None,
     tax_kind_rows: Iterable[Mapping[str, Any]] | None = None,
     tax_accrual_rows: Iterable[Mapping[str, Any]] | None = None,
@@ -87,6 +93,8 @@ def tax_profiles_from_account_org_mapping(
     special_tax_source_complete: bool = False,
 ) -> list[TaxProfile]:
     onec_organizations = _index_onec_organizations(onec_organization_rows or ())
+    tax_system_settings = list(tax_system_setting_rows or ())
+    vat_settings = list(vat_setting_rows or ())
     special_tax_modes = _index_special_tax_modes(special_tax_mode_rows or ())
     tax_kinds = list(tax_kind_rows or ())
     tax_accruals = list(tax_accrual_rows or ())
@@ -99,7 +107,9 @@ def tax_profiles_from_account_org_mapping(
             client_id,
             item,
             onec_organizations.get(item.organization_id),
-            special_tax_modes.get(item.organization_id, []),
+            tax_system_setting_rows=tax_system_settings,
+            vat_setting_rows=vat_settings,
+            special_tax_modes=special_tax_modes.get(item.organization_id, []),
             tax_kind_rows=tax_kinds,
             tax_accrual_rows=tax_accruals,
             tax_accrual_line_rows=tax_accrual_lines,
@@ -117,6 +127,8 @@ def tax_profile_source_diagnostic(
     organization_id: str,
     *,
     organization: Mapping[str, Any] | None,
+    tax_system_setting_rows: Iterable[Mapping[str, Any]] = (),
+    vat_setting_rows: Iterable[Mapping[str, Any]] = (),
     special_tax_mode_rows: Iterable[Mapping[str, Any]] = (),
     tax_kind_rows: Iterable[Mapping[str, Any]] = (),
     tax_accrual_rows: Iterable[Mapping[str, Any]] = (),
@@ -133,6 +145,14 @@ def tax_profile_source_diagnostic(
     evidence of ОСНО/УСН or of the right to deduct input VAT.
     """
 
+    policy_profile, policy_evidence = _tax_profile_from_policy_settings(
+        "diagnostic",
+        organization_id,
+        organization,
+        tax_system_setting_rows=tax_system_setting_rows,
+        vat_setting_rows=vat_setting_rows,
+        calculation_date=calculation_date,
+    )
     relevant_notices = _index_special_tax_modes(special_tax_mode_rows).get(
         organization_id, []
     )
@@ -173,18 +193,23 @@ def tax_profile_source_diagnostic(
         if organization is not None
         else None
     )
-    derived_profile = accounting_profile or osno_profile
+    derived_profile = policy_profile or accounting_profile or osno_profile
     published = {
-        "taxSystem": bool(_first_text(candidate, *_TAX_SYSTEM_KEYS))
+        "taxSystem": bool(policy_evidence.get("taxSystem"))
+        or bool(_first_text(candidate, *_TAX_SYSTEM_KEYS))
         or bool(accounting_evidence.get("taxSystem")),
-        "vatRate": _decimal_from_row(candidate, *_VAT_RATE_KEYS) is not None
+        "vatRate": policy_evidence.get("vatRate") is not None
+        or _decimal_from_row(candidate, *_VAT_RATE_KEYS) is not None
         or accounting_evidence.get("vatRate") is not None,
-        "vatMode": bool(_first_text(candidate, *_VAT_MODE_KEYS))
+        "vatMode": bool(policy_evidence.get("vatMode"))
+        or bool(_first_text(candidate, *_VAT_MODE_KEYS))
         or bool(accounting_evidence.get("vatMode")),
-        "vatDeductionMode": bool(_first_text(candidate, *_VAT_DEDUCTION_MODE_KEYS))
+        "vatDeductionMode": bool(policy_evidence.get("vatDeductionMode"))
+        or bool(_first_text(candidate, *_VAT_DEDUCTION_MODE_KEYS))
         or bool(accounting_evidence.get("vatDeductionMode")),
         "revenueTaxRate": (
-            _decimal_from_row(candidate, *_REVENUE_TAX_RATE_KEYS) is not None
+            policy_evidence.get("revenueTaxRate") is not None
+            or _decimal_from_row(candidate, *_REVENUE_TAX_RATE_KEYS) is not None
         )
         or accounting_evidence.get("revenueTaxRate") is not None,
     }
@@ -197,6 +222,21 @@ def tax_profile_source_diagnostic(
     if organization is None:
         status = "missing_organization"
         message = "Карточка связанной организации не найдена в выгрузке 1С."
+    elif policy_profile is not None and tax_profile_is_configured(policy_profile):
+        status = "ready"
+        message = (
+            "Налоговый профиль получен из периодических настроек организации "
+            "1С; текущая методика не рассчитывает налог по объекту «доходы "
+            "минус расходы»."
+            if not _policy_profile_is_calculation_ready(policy_profile)
+            else "Налоговый профиль получен из периодических настроек организации 1С."
+        )
+    elif policy_profile is not None:
+        status = "unconfirmed"
+        message = (
+            "Налоговый профиль получен из настроек организации 1С, но текущая "
+            "методика расчёта для него не подтверждена."
+        )
     elif accounting_profile is not None:
         status = "ready"
         message = (
@@ -238,20 +278,27 @@ def tax_profile_source_diagnostic(
                 organization_payload.get("НДСВключатьВСтоимость")
             ),
             "authoritativeForTaxSystem": bool(
-                accounting_profile is not None or osno_profile is not None
+                policy_profile is not None
+                or accounting_profile is not None
+                or osno_profile is not None
             ),
         },
         "derivedProfile": (
             {
                 "taxSystem": derived_profile.tax_system,
+                "taxObject": derived_profile.tax_object,
+                "taxRate": str(derived_profile.tax_rate),
+                "elevatedTaxRate": str(derived_profile.elevated_tax_rate),
                 "vatRate": str(derived_profile.vat_rate),
                 "vatMode": derived_profile.vat_mode.value,
                 "vatDeductionMode": derived_profile.vat_deduction_mode.value,
                 "source": derived_profile.source,
+                "calculationSupported": tax_profile_is_confirmed(derived_profile),
             }
             if derived_profile is not None
             else None
         ),
+        "settingsEvidence": policy_evidence,
         "accountingEvidence": accounting_evidence,
     }
 
@@ -260,6 +307,8 @@ def _tax_profile_from_onec_settings(
     client_id: str,
     item: AccountOrgMapping,
     organization: Mapping[str, Any] | None,
+    tax_system_setting_rows: Iterable[Mapping[str, Any]],
+    vat_setting_rows: Iterable[Mapping[str, Any]],
     special_tax_modes: list[Mapping[str, Any]],
     tax_kind_rows: Iterable[Mapping[str, Any]],
     tax_accrual_rows: Iterable[Mapping[str, Any]],
@@ -270,6 +319,16 @@ def _tax_profile_from_onec_settings(
     calculation_date: date | None,
     special_tax_source_complete: bool,
 ) -> TaxProfile | None:
+    settings_profile, _evidence = _tax_profile_from_policy_settings(
+        client_id,
+        item.organization_id,
+        organization,
+        tax_system_setting_rows=tax_system_setting_rows,
+        vat_setting_rows=vat_setting_rows,
+        calculation_date=calculation_date,
+    )
+    if settings_profile is not None:
+        return settings_profile
     special_tax_profile = _tax_profile_from_special_tax_modes(
         client_id, item.organization_id, special_tax_modes
     )
@@ -305,6 +364,269 @@ def _tax_profile_from_onec_settings(
         special_tax_modes,
         calculation_date=calculation_date,
         special_tax_source_complete=special_tax_source_complete,
+    )
+
+
+def _tax_profile_from_policy_settings(
+    client_id: str,
+    organization_id: str,
+    organization: Mapping[str, Any] | None,
+    *,
+    tax_system_setting_rows: Iterable[Mapping[str, Any]],
+    vat_setting_rows: Iterable[Mapping[str, Any]],
+    calculation_date: date | None,
+) -> tuple[TaxProfile | None, dict[str, Any]]:
+    """Resolve the effective periodic tax settings for one 1C organization."""
+
+    tax_row = _effective_periodic_setting_row(
+        tax_system_setting_rows,
+        organization_id=organization_id,
+        calculation_date=calculation_date,
+    )
+    vat_row = _effective_periodic_setting_row(
+        vat_setting_rows,
+        organization_id=organization_id,
+        calculation_date=calculation_date,
+    )
+    if tax_row is None:
+        return None, {
+            "taxSystem": None,
+            "taxObject": None,
+            "taxRate": None,
+            "elevatedTaxRate": None,
+            "vatRate": None,
+            "vatMode": None,
+            "vatDeductionMode": None,
+            "revenueTaxRate": None,
+            "taxSettingsPeriod": None,
+            "vatSettingsPeriod": (
+                _period_text(vat_row) if vat_row is not None else None
+            ),
+        }
+
+    tax_system, tax_object = _tax_system_from_policy_row(tax_row)
+    if not tax_system:
+        return None, {
+            "taxSystem": None,
+            "taxObject": tax_object or None,
+            "taxRate": None,
+            "elevatedTaxRate": None,
+            "vatRate": None,
+            "vatMode": None,
+            "vatDeductionMode": None,
+            "revenueTaxRate": None,
+            "taxSettingsPeriod": _period_text(tax_row),
+            "vatSettingsPeriod": (
+                _period_text(vat_row) if vat_row is not None else None
+            ),
+        }
+
+    tax_rate = _decimal_from_row(tax_row, "СтавкаНалога") or Decimal("0")
+    elevated_tax_rate = (
+        _decimal_from_row(tax_row, "ПовышеннаяСтавкаНалога") or Decimal("0")
+    )
+    usn_vat_payer = _optional_bool(
+        tax_row.get("ПлательщикНДСПрименяющийУСН")
+    )
+    general_vat_payer = _optional_bool(tax_row.get("ПлательщикНДС"))
+    vat_payer = (
+        usn_vat_payer
+        if tax_system.startswith("УСН") and usn_vat_payer is not None
+        else general_vat_payer
+        if general_vat_payer is not None
+        else usn_vat_payer
+    )
+    vat_exempt = (
+        _optional_bool(vat_row.get("ПрименяетсяОсвобождениеОтУплатыНДС"))
+        if vat_row is not None
+        else None
+    )
+    vat_kind = (
+        _first_text(vat_row, "СтавкаНалогообложенияПриУСН")
+        if vat_row is not None
+        else ""
+    )
+    if vat_payer is False or vat_exempt is True:
+        vat_rate = Decimal("0")
+    else:
+        vat_rate = _vat_rate_from_policy_kind(vat_kind, calculation_date)
+        if vat_rate is None:
+            return None, {
+                "taxSystem": tax_system,
+                "taxObject": tax_object,
+                "taxRate": str(tax_rate),
+                "elevatedTaxRate": str(elevated_tax_rate),
+                "vatRate": None,
+                "vatMode": None,
+                "vatDeductionMode": None,
+                "revenueTaxRate": (
+                    str(tax_rate / Decimal("100"))
+                    if tax_object == "income"
+                    else "0"
+                ),
+                "taxSettingsPeriod": _period_text(tax_row),
+                "vatSettingsPeriod": (
+                    _period_text(vat_row) if vat_row is not None else None
+                ),
+                "vatPayer": vat_payer,
+                "vatExempt": vat_exempt,
+                "vatRateKind": None,
+            }
+
+    if vat_rate <= 0:
+        vat_mode = VatMode.NONE
+        vat_deduction_mode = VatDeductionMode.NOT_APPLICABLE
+    else:
+        vat_mode = VatMode.INCLUDED
+        vat_deduction_mode = (
+            VatDeductionMode.NOT_ALLOWED
+            if vat_rate in {Decimal("5"), Decimal("7")}
+            else VatDeductionMode.ALLOWED
+        )
+    revenue_tax_rate = (
+        tax_rate / Decimal("100") if tax_object == "income" else Decimal("0")
+    )
+    period_dates = [
+        value
+        for value in (
+            _date_from_value(tax_row.get("Period")),
+            _date_from_value(vat_row.get("Period")) if vat_row is not None else None,
+        )
+        if value is not None
+    ]
+    valid_from = max(period_dates) if period_dates else None
+    source_object_ids = [
+        f"InformationRegister_СистемыНалогообложенияОрганизаций:"
+        f"{organization_id}:{_period_text(tax_row)}"
+    ]
+    if vat_row is not None:
+        source_object_ids.append(
+            f"InformationRegister_НастройкиУчетаНДС:"
+            f"{organization_id}:{_period_text(vat_row)}"
+        )
+    profile = TaxProfile(
+        client_id=client_id,
+        organization_id=organization_id,
+        tax_system=tax_system,
+        tax_object=tax_object,
+        tax_rate=tax_rate,
+        elevated_tax_rate=elevated_tax_rate,
+        vat_rate=vat_rate,
+        vat_mode=vat_mode,
+        vat_deduction_mode=vat_deduction_mode,
+        revenue_tax_rate=revenue_tax_rate,
+        income_tax_kind=tax_system if tax_system.startswith("УСН") else "",
+        valid_from=valid_from,
+        source="1C:tax_system_settings+vat_settings",
+        source_object_ids=source_object_ids,
+    )
+    return profile, {
+        "taxSystem": tax_system,
+        "taxObject": tax_object,
+        "taxRate": str(tax_rate),
+        "elevatedTaxRate": str(elevated_tax_rate),
+        "vatRate": str(vat_rate),
+        "vatMode": vat_mode.value,
+        "vatDeductionMode": vat_deduction_mode.value,
+        "revenueTaxRate": str(revenue_tax_rate),
+        "taxSettingsPeriod": _period_text(tax_row),
+        "vatSettingsPeriod": _period_text(vat_row) if vat_row is not None else None,
+        "vatPayer": vat_payer,
+        "vatExempt": vat_exempt,
+        "vatRateKind": vat_kind or None,
+    }
+
+
+def _effective_periodic_setting_row(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    organization_id: str,
+    calculation_date: date | None,
+) -> Mapping[str, Any] | None:
+    candidates: list[tuple[date, int, Mapping[str, Any]]] = []
+    for position, row in enumerate(rows):
+        if _text(row.get("Организация_Key")) != organization_id:
+            continue
+        row_date = _date_from_value(row.get("Period"))
+        if row_date is None:
+            continue
+        if calculation_date is not None and row_date > calculation_date:
+            continue
+        candidates.append((row_date, position, row))
+    return max(candidates, default=(date.min, -1, None), key=lambda item: item[:2])[2]
+
+
+def _tax_system_from_policy_row(
+    row: Mapping[str, Any],
+) -> tuple[str, str]:
+    system = _normalized_onec_enum(row.get("СистемаНалогообложения"))
+    object_name = _normalized_onec_enum(row.get("ОбъектНалогообложения"))
+    usn_flag = _optional_bool(row.get("ПлательщикУСН"))
+    is_usn = usn_flag is True or "упрощ" in system or "усн" in system
+    if is_usn:
+        if "расход" in object_name:
+            return "УСН Доходы минус расходы", "income_minus_expenses"
+        if "доход" in object_name:
+            return "УСН Доходы", "income"
+        return "УСН", ""
+    if "общ" in system or "осно" in system:
+        return "ОСНО", "profit"
+    if "автомат" in system or "аусн" in system:
+        return "АУСН", ""
+    if "патент" in system:
+        return "Патент", ""
+    return (_text(row.get("СистемаНалогообложения")), "")
+
+
+def _vat_rate_from_policy_kind(
+    value: Any,
+    calculation_date: date | None,
+) -> Decimal | None:
+    normalized = _normalized_onec_enum(value).replace(" ", "")
+    if not normalized:
+        return None
+    if "безндс" in normalized or "освобожд" in normalized:
+        return Decimal("0")
+    if "семь" in normalized or re.search(r"(^|\D)7($|\D)", normalized):
+        return Decimal("7")
+    if "пять" in normalized or re.search(r"(^|\D)5($|\D)", normalized):
+        return Decimal("5")
+    if "общ" in normalized or "основ" in normalized:
+        return (
+            Decimal("22")
+            if calculation_date and calculation_date >= _OSNO_2026_START
+            else Decimal("20")
+        )
+    numeric = re.search(r"(\d+(?:[.,]\d+)?)", normalized)
+    if numeric is not None:
+        return Decimal(numeric.group(1).replace(",", "."))
+    return None
+
+
+def _normalized_onec_enum(value: Any) -> str:
+    text = _text(value).casefold()
+    if not text:
+        return ""
+    tail = re.split(r"[./:]", text)[-1]
+    return re.sub(r"[^a-zа-яё0-9]+", " ", tail).strip()
+
+
+def _period_text(row: Mapping[str, Any]) -> str:
+    value = _date_from_value(row.get("Period"))
+    return value.isoformat() if value is not None else ""
+
+
+def _policy_profile_is_calculation_ready(profile: TaxProfile) -> bool:
+    tax_system = profile.tax_system.casefold()
+    if profile.vat_deduction_mode is VatDeductionMode.UNKNOWN:
+        return False
+    if "осно" in tax_system or "общ" in tax_system:
+        return True
+    return (
+        ("усн" in tax_system or "упрощ" in tax_system)
+        and "доход" in tax_system
+        and "расход" not in tax_system
+        and profile.revenue_tax_rate > 0
     )
 
 
