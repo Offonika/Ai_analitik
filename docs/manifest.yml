@@ -188,7 +188,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted спек второй очереди WP-5: F-1 габариты доведены до сквозного staff-only test-пакета; F-2 тарифы, F-3 маршруты, F-4 замеры/штрафы и клиентский rollout остаются следующими подпакетами."
+    summary: "Accepted спек второй очереди WP-5: F-1 габариты и F-2 тарифы приняты на staff-only test; F-3 маршруты собраны локально и ожидают merge/test evidence; F-4 замеры/штрафы и клиентский rollout остаются следующими подпакетами."
     read_when: "Проектируется вторая очередь логистики WB: габариты, замеры/штрафы, тарифы, склады, маршруты, витрины dimensions/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/wb-logistics-return-reasons-implementation.md"

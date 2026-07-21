@@ -9,8 +9,8 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: logistics-cost-analysis
 truth_priority: 100
-related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py]
-related_tests: [tests/test_logistics_analysis.py, tests/test_wb_tariffs.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
+related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py]
+related_tests: [tests/test_logistics_analysis.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -28,20 +28,20 @@ ai_sections:
   tests: "Test Plan"
 code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
-    symbols: ["def build_logistics_analysis", "def build_order_rows", "def build_sku_rows", "def build_tariff_rows"]
+    symbols: ["def build_logistics_analysis", "def build_order_rows", "def build_sku_rows", "def build_tariff_rows", "def build_route_rows"]
   - path: src/wb_unit_economics/web/repository.py
-    symbols: ["def replace_report_logistics_analysis", "def report_logistics_summary_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def _logistics_context_state", "def _logistics_recommendations"]
+    symbols: ["def replace_report_logistics_analysis", "def report_logistics_summary_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload", "def _logistics_context_state", "def _logistics_recommendations"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _build_and_persist_logistics_analysis", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot"]
+    symbols: ["def _build_and_persist_logistics_analysis", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/web/settings.py
-    symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool"]
+    symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool", "logistics_routes_enabled: bool", "logistics_routes_client_enabled: bool"]
 test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot"]
+    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten"]
+    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
 updated_at: "2026-07-21"
@@ -79,8 +79,9 @@ Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
 обязательные команды повторной проверки находятся в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
 Ближайший rollout допускается только на test; клиентский флаг остается
-выключенным до отдельного согласования. Габариты, маршруты, тарифы, Excel и
-калькуляторы в эту реализацию не входят.
+выключенным до отдельного согласования. F-1 и F-2 уже приняты на staff-only
+test; F-3 реализован отдельным локальным пакетом поверх первой очереди и
+ожидает merge/CI/test evidence. Excel и калькуляторы в этот пакет не входят.
 
 # Цель
 
@@ -499,8 +500,14 @@ input hash; изменение правил требует новой верси
 
 ## `report_logistics_route_rows`
 
-Гранулярность — склад и доступное направление доставки. Витрина создается во
-второй очереди только при достаточном покрытии исходных полей.
+Storage-grain F-3 — неизменяемый сегмент цепочки с датой/неделей, товаром,
+складом и доступным направлением доставки. Он сохраняет и явные
+`missing/mixed`, чтобы фактическая логистика и denominator coverage полностью
+reconciled с order mart. Read-only `/routes` SQL-агрегирует эти строки до
+склада/направления после применения периода, кабинета, организации, схемы и
+товара. Точная связка Statistics выполняется только по
+`(wb_cabinet_id, srid, nm_id)`; глобальный coverage threshold не применяется,
+потому что он скрывал бы валидный кабинет из-за частичного scope другого.
 
 ## `report_logistics_tariff_rows`
 
@@ -714,7 +721,8 @@ AI не может:
 - `partial` остается review-статусом; старый отчет без
   `logistics_analysis_required` не блокируется, но API возвращает
   `needs_rebuild`.
-- При отсутствии направления доставки маршрутный анализ не строится.
+- При отсутствии направления доставки route mart сохраняет недоступную строку
+  цепочки, чтобы coverage и reconciliation оставались полными.
 - При отсутствии исторического тарифа калькулятор показывает оценку по явно
   выбранному тарифу, но не объясняет им исторический факт.
 - Нулевая или отрицательная выручка не приводит к бесконечной доле.
@@ -1015,6 +1023,11 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-21 — F-3 уточнён до атомарной route evidence: exact
+  cabinet/srid/nm join, explicit missing/mixed, полная reconciliation с order
+  mart и SQL-агрегация `/logistics/routes` после фильтров. Точный контракт,
+  flags и rollout находятся в accepted factor-spec.
 
 - 2026-07-21 — F-2 тарифы выделены в отдельные immutable tariff context/mart и
   read-only `/logistics/tariffs`: это позволяет показать архивный факт или

@@ -34,7 +34,8 @@ LOGISTICS_HARDENING_SCHEMA_VERSION = "2026_07_18_logistics_profit_link_v5"
 LOGISTICS_FACTOR_MARTS_SCHEMA_VERSION = "2026_07_19_logistics_factor_marts_v1"
 LOGISTICS_DIMENSIONS_SCHEMA_VERSION = "2026_07_20_logistics_dimensions_context_v1"
 LOGISTICS_TARIFFS_SCHEMA_VERSION = "2026_07_21_logistics_tariffs_context_v1"
-DB_FIRST_SCHEMA_VERSION = LOGISTICS_TARIFFS_SCHEMA_VERSION
+LOGISTICS_ROUTES_SCHEMA_VERSION = "2026_07_21_logistics_routes_context_v1"
+DB_FIRST_SCHEMA_VERSION = LOGISTICS_ROUTES_SCHEMA_VERSION
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -124,6 +125,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
         _record_schema_migration(engine, LOGISTICS_FACTOR_MARTS_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_DIMENSIONS_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_TARIFFS_SCHEMA_VERSION)
+        _record_schema_migration(engine, LOGISTICS_ROUTES_SCHEMA_VERSION)
 
 
 def schema_version(engine: Engine) -> str:
@@ -184,10 +186,10 @@ def _record_schema_migration(engine: Engine, version: str) -> None:
         connection.execute(
             text(
                 f"INSERT INTO {table_name} (version, applied_at) "
-                "VALUES (:version, CURRENT_TIMESTAMP) "
+                "VALUES (:version, :applied_at) "
                 "ON CONFLICT (version) DO NOTHING"
             ),
-            {"version": version},
+            {"version": version, "applied_at": datetime.now(UTC)},
         )
 
 
@@ -213,6 +215,9 @@ def _ensure_report_run_db_first_columns(engine: Engine) -> None:
             f"BOOLEAN NOT NULL DEFAULT {bool_default}"
         ),
         "logistics_tariffs_required": (
+            f"BOOLEAN NOT NULL DEFAULT {bool_default}"
+        ),
+        "logistics_routes_required": (
             f"BOOLEAN NOT NULL DEFAULT {bool_default}"
         ),
     }
@@ -273,6 +278,18 @@ def _ensure_logistics_hardening_columns_and_indexes(engine: Engine) -> None:
             "product_ref": "VARCHAR NOT NULL DEFAULT ''",
             "financial_revenue": "NUMERIC",
         },
+        "report_logistics_route_rows": {
+            "financial_date": "DATE",
+            "financial_week_start": "DATE",
+            "product_ref": "VARCHAR NOT NULL DEFAULT ''",
+            "product": "VARCHAR NOT NULL DEFAULT ''",
+            "vendor_code": "VARCHAR NOT NULL DEFAULT ''",
+            "chain_key": "VARCHAR NOT NULL DEFAULT ''",
+            "coefficient_status": (
+                "VARCHAR NOT NULL DEFAULT 'data_unavailable'"
+            ),
+            "data_quality_status": "VARCHAR NOT NULL DEFAULT ''",
+        },
     }
     table_names = set(inspector.get_table_names(schema=schema))
     with engine.begin() as connection:
@@ -294,6 +311,7 @@ def _ensure_logistics_hardening_columns_and_indexes(engine: Engine) -> None:
                     )
         order_table = _table_name(engine, "report_logistics_order_rows")
         sku_table = _table_name(engine, "report_logistics_sku_rows")
+        route_table = _table_name(engine, "report_logistics_route_rows")
         if "report_logistics_order_rows" in table_names:
             connection.execute(
                 text(
@@ -317,6 +335,14 @@ def _ensure_logistics_hardening_columns_and_indexes(engine: Engine) -> None:
                     "ix_report_logistics_sku_product_ref "
                     f"ON {sku_table} (report_run_id, product_ref, "
                     "financial_week_start)"
+                )
+            )
+        if "report_logistics_route_rows" in table_names:
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_report_logistics_route_calendar_product "
+                    f"ON {route_table} (report_run_id, financial_date, product_ref)"
                 )
             )
 

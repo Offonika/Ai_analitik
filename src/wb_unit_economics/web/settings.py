@@ -80,6 +80,8 @@ class WebSettings(BaseSettings):
     logistics_factors_client_enabled: bool = False
     logistics_tariffs_enabled: bool = False
     logistics_tariffs_client_enabled: bool = False
+    logistics_routes_enabled: bool = False
+    logistics_routes_client_enabled: bool = False
     accounting_workflow_enabled: bool = False
     accounting_workflow_scheduler_enabled: bool = False
     accounting_workflow_calendar_configured: bool = False

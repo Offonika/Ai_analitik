@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260721-logistics-f2-tariffs-v2"
+      content="20260721-logistics-f3-routes-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="data:," />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260721-logistics-f2-tariffs-v2"
+      href="/static/styles.css?v=20260721-logistics-f3-routes-v1"
     />
     <link
       rel="stylesheet"
@@ -566,6 +566,71 @@
               </button>
               <span id="logistics-tariffs-page" class="muted"></span>
               <button id="logistics-tariffs-next" type="button" class="secondary-button">
+                Далее
+              </button>
+            </div>
+          </section>
+
+          <section
+            id="logistics-routes"
+            class="panel logistics-tariffs-panel logistics-routes-panel"
+            aria-labelledby="logistics-routes-title"
+            hidden
+          >
+            <div class="logistics-section-heading">
+              <div>
+                <p class="eyebrow">Факторы стоимости</p>
+                <h3 id="logistics-routes-title">Склады и направления</h3>
+                <p class="muted logistics-tariffs-note">
+                  Маршрут подтверждается только точной связкой Statistics с
+                  цепочкой. Недоступные и конфликтующие значения не выбираются случайно.
+                </p>
+              </div>
+              <span id="logistics-routes-status" class="logistics-data-status"></span>
+            </div>
+            <div
+              id="logistics-routes-coverage"
+              class="logistics-tariffs-coverage"
+              aria-label="Покрытие маршрутов"
+            ></div>
+            <p class="logistics-tariffs-warning">
+              Суммы — фактическая логистика пересекающихся маршрутных срезов,
+              а не резерв экономии и не слагаемые других факторов.
+            </p>
+            <ul
+              id="logistics-routes-recommendations"
+              class="logistics-factor-recommendations"
+            ></ul>
+            <div class="table-wrap logistics-tariffs-table-wrap">
+              <table
+                id="logistics-routes-table"
+                class="logistics-table logistics-tariffs-table logistics-routes-table"
+                data-sort-mode="remote"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" data-sort-key="warehouse">Склад</th>
+                    <th scope="col" data-sort-key="destination">Направление</th>
+                    <th scope="col" data-sort-key="logisticsTotal">Логистика</th>
+                    <th scope="col" data-sort-key="chainCount">Цепочки</th>
+                    <th scope="col" data-sort-disabled="true">Box недели</th>
+                    <th scope="col" data-sort-key="coverageStatus">Основание</th>
+                  </tr>
+                </thead>
+                <tbody id="logistics-routes-rows"></tbody>
+              </table>
+            </div>
+            <div
+              id="logistics-routes-pagination"
+              class="logistics-pagination"
+              aria-label="Страницы маршрутов"
+              hidden
+            >
+              <button id="logistics-routes-prev" type="button" class="secondary-button">
+                Назад
+              </button>
+              <span id="logistics-routes-page" class="muted"></span>
+              <button id="logistics-routes-next" type="button" class="secondary-button">
                 Далее
               </button>
             </div>
@@ -2762,9 +2827,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260721-logistics-f2-tariffs-v2" defer></script>
-    <script src="/static/month-close-report.js?v=20260721-logistics-f2-tariffs-v2" defer></script>
-    <script src="/static/tax-load-report.js?v=20260721-logistics-f2-tariffs-v2" defer></script>
-    <script src="/static/app.js?v=20260721-logistics-f2-tariffs-v2" defer></script>
+    <script src="/static/report-scenarios.js?v=20260721-logistics-f3-routes-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260721-logistics-f3-routes-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260721-logistics-f3-routes-v1" defer></script>
+    <script src="/static/app.js?v=20260721-logistics-f3-routes-v1" defer></script>
   </body>
 </html>

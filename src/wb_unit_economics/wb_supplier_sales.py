@@ -8,7 +8,7 @@
 Коннектор только читает (`GET`, отбор по `dateFrom`, хранение WB ~90 дней) и
 нормализует строки в плоский слой. Пропущенные поля остаются `None` — отсутствие
 склада или направления остаётся явным, а не подменяется пустым значением.
-Направление не выводится как факт при отсутствии поля (см. draft-спек
+Направление не выводится как факт при отсутствии поля (см. accepted-спек
 `docs/specs/wb-logistics-cost-factors-implementation.md`).
 """
 
@@ -101,10 +101,14 @@ def flatten_supplier_sales(
 @dataclass(frozen=True)
 class WbSupplierSalesExportResult:
     ok: bool
+    seller_account_id: str = ""
+    account_name: str = ""
     row_count: int = 0
     raw_output_path: Path | None = None
     flat_output_path: Path | None = None
     raw_payload_hash: str = ""
+    flat_payload_hash: str = ""
+    status_code: int | None = None
     error: str = ""
 
 
@@ -113,22 +117,43 @@ def export_wb_supplier_sales(
     output_dir: Path,
     *,
     date_from: date,
+    seller_account_id: str = "",
+    account_name: str = "",
+    file_prefix: str = "",
 ) -> WbSupplierSalesExportResult:
     """Read-only снимок продаж со складом/направлением: raw + flat."""
     try:
         raw_rows = client.fetch_supplier_sales(date_from)
+    except httpx.HTTPStatusError as exc:
+        return WbSupplierSalesExportResult(
+            ok=False,
+            seller_account_id=seller_account_id,
+            account_name=account_name,
+            status_code=exc.response.status_code,
+            error=exc.__class__.__name__,
+        )
     except (httpx.HTTPError, ValueError) as exc:
-        return WbSupplierSalesExportResult(ok=False, error=exc.__class__.__name__)
+        return WbSupplierSalesExportResult(
+            ok=False,
+            seller_account_id=seller_account_id,
+            account_name=account_name,
+            error=exc.__class__.__name__,
+        )
     rows = flatten_supplier_sales(raw_rows)
     stamp = date_from.isoformat()
-    raw_path = output_dir / f"wb_supplier_sales_{stamp}.raw.json"
-    flat_path = output_dir / f"wb_supplier_sales_{stamp}.flat.json"
+    prefix = f"{file_prefix}_" if file_prefix else ""
+    raw_path = output_dir / f"{prefix}wb_supplier_sales_{stamp}.raw.json"
+    flat_path = output_dir / f"{prefix}wb_supplier_sales_{stamp}.flat.json"
     _write_json(raw_path, raw_rows)
     _write_json(flat_path, rows)
     return WbSupplierSalesExportResult(
         ok=True,
+        seller_account_id=seller_account_id,
+        account_name=account_name,
         row_count=len(rows),
         raw_output_path=raw_path,
         flat_output_path=flat_path,
         raw_payload_hash=raw_payload_hash(raw_rows),
+        flat_payload_hash=raw_payload_hash(rows),
+        status_code=200,
     )

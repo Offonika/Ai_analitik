@@ -113,6 +113,7 @@ updated_at: "2026-07-17"
 | `GET` | `/api/reports/{report_id}/logistics/dimensions` | `report_logistics_dimensions_api_reports__report_id__logistics_dimensions_get` | Report Logistics Dimensions |
 | `GET` | `/api/reports/{report_id}/logistics/orders` | `report_logistics_orders_api_reports__report_id__logistics_orders_get` | Report Logistics Orders |
 | `GET` | `/api/reports/{report_id}/logistics/products` | `report_logistics_products_api_reports__report_id__logistics_products_get` | Report Logistics Products |
+| `GET` | `/api/reports/{report_id}/logistics/routes` | `report_logistics_routes_api_reports__report_id__logistics_routes_get` | Report Logistics Routes |
 | `GET` | `/api/reports/{report_id}/logistics/summary` | `report_logistics_summary_api_reports__report_id__logistics_summary_get` | Report Logistics Summary |
 | `GET` | `/api/reports/{report_id}/logistics/tariffs` | `report_logistics_tariffs_api_reports__report_id__logistics_tariffs_get` | Report Logistics Tariffs |
 | `GET` | `/api/reports/{report_id}/management-report` | `report_management_report_api_reports__report_id__management_report_get` | Report Management Report |
@@ -129,4 +130,4 @@ updated_at: "2026-07-17"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **108**.
+Всего маршрутов: **109**.

@@ -11,6 +11,7 @@ class _FakeService:
     def __init__(self) -> None:
         self.calls: dict[str, tuple] = {}
         self.tariffs_recorded = False
+        self.supplier_sales_recorded = False
 
     def _wb_tariffs_exporter(self, accounts, output_dir, *, period_start, period_end):
         self.calls["tariffs"] = (
@@ -47,6 +48,20 @@ class _FakeService:
             tuple(accounts), output_dir, period_start, period_end
         )
         return []
+
+    def _record_wb_supplier_sales(
+        self,
+        db,
+        refresh_run,
+        output_dir,
+        results,
+        *,
+        wb_cabinet_ids,
+        period_start,
+        period_end,
+    ):
+        self.supplier_sales_recorded = True
+        return SimpleNamespace(id=2)
 
 
 def _context(tmp_path: Path, *, wb: bool) -> sr.CollectorContext:
@@ -94,6 +109,7 @@ def test_factor_collectors_call_exporter_and_return_output_dir(
     assert set(service.calls) == {"tariffs", "goods_return", "supplier_sales"}
     assert service.calls["tariffs"][0]  # accounts passed through
     assert service.tariffs_recorded is True
+    assert service.supplier_sales_recorded is True
 
 
 def test_factor_collectors_skip_without_wb_settings(tmp_path: Path) -> None:

@@ -1232,6 +1232,215 @@ def test_tariff_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> Non
     assert len(selection.tariff_rows) == 1
 
 
+def test_route_snapshot_db_and_file_authoritative_are_equivalent(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        rows = [_route_source_row()]
+        db_run, _, _ = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-db",
+            cabinet_id=cabinet_id,
+            rows=rows,
+            file_authoritative=False,
+        )
+        file_run, _, _ = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-file",
+            cabinet_id=cabinet_id,
+            rows=rows,
+            file_authoritative=True,
+        )
+
+        db_selection = source_refresh._select_route_snapshot(
+            db, report, roles=[(0, db_run)]
+        )
+        file_selection = source_refresh._select_route_snapshot(
+            db, report, roles=[(0, file_run)]
+        )
+
+    assert db_selection.blocking_reasons == ()
+    assert file_selection.blocking_reasons == ()
+    assert db_selection.route_rows == file_selection.route_rows
+    assert db_selection.source_row_count == file_selection.source_row_count == 1
+    assert db_selection.source_coverage_start == report.period_start
+    assert db_selection.source_coverage_end == report.period_end
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("database_hash", "route_source_payload_hash_mismatch"),
+        ("database_row_count", "route_database_row_count_mismatch"),
+        ("snapshot_hash", "route_source_snapshot_hash_mismatch"),
+        ("tenant_scope", "route_source_scope_mismatch"),
+        ("unverified_manifest", "route_raw_snapshot_invalid"),
+        ("storage_ambiguity", "route_source_storage_ambiguity"),
+        ("file_tamper", "route_file_snapshot_invalid"),
+        ("path_traversal", "route_file_snapshot_invalid"),
+    ],
+)
+def test_route_snapshot_integrity_failures_are_blocking(
+    tmp_path: Path,
+    failure: str,
+    expected_code: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        file_authoritative = failure in {
+            "storage_ambiguity",
+            "file_tamper",
+            "path_traversal",
+        }
+        run, collection, flat_path = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id=f"routes-{failure}",
+            cabinet_id=cabinet_id,
+            rows=[_route_source_row()],
+            file_authoritative=file_authoritative,
+        )
+        if failure == "database_hash":
+            db.query(SourceSnapshotRow).filter_by(
+                collection_id=collection.id
+            ).one().raw_payload_hash = "changed"
+        elif failure == "database_row_count":
+            collection.row_count = 2
+            results = [{**collection.payload["results"][0], "rowCount": 2}]
+            collection.snapshot_hash = source_refresh._hash_payload(results)
+            collection.payload = {**collection.payload, "results": results}
+        elif failure == "snapshot_hash":
+            collection.snapshot_hash = "changed"
+        elif failure == "tenant_scope":
+            collection.tenant_id = "other"
+        elif failure == "unverified_manifest":
+            collection.payload = {
+                **collection.payload,
+                "rawIntegrity": {"status": "failed"},
+            }
+        elif failure == "storage_ambiguity":
+            row = _route_source_row()
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=1,
+                raw_payload_hash=source_refresh._hash_payload(row),
+                source_row_id="route-1",
+                wb_cabinet_id=cabinet_id,
+                row_payload=row,
+            )
+        elif failure == "file_tamper":
+            flat_path.write_text(
+                json.dumps([_route_source_row(warehouse="Склад X")]),
+                encoding="utf-8",
+            )
+        elif failure == "path_traversal":
+            results = list(collection.payload["results"])
+            results[0] = {
+                **results[0],
+                "flatOutputFile": "../supplier-sales.flat.json",
+            }
+            collection.snapshot_hash = source_refresh._hash_payload(results)
+            collection.payload = {**collection.payload, "results": results}
+
+        selection = source_refresh._select_route_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.route_rows == ()
+    assert expected_code in selection.blocking_reasons
+
+
+def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        primary, _, _ = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-primary",
+            cabinet_id=cabinet_id,
+            rows=[_route_source_row()],
+            file_authoritative=False,
+        )
+        base, _, _ = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-base",
+            cabinet_id=cabinet_id,
+            rows=[_route_source_row(warehouse="Склад B")],
+            file_authoritative=False,
+        )
+        peer, _, _ = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-peer",
+            cabinet_id=cabinet_id,
+            rows=[_route_source_row(warehouse="Склад C")],
+            file_authoritative=False,
+        )
+
+        selected = source_refresh._select_route_snapshot(
+            db, report, roles=[(0, primary), (1, base)]
+        )
+        conflicted = source_refresh._select_route_snapshot(
+            db, report, roles=[(0, primary), (0, peer)]
+        )
+
+    assert selected.blocking_reasons == ()
+    assert selected.route_rows[0]["warehouse_name"] == "Склад A"
+    assert conflicted.route_rows == ()
+    assert conflicted.blocking_reasons == ("route_source_revision_conflict",)
+
+
+def test_route_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        run, collection, _ = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-partial",
+            cabinet_id=cabinet_id,
+            rows=[_route_source_row()],
+            file_authoritative=False,
+        )
+        collection.status = "partial_source"
+        selection = source_refresh._select_route_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.blocking_reasons == ()
+    assert selection.review_reasons == ("route_source_partial",)
+    assert len(selection.route_rows) == 1
+
+
 def test_dimension_snapshot_uses_primary_before_base_and_blocks_peer_conflict(
     tmp_path: Path,
 ) -> None:
@@ -1566,6 +1775,103 @@ def test_tariff_context_and_rows_are_built_for_new_draft(tmp_path: Path) -> None
     assert context.unavailable_point_count == 1
     assert len(rows) == 2
     assert {row.tariff_type for row in rows} == {"box", "pallet"}
+
+
+def test_route_context_and_rows_are_built_for_new_draft(tmp_path: Path) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        report.publication_status = "draft"
+        report.is_current = False
+        unit_row = db.query(repository.ReportUnitRow).one()
+        finance_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="routes-end-to-end-finance",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="route end-to-end test",
+            enforce_active_check=False,
+        )
+        finance_collection = repository.add_source_refresh_collection(
+            db,
+            finance_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        finance_payload = {
+            "rrdId": "route-finance-1",
+            "rrDate": "2026-04-06",
+            "orderDt": "2026-04-05",
+            "orderUid": "route-order-1",
+            "nmId": "1001",
+            "sku": "BAR-1",
+            "vendorCode": "WB-1",
+            "title": "Товар",
+            "deliveryMethod": "FBO",
+            "docTypeName": "Логистика",
+            "sellerOperName": "Логистика",
+            "deliveryService": "50",
+            "deliveryAmount": "1",
+            "returnAmount": "0",
+        }
+        repository.add_source_snapshot_row(
+            db,
+            finance_collection,
+            row_number=1,
+            raw_payload_hash=source_refresh._hash_payload(finance_payload),
+            source_row_id="route-finance-1",
+            wb_cabinet_id=unit_row.wb_cabinet_id,
+            row_payload=finance_payload,
+        )
+        route_run, _collection, _flat_path = _add_route_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="routes-end-to-end-source",
+            cabinet_id=unit_row.wb_cabinet_id,
+            rows=[_route_source_row()],
+            file_authoritative=False,
+        )
+
+        logistics_result = source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=finance_run,
+        )
+        source_refresh._build_and_persist_logistics_routes(
+            db,
+            report,
+            logistics_result=logistics_result,
+            primary_refresh_run=finance_run,
+            contributing_runs=[route_run],
+        )
+        db.commit()
+
+        context = db.get(repository.ReportLogisticsRouteContext, report.id)
+        rows = db.query(repository.ReportLogisticsRouteRow).all()
+
+    assert report.logistics_routes_required is True
+    assert context is not None
+    assert context.data_status == "ready"
+    assert context.total_chain_count == 1
+    assert context.matched_chain_count == 1
+    assert context.missing_chain_count == 0
+    assert context.total_logistics == Decimal("50")
+    assert context.linked_logistics == Decimal("50")
+    assert len(rows) == 1
+    assert rows[0].warehouse == "Склад A"
+    assert rows[0].destination == "Страна · Округ · Регион A"
+    assert rows[0].coverage_status == "ready"
 
 
 def test_logistics_analysis_blocks_undated_report_row_without_losing_total(
@@ -7055,6 +7361,133 @@ def _add_tariff_file_snapshot(
         source_root=settings.source_refresh_root_path,
     )
     assert collection.payload["rawIntegrity"]["status"] == "verified"
+    return run, collection, flat_path
+
+
+def _route_source_row(
+    *,
+    srid: str = "route-order-1",
+    nm_id: str = "1001",
+    warehouse: str = "Склад A",
+    region: str = "Регион A",
+) -> dict[str, object]:
+    return {
+        "srid": srid,
+        "g_number": "safe-order-group",
+        "sale_id": "safe-sale",
+        "nm_id": nm_id,
+        "barcode": "BAR-1",
+        "sale_date": "2026-04-06T10:00:00",
+        "last_change_date": "2026-04-06T11:00:00",
+        "warehouse_name": warehouse,
+        "country_name": "Страна",
+        "oblast_okrug_name": "Округ",
+        "region_name": region,
+    }
+
+
+def _add_route_snapshot(
+    db,
+    report,
+    *,
+    settings: WebSettings,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    rows: list[dict[str, object]],
+    file_authoritative: bool,
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="route source test",
+        enforce_active_check=False,
+    )
+    run_root = settings.source_refresh_root_path / snapshot_set_id
+    raw_dir = run_root / "wb_supplier_sales"
+    raw_dir.mkdir(parents=True)
+    run.root_dir = str(run_root)
+    raw_payload = [
+        {
+            "srid": row["srid"],
+            "nmId": int(str(row["nm_id"])),
+            "warehouseName": row["warehouse_name"],
+            "countryName": row["country_name"],
+            "oblastOkrugName": row["oblast_okrug_name"],
+            "regionName": row["region_name"],
+        }
+        for row in rows
+    ]
+    raw_path = raw_dir / "supplier-sales.raw.json"
+    flat_path = raw_dir / "supplier-sales.flat.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    flat_path.write_text(json.dumps(rows), encoding="utf-8")
+    results = [
+        {
+            "sellerAccountId": "WB_ACCOUNT_SAFE",
+            "accountName": "Кабинет",
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 1,
+            "status": "loaded",
+            "ok": True,
+            "rowCount": len(rows),
+            "statusCode": 200,
+            "rawPayloadHash": source_refresh._hash_payload(raw_payload),
+            "flatPayloadHash": source_refresh._hash_payload(rows),
+            "outputFile": raw_path.name,
+            "flatOutputFile": flat_path.name,
+            "error": "",
+        }
+    ]
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({"results": results}),
+        encoding="utf-8",
+    )
+    payload: dict[str, object] = {
+        "results": results,
+        "coverageStart": report.period_start.isoformat(),
+        "coverageEnd": report.period_end.isoformat(),
+        "factorSnapshotDate": "2026-07-21",
+    }
+    if file_authoritative:
+        payload["rowPersistence"] = {
+            "status": "file_authoritative",
+            "rawFilesAuthoritative": True,
+        }
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type="wb_supplier_sales",
+        source_label="WB supplier sales routes",
+        required=False,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(rows),
+        raw_path=str(raw_dir),
+        payload=payload,
+    )
+    source_refresh._attach_collection_raw_integrity(
+        collection,
+        source_root=settings.source_refresh_root_path,
+    )
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    if not file_authoritative:
+        for row_number, row in enumerate(rows, 1):
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=row_number,
+                raw_payload_hash=source_refresh._hash_payload(row),
+                source_row_id=f"route-{row_number}",
+                wb_cabinet_id=cabinet_id,
+                row_payload=row,
+            )
     return run, collection, flat_path
 
 
