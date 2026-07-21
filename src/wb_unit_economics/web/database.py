@@ -1150,6 +1150,9 @@ def _ensure_tax_profile_columns(engine: Engine) -> None:
             column["name"] for column in inspector.get_columns(table, schema=schema)
         }
         missing_specs = {
+            "tax_object": "VARCHAR NOT NULL DEFAULT ''",
+            "tax_rate": "NUMERIC NOT NULL DEFAULT 0",
+            "elevated_tax_rate": "NUMERIC NOT NULL DEFAULT 0",
             "vat_deduction_mode": "VARCHAR NOT NULL DEFAULT 'unknown'",
             "rate_basis_kind": "VARCHAR NOT NULL DEFAULT ''",
             "basis_document": "TEXT NOT NULL DEFAULT ''",

@@ -500,7 +500,10 @@ def test_ozon_unconfirmed_profile_collapses_to_missing_and_surfaces_issue() -> N
         tax_profile=profile,
     )
 
-    # Неподтвержденный профиль (unknown vat deduction) схлопывается в missing.
+    # Неподтвержденный профиль виден, но не участвует в расчёте.
+    assert payload["taxProfile"]["status"] == "unconfirmed"
+    assert payload["taxProfile"]["taxSystem"] == "УСН Доходы"
+    assert payload["taxProfile"]["vatDeductionMode"] == "unknown"
     assert payload["totals"]["taxCompleteness"] == "missing_tax_profile"
     assert payload["summary"]["taxProfileMissing"] == 1
     assert "ozon_mart_tax_profile_missing" in [

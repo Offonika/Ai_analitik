@@ -12,6 +12,8 @@ truth_priority: 100
 related_code:
   - src/wb_unit_economics/calculation.py
   - src/wb_unit_economics/contracts.py
+  - src/wb_unit_economics/config.py
+  - src/wb_unit_economics/onec_odata.py
   - src/wb_unit_economics/web/app.py
   - src/wb_unit_economics/web/database.py
   - src/wb_unit_economics/web/repository.py
@@ -242,6 +244,12 @@ composite hash. Если подходящего WB snapshot нет, web auto-ref
 страницами и сортировкой `Date,Ref_Key`; ограничение отчетного периода по
 `Date` выполняется при нормализации и фиксируется как
 `local_document_date` в manifest.
+Периодические регистры
+`InformationRegister_СистемыНалогообложенияОрганизаций` и
+`InformationRegister_НастройкиУчетаНДС` читаются полностью как малые
+read-only справочные snapshots. Отбор по началу отчетного периода запрещен,
+потому что действующая запись могла начаться раньше; профиль выбирает последнюю
+запись с `Период <= дата расчета` по каждой `Организация_Key`.
 В опубликованной 1С OData-модели регистры `Запасы`, `ЗапасыНаСкладах`,
 `Продажи`, `ДоходыИРасходы` и взаиморасчеты возвращают верхнеуровневые записи
 `Recorder/RecordSet`; поле `Period` находится внутри вложенного `RecordSet`.
