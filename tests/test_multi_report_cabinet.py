@@ -37,6 +37,7 @@ from wb_unit_economics.web.reports.builders import (
 )
 from wb_unit_economics.web.reports.evidence import (
     AccountingEvidenceSource,
+    _bank_tax_payments,
     materialize_accounting_evidence,
 )
 from wb_unit_economics.web.reports.excel import (
@@ -583,6 +584,133 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
     assert usn["status"] == "loaded"
     # Только ORG-1 и только период с начала года: 1200 + 800.
     assert usn["value"] == "2000"
+
+
+def test_tax_load_uses_classified_bank_tax_payments_when_ens_is_empty() -> None:
+    sources = {
+        "onec_tax_kinds": AccountingEvidenceSource(
+            source_type="onec_tax_kinds",
+            status="loaded",
+            snapshot_id="tax-kinds-sha",
+            rows=(
+                {"Ref_Key": "TAX-USN", "Description": "Налог при УСН"},
+                {"Ref_Key": "TAX-VAT", "Description": "НДС"},
+            ),
+        ),
+        "onec_accounting_taxes": AccountingEvidenceSource(
+            source_type="onec_accounting_taxes",
+            status="loaded",
+            snapshot_id="tax-register-sha",
+            rows=(
+                {
+                    "Организация_Key": "ORG-1",
+                    "Period": "2026-05-31T00:00:00",
+                    "ВидНалога_Key": "TAX-USN",
+                    "Сумма": "100",
+                },
+                {
+                    "Организация_Key": "ORG-1",
+                    "Period": "2026-05-31T00:00:00",
+                    "ВидНалога_Key": "TAX-VAT",
+                    "Сумма": "50",
+                },
+            ),
+        ),
+        "onec_accounting_taxes_on_ens": AccountingEvidenceSource(
+            source_type="onec_accounting_taxes_on_ens",
+            status="empty_expected",
+            snapshot_id="ens-empty-sha",
+            rows=(),
+        ),
+        "onec_accounting_bank_out": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_out",
+            status="loaded",
+            snapshot_id="bank-out-sha",
+            rows=(
+                {
+                    "Организация_Key": "ORG-1",
+                    "Date": "2026-03-20T00:00:00",
+                    "Posted": True,
+                    "DeletionMark": False,
+                    "ВидОперации": "Налоги",
+                    "НазначениеПлатежа": "Налог УСН",
+                    "СуммаДокумента": "100",
+                },
+                {
+                    "Организация_Key": "ORG-1",
+                    "Date": "2026-05-21T00:00:00",
+                    "Posted": True,
+                    "DeletionMark": False,
+                    "ВидОперации": "Налоги",
+                    "НазначениеПлатежа": "НДС",
+                    "СуммаДокумента": "50",
+                },
+            ),
+        ),
+        "onec_kudir": AccountingEvidenceSource(
+            source_type="onec_kudir",
+            status="loaded",
+            snapshot_id="kudir-sha",
+            rows=(
+                {
+                    "Организация_Key": "ORG-1",
+                    "Period": "2026-05-31T00:00:00",
+                    "ДоходБаза": "2000",
+                },
+            ),
+        ),
+    }
+
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        refresh_run_id="gen-bank-payments",
+        sources=sources,
+    )
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={"taxSystem": "УСН Доходы", "profileStatus": "ready"},
+        evidence=evidence,
+    )
+
+    assert {row["sourceKind"] for row in evidence["taxRows"]} == {
+        "onec_accounting_bank_out"
+    }
+    assert fns_paid_taxes_numerator(evidence["taxRows"]) == Decimal("150")
+    assert not any(
+        issue["code"] in {
+            "onec_accounting_taxes_on_ens_gap",
+            "paid_tax_fact_unconfirmed",
+        }
+        for issue in evidence["issues"]
+    )
+    assert payload["taxLoadSummary"]["usnIncomeTaxBurden"] == "7.5000"
+
+
+def test_bank_tax_payment_fallback_rejects_unclassified_document() -> None:
+    payments, classified = _bank_tax_payments(
+        [
+            {
+                "Posted": True,
+                "DeletionMark": False,
+                "ВидОперации": "Налоги",
+                "НазначениеПлатежа": "Налог УСН",
+                "СуммаДокумента": "100",
+            },
+            {
+                "Posted": True,
+                "DeletionMark": False,
+                "ВидОперации": "Налоги",
+                "НазначениеПлатежа": "Налоговый платеж без расшифровки",
+                "СуммаДокумента": "50",
+            },
+        ]
+    )
+
+    assert payments == {}
+    assert classified is False
 
 
 def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:

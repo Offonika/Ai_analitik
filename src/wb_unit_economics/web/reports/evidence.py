@@ -250,11 +250,12 @@ def _tax_load_evidence(
     period_end: date,
     sources: Mapping[str, AccountingEvidenceSource],
 ) -> dict[str, Any]:
+    ytd_start = period_start.replace(month=1, day=1)
     tax_lookup = _description_lookup(sources.get("onec_tax_kinds"))
     raw_tax_rows = _organization_period_rows(
         sources.get("onec_accounting_taxes"),
         organization_id,
-        period_start,
+        ytd_start,
         period_end,
         date_fields=("Period",),
     )
@@ -262,9 +263,20 @@ def _tax_load_evidence(
     raw_payment_rows = _organization_period_rows(
         payment_source,
         organization_id,
-        period_start,
+        ytd_start,
         period_end,
         date_fields=("Period", "Date", "СрокУплаты"),
+    )
+    bank_payment_source = sources.get("onec_accounting_bank_out")
+    raw_bank_payment_rows = _organization_period_rows(
+        bank_payment_source,
+        organization_id,
+        ytd_start,
+        period_end,
+        date_fields=("Period", "Date", "Дата"),
+    )
+    bank_paid_by_kind, bank_payments_classified = _bank_tax_payments(
+        raw_bank_payment_rows
     )
     paid_by_tax: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
     for row in raw_payment_rows:
@@ -308,8 +320,29 @@ def _tax_load_evidence(
         item["accrued"] += _first_decimal(row, ("Сумма", "Amount")) or Decimal("0")
     tax_rows: list[dict[str, Any]] = []
     tax_code_counts: dict[str, int] = defaultdict(int)
+    tax_kind_counts: dict[str, int] = defaultdict(int)
     for tax_code, _due_date in grouped:
         tax_code_counts[tax_code] += 1
+    for item in grouped.values():
+        tax_kind = _tax_payment_match_kind(str(item["taxName"]))
+        if tax_kind:
+            tax_kind_counts[tax_kind] += 1
+    included_tax_kinds = {
+        _tax_payment_match_kind(str(item["taxName"]))
+        for item in grouped.values()
+        if _tax_classification(str(item["taxName"]))[1]
+    }
+    bank_payment_fallback_ready = (
+        not raw_payment_rows
+        and bank_payments_classified
+        and None not in included_tax_kinds
+        and all(
+            tax_kind_counts[tax_kind] == 1 and tax_kind in bank_paid_by_kind
+            for tax_kind in included_tax_kinds
+        )
+        and all(tax_kind_counts[tax_kind] == 1 for tax_kind in bank_paid_by_kind)
+    )
+    bank_payment_fallback_used = False
     for item in grouped.values():
         payment_kind, included, exclusion_reason = _tax_classification(
             str(item["taxName"])
@@ -318,18 +351,27 @@ def _tax_load_evidence(
         paid = paid_by_tax.get((tax_code, str(item["dueDate"] or "")))
         if paid is None and tax_code_counts[tax_code] == 1:
             paid = paid_by_tax.get((tax_code, ""))
+        paid_source = payment_source
+        if paid is None and bank_payment_fallback_ready:
+            tax_kind = _tax_payment_match_kind(str(item["taxName"]))
+            paid = bank_paid_by_kind.get(tax_kind or "")
+            if paid is not None:
+                paid_source = bank_payment_source
+                bank_payment_fallback_used = True
         item["accrued"] = _decimal_text(item["accrued"])
         item["paid"] = _decimal_text(paid) if paid is not None else None
         item["valueStatus"] = "loaded" if paid is not None else "partial"
         item["evidenceStatus"] = (
             "loaded"
             if paid is not None
-            and payment_source is not None
-            and payment_source.status in {"loaded", "ready", "complete"}
+            and paid_source is not None
+            and paid_source.status in {"loaded", "ready", "complete"}
             else "partial_source"
         )
         item["sourceKind"] = (
-            "onec_accounting_taxes_on_ens" if paid is not None else "onec_tax_register"
+            paid_source.source_type
+            if paid is not None and paid_source is not None
+            else "onec_tax_register"
         )
         item["issueCode"] = None if paid is not None else "paid_tax_fact_unconfirmed"
         item["paymentKind"] = payment_kind
@@ -379,7 +421,7 @@ def _tax_load_evidence(
     usn_income_rows = _organization_period_rows(
         usn_income_source,
         organization_id,
-        period_start.replace(month=1, day=1),
+        ytd_start,
         period_end,
         date_fields=("Period", "Date", "Дата"),
     )
@@ -389,14 +431,13 @@ def _tax_load_evidence(
         "sourceKind": "onec_kudir",
         "snapshotId": usn_income_source.snapshot_id if usn_income_source else "",
     }
-    issues = _source_gap_issues(
-        sources,
-        {
-            "onec_accounting_taxes": "Налоги",
-            "onec_accounting_taxes_on_ens": "Платежи",
-            "onec_official_financial_results": "Доходный знаменатель",
-        },
-    )
+    required_sources = {
+        "onec_accounting_taxes": "Налоги",
+        "onec_official_financial_results": "Доходный знаменатель",
+    }
+    if not bank_payment_fallback_used:
+        required_sources["onec_accounting_taxes_on_ens"] = "Платежи"
+    issues = _source_gap_issues(sources, required_sources)
     if any(row.get("paid") is None for row in tax_rows):
         issues.append(
             {
@@ -413,9 +454,7 @@ def _tax_load_evidence(
             }
         )
     return {
-        "sourceCoverage": _coverage(
-            sources, period_start.replace(month=1, day=1), period_end
-        ),
+        "sourceCoverage": _coverage(sources, ytd_start, period_end),
         "taxRows": tax_rows,
         "incomeEvidence": income_evidence,
         "usnIncomeEvidence": usn_income_evidence,
@@ -703,6 +742,54 @@ def _tax_classification(name: str) -> tuple[str, bool, str | None]:
     if not normalized.strip() or "не классифицирован" in normalized:
         return "unclassified", False, "unclassified"
     return "own_tax", True, None
+
+
+def _tax_payment_match_kind(value: str) -> str | None:
+    normalized = value.casefold()
+    markers = {
+        "insurance": ("страх", "взнос"),
+        "ndfl": ("ндфл",),
+        "dividend_tax": ("дивиденд",),
+        "vat": ("ндс",),
+        "usn": ("усн", "упрощ"),
+        "profit_tax": ("прибыл",),
+        "property_tax": ("имуще",),
+        "transport_tax": ("транспорт",),
+        "land_tax": ("земел",),
+    }
+    matches = {
+        tax_kind
+        for tax_kind, values in markers.items()
+        if any(marker in normalized for marker in values)
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _bank_tax_payments(
+    rows: list[Mapping[str, Any]],
+) -> tuple[dict[str, Decimal], bool]:
+    tax_rows = [
+        row
+        for row in rows
+        if row.get("Posted") is True
+        and row.get("DeletionMark") is not True
+        and str(row.get("ВидОперации") or "").strip().casefold() == "налоги"
+    ]
+    if not tax_rows:
+        return {}, False
+    paid_by_kind: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    for row in tax_rows:
+        tax_kind = _tax_payment_match_kind(
+            " ".join(
+                str(row.get(key) or "")
+                for key in ("НазначениеПлатежа", "Комментарий")
+            )
+        )
+        paid = _first_decimal(row, ("СуммаДокумента", "Сумма", "Amount"))
+        if tax_kind is None or paid is None:
+            return {}, False
+        paid_by_kind[tax_kind] += paid
+    return dict(paid_by_kind), True
 
 
 def _sum_rows(rows: list[Mapping[str, Any]], keys: tuple[str, ...]) -> str | None:
