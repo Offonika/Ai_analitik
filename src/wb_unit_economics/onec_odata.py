@@ -307,7 +307,10 @@ TAX_PROFILE_SAMPLE_COLLECTIONS = (
     OnecSampleCollection(
         sample_id="kudir",
         collection_name="AccumulationRegister_КнигаУчетаДоходовИРасходов_RecordType",
-        purpose="Наличие КУДиР как дополнительный учетный признак УСН.",
+        purpose=(
+            "КУДиР УСН: признак применения и доход-база без НДС для "
+            "управленческого показателя налоговой нагрузки ИП."
+        ),
         page_size=1000,
         order_by="Period asc",
         select_fields=(
@@ -316,6 +319,9 @@ TAX_PROFILE_SAMPLE_COLLECTIONS = (
             "Active",
             "Организация_Key",
             "ВидЗаписи",
+            "ДоходБаза",
+            "ДоходВсего",
+            "НДС",
         ),
     ),
     OnecSampleCollection(

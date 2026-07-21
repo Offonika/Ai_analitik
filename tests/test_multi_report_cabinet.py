@@ -500,7 +500,7 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
     evidence["usnIncomeEvidence"] = {
         "value": "2000",
         "status": "confirmed",
-        "sourceKind": "onec_usn_income",
+        "sourceKind": "onec_kudir",
     }
 
     payload = build_tax_load_payload(
@@ -523,6 +523,43 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
     assert summary["usnIncomeStatus"] == "management_reference"
     assert summary["usnIncomeDenominatorKind"] == "usn_income_receipts_excluding_vat"
     assert payload["businessStatus"] == "preliminary"
+
+
+def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
+    sources = {
+        "onec_kudir": AccountingEvidenceSource(
+            source_type="onec_kudir",
+            status="loaded",
+            snapshot_id="kudir-sha",
+            rows=(
+                {"Организация_Key": "ORG-1", "Period": "2026-05-10T00:00:00",
+                 "ДоходБаза": "1200", "ВидЗаписи": "Приход"},
+                {"Организация_Key": "ORG-1", "Period": "2026-06-20T00:00:00",
+                 "ДоходБаза": "800", "ВидЗаписи": "Приход"},
+                # Другая организация — не суммируется.
+                {"Организация_Key": "ORG-2", "Period": "2026-05-10T00:00:00",
+                 "ДоходБаза": "999", "ВидЗаписи": "Приход"},
+                # До начала года — вне YTD-периода.
+                {"Организация_Key": "ORG-1", "Period": "2025-12-31T00:00:00",
+                 "ДоходБаза": "500", "ВидЗаписи": "Приход"},
+            ),
+        ),
+    }
+
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 6, 30),
+        refresh_run_id="gen-1",
+        sources=sources,
+    )
+
+    usn = evidence["usnIncomeEvidence"]
+    assert usn["sourceKind"] == "onec_kudir"
+    assert usn["status"] == "loaded"
+    # Только ORG-1 и только период с начала года: 1200 + 800.
+    assert usn["value"] == "2000"
 
 
 def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
