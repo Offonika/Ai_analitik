@@ -6,8 +6,8 @@ audience: ["consultant", "engineering", "client"]
 status: "draft"
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-17"
-updated_at: "2026-07-17"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-21"
+updated_at: "2026-07-21"
 ---
 
 # Формулы расчета показателей WB/1C
@@ -390,7 +390,12 @@ P&L, который уже построен на суммах без НДС. Д�
 `confirmed_non_ndfl_income_tax = 0`.
 
 Точные ставки, режим и правила входного НДС берутся из налогового профиля
-организации 1С. Без профиля значения `vat_payable`, `income_tax` и
+организации 1С на дату расчёта. Настройки выбираются отдельно по организации из
+периодических регистров системы налогообложения и НДС. Для УСН «доходы минус
+расходы» ставки сохраняются в профиле, но не применяются к выручке без отдельной
+принятой формулы налоговой базы. Общая ставка НДС 20%/22% задаёт режим с
+вычетами, специальные ставки 5%/7% — без вычетов. Без профиля значения
+`vat_payable`, `income_tax` и
 `profit_before_ndfl` неопределены. Внутренние поля `vat_5_from_revenue`,
 `usn_1_from_revenue` и `profit_after_taxes` остаются только для совместимости.
 Формула `НДС 5/105 + УСН 1%` разрешена исключительно для legacy-отчета с

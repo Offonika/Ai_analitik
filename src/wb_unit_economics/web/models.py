@@ -183,6 +183,11 @@ class OrganizationTaxProfile(Base):
     )
     organization_id: Mapped[str] = mapped_column(String, nullable=False)
     tax_system: Mapped[str] = mapped_column(String, nullable=False)
+    tax_object: Mapped[str] = mapped_column(String, nullable=False, default="")
+    tax_rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
+    elevated_tax_rate: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, default=0
+    )
     vat_rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     vat_mode: Mapped[str] = mapped_column(String, nullable=False, default="none")
     vat_deduction_mode: Mapped[str] = mapped_column(
@@ -206,7 +211,7 @@ class OrganizationTaxProfile(Base):
         String, nullable=False, default=""
     )
     methodology_version: Mapped[str] = mapped_column(
-        String, nullable=False, default="ozon-tax-profile-v2"
+        String, nullable=False, default="marketplace-tax-profile-v4"
     )
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
@@ -235,6 +240,11 @@ class OrganizationTaxProfileOverride(Base):
     )
     organization_id: Mapped[str] = mapped_column(String, nullable=False)
     tax_system: Mapped[str] = mapped_column(String, nullable=False)
+    tax_object: Mapped[str] = mapped_column(String, nullable=False, default="")
+    tax_rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
+    elevated_tax_rate: Mapped[Decimal] = mapped_column(
+        Numeric, nullable=False, default=0
+    )
     vat_rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False, default=0)
     vat_mode: Mapped[str] = mapped_column(String, nullable=False, default="none")
     vat_deduction_mode: Mapped[str] = mapped_column(

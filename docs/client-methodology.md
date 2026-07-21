@@ -6,8 +6,8 @@ audience: ["client", "consultant"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-17"
-updated_at: "2026-07-17"
+last_reconciled_with: "docs/specs/wb-unit-economics-excel-mvp-implementation.md @ 2026-07-21"
+updated_at: "2026-07-21"
 ---
 
 # Методика расчета юнит-экономики Wildberries
@@ -88,6 +88,13 @@ Mapping (сопоставление товаров WB и 1С) ведется в 
 ```
 
 После этого применяется профиль организации 1С:
+
+Профиль выбирается отдельно для каждой организации по последним действующим на
+дату отчёта настройкам системы налогообложения и НДС в 1С. Для УСН «доходы
+минус расходы» режим и ставки показываются, но налог не умножается на выручку:
+для этого объекта нужна отдельная принятая формула налоговой базы.
+Общая ставка НДС 20%/22% означает режим с вычетами, специальные ставки 5%/7% —
+режим без вычетов, а освобождение от НДС — отсутствие расчёта НДС.
 
 ```text
 для ОСНО:

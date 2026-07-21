@@ -11,6 +11,7 @@ truth_scope: "tax-load-report"
 truth_priority: 100
 related_code:
   - scripts/build_onec_month_close_audit_pack.py
+  - src/wb_unit_economics/config.py
   - src/wb_unit_economics/onec_odata.py
   - src/wb_unit_economics/web/models.py
   - src/wb_unit_economics/web/repository.py
@@ -29,7 +30,7 @@ related_specs:
   - docs/specs/accounting-reports-smart-process-onepage.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-21"
 ---
 
 # Статус документа
@@ -156,7 +157,9 @@ ONEPAGE; эта report spec их не переопределяет.
 
 Предпочтительные источники:
 
-- налоговый профиль и учетные признаки организации 1С;
+- периодические настройки налоговой системы и НДС организации 1С из
+  `InformationRegister_СистемыНалогообложенияОрганизаций` и
+  `InformationRegister_НастройкиУчетаНДС`;
 - ОСВ и счета налогов/ЕНС;
 - read-only регистры начислений и расчетов по налогам;
 - книги покупок/продаж и другие согласованные источники НДС;

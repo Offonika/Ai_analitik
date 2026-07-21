@@ -4426,7 +4426,7 @@ def test_source_refresh_builds_usn_profile_from_accounting_evidence(
     assert tax_collection.payload["missingProfileCount"] == 0
     assert tax_collection.payload["manualOverrideCount"] == 0
     assert tax_collection.payload["methodologyVersion"] == (
-        "marketplace-tax-profile-v3"
+        "marketplace-tax-profile-v4"
     )
     diagnostic = tax_collection.payload["companyDiagnostics"][0]
     assert diagnostic["accountingEvidence"]["rateAnchorMatched"] is True
@@ -4438,6 +4438,112 @@ def test_source_refresh_builds_usn_profile_from_accounting_evidence(
     assert source_profile.rate_basis_kind == "regional_preference"
     assert source_profile.basis_document == "Региональный закон о льготной ставке УСН"
     assert source_profile.confirmed_by == "Бухгалтер"
+
+
+def test_source_refresh_builds_unconfirmed_usn_expense_profile_from_settings(
+    tmp_path: Path,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .first()
+        )
+        assert company is not None
+        company.onec_organization_id = "ORG-USN-DR"
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="usn-periodic-settings",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            user=user,
+            source_report=report,
+            reason="periodic tax settings test",
+        )
+
+        def add_rows(source_type: str, rows: list[dict[str, object]]) -> None:
+            collection = repository.add_source_refresh_collection(
+                db,
+                run,
+                source_type=source_type,
+                source_label=source_type,
+                required=False,
+                status="loaded" if rows else "empty_expected",
+                row_count=len(rows),
+            )
+            for index, payload in enumerate(rows, 1):
+                repository.add_source_snapshot_row(
+                    db,
+                    collection,
+                    row_number=index,
+                    raw_payload_hash=f"{source_type}-{index}",
+                    row_payload=payload,
+                )
+
+        add_rows("onec_organizations", [{"Ref_Key": "ORG-USN-DR"}])
+        add_rows(
+            "onec_tax_system_settings",
+            [
+                {
+                    "Period": "2026-01-01T00:00:00",
+                    "Организация_Key": "ORG-USN-DR",
+                    "СистемаНалогообложения": "Упрощенная",
+                    "ПлательщикУСН": True,
+                    "ОбъектНалогообложения": "ДоходыМинусРасходы",
+                    "СтавкаНалога": "15",
+                    "ПовышеннаяСтавкаНалога": "20",
+                    "ПлательщикНДСПрименяющийУСН": True,
+                }
+            ],
+        )
+        add_rows(
+            "onec_vat_settings",
+            [
+                {
+                    "Period": "2026-01-01T00:00:00",
+                    "Организация_Key": "ORG-USN-DR",
+                    "ПрименяетсяОсвобождениеОтУплатыНДС": False,
+                    "СтавкаНалогообложенияПриУСН": "Общая",
+                }
+            ],
+        )
+
+        tax_collection = repository.sync_organization_tax_profiles(db, run, user=user)
+        source_profile = (
+            db.query(OrganizationTaxProfile)
+            .filter_by(source_refresh_run_id=run.id)
+            .one()
+        )
+        resolved_profile, resolved_status = repository.resolve_company_tax_profile(
+            db,
+            company=company,
+            calculation_date=run.period_end,
+            refresh_run=run,
+        )
+
+    assert tax_collection.status == "needs_review"
+    assert tax_collection.payload["configuredCompanyCount"] == 1
+    assert tax_collection.payload["profileCount"] == 0
+    assert tax_collection.payload["unconfirmedProfileCount"] == 1
+    assert source_profile.tax_system == "УСН Доходы минус расходы"
+    assert source_profile.tax_object == "income_minus_expenses"
+    assert source_profile.tax_rate == Decimal("15")
+    assert source_profile.elevated_tax_rate == Decimal("20")
+    assert source_profile.vat_rate == Decimal("22")
+    assert source_profile.vat_deduction_mode == "allowed"
+    assert source_profile.revenue_tax_rate == Decimal("0")
+    assert source_profile.source == "1C:tax_system_settings+vat_settings"
+    assert resolved_profile is not None
+    assert resolved_status["status"] == "ready"
 
 
 def test_source_refresh_blocks_conflicting_active_run_with_status(

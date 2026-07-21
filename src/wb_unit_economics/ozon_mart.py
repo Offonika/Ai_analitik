@@ -1215,10 +1215,13 @@ def _tax_profile_payload(
     *,
     required: bool,
 ) -> dict[str, Any]:
-    if profile is None or not tax_profile_is_confirmed(profile):
+    if profile is None:
         return {
             "status": "missing" if required else "not_required",
             "taxSystem": "",
+            "taxObject": "",
+            "taxRate": None,
+            "elevatedTaxRate": None,
             "vatRate": None,
             "vatMode": "",
             "vatDeductionMode": "unknown",
@@ -1228,9 +1231,19 @@ def _tax_profile_payload(
             "validTo": None,
             "source": "missing",
         }
+    confirmed = tax_profile_is_confirmed(profile)
     return {
-        "status": "override" if profile.source == "manual_override" else "ready",
+        "status": (
+            "override"
+            if profile.source == "manual_override" and confirmed
+            else "ready"
+            if confirmed
+            else "unconfirmed"
+        ),
         "taxSystem": profile.tax_system,
+        "taxObject": profile.tax_object,
+        "taxRate": _json_number(profile.tax_rate),
+        "elevatedTaxRate": _json_number(profile.elevated_tax_rate),
         "vatRate": _json_number(profile.vat_rate),
         "vatMode": profile.vat_mode.value,
         "vatDeductionMode": profile.vat_deduction_mode.value,
