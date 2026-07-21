@@ -5499,10 +5499,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260721-logistics-f4-measurements-v1"
+        "20260721-logistics-f4-measurements-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260721-logistics-f4-measurements-v1"
+        "20260721-logistics-f4-measurements-v2"
     )
 
     page = client.get("/")
@@ -5653,11 +5653,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260721-logistics-f4-measurements-v1"
+            "styles.css?v=20260721-logistics-f4-measurements-v2"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260721-logistics-f4-measurements-v1"
+            "app.js?v=20260721-logistics-f4-measurements-v2"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
