@@ -197,19 +197,36 @@ def endpoints(today: date) -> list[tuple[str, str, dict, str]]:
     week_ago = (today - timedelta(days=7)).isoformat()
     today_str = today.isoformat()
     return [
-        ("tariffs_box", "https://common-api.wildberries.ru/api/v1/tariffs/box",
-         {"date": today_str}, "Тарифы"),
-        ("tariffs_pallet",
-         "https://common-api.wildberries.ru/api/v1/tariffs/pallet",
-         {"date": today_str}, "Тарифы"),
-        ("statistics_sales",
-         "https://statistics-api.wildberries.ru/api/v1/supplier/sales",
-         {"dateFrom": week_ago}, "Статистика"),
-        ("goods_return",
-         "https://seller-analytics-api.wildberries.ru/api/v1/analytics/goods-return",
-         {"dateFrom": week_ago, "dateTo": today_str}, "Аналитика"),
-        ("claims", "https://returns-api.wildberries.ru/api/v1/claims",
-         {"is_archive": "false"}, "Возвраты покупателями"),
+        (
+            "tariffs_box",
+            "https://common-api.wildberries.ru/api/v1/tariffs/box",
+            {"date": today_str},
+            "Тарифы",
+        ),
+        (
+            "tariffs_pallet",
+            "https://common-api.wildberries.ru/api/v1/tariffs/pallet",
+            {"date": today_str},
+            "Тарифы",
+        ),
+        (
+            "statistics_sales",
+            "https://statistics-api.wildberries.ru/api/v1/supplier/sales",
+            {"dateFrom": week_ago},
+            "Статистика",
+        ),
+        (
+            "goods_return",
+            "https://seller-analytics-api.wildberries.ru/api/v1/analytics/goods-return",
+            {"dateFrom": week_ago, "dateTo": today_str},
+            "Аналитика",
+        ),
+        (
+            "claims",
+            "https://returns-api.wildberries.ru/api/v1/claims",
+            {"is_archive": "false"},
+            "Возвраты покупателями",
+        ),
     ]
 
 
@@ -272,12 +289,26 @@ def r0_endpoints(today: date, *, days: int = 7) -> list[tuple[str, str, dict]]:
 
 
 INTEREST = {
-    "tariffs_box": ["dtNextBox", "dtTillMax", "boxDeliveryBase",
-                    "boxDeliveryCoefExpr", "warehouseName"],
-    "tariffs_pallet": ["dtNextPallet", "dtTillMax", "palletDeliveryExpr",
-                       "warehouseName"],
-    "statistics_sales": ["warehouseName", "countryName", "oblastOkrugName",
-                         "regionName", "srid"],
+    "tariffs_box": [
+        "dtNextBox",
+        "dtTillMax",
+        "boxDeliveryBase",
+        "boxDeliveryCoefExpr",
+        "warehouseName",
+    ],
+    "tariffs_pallet": [
+        "dtNextPallet",
+        "dtTillMax",
+        "palletDeliveryExpr",
+        "warehouseName",
+    ],
+    "statistics_sales": [
+        "warehouseName",
+        "countryName",
+        "oblastOkrugName",
+        "regionName",
+        "srid",
+    ],
     "goods_return": ["reason", "status", "returnType", "srid", "nmId"],
     "claims": ["id", "claim_type", "status", "nm_id", "user_comment", "srid", "dt"],
 }
@@ -328,10 +359,13 @@ def load_wb_key(settings: WebSettings) -> tuple[str, str, list[dict]]:
     engine = make_engine(settings.database_url)
     session_factory = make_session_factory(engine)
     with session_factory() as db:
-        rows = list(db.scalars(
-            select(TenantIntegration)
-            .where(TenantIntegration.tenant_id == settings.source_refresh_tenant)
-        ))
+        rows = list(
+            db.scalars(
+                select(TenantIntegration).where(
+                    TenantIntegration.tenant_id == settings.source_refresh_tenant
+                )
+            )
+        )
     wb = [r for r in rows if str(r.provider).split(":", 1)[0] == "wb_api"]
     wb.sort(key=lambda r: (":" in str(r.provider), str(r.provider)))
     diag: list[dict] = []
@@ -691,9 +725,11 @@ def evaluate_r0_join(
     source_unmatched_present = False
     finance_unmatched_present = False
     with session_factory() as db:
-        for (tenant_id, client_id, cabinet_id), source_keys in (
-            source_keys_by_scope.items()
-        ):
+        for (
+            tenant_id,
+            client_id,
+            cabinet_id,
+        ), source_keys in source_keys_by_scope.items():
             source_key_present = source_key_present or bool(source_keys)
             report_id = db.scalar(
                 select(ReportRun.id)
@@ -1021,9 +1057,7 @@ def _selected_finance_identity_rows(
             "file_authoritative_snapshot_invalid",
         }
     )
-    failure["databaseFileAmbiguityPresent"] = (
-        "source_storage_ambiguity" in blocking
-    )
+    failure["databaseFileAmbiguityPresent"] = "source_storage_ambiguity" in blocking
     failure["fileSnapshotIntegrityFailurePresent"] = (
         "file_authoritative_snapshot_invalid" in blocking
     )
@@ -1039,9 +1073,7 @@ def _selected_finance_identity_rows(
         "source_storage_ambiguity",
         "file_authoritative_snapshot_invalid",
     }
-    failure["unclassifiedBlockingFailurePresent"] = bool(
-        blocking - classified_blocking
-    )
+    failure["unclassifiedBlockingFailurePresent"] = bool(blocking - classified_blocking)
     return rows, verified, failure
 
 
@@ -1104,9 +1136,7 @@ def load_r0_finance_identity(
 
     engine = make_engine(settings.database_url)
     session_factory = make_session_factory(engine)
-    maps_by_scope: dict[
-        tuple[str, str, str], dict[str, dict[str, set[str]]]
-    ] = {}
+    maps_by_scope: dict[tuple[str, str, str], dict[str, dict[str, set[str]]]] = {}
     state_by_scope: dict[tuple[str, str, str], dict[str, bool]] = {}
     with session_factory() as db:
         for tenant_id, client_id, cabinet_id in sorted(scopes):
@@ -1151,9 +1181,7 @@ def load_r0_finance_identity(
                         )
                     )
                 )
-                rows, verified, failure = _selected_finance_identity_rows(
-                    db, report
-                )
+                rows, verified, failure = _selected_finance_identity_rows(db, report)
             except Exception:  # noqa: BLE001
                 db.rollback()
                 maps_by_scope[scope] = empty_maps
@@ -1215,28 +1243,23 @@ def run_r0_lineage_preflight(
                 )
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
-                sqlstate = str(
-                    getattr(getattr(exc, "orig", None), "sqlstate", "")
-                )
+                sqlstate = str(getattr(getattr(exc, "orig", None), "sqlstate", ""))
                 report["schemaCompatibilityFailurePresent"] = (
-                    report["schemaCompatibilityFailurePresent"]
-                    or sqlstate == "42703"
+                    report["schemaCompatibilityFailurePresent"] or sqlstate == "42703"
                 )
-                report["selectorContractFailurePresent"] = (
-                    report["selectorContractFailurePresent"]
-                    or isinstance(exc, (AttributeError, TypeError))
-                )
+                report["selectorContractFailurePresent"] = report[
+                    "selectorContractFailurePresent"
+                ] or isinstance(exc, (AttributeError, TypeError))
                 continue
-            report["candidateReportPresent"] = (
-                report["candidateReportPresent"] or bool(candidates)
+            report["candidateReportPresent"] = report["candidateReportPresent"] or bool(
+                candidates
             )
             for candidate in candidates:
                 try:
                     return_keys = set(
                         db.scalars(
                             select(ReportLogisticsOrderRow.chain_key).where(
-                                ReportLogisticsOrderRow.report_run_id
-                                == candidate.id,
+                                ReportLogisticsOrderRow.report_run_id == candidate.id,
                                 ReportLogisticsOrderRow.wb_cabinet_id == cabinet_id,
                                 or_(
                                     ReportLogisticsOrderRow.return_quantity != 0,
@@ -1250,21 +1273,18 @@ def run_r0_lineage_preflight(
                     )
                 except Exception as exc:  # noqa: BLE001
                     db.rollback()
-                    sqlstate = str(
-                        getattr(getattr(exc, "orig", None), "sqlstate", "")
-                    )
+                    sqlstate = str(getattr(getattr(exc, "orig", None), "sqlstate", ""))
                     report["schemaCompatibilityFailurePresent"] = (
                         report["schemaCompatibilityFailurePresent"]
                         or sqlstate == "42703"
                     )
-                    report["selectorContractFailurePresent"] = (
-                        report["selectorContractFailurePresent"]
-                        or isinstance(exc, (AttributeError, TypeError))
-                    )
+                    report["selectorContractFailurePresent"] = report[
+                        "selectorContractFailurePresent"
+                    ] or isinstance(exc, (AttributeError, TypeError))
                     continue
-                report["financeReturnFactPresent"] = (
-                    report["financeReturnFactPresent"] or bool(return_keys)
-                )
+                report["financeReturnFactPresent"] = report[
+                    "financeReturnFactPresent"
+                ] or bool(return_keys)
                 for field in (
                     "lineageMetadataFailurePresent",
                     "schemaCompatibilityFailurePresent",
@@ -1282,8 +1302,7 @@ def run_r0_lineage_preflight(
                     and state.get("unambiguousStoragePresent")
                     and return_keys
                     and any(
-                        row.wb_cabinet_id == cabinet_id
-                        and row.chain_key in return_keys
+                        row.wb_cabinet_id == cabinet_id and row.chain_key in return_keys
                         for row in rows
                     )
                 )
@@ -1303,9 +1322,7 @@ def run_r0_lineage_preflight(
                     and not state.get("databaseStoragePresent")
                 )
                 break
-    report["newReportRequired"] = not report[
-        "verifiedUnambiguousReturnLineagePresent"
-    ]
+    report["newReportRequired"] = not report["verifiedUnambiguousReturnLineagePresent"]
     report["acceptedReuseDecisionRequired"] = report[
         "verifiedUnambiguousReturnLineagePresent"
     ]
@@ -1317,17 +1334,17 @@ def evaluate_r0_identity(
     source_keys_by_scope: dict[tuple[str, str, str], dict[str, set[str]]],
     source_ambiguity_by_scope: dict[tuple[str, str, str], dict[str, bool]],
     invalid_source_by_scope: dict[tuple[str, str, str], dict[str, bool]],
-    finance_maps_by_scope: dict[
-        tuple[str, str, str], dict[str, dict[str, set[str]]]
-    ],
+    finance_maps_by_scope: dict[tuple[str, str, str], dict[str, dict[str, set[str]]]],
     finance_state_by_scope: dict[tuple[str, str, str], dict[str, bool]],
 ) -> dict[str, Any]:
     """Compare hashed candidates and emit boolean-only crosswalk evidence."""
 
     candidates: dict[str, dict[str, bool]] = {}
-    for candidate_name, (source_field, finance_field, kind) in (
-        R0_IDENTITY_CANDIDATES.items()
-    ):
+    for candidate_name, (
+        source_field,
+        finance_field,
+        kind,
+    ) in R0_IDENTITY_CANDIDATES.items():
         join_evaluated = False
         verified_lineage = False
         lineage_failure = False
@@ -1364,9 +1381,7 @@ def evaluate_r0_identity(
             finance_keys = set(finance_map)
             state = finance_state_by_scope.get(scope, {})
             join_evaluated = join_evaluated or bool(state.get("joinEvaluated"))
-            verified_lineage = verified_lineage or bool(
-                state.get("verifiedLineage")
-            )
+            verified_lineage = verified_lineage or bool(state.get("verifiedLineage"))
             lineage_failure = lineage_failure or bool(
                 state.get("lineageFailurePresent")
             )
@@ -1401,9 +1416,8 @@ def evaluate_r0_identity(
             database_file_ambiguity = database_file_ambiguity or bool(
                 state.get("databaseFileAmbiguityPresent")
             )
-            file_snapshot_integrity_failure = (
-                file_snapshot_integrity_failure
-                or bool(state.get("fileSnapshotIntegrityFailurePresent"))
+            file_snapshot_integrity_failure = file_snapshot_integrity_failure or bool(
+                state.get("fileSnapshotIntegrityFailurePresent")
             )
             unclassified_blocking_failure = unclassified_blocking_failure or bool(
                 state.get("unclassifiedBlockingFailurePresent")
@@ -1478,6 +1492,9 @@ def evaluate_r0_identity(
         or candidates["goodsReturnOrderIdToFinanceOrderId"]["candidateGate"]
     )
     claims_gate = candidates["claimsSridToFinanceSrid"]["candidateGate"]
+    goods_implementation_gate = candidates["goodsReturnSridToFinanceSrid"][
+        "candidateGate"
+    ]
     baseline_gate = (
         candidates["goodsReturnSridToFinanceOrderUid"]["matchedPresent"]
         or candidates["claimsSridToFinanceOrderUid"]["matchedPresent"]
@@ -1487,9 +1504,17 @@ def evaluate_r0_identity(
         "goodsReturnIdentityGate": goods_gate,
         "claimsIdentityGate": claims_gate,
         "completeIdentityGate": goods_gate and claims_gate,
+        "goodsReturnImplementationGate": goods_implementation_gate,
+        "claimsImplementationGate": False,
         "sameNameEvidencePresent": goods_gate or claims_gate,
         "baselineDirectMatchPresent": baseline_gate,
-        "contractChangeRequired": (goods_gate or claims_gate) and not baseline_gate,
+        "contractChangeRequired": (
+            claims_gate
+            or (
+                candidates["goodsReturnOrderIdToFinanceOrderId"]["candidateGate"]
+                and not goods_implementation_gate
+            )
+        ),
     }
 
 
@@ -1510,9 +1535,7 @@ def aggregate_f4_statuses(statuses: dict[str, list[str]]) -> dict:
             "schemaMismatchPresent": "schema_mismatch" in values,
         }
         gate = (
-            gate
-            and entry["schemaConfirmedAny"]
-            and not entry["schemaMismatchPresent"]
+            gate and entry["schemaConfirmedAny"] and not entry["schemaMismatchPresent"]
         )
         endpoints_report[name] = entry
     return {"endpoints": endpoints_report, "implementationGate": gate}
@@ -1540,9 +1563,7 @@ def aggregate_r0_statuses(statuses: dict[str, list[str]]) -> dict:
         )
         endpoints_report[name] = entry
     goods_return_gate = endpoint_gates["goods_return"]
-    claims_gate = (
-        endpoint_gates["claims_active"] and endpoint_gates["claims_archive"]
-    )
+    claims_gate = endpoint_gates["claims_active"] and endpoint_gates["claims_archive"]
     return {
         "endpoints": endpoints_report,
         "goodsReturnGate": goods_return_gate,
@@ -1633,9 +1654,7 @@ def run_r0_identity_probe(
 
     statuses = {name: [] for name in R0_REQUIRED_FIELDS}
     source_keys_by_scope: dict[tuple[str, str, str], dict[str, set[str]]] = {}
-    source_ambiguity_by_scope: dict[
-        tuple[str, str, str], dict[str, bool]
-    ] = {}
+    source_ambiguity_by_scope: dict[tuple[str, str, str], dict[str, bool]] = {}
     invalid_source_by_scope: dict[tuple[str, str, str], dict[str, bool]] = {}
     report_window_aligned = False
     for account in accounts:
@@ -1686,8 +1705,7 @@ def run_r0_identity_probe(
                         or ambiguous[field]
                     )
                     invalid_source_by_scope[account.scope][field] = (
-                        invalid_source_by_scope[account.scope][field]
-                        or invalid[field]
+                        invalid_source_by_scope[account.scope][field] or invalid[field]
                     )
 
     finance_maps, finance_state = load_r0_finance_identity(
@@ -1704,6 +1722,11 @@ def run_r0_identity_probe(
     )
     report["reportWindowAligned"] = report_window_aligned
     report["sourceImplementationGate"] = report["implementationGate"]
+    report["goodsReturnImplementationGate"] = bool(
+        report["goodsReturnGate"]
+        and report["identity"]["goodsReturnImplementationGate"]
+    )
+    report["claimsImplementationGate"] = False
     report["implementationGate"] = False
     return report
 

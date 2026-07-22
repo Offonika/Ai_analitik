@@ -690,9 +690,11 @@ deployment и без write-операций во внешние системы:
 immutable draft и повторный R-0I подтвердили verified lineage и exact
 `goods-return.srid → Finance.srid`; goods-return identity gate открыт. Claims
 keys в текущем окне отсутствуют, поэтому claims/complete gates и общий
-`implementationGate` закрыты, а `contractChangeRequired=true`. R-1 начинается
-только после отдельного accepted-решения по контракту; R-2 — после собственного
-положительного claims identity evidence. R-3…R-5 автоматически не начинаются.
+`implementationGate` закрыты. Source-specific контракт R-1 отдельно принят и
+реализован в локальном change set: registered immutable goods-return source,
+DB/file selector, normalization и internal exact link/coverage без mart/API/UI.
+Environment rollout не выполнен. R-2 начинается только после собственного
+положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
 Factor-spec остаётся `accepted`, потому что F-5, объединённая staff-приёмка и
 client/production решения не завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
@@ -701,12 +703,13 @@ client/production решения не завершены. Общий опера�
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. Подготовить и отдельно принять изменение F-5 контракта для подтверждённого
-   goods-return `srid → Finance.srid`, сохранив tenant/cabinet/nm scope и
-   однозначное разрешение canonical return chain. До принятия не начинать R-1.
-   Для R-2 отдельно получить окно с claims source keys и положительный claims
+2. Провести review/CI R-1 пакета. После merge отдельно согласовать test-only
+   full/weekly source refresh для проверки зарегистрированной
+   `wb_goods_return` collection и DB/file selector без публикации report и без
+   client flags. R-3 mart/API/UI автоматически не начинать.
+3. Для R-2 отдельно получить окно с claims source keys и положительный claims
    identity gate; не ослаблять join до product/date/одиночного identifier.
-3. Для повторной клиентской приемки использовать текущую ссылку вида
+4. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода

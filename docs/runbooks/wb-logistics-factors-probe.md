@@ -34,10 +34,13 @@ R-0L не нашёл пригодного прежнего lineage. После �
 source refresh новый неопубликованный draft получил verified
 file-authoritative Finance без ambiguity. Повторный R-0I открыл goods-return
 identity gate на exact `srid → Finance.srid`, но claims keys отсутствуют;
-`completeIdentityGate=false`, `contractChangeRequired=true` и
-`implementationGate=false`. R-1 требует отдельного accepted-решения, R-2 —
-собственного положительного gate. Ниже сохранён воспроизводимый безопасный
-порядок проверки.
+`completeIdentityGate=false` и общий `implementationGate=false`. После probe
+source-specific контракт R-1 отдельно принят и реализован локальным пакетом
+registered snapshot/selector/normalization/internal join;
+`goodsReturnImplementationGate=true`, исторический
+`contractChangeRequired=true` закрыт решением. R-2 требует собственного
+положительного gate. Environment rollout R-1 не выполнялся. Ниже сохранён
+воспроизводимый безопасный порядок проверки.
 
 # Безопасность прогона
 
@@ -289,11 +292,12 @@ keys отсутствуют, поэтому `claimsIdentityGate=false` и
 `completeIdentityGate=false`.
 
 Положительный goods-return candidate не меняет production join автоматически:
-`contractChangeRequired=true`, общий `implementationGate=false`. R-1 требует
-отдельного accepted-решения об изменении контракта, R-2 не начинается до
-положительного claims identity gate. Draft не публиковался, current report,
-production runtime и client flags не менялись; финальный production health
-остался `ok`.
+probe зафиксировал `contractChangeRequired=true`, общий
+`implementationGate=false`. Последующим отдельным решением exact
+`goods-return.srid → Finance.srid` принят для R-1 и реализован без mart/API/UI;
+R-2 не начинается до положительного claims identity gate. Draft не
+публиковался, current report, production runtime и client flags не менялись;
+финальный production health остался `ok`.
 
 Evidence сохранено локально с правами `0600`; в Git/Markdown не переносились
 provider labels, counts, клиентские окна, identifiers, причины, комментарии,

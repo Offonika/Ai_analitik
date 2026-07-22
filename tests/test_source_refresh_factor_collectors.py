@@ -11,13 +11,12 @@ class _FakeService:
     def __init__(self) -> None:
         self.calls: dict[str, tuple] = {}
         self.tariffs_recorded = False
+        self.goods_return_recorded = False
         self.supplier_sales_recorded = False
         self.measurements_recorded: set[str] = set()
 
     def _wb_tariffs_exporter(self, accounts, output_dir, *, period_start, period_end):
-        self.calls["tariffs"] = (
-            tuple(accounts), output_dir, period_start, period_end
-        )
+        self.calls["tariffs"] = (tuple(accounts), output_dir, period_start, period_end)
         return []
 
     def _record_wb_tariffs(
@@ -38,15 +37,35 @@ class _FakeService:
         self, accounts, output_dir, *, period_start, period_end
     ):
         self.calls["goods_return"] = (
-            tuple(accounts), output_dir, period_start, period_end
+            tuple(accounts),
+            output_dir,
+            period_start,
+            period_end,
         )
         return []
+
+    def _record_wb_goods_return(
+        self,
+        db,
+        refresh_run,
+        output_dir,
+        results,
+        *,
+        wb_cabinet_ids,
+        period_start,
+        period_end,
+    ):
+        self.goods_return_recorded = True
+        return SimpleNamespace(id=4)
 
     def _wb_supplier_sales_exporter(
         self, accounts, output_dir, *, period_start, period_end
     ):
         self.calls["supplier_sales"] = (
-            tuple(accounts), output_dir, period_start, period_end
+            tuple(accounts),
+            output_dir,
+            period_start,
+            period_end,
         )
         return []
 
@@ -68,7 +87,10 @@ class _FakeService:
         self, accounts, output_dir, *, period_start, period_end
     ):
         self.calls["measurement_penalties"] = (
-            tuple(accounts), output_dir, period_start, period_end
+            tuple(accounts),
+            output_dir,
+            period_start,
+            period_end,
         )
         return []
 
@@ -76,7 +98,10 @@ class _FakeService:
         self, accounts, output_dir, *, period_start, period_end
     ):
         self.calls["warehouse_measurements"] = (
-            tuple(accounts), output_dir, period_start, period_end
+            tuple(accounts),
+            output_dir,
+            period_start,
+            period_end,
         )
         return []
 
@@ -99,9 +124,7 @@ class _FakeService:
 def _context(tmp_path: Path, *, wb: bool) -> sr.CollectorContext:
     wb_settings = (
         SimpleNamespace(
-            accounts=(
-                SimpleNamespace(api_key="k", seller_account_id="WB_ACCOUNT_1"),
-            )
+            accounts=(SimpleNamespace(api_key="k", seller_account_id="WB_ACCOUNT_1"),)
         )
         if wb
         else None
@@ -151,6 +174,7 @@ def test_factor_collectors_call_exporter_and_return_output_dir(
     }
     assert service.calls["tariffs"][0]  # accounts passed through
     assert service.tariffs_recorded is True
+    assert service.goods_return_recorded is True
     assert service.supplier_sales_recorded is True
     assert service.measurements_recorded == {
         "wb_measurement_penalties",
