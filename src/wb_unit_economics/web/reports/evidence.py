@@ -432,6 +432,47 @@ def _tax_load_evidence(
         "status": _source_status(usn_income_source),
         "sourceKind": "onec_kudir",
         "snapshotId": usn_income_source.snapshot_id if usn_income_source else "",
+        "monthlyValues": _monthly_values(
+            usn_income_rows,
+            date_fields=("Period", "Date", "Дата"),
+            amount_fields=("ДоходБаза", "ДоходВсего"),
+            source_status=_source_status(usn_income_source),
+        ),
+    }
+    usn_bank_payment_rows = [
+        row
+        for row in raw_bank_payment_rows
+        if row.get("Posted") is True
+        and row.get("DeletionMark") is not True
+        and str(row.get("ВидОперации") or "").strip().casefold() == "налоги"
+        and _tax_payment_match_kind(
+            " ".join(
+                str(row.get(key) or "")
+                for key in ("НазначениеПлатежа", "Комментарий")
+            )
+        )
+        == "usn"
+    ]
+    usn_tax_payment_evidence = {
+        "status": (
+            _source_status(bank_payment_source)
+            if bank_payments_classified
+            else "partial_source"
+        ),
+        "sourceKind": "onec_accounting_bank_out",
+        "snapshotId": (
+            bank_payment_source.snapshot_id if bank_payment_source else ""
+        ),
+        "monthlyValues": (
+            _monthly_values(
+                usn_bank_payment_rows,
+                date_fields=("Period", "Date", "Дата"),
+                amount_fields=("СуммаДокумента", "Сумма", "Amount"),
+                source_status=_source_status(bank_payment_source),
+            )
+            if bank_payments_classified
+            else []
+        ),
     }
     required_sources = {
         "onec_accounting_taxes": "Налоги",
@@ -460,6 +501,7 @@ def _tax_load_evidence(
         "taxRows": tax_rows,
         "incomeEvidence": income_evidence,
         "usnIncomeEvidence": usn_income_evidence,
+        "usnTaxPaymentEvidence": usn_tax_payment_evidence,
         "vatSummary": {
             "status": _combined_status(
                 sources.get("onec_vat_sales_book"),
@@ -800,6 +842,54 @@ def _sum_rows(rows: list[Mapping[str, Any]], keys: tuple[str, ...]) -> str | Non
     if not present:
         return None
     return _decimal_text(sum(present, Decimal("0")))
+
+
+def _monthly_values(
+    rows: list[Mapping[str, Any]],
+    *,
+    date_fields: tuple[str, ...],
+    amount_fields: tuple[str, ...],
+    source_status: str,
+) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        row_date = next(
+            (
+                parsed
+                for field in date_fields
+                if (parsed := _parse_date(row.get(field))) is not None
+            ),
+            None,
+        )
+        if row_date is None:
+            continue
+        month = row_date.strftime("%Y-%m")
+        bucket = buckets.setdefault(
+            month,
+            {
+                "month": month,
+                "total": Decimal("0"),
+                "rowCount": 0,
+                "missingAmount": False,
+            },
+        )
+        bucket["rowCount"] += 1
+        amount = _first_decimal(row, amount_fields)
+        if amount is None:
+            bucket["missingAmount"] = True
+        else:
+            bucket["total"] += amount
+    return [
+        {
+            "month": month,
+            "value": (
+                None if item["missingAmount"] else _decimal_text(item["total"])
+            ),
+            "status": "partial_source" if item["missingAmount"] else source_status,
+            "rowCount": item["rowCount"],
+        }
+        for month, item in sorted(buckets.items())
+    ]
 
 
 def _first_decimal(row: Mapping[str, Any], keys: tuple[str, ...]) -> Decimal | None:
