@@ -35,6 +35,8 @@ code_anchors:
     symbols: ["def _build_and_persist_logistics_analysis", "def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/wb_goods_return.py
     symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links"]
+  - path: scripts/probe_wb_logistics_factors.py
+    symbols: ["def fetch_r0_source_payload", "def run_r0_identity_probe"]
   - path: src/wb_unit_economics/web/settings.py
     symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool", "logistics_routes_enabled: bool", "logistics_routes_client_enabled: bool"]
 test_anchors:
@@ -44,6 +46,8 @@ test_anchors:
     symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot", "def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_goods_return.py
     symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity"]
+  - path: tests/test_probe_wb_logistics_factors.py
+    symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed"]
   - path: tests/test_web_app.py
     symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
@@ -98,9 +102,11 @@ chain (`goodsReturnIdentityGate=true`). Baseline `srid → orderUid` не сов
 canonical return chain; `goodsReturnImplementationGate=true`, исторический
 `contractChangeRequired=true` закрыт этим решением. R-2 требует отдельного
 положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
-В текущем change set R-1 реализован до registered immutable source,
+R-1 влит в `main` через PR №56: registered immutable source,
 DB/file-authoritative selector, normalization и internal exact link/coverage;
-mart/API/UI и environment rollout не выполнялись.
+mart/API/UI и environment rollout не выполнялись. Следующий evidence-only
+change set доводит claims active/archive до полной provider-total pagination;
+это не открывает R-2 без нового live identity gate и accepted-решения.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -1043,6 +1049,12 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-22 — после merge PR №56 claims R-0/R-0I runner приведён к принятому
+  контракту полной active/archive pagination: `limit=200`, bounded offset,
+  rate-limit pacing, неизменный provider total, duplicate-ID guard и boolean
+  `paginationMismatchPresent`. Частичные keys не участвуют в identity gate;
+  R-2, mart/API/UI и rollout остаются закрыты.
 
 - 2026-07-22 — реализован F-5/R-1 source package без rollout: registered
   `wb_goods_return` collection, raw integrity, DB/file selector, strict

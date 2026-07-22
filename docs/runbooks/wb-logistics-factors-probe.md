@@ -39,7 +39,9 @@ source-specific контракт R-1 отдельно принят и реали
 registered snapshot/selector/normalization/internal join;
 `goodsReturnImplementationGate=true`, исторический
 `contractChangeRequired=true` закрыт решением. R-2 требует собственного
-положительного gate. Environment rollout R-1 не выполнялся. Ниже сохранён
+положительного gate. PR №56 с R-1 влит в `main`; environment rollout R-1 не
+выполнялся. Текущий claims-evidence hardening доводит R-0/R-0I до полной
+provider-total pagination, но сам не открывает R-2. Ниже сохранён
 воспроизводимый безопасный порядок проверки.
 
 # Безопасность прогона
@@ -303,6 +305,30 @@ Evidence сохранено локально с правами `0600`; в Git/Ma
 provider labels, counts, клиентские окна, identifiers, причины, комментарии,
 media, суммы, paths, hashes или raw rows.
 
+# R-0I claims pagination hardening — 22 июля 2026 года
+
+После merge R-1 обнаружено расхождение принятого probe-контракта и runner:
+claims active/archive запрашивались с `limit=1`, поэтому непустой источник мог
+дать ложный отрицательный identity gate, если совместимый key находился не на
+первой строке. В текущем change set исправлена только read-only evidence-
+механика:
+
+- active/archive читаются отдельно с `limit=200` и последовательными `offset`;
+- provider `total` должен оставаться неизменным и точно совпасть с полностью
+  собранным набором;
+- duplicate claim ID, изменение total, пустая промежуточная страница,
+  превышение bounded page cap и частичный HTTP/schema failure закрывают claims
+  gate; `paginationMismatchPresent` публикуется только как boolean;
+- перед каждым claims GET соблюдается pacing лимита 20 запросов/мин, включая
+  границу active/archive и переход между кабинетами;
+- raw claim IDs, `srid`, `nm_id`, `user_comment`, media, total и counts остаются
+  только в памяти процесса и не попадают в stdout/Markdown/Git.
+
+Локальные тесты подтверждают match на второй странице и fail-closed сценарии.
+Live R-0I после этого hardening ещё не выполнялся, поэтому
+`claimsIdentityGate=false`, `claimsImplementationGate=false` и R-2 остаётся
+закрытым.
+
 # F-4 live source gate
 
 Перед collector/mart/API выполнен минимальный read-only probe в отдельном
@@ -371,3 +397,6 @@ rollout фиксируется отдельно после merge и развёр
 2. При отсутствии `schema_mismatch` начинать реализацию принятого F-4 контракта
    отдельной веткой за выключенным флагом. При mismatch сначала обновить spec.
 3. Не публиковать raw и не менять production без отдельного разрешения.
+4. Для R-2 принимать только claims evidence после полной pagination без
+   `paginationMismatchPresent`; первый page match или частичный набор не
+   является положительным gate.

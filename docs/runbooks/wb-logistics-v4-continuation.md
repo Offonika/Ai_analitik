@@ -48,8 +48,11 @@ HTTP 404, блок скрыт и запрос не выполняется. Вр�
 отдельного разрешения; production runtime и client flags не менялись. Для F-5
 новый production draft имеет verified unambiguous Finance lineage. Повторный
 R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys в текущем
-окне отсутствуют; общий implementation gate закрыт. R-1 не начинать без
-отдельного accepted-решения по контракту, R-2 — без положительного claims gate.
+окне отсутствуют; общий implementation gate закрыт. На 22 июля отдельное
+решение принято, а R-1 влит в `main` через PR №56 без environment rollout.
+Следующий кодовый пакет — hardening полной claims pagination для повторяемого
+R-0I; R-2 не начинать без положительного claims gate и отдельного accepted-
+решения.
 ```
 
 # Текущее состояние
@@ -80,6 +83,9 @@ R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys
   verified file-authoritative Finance без DB/file ambiguity. Goods-return
   identity gate открыт, claims/complete gates и implementation gate закрыты;
   published current report и client flags не менялись.
+- R-1 source/selector/internal exact link влит в `main` через PR №56; test или
+  production refresh из этой ревизии, publication, client flags и R-3
+  mart/API/UI не выполнялись.
 - Временные acceptance users деактивированы, пароли повторно сброшены, sessions,
   credential-файлы, screenshots и browser script удалены.
 - Production symlink остается на
@@ -443,9 +449,10 @@ criteria. Текущий production/test URL пока использует ра�
   статусы, media и `srid`, но возвращает заявки покупателей только за текущие
   14 дней. `is_archive` в актуальном OpenAPI — boolean и выбирает состояние
   заявки; документированного глубокого архива нет.
-- В `main` есть prework read-only goods-return client/export и файловый вызов
-  source refresh, но нет зарегистрированного snapshot, claims connector,
-  context/mart/API/UI или Finance join. Это не end-to-end реализация.
+- В `main` через PR №56 реализован R-1: registered immutable goods-return
+  snapshot, DB/file selector, normalization и exact internal
+  `goods-return.srid → Finance.srid` link. Claims connector и
+  context/mart/API/UI отсутствуют; environment rollout не выполнялся.
 - Accepted F-5 spec требует boolean-only R-0 доступов/coverage и exact
   `(cabinet, srid, nm_id)` join. `goods-return.reason` и факт наличия
   `claims.user_comment` не взаимозаменяемы; raw комментарии и media не попадают
@@ -691,7 +698,7 @@ immutable draft и повторный R-0I подтвердили verified linea
 `goods-return.srid → Finance.srid`; goods-return identity gate открыт. Claims
 keys в текущем окне отсутствуют, поэтому claims/complete gates и общий
 `implementationGate` закрыты. Source-specific контракт R-1 отдельно принят и
-реализован в локальном change set: registered immutable goods-return source,
+реализован в `main` через PR №56: registered immutable goods-return source,
 DB/file selector, normalization и internal exact link/coverage без mart/API/UI.
 Environment rollout не выполнен. R-2 начинается только после собственного
 положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
@@ -703,12 +710,15 @@ client/production решения не завершены. Общий опера�
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. Провести review/CI R-1 пакета. После merge отдельно согласовать test-only
-   full/weekly source refresh для проверки зарегистрированной
+2. R-1 review/CI и merge завершены PR №56. Отдельно согласовать test-only
+   full/weekly source refresh из merge `1c0f0b2` для проверки зарегистрированной
    `wb_goods_return` collection и DB/file selector без публикации report и без
    client flags. R-3 mart/API/UI автоматически не начинать.
-3. Для R-2 отдельно получить окно с claims source keys и положительный claims
-   identity gate; не ослаблять join до product/date/одиночного identifier.
+3. До нового live R-0I влить claims pagination hardening: полная active/archive
+   pagination, provider-total reconciliation и fail-closed
+   `paginationMismatchPresent`. Затем отдельно получить окно с claims source
+   keys и положительный claims identity gate; не ослаблять join до
+   product/date/одиночного identifier.
 4. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного

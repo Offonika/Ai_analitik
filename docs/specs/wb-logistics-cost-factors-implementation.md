@@ -29,6 +29,8 @@ code_anchors:
     symbols: ["def flatten_measurement_penalties", "def flatten_warehouse_measurements", "def export_wb_measurement_penalties", "def export_wb_warehouse_measurements"]
   - path: src/wb_unit_economics/wb_goods_return.py
     symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links", "def export_wb_goods_return"]
+  - path: scripts/probe_wb_logistics_factors.py
+    symbols: ["def fetch_r0_source_payload", "def run_r0_identity_probe"]
   - path: src/wb_unit_economics/web/source_refresh.py
     symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_measurements", "def _select_measurement_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/web/repository.py
@@ -49,7 +51,7 @@ test_anchors:
   - path: tests/test_wb_measurements.py
     symbols: ["def test_measurement_penalties_pagination_reconciles_provider_total", "def test_flat_measurement_rows_omit_photos_and_subject_values", "def test_incomplete_measurement_page_fails_closed"]
   - path: tests/test_probe_wb_logistics_factors.py
-    symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts"]
+    symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts", "def test_claims_fetch_fails_closed_on_pagination_mismatch", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-22"
@@ -136,8 +138,10 @@ F-5 «Причины возвратов» принят как отдельный
 поэтому `claimsIdentityGate=false`, `completeIdentityGate=false` и общий
 `implementationGate=false`. Пользователь отдельно принял exact goods-return
 `srid → Finance.srid` контракт; `goodsReturnImplementationGate=true`, поэтому
-R-1 реализован как registered snapshot/selector/normalization/internal join без
-mart/API/UI и rollout. R-2 остаётся закрыт до положительного claims identity evidence;
+R-1 влит в `main` через PR №56 как registered
+snapshot/selector/normalization/internal join без mart/API/UI и rollout.
+Claims evidence runner использует полную provider-total pagination, но R-2
+остаётся закрыт до положительного live identity evidence;
 context/mart/API/UI и rollout автоматически не начинаются.
 
 # Цель
@@ -1137,6 +1141,11 @@ Source-specific accepted-решение для R-1 принято; R-2 оста�
 собственного положительного identity evidence.
 
 # Changelog
+
+- 2026-07-22 — claims R-0/R-0I runner hardened до полной active/archive
+  pagination с provider-total reconciliation, duplicate-ID guard, bounded page
+  cap, rate-limit pacing и boolean `paginationMismatchPresent`. R-2 не открыт;
+  raw comments/identifiers/counts не выводятся.
 
 - 2026-07-22 — реализован R-1 source package: registered goods-return
   collection, raw integrity, DB/file selector, strict envelope/window,
