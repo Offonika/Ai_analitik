@@ -760,9 +760,13 @@ def test_scenario_excel_has_exact_sheets_and_traceable_overview(tmp_path: Path) 
             if row[0]
         }
         if payload["reportKind"] == "tax_load":
-            assert values["ID отчёта"] == payload["meta"]["reportId"]
+            assert "ID отчёта" not in values
+            assert "Версия методики" not in values
             assert "reportId" not in values
             assert "payloadSha256" not in values
+            assert workbook.properties.identifier == payload["meta"]["reportId"]
+            assert workbook.properties.version == payload["meta"]["methodologyVersion"]
+            assert workbook.properties.language == "ru-RU"
         else:
             assert values["reportId"] == payload["meta"]["reportId"]
             assert values["payloadSha256"] == payload_hash
@@ -880,6 +884,8 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
     assert "read-only" not in workbook_text
     assert "Отчёт о финансовых результатах 1С" in workbook_text
     assert "только для чтения" in workbook_text
+    assert payload["meta"]["reportId"] not in workbook_text
+    assert payload["meta"]["methodologyVersion"] not in workbook_text
 
 
 def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:
