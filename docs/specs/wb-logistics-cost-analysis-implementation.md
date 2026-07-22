@@ -79,9 +79,11 @@ Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
 Ближайший factor rollout допускается только на test; factor client flags
 остаются выключенными до отдельного согласования. F-1…F-4 приняты на staff-only
 test. Для F-5 принят отдельный контракт причин возвратов; следующий разрешённый
-шаг — отдельное identity evidence: boolean-only R-0 подтвердил source schema,
-но не нашёл exact Finance/source match и оставил `implementationGate=false`.
-R-1…R-5 не начинаются. Excel и калькуляторы в этот пакет не входят.
+шаг — повторное identity evidence на новом immutable report с однозначным
+Finance storage. Boolean-only R-0I подтвердил source schema, но production
+selector обнаружил DB/file ambiguity, поэтому verified lineage и exact
+crosswalk не доказаны, а `implementationGate=false`. R-1…R-5 не начинаются.
+Excel и калькуляторы в этот пакет не входят.
 
 # Цель
 
@@ -1023,6 +1025,13 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-22 — F-5 R-0I выполнен fail closed: внешний source gate пройден, но
+  выбранный Finance lineage имеет DB/file storage ambiguity. Exact same-name
+  crosswalk не оценён как verified; все identity gates и implementation gate
+  закрыты. Следующий допустимый шаг — новый immutable report из однозначного
+  verified storage, без изменения опубликованных отчётов и production/client
+  enable.
 
 - 2026-07-22 — синхронизировано фактическое состояние F-1…F-4 после
   staff-only test acceptance; принят подчинённый F-5 контракт причин возвратов.

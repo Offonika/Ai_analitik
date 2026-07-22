@@ -69,6 +69,8 @@ class LogisticsSourceRow:
     delivery_amount: Decimal | None
     return_amount: Decimal | None
     rebill_logistic_cost: Decimal | None
+    finance_srid: str = ""
+    finance_order_id: str = ""
     validation_errors: tuple[str, ...] = ()
 
     @property
@@ -399,6 +401,8 @@ def source_row_from_payload(
         delivery_amount=delivery_amount,
         return_amount=return_amount,
         rebill_logistic_cost=rebill_logistic_cost,
+        finance_srid=_text(_raw_first(payload, "srid")),
+        finance_order_id=_text(_raw_first(payload, "orderId", "order_id")),
         validation_errors=tuple(sorted(set(errors))),
     )
 

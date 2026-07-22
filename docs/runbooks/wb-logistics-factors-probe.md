@@ -1,5 +1,5 @@
 ---
-title: "Probe доступности источников логистики (F-0 / R-0 / C-0)"
+title: "Probe доступности источников логистики (F-0 / R-0/R-0I / C-0)"
 doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "agent", "operations"]
@@ -29,9 +29,11 @@ Draft-спеки, для которых нужен этот probe:
 **Статус на 2026-07-22:** базовый живой probe F-1…F-3 выполнен. Минимальный
 F-4 source gate двух measurement endpoints также пройден в отдельном read-only
 процессе: schema подтверждена без вывода raw, идентификаторов, значений, сумм
-или counts. F-5 spec принят; boolean-only R-0 подтвердил source schema, но не
-нашёл exact Finance/source match, поэтому `implementationGate=false` и R-1…R-5
-не начинаются. Ниже сохранён воспроизводимый безопасный порядок проверки.
+или counts. F-5 spec принят; boolean-only R-0I подтвердил source schema, но
+Finance selector fail closed на DB/file ambiguity выбранного immutable report.
+Verified exact crosswalk не доказан, поэтому `implementationGate=false` и
+R-1…R-5 не начинаются. Ниже сохранён воспроизводимый безопасный порядок
+проверки.
 
 # Безопасность прогона
 
@@ -189,6 +191,43 @@ Source и Finance return keys присутствуют, но exact
 
 В вывод и Markdown не переносились provider labels, counts, периоды клиентской
 активности, identifiers, причины, комментарии, media, суммы или HTTP bodies.
+
+# R-0I live identity gate — 22 июля 2026 года
+
+После закрытого direct R-0 join выполнен принятый same-name crosswalk probe:
+
+```bash
+PYTHONPATH="$PWD:$PWD/src" .venv/bin/python \
+  scripts/probe_wb_logistics_factors.py --mode r0-identity --days 31
+```
+
+Режим выбирает последний подходящий immutable report с неблокирующим logistics
+context, повторно прогоняет его Finance rows через production
+`current → base → contributor` selector и сравнивает только разрешённые
+same-name identity candidates в tenant/client/cabinet/nm scope. Для
+совместимости с ещё не применёнными factor migrations probe читает только
+базовые report/lineage колонки. Integrity contract при этом не ослабляется.
+
+Test service environment не содержал usable integration и корректно вернул
+закрытые gates без внешних запросов. Transient production-service process
+подтвердил внешний source gate, но обнаружил одновременное наличие DB rows и
+`file_authoritative` representation одного Finance snapshot. Это
+`source_storage_ambiguity`: `verifiedLineagePresent=false`,
+`databaseFileAmbiguityPresent=true`, оба source-specific identity gate и общий
+identity gate закрыты. Same-name match не считается ни подтверждённым, ни
+опровергнутым, потому что candidate comparison не может пройти раньше lineage
+gate.
+
+Production process, БД, configuration, reports и feature flags не менялись.
+Вывод содержал только boolean-признаки; provider labels, counts, клиентские
+окна, identifiers, причины, комментарии, media, суммы, paths, hashes и raw rows
+не записывались.
+
+Для продолжения нельзя вручную предпочесть DB или file и нельзя изменять
+опубликованный report. Нужно создать новый immutable report из однозначно
+выбранного, повторно verified Finance storage и повторить тот же R-0I. R-1/R-2
+разрешаются только отдельным положительным source-specific identity gate и
+последующим accepted решением.
 
 # F-4 live source gate
 

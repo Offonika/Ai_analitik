@@ -39,14 +39,16 @@ updated_at: "2026-07-22"
 Назначение спека — закрепить ДО end-to-end кода отдельный read-only слой причин
 возвратов покупателя и его связывание с уже готовым фактом возврата из Finance.
 Ключевое ограничение канона: Finance подтверждает ФАКТ и СУММУ возврата, но не
-причину покупателя; интерфейс не придумывает причину. Этот draft описывает, как
+причину покупателя; интерфейс не придумывает причину. Этот spec описывает, как
 безопасно добавить причину там, где отдельный WB-источник её действительно
 содержит, и как честно показывать её отсутствие.
 
 Решения приняты 22 июля 2026 года после повторной построчной сверки текущего
-официального WB OpenAPI. `accepted` разрешает только безопасный R-0 probe.
-Подпакеты R-1…R-5 начинаются после обезличенного live evidence доступности и
-покрытия; этот статус не подтверждает реализацию, client enable или rollout.
+официального WB OpenAPI. После закрытого R-0 join gate выполнен отдельный
+безопасный R-0I identity probe. Он fail closed на storage ambiguity Finance
+lineage, поэтому подпакеты R-1…R-5 по-прежнему не разрешены. Они начинаются по
+отдельности только после обезличенного live evidence совместимого exact
+crosswalk; этот статус не подтверждает реализацию, client enable или rollout.
 
 # Текущее состояние реализации
 
@@ -68,6 +70,13 @@ goods-return window, выровненном по последнему immutable 
 `implementationGate=false`: R-1…R-5 не начинаются до отдельного evidence
 совместимого identity crosswalk. `nm_id`, `srid` или `orderId` отдельно не
 разрешены как обход.
+
+R-0I также выполнен 22 июля. Внешний source gate и выравнивание окна прошли,
+но выбранный Finance lineage одновременно представлен DB-строками и
+`file_authoritative` коллекцией. Production selector классифицировал это как
+`source_storage_ambiguity`; verified lineage отсутствует, оба source-specific
+identity gate и общий gate закрыты. Это не доказательство отсутствия same-name
+совпадения: сравнение не принимается до нового unambiguous verified snapshot.
 
 # Цель
 
@@ -238,13 +247,76 @@ Boolean-only evidence подтвердил:
 активности, identifiers, причины, комментарии, media или суммы. Результат не
 разрешает R-1…R-5 и не влияет на основную логистику, отчёты или feature flags.
 
+## R-0I identity crosswalk contract
+
+R-0 показал, что canonical Finance chain использует `orderUid`, а прямое
+сравнение source `srid` с этим полем не доказано. Актуальный Finance OpenAPI
+возвращает `orderUid`, `srid` и `orderId` как разные поля; goods-return также
+возвращает `srid` и `orderId`, причём `orderId` документирован как номер
+сборочного задания. Поэтому равенство разных полей не предполагается.
+
+R-0I выполняется на том же выровненном goods-return window и на Finance rows из
+последнего подходящего immutable report с неблокирующим logistics context
+(`current → base → contributor`). Диагностика читает только базовые колонки,
+доступные до factor migrations, но не ослабляет production selector. DB и
+`file_authoritative` проходят тем же selector/integrity contract, что основная
+логистика. Scope/hash/revision/path/storage ambiguity закрывает identity gate.
+
+Разрешены только следующие кандидаты с обязательными
+`(tenant, client, wb_cabinet_id, nm_id)` dimensions:
+
+- baseline `source.srid → Finance.orderUid` — только для подтверждения причины
+  прежнего R-0 failure, не как новый контракт;
+- `goods-return.srid → Finance.srid`;
+- `goods-return.orderId → Finance.orderId`;
+- `claims.srid → Finance.srid`; прямой claims → `orderUid` остаётся baseline.
+
+Same-name match должен однозначно разрешаться в один существующий canonical
+Finance `chain_key` с return fact. Несколько canonical chain для одного
+candidate key, конфликт source identity, другой кабинет, несовпадающий `nm_id`
+или неполный ключ дают `ambiguous/unmatched`, а не fallback. Совпадение только
+по товару, дате, `stickerId`, `shkId` либо любому одиночному identifier
+запрещено.
+
+Вывод `--mode r0-identity` содержит только boolean-признаки presence,
+matched/unmatched, ambiguity, verified lineage и отдельные gates для
+goods-return и claims. Fail-closed диагностика отдельно различает metadata,
+schema compatibility, selector contract, payload/hash/identity/revision/scope
+и DB/file storage failures, но публикует их только как booleans. Она не печатает
+names, counts, периоды, identifiers, hashes, причины, комментарии, media, суммы
+или raw rows. Даже положительный candidate не меняет production join
+автоматически: R-0I обновляет accepted решение отдельно, после чего разрешается
+только соответствующий R-1 или R-2.
+
+## R-0I live evidence — 22 июля 2026 года
+
+Test service environment не содержал usable WB integration; внешний запрос из
+него не выполнялся. Transient production-service process выполнил только
+read-only GET и чтение уже сохранённого lineage; service, БД, configuration и
+feature flags не менялись.
+
+Boolean-only evidence подтвердил доступность внешней source schema и
+выровненное report window. Exact candidate evaluation остановлен до join:
+production selector обнаружил DB/file storage ambiguity у Finance snapshot.
+`verifiedLineagePresent=false`, `databaseFileAmbiguityPresent=true`,
+`goodsReturnIdentityGate=false`, `claimsIdentityGate=false` и
+`completeIdentityGate=false`. В evidence не перенесены provider labels, counts,
+периоды клиентской активности, identifiers, причины, комментарии, media, суммы,
+paths, hashes или raw rows.
+
+Следующий допустимый шаг — создать новый immutable report из однозначно
+выбранного и повторно verified Finance storage, затем повторить тот же R-0I.
+Изменять опубликованный report, выбирать DB или file случайно либо начинать
+R-1/R-2 до положительного source-specific gate запрещено.
+
 # Модель связывания и покрытия
 
 - Факт и сумма возврата берутся ТОЛЬКО из Finance (первая очередь); причина —
   дополнительный слой, не меняющий сумму.
-- Связывание только по точному `(wb_cabinet_id, srid, nm_id)`. Неполный ключ,
-  совпадение в другом кабинете или несколько кандидатов дают явный
-  `unmatched`/`conflicting`, а не fallback или случайный выбор.
+- Source identity связывается с canonical Finance chain только через принятый
+  exact same-name crosswalk в scope `(tenant, client, cabinet, nm_id)`.
+  Неполный ключ, совпадение в другом кабинете или несколько canonical chain
+  дают явный `unmatched`/`conflicting`, а не fallback или случайный выбор.
 - Непустой `goods-return.reason` становится `evidenceType=fact` только после
   exact join. Отсутствие источника/окна/join — `data_unavailable`.
 - `claims.user_comment` не переносится как текст и не подменяет reason. Exact
@@ -389,17 +461,19 @@ factors и return-reasons master; client дополнительно требуе
 # Этапы реализации
 
 1. `R-0 Probe доступности` — boolean-only матрица goods-return и claims на
-   реальном снимке; это единственный подпакет, разрешённый сразу после принятия
-   спека.
-2. `R-1 goods-return` — довести существующий prework до зарегистрированного raw
+   реальном снимке; выполнен, direct source `srid → Finance.orderUid` не доказан.
+2. `R-0I Identity crosswalk` — выполнен fail closed: source gate пройден, но
+   DB/file ambiguity не позволила получить verified Finance lineage; все
+   identity gates закрыты и join не изменён.
+3. `R-1 goods-return` — довести существующий prework до зарегистрированного raw
    snapshot, selector, нормализации `reason`, exact join и статусов покрытия.
-3. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
+4. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
    наличия комментария без переноса текста из raw.
-4. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
+5. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
    «Возвраты».
-5. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
+6. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
    рекомендаций обратной логистики.
-6. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
+7. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
    клиентском включении.
 
 Каждый подпакет — за выключенным флагом и additive-миграцией схемы.
@@ -408,8 +482,8 @@ factors и return-reasons master; client дополнительно требуе
 
 Design-часть принята 22 июля 2026 года. Реализация готова, когда:
 
-1. probe зафиксировал schema и хотя бы один exact Finance/source match
-   обезличенной boolean-only матрицей;
+1. probe зафиксировал schema и хотя бы один однозначный same-name
+   Finance/source crosswalk в обезличенной boolean-only матрице;
 2. факт и сумма возврата остаются из Finance и не меняются наличием причины;
 3. `reason` хранится как отдельный source fact; raw `user_comment` не попадает в
    mart/API/AI, сохраняется только `has_user_comment`;
@@ -437,6 +511,9 @@ Design-часть принята 22 июля 2026 года. Реализация
 - unit: запрет чувствительных полей в flat/mart/API/AI и стабильность hashes;
 - R-0: boolean-only output без labels, counts, IDs, периодов клиентской
   активности и raw values для empty/nonempty/denied/402/429/schema mismatch;
+- R-0I: same-name `srid↔srid`/`orderId↔orderId`, canonical-chain resolution,
+  кабинетная изоляция, incomplete key, source/canonical ambiguity, pre-factor
+  schema compatibility, DB/file ambiguity, transaction isolation и запрет raw;
 - integration: сборка `report_logistics_return_reason_rows` из обезличенного
   снимка, lineage и hash; сумма Finance не меняется;
 - source integration: DB/file parity, primary/base precedence, manifest/hash/
@@ -492,13 +569,28 @@ Rollback отключает новые маршруты и блок причин
 
 # Открытые вопросы
 
-- Реальное per-cabinet покрытие exact join между Finance, goods-return и claims.
+- Реальное per-cabinet покрытие exact join между Finance, goods-return и claims
+  после нового immutable report с unambiguous verified Finance storage.
 - Фактическая history depth goods-return за пределами одного 31-дневного
   request window; официальный контракт её не гарантирует.
 - Нормализованный справочник категорий `reason` (версионировать ли, как
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-22 — R-0I live probe прошёл внешний source gate, но fail closed на
+  DB/file ambiguity выбранного Finance snapshot. Verified lineage и exact
+  candidate evaluation не подтверждены; goods-return/claims/complete identity
+  gates остаются закрыты. Диагностика сделана совместимой с pre-factor schema,
+  изолирует scope transactions и публикует только безопасные failure booleans.
+  Следующий шаг — новый immutable report из однозначного verified storage;
+  R-1…R-5, production/client enable и изменение существующего join запрещены.
+
+- 2026-07-22 — после закрытого R-0 direct join принят отдельный R-0I contract:
+  сравнивать только same-name `srid↔srid` и `orderId↔orderId` на verified
+  Finance lineage, разрешать candidate в единственный canonical return chain и
+  публиковать только boolean evidence. Cross-field/product/date fallback и
+  автоматическое изменение implementation join запрещены.
 
 - 2026-07-22 — boolean-only R-0 live gate подтвердил source schema и валидные
   scoped keys, но не подтвердил ни одного exact Finance/source match на

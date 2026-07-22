@@ -650,10 +650,11 @@ deployment и без write-операций во внешние системы:
 Обновление 2026-07-22: F-1 «Габариты», F-2 «Тарифы», F-3 «Склады и
 направления» и F-4 «Замеры и удержания» приняты на staff-only test. Для F-5
 «Причины возвратов» принят отдельный spec-first контракт. Следующий разрешённый
-шаг после boolean-only R-0 — отдельное identity evidence: source schema
-подтверждена, но exact Finance/source match не найден и
-`implementationGate=false`. R-1…R-5 не начинаются. Factor-spec остаётся
-`accepted`, потому что F-5, объединённая staff-приёмка factors и
+шаг после boolean-only R-0I — новый immutable report из однозначного verified
+Finance storage и повтор того же identity evidence. Source schema подтверждена,
+но выбранный lineage имеет DB/file ambiguity; exact crosswalk не оценён как
+verified и `implementationGate=false`. R-1…R-5 не начинаются. Factor-spec
+остаётся `accepted`, потому что F-5, объединённая staff-приёмка factors и
 client/production решения не завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
 `monthly_reconciliation_unresolved` остаётся advisory (PR №22).
@@ -661,10 +662,10 @@ client/production решения не завершены. Общий опера�
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. Подготовить отдельный identity probe для различий Finance `orderUid` и
-   goods-return/claims `srid`/`orderId` на одном immutable window. Выводить
-   только boolean overlap; не разрешать одиночный identifier или product-only
-   join без нового accepted решения.
+2. Создать новый immutable report из однозначно выбранного Finance storage без
+   DB/file ambiguity и повторить готовый `--mode r0-identity` на том же report
+   window. Выводить только boolean overlap; не разрешать одиночный identifier,
+   product-only join или ручной выбор одной из конфликтующих копий.
 3. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
