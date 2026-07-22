@@ -710,6 +710,28 @@ XLSX и не занимают пользовательские ячейки; в 
 Rollback скрывает `tax_load` в registry. Report runs и audit сохраняются;
 current других видов не меняется.
 
+## Production Rollout Evidence
+
+- 2026-07-22: accounting-report wizard объединён с действующим production
+  исправлением налогового профиля 1С и зафиксирован в commit
+  `dba3d7df103b74e578889b0103f85e25ef8f827d`. Полный локальный набор дал
+  `977 passed`; GitHub run `29951864864` завершил обязательные `quality` и
+  `tests` со статусом `success`.
+- Из commit собран immutable release
+  `runtime-dba3d7d-accounting-wizard-prod-20260722`, сначала promoted в
+  `test`, затем после повторного health/smoke — в `production`. Оба контура
+  возвращают `status=ok`, совпадающие backend/static build
+  `20260722-accounting-wizard-tax-profile-v2` и корректный environment;
+  cwd production-процесса указывает на тот же release.
+- Перед production restart через штатный systemd EnvironmentFile применена
+  идемпотентная additive migration до
+  `2026_07_21_logistics_measurements_context_v1`; содержимое environment-файла
+  не читалось и не выводилось. После переключения production health-service
+  завершился с `success`, а unauthenticated reports и generation endpoints
+  вернули `401`. Предыдущий release
+  `runtime-fcfc52b-tax-profile-configured-20260721` сохранён как совместимый
+  rollback target.
+
 ## Test Rollout Evidence
 
 - 2026-07-22: пошаговый accounting-report wizard из commit
