@@ -7,8 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
-related_tests: [tests/test_wb_content.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_content.py, tests/test_wb_measurements.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -24,22 +24,28 @@ ai_sections:
   tests: "Test Plan"
 code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
-    symbols: ["def build_dimension_rows", "def build_tariff_rows", "def build_route_rows"]
+    symbols: ["def build_dimension_rows", "def build_measurement_rows", "def build_tariff_rows", "def build_route_rows"]
+  - path: src/wb_unit_economics/wb_measurements.py
+    symbols: ["def flatten_measurement_penalties", "def flatten_warehouse_measurements", "def export_wb_measurement_penalties", "def export_wb_warehouse_measurements"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
+    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_measurements", "def _select_measurement_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/web/repository.py
-    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload"]
+    symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_measurement_analysis", "def report_logistics_measurements_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload"]
 test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_build_dimension_rows_links_by_nm_and_marks_unavailable"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
+    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_measurements_api_states_filters_and_full_slice_coverage", "def test_logistics_measurements_role_and_flag_matrix", "def test_required_measurement_context_controls_publication_readiness", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
+    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_db_and_file_authoritative_are_equivalent", "def test_measurement_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_precedence_partial_and_context_build", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_tariffs.py
     symbols: ["def test_build_tariff_snapshot_dates_uses_calendar_weeks", "def test_flatten_box_tariffs_keeps_period_and_none_for_missing"]
   - path: tests/test_logistics_factor_marts.py
-    symbols: ["def test_build_tariff_rows_uses_historical_fact_and_current_estimate", "def test_build_route_rows_joins_exact_chain_and_marks_conflicts", "def test_route_analysis_is_atomic_and_published_report_is_immutable"]
+    symbols: ["def test_build_measurement_rows_merges_exact_event_and_preserves_money", "def test_build_measurement_rows_isolates_cabinets_and_mapping_scope", "def test_build_measurement_rows_conflicts_fail_closed_without_fanout", "def test_measurement_analysis_is_atomic_and_published_report_is_immutable", "def test_build_tariff_rows_uses_historical_fact_and_current_estimate", "def test_build_route_rows_joins_exact_chain_and_marks_conflicts", "def test_route_analysis_is_atomic_and_published_report_is_immutable"]
+  - path: tests/test_wb_measurements.py
+    symbols: ["def test_measurement_penalties_pagination_reconciles_provider_total", "def test_flat_measurement_rows_omit_photos_and_subject_values", "def test_incomplete_measurement_page_fails_closed"]
+  - path: tests/test_probe_wb_logistics_factors.py
+    symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-21"
@@ -63,8 +69,8 @@ updated_at: "2026-07-21"
 статистика склад/направление (по кабинету с полным scope). На 21.07.2026
 официальный Reports contract повторно проверен для F-4: авторитетные read-only
 источники — Analytics `measurement-penalties` и `warehouse-measurements`, а не
-общий штраф Finance. Live-доступ этих двух методов конкретным токенам остаётся
-обязательным source gate перед реализацией F-4.
+общий штраф Finance. Минимальный live source gate обоих методов пройден с
+boolean-only evidence; raw, IDs, значения, суммы и counts не публиковались.
 
 # Текущее состояние реализации
 
@@ -76,6 +82,8 @@ updated_at: "2026-07-21"
 
 - `src/wb_unit_economics/wb_content.py` — извлечение `dimensions` (габариты, вес,
   `isValid`) из карточек (F-1);
+- `src/wb_unit_economics/wb_measurements.py` — read-only offset-pagination и
+  безопасные flat snapshots двух Analytics endpoints (F-4);
 - `src/wb_unit_economics/wb_tariffs.py` — read-only тарифы box/pallet с периодами
   действия (F-2);
 - `src/wb_unit_economics/wb_goods_return.py` — read-only причины возврата
@@ -84,9 +92,8 @@ updated_at: "2026-07-21"
   направление доставки (F-3);
 - `scripts/probe_wb_logistics_factors.py` — read-only probe доступности.
 
-После PR №34–39 в `main` появились additive schema для dimension/route mart,
-чистая сборка dimension rows, snapshot exporters факторов, optional collectors,
-repository persistence и первичный read-only API `/dimensions`.
+В `main` последовательно приняты additive schema, deterministic marts, verified
+snapshot selectors, persistence, read-only API и staff-only UI F-1…F-3.
 
 F-1 «Габариты» собран сквозным пакетом и принят на staff-only test 20 июля
 2026 года: штатный report build выбирает и повторно проверяет авторитетный
@@ -94,9 +101,9 @@ snapshot карточек, атомарно сохраняет dimension context
 state matrix, фильтры, SQL-pagination и coverage полного среза, а factor-блок
 встроен в `#tables/logistics`. Operational evidence находится в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Статус всего factor-spec остаётся `accepted`: причины возвратов, реализация
-замеров/удержаний F-4, factor AI digest и клиентский/production rollout остаются
-следующими подпакетами.
+Статус всего factor-spec остаётся `accepted`: причины возвратов, staff-приёмка
+F-4, factor AI digest и клиентский/production rollout остаются следующими
+подпакетами.
 
 F-2 «Тарифы» реализован сквозным пакетом и принят на staff-only test 21 июля
 2026 года: verified box/pallet snapshot, tariff context/mart, read-only
@@ -108,10 +115,12 @@ verified `supplier/sales` snapshot, exact chain join, route context/mart,
 read-only `/routes` и локальный UI-блок работают за отдельными defaults-off
 флагами. Production и client enable не выполнялись.
 
-F-4 пока не реализован. Этим spec-first изменением принят отдельный точный
-контракт источников, нормализации, immutable context/mart, read-only API,
-интерфейса и rollout gate. Никакие F-4 миграции, collectors, API routes,
-feature flags в runtime или изменения среды в этот этап не входят.
+F-4 реализован в отдельном implementation package за defaults-off флагами:
+read-only collectors и verified dual snapshots, нормализация/merge событий,
+immutable measurement context/mart, publication readiness, read-only API и
+локально изолированный responsive UI. Локальные unit/source/persistence/API/UI
+проверки входят в пакет; staff-only test rollout фиксируется отдельно только
+после merge и успешных GitHub jobs. Production и client enable не выполнялись.
 
 # Цель
 
@@ -331,7 +340,7 @@ Probe-чеклист:
 | Склад/направление | ❌ недоступен в сохранённом | В финансовом снимке нет `officeName`/`warehouseName`/гео — только `srid`; отчёт продаж с гео не сохраняется. Нужен новый live-источник Statistics `supplier/sales`. |
 | Тарифы box/pallet | ❌ не подключено | В сохранённых данных тарифов нет; нужен новый live-коннектор. |
 | Причины возвратов (goods-return/claims) | ❌ не подключено | В сохранённых данных отсутствуют; нужны новые live-коннекторы. |
-| Замеры/удержания (Analytics Reports) | ⚠️ live-доступ не проверен | Официальный schema contract подтверждён 21.07.2026; перед кодом нужны безопасные вызовы двух Analytics GET-методов для каждого разрешённого кабинета. |
+| Замеры/удержания (Analytics Reports) | ✅ минимальный live gate | Оба Analytics GET-метода подтвердили schema хотя бы на одной разрешённой интеграции; evidence содержит только boolean-признаки без IDs, значений, сумм и counts. |
 
 Следствие для порядка подпакетов: **F-1 (габариты)** разблокирован на уровне
 источника и начат — извлечение `dimensions` в плоскую карточку реализовано
@@ -351,9 +360,10 @@ Probe-чеклист:
 ## Source gate F-4 (2026-07-21)
 
 Документированный API-контракт двух Analytics методов подтверждён. Это закрывает
-ошибочную гипотезу о Finance как источнике замеров, но не является environment
-evidence. До изменения product-кода оператор выполняет минимальный live probe
-по runbook. Gate считается пройденным, если для каждого разрешённого кабинета
+ошибочную гипотезу о Finance как источнике замеров. Минимальный live probe
+выполнен по runbook в отдельном read-only процессе: оба endpoint подтвердили
+schema хотя бы на одной разрешённой интеграции, `schemaMismatchPresent=false`,
+общий `implementationGate=true`. Gate считается пройденным, если по кабинетам
 зафиксирован один из безопасных статусов `confirmed_empty`,
 `confirmed_nonempty`, `access_denied` или `unavailable`, а успешный ответ
 содержит ожидаемую envelope/schema. Raw строки, значения, `dimId`, `nmId`, URL
@@ -361,8 +371,8 @@ evidence. До изменения product-кода оператор выполн
 
 `access_denied`/`unavailable` допускает реализацию с явным partial coverage для
 этого кабинета. Несоответствие успешной schema официальному контракту
-возвращает F-4 на spec review. Ни один live probe этого spec-first изменения не
-претендует на rollout или изменение production.
+возвращает F-4 на spec review. Пройденный source gate не является rollout:
+production не менялся, test deployment и staff-приёмка выполняются отдельно.
 
 # Расчётная модель факторов
 
@@ -1013,10 +1023,10 @@ Design-часть подпакета считается принятой, ког
 - browser: staff-only deep-link на desktop/mobile, client 404/скрытый блок,
   отсутствие overflow и console/page/network errors.
 
-Файлы (расширяются существующие): `tests/test_wb_content.py`,
-`tests/test_wb_stocks.py`, `tests/test_logistics_analysis.py`,
-`tests/test_source_refresh.py`, `tests/test_web_app.py`; новые тесты тарифного
-коннектора добавляются вместе с ним.
+Файлы: `tests/test_probe_wb_logistics_factors.py`,
+`tests/test_wb_measurements.py`, `tests/test_logistics_factor_marts.py`,
+`tests/test_source_refresh.py`, `tests/test_web_app.py` и существующие factor-
+тесты F-1…F-3. Все fixtures обезличены.
 
 # Rollout And Rollback
 
@@ -1047,9 +1057,9 @@ staff API/UI проверяются на desktop 1440x900 и mobile 390x844. Cli
 выполняются; operational evidence не содержит объёмов, складов, направлений или
 идентификаторов клиента.
 
-Для F-4 до product-кода выполняется live source gate двух Analytics GET без
-сохранения raw в evidence. Затем применяются additive migration и immutable
-runtime. На test включаются factor master и
+Для F-4 live source gate двух Analytics GET выполнен до product-кода без
+сохранения raw в evidence. После merge применяются additive migration и
+immutable runtime. На test включаются factor master и
 `SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED`; measurements client-флаг остаётся
 `false`. Новый immutable report строится из verified snapshots с полной
 provider-total reconciliation. Staff API/UI проверяются на desktop 1440x900 и
@@ -1089,9 +1099,9 @@ blocker с report run, который обязан был пройти gate, н�
 
 # Открытые вопросы
 
-- Live availability/retention двух F-4 Analytics endpoint для каждого
-  разрешённого кабинета — проверить безопасным probe перед кодом; официальный
-  schema contract уже подтверждён.
+- Фактическая retention/history depth двух F-4 Analytics endpoint не
+  гарантирована provider contract и фиксируется coverage window каждого
+  verified snapshot; минимальный live schema gate уже пройден.
 - Exact бухгалтерское соответствие Analytics удержания строке Finance не
   документировано. Оно не входит в F-4 v1; до отдельного accepted решения суммы
   не включаются повторно в financial KPI.
@@ -1102,10 +1112,18 @@ blocker с report run, который обязан был пройти gate, н�
 
 Частично закрытые probe (2026-07-19…21): габариты, тарифы и supplier-sales
 подтверждены read-only проверками; F-1, F-2 и F-3 приняты на staff-only test.
-F-4 schema подтверждена официальным контрактом, live token/source gate остаётся
-предусловием реализации.
+F-4 schema и минимальный live token/source gate подтверждены; implementation
+package ожидает merge и отдельный staff-only test rollout.
 
 # Changelog
+
+- 2026-07-21 — реализован F-4 package за defaults-off флагами: безопасный
+  source-gate mode, read-only collectors с provider-total reconciliation,
+  verified DB/file dual snapshots, deterministic event mart, additive schema,
+  atomic context+rows и publication gate, `/logistics/measurements`, role/flag
+  matrix и responsive UI с локальной error isolation. Staff-only test rollout
+  выполняется только после merge; production/client enable не выполнялись,
+  factor-spec остаётся `accepted`.
 
 - 2026-07-21 — принят отдельный spec-first контракт F-4 «Замеры и удержания»:
   исправлен источник с общего Finance penalty на Analytics

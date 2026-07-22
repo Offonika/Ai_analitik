@@ -6371,6 +6371,31 @@ td {
   white-space: normal;
 }
 
+.logistics-measurements-table th:nth-child(1) {
+  width: 11%;
+}
+
+.logistics-measurements-table th:nth-child(2) {
+  width: 17%;
+}
+
+.logistics-measurements-table th:nth-child(3),
+.logistics-measurements-table th:nth-child(4) {
+  width: 13%;
+}
+
+.logistics-measurements-table th:nth-child(5) {
+  width: 15%;
+}
+
+.logistics-measurements-table th:nth-child(6) {
+  width: 18%;
+}
+
+.logistics-measurements-table th:nth-child(7) {
+  width: 13%;
+}
+
 .logistics-bar-list {
   display: grid;
   gap: 14px;
@@ -6509,6 +6534,14 @@ td {
   display: block;
   margin-top: 4px;
   color: #6b7b8e;
+}
+
+.logistics-table.logistics-measurements-table th,
+.logistics-table.logistics-measurements-table td,
+.logistics-table.logistics-measurements-table td:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .logistics-quality-badge {

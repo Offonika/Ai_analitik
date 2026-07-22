@@ -439,6 +439,9 @@ ALTER TABLE IF EXISTS wb_unit_economics.report_runs
 ALTER TABLE IF EXISTS wb_unit_economics.report_runs
     ADD COLUMN IF NOT EXISTS logistics_routes_required boolean NOT NULL DEFAULT false;
 
+ALTER TABLE IF EXISTS wb_unit_economics.report_runs
+    ADD COLUMN IF NOT EXISTS logistics_measurements_required boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_rows (
     id bigserial PRIMARY KEY,
     report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
@@ -656,6 +659,103 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_route_contexts (
 
 CREATE INDEX IF NOT EXISTS ix_report_logistics_route_context_status
     ON wb_unit_economics.report_logistics_route_contexts (tenant_id, data_status);
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_measurement_rows (
+    id bigserial PRIMARY KEY,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    row_uid text NOT NULL,
+    wb_cabinet_id text NOT NULL,
+    dim_id text NOT NULL,
+    nm_id text NOT NULL,
+    client_company_id text,
+    scheme text,
+    product_ref text,
+    product text NOT NULL DEFAULT '',
+    event_kind text NOT NULL,
+    measurement_at timestamptz,
+    penalty_effective_at timestamptz,
+    validation_at timestamptz,
+    measured_volume_l numeric,
+    measured_width_cm numeric,
+    measured_length_cm numeric,
+    measured_height_cm numeric,
+    measured_calculated_volume_l numeric,
+    declared_volume_l numeric,
+    declared_width_cm numeric,
+    declared_length_cm numeric,
+    declared_height_cm numeric,
+    declared_calculated_volume_l numeric,
+    volume_ratio_percent numeric,
+    volume_excess_percent numeric,
+    is_valid boolean,
+    penalty_amount numeric,
+    reversal_amount numeric,
+    net_penalty_amount numeric,
+    accounting_reconciliation_status text NOT NULL DEFAULT 'unreconciled',
+    included_in_financial_kpi boolean NOT NULL DEFAULT false,
+    evidence_type text NOT NULL DEFAULT '',
+    coverage_status text NOT NULL DEFAULT '',
+    data_quality_status text NOT NULL DEFAULT '',
+    source_hash_digest text NOT NULL,
+    CONSTRAINT uq_report_logistics_measurement_row UNIQUE (report_run_id, row_uid)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_measurement_filter
+    ON wb_unit_economics.report_logistics_measurement_rows (
+        report_run_id, wb_cabinet_id, client_company_id, scheme, event_kind
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_measurement_event_date
+    ON wb_unit_economics.report_logistics_measurement_rows (
+        report_run_id, penalty_effective_at, measurement_at
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_measurement_product
+    ON wb_unit_economics.report_logistics_measurement_rows (
+        report_run_id, product_ref
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_measurement_contexts (
+    report_run_id text PRIMARY KEY REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    factor_methodology_version text NOT NULL,
+    data_status text NOT NULL,
+    input_hash text NOT NULL,
+    penalty_source_snapshot_hash text NOT NULL DEFAULT '',
+    warehouse_source_snapshot_hash text NOT NULL DEFAULT '',
+    penalty_source_loaded_at timestamptz,
+    warehouse_source_loaded_at timestamptz,
+    factor_snapshot_at timestamptz,
+    source_coverage_start date,
+    source_coverage_end date,
+    expected_endpoint_count integer NOT NULL DEFAULT 2,
+    complete_endpoint_count integer NOT NULL DEFAULT 0,
+    unavailable_endpoint_count integer NOT NULL DEFAULT 0,
+    source_event_count integer NOT NULL DEFAULT 0,
+    provider_event_count integer NOT NULL DEFAULT 0,
+    measurement_row_count integer NOT NULL DEFAULT 0,
+    scoped_product_count integer NOT NULL DEFAULT 0,
+    product_with_event_count integer NOT NULL DEFAULT 0,
+    matched_event_count integer NOT NULL DEFAULT 0,
+    unmatched_event_count integer NOT NULL DEFAULT 0,
+    ambiguous_event_count integer NOT NULL DEFAULT 0,
+    invalid_event_count integer NOT NULL DEFAULT 0,
+    conflicting_event_count integer NOT NULL DEFAULT 0,
+    penalty_event_count integer NOT NULL DEFAULT 0,
+    reversal_event_count integer NOT NULL DEFAULT 0,
+    warehouse_only_event_count integer NOT NULL DEFAULT 0,
+    blocking_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_measurement_context_status
+    ON wb_unit_economics.report_logistics_measurement_contexts (
+        tenant_id, data_status
+    );
 
 ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts
     ADD COLUMN IF NOT EXISTS source_quality_status text NOT NULL DEFAULT 'ready',

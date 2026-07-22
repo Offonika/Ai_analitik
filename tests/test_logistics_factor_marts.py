@@ -9,8 +9,10 @@ import pytest
 from sqlalchemy import inspect
 
 from wb_unit_economics.logistics_analysis import (
+    LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
     LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
+    build_measurement_rows,
     build_route_rows,
     build_tariff_rows,
     logistics_chain_key,
@@ -19,6 +21,7 @@ from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import (
     DB_FIRST_SCHEMA_VERSION,
     LOGISTICS_DIMENSIONS_SCHEMA_VERSION,
+    LOGISTICS_MEASUREMENTS_SCHEMA_VERSION,
     LOGISTICS_ROUTES_SCHEMA_VERSION,
     LOGISTICS_TARIFFS_SCHEMA_VERSION,
     init_db,
@@ -42,8 +45,9 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
 
     assert LOGISTICS_DIMENSIONS_SCHEMA_VERSION < LOGISTICS_TARIFFS_SCHEMA_VERSION
     assert LOGISTICS_ROUTES_SCHEMA_VERSION != LOGISTICS_TARIFFS_SCHEMA_VERSION
-    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_ROUTES_SCHEMA_VERSION
-    assert schema_version(engine) == LOGISTICS_ROUTES_SCHEMA_VERSION
+    assert LOGISTICS_MEASUREMENTS_SCHEMA_VERSION != LOGISTICS_ROUTES_SCHEMA_VERSION
+    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
+    assert schema_version(engine) == LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
 
     inspector = inspect(engine)
 
@@ -95,6 +99,7 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
     assert "logistics_dimensions_required" in report_columns
     assert "logistics_tariffs_required" in report_columns
     assert "logistics_routes_required" in report_columns
+    assert "logistics_measurements_required" in report_columns
 
     tariff_cols = {
         column["name"]: column
@@ -139,6 +144,43 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
         "blocking_reasons",
     } <= route_context_cols
 
+    measurement_cols = {
+        column["name"]: column
+        for column in inspector.get_columns("report_logistics_measurement_rows")
+    }
+    assert {
+        "dim_id",
+        "nm_id",
+        "event_kind",
+        "measurement_at",
+        "penalty_effective_at",
+        "penalty_amount",
+        "reversal_amount",
+        "net_penalty_amount",
+        "included_in_financial_kpi",
+    } <= set(measurement_cols)
+    assert measurement_cols["product_ref"]["nullable"] is True
+    assert measurement_cols["penalty_amount"]["nullable"] is True
+
+    measurement_context_cols = {
+        column["name"]
+        for column in inspector.get_columns(
+            "report_logistics_measurement_contexts"
+        )
+    }
+    assert {
+        "penalty_source_snapshot_hash",
+        "warehouse_source_snapshot_hash",
+        "factor_snapshot_at",
+        "source_coverage_start",
+        "source_coverage_end",
+        "complete_endpoint_count",
+        "measurement_row_count",
+        "unmatched_event_count",
+        "ambiguous_event_count",
+        "blocking_reasons",
+    } <= measurement_context_cols
+
 
 def _tariff_sku(**changes):
     values = {
@@ -152,6 +194,237 @@ def _tariff_sku(**changes):
     }
     values.update(changes)
     return SimpleNamespace(**values)
+
+
+def _measurement_sku(**changes):
+    values = {
+        "tenant_id": "tenant",
+        "client_id": "client",
+        "wb_cabinet_id": "cabinet-a",
+        "client_company_id": "company",
+        "scheme": "fbo",
+        "product_ref": "product-ref",
+        "product": "Товар",
+        "nm_id": "101",
+        "source_hash_digest": "sku-hash",
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+def _measurement_penalty(**changes):
+    values = {
+        "tenant_id": "tenant",
+        "client_id": "client",
+        "wb_cabinet_id": "cabinet-a",
+        "dim_id": "dim-1",
+        "nm_id": "101",
+        "volume": "2.50",
+        "width": "10",
+        "length": "25",
+        "height": "10",
+        "volume_sup": "2",
+        "width_sup": "10",
+        "length_sup": "20",
+        "height_sup": "10",
+        "prc_over": "125",
+        "dt_bonus": "2026-07-02T01:00:00Z",
+        "is_valid": False,
+        "is_valid_dt": "2026-07-02T02:00:00Z",
+        "penalty_amount": "10",
+        "reversal_amount": "15",
+        "source_hash": "penalty-hash",
+    }
+    values.update(changes)
+    return values
+
+
+def _warehouse_measurement(**changes):
+    values = {
+        "tenant_id": "tenant",
+        "client_id": "client",
+        "wb_cabinet_id": "cabinet-a",
+        "dim_id": "dim-1",
+        "nm_id": "101",
+        "volume": "2.5",
+        "width": "10",
+        "length": "25",
+        "height": "10",
+        "dt": "2026-07-02T00:00:00Z",
+        "source_hash": "warehouse-hash",
+    }
+    values.update(changes)
+    return values
+
+
+def test_build_measurement_rows_merges_exact_event_and_preserves_money() -> None:
+    sku_rows = [
+        _measurement_sku(),
+        _measurement_sku(source_hash_digest="sku-hash-2"),
+    ]
+    penalty = _measurement_penalty()
+    warehouse = _warehouse_measurement()
+
+    rows = build_measurement_rows(
+        sku_rows,
+        [penalty, dict(penalty)],
+        [warehouse, dict(warehouse)],
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["event_kind"] == "merged"
+    assert row["coverage_status"] == "ready"
+    assert row["product_ref"] == "product-ref"
+    assert row["measured_calculated_volume_l"] == Decimal("2.50")
+    assert row["declared_calculated_volume_l"] == Decimal("2.00")
+    assert row["volume_ratio_percent"] == Decimal("125")
+    assert row["volume_excess_percent"] == Decimal("25")
+    assert row["penalty_amount"] == Decimal("10")
+    assert row["reversal_amount"] == Decimal("15")
+    assert row["net_penalty_amount"] == Decimal("-5")
+    assert row["is_valid"] is False
+    assert row["included_in_financial_kpi"] is False
+    assert row["accounting_reconciliation_status"] == "unreconciled"
+    assert LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION in (
+        "wb-logistics-measurements-v1",
+    )
+
+    repeated = build_measurement_rows(
+        list(reversed(sku_rows)),
+        [dict(penalty), penalty],
+        [dict(warehouse), warehouse],
+    )
+    assert repeated[0]["row_uid"] == row["row_uid"]
+    assert repeated[0]["source_hash_digest"] == row["source_hash_digest"]
+
+
+def test_build_measurement_rows_isolates_cabinets_and_mapping_scope() -> None:
+    rows = build_measurement_rows(
+        [
+            _measurement_sku(),
+            _measurement_sku(
+                wb_cabinet_id="cabinet-b",
+                client_company_id="other-company",
+                product_ref="other-product",
+            ),
+        ],
+        [
+            _measurement_penalty(),
+            _measurement_penalty(
+                wb_cabinet_id="cabinet-b",
+                source_hash="other-penalty-hash",
+            ),
+        ],
+        [],
+    )
+
+    assert len(rows) == 2
+    mapped = {row["wb_cabinet_id"]: row["product_ref"] for row in rows}
+    assert mapped == {
+        "cabinet-a": "product-ref",
+        "cabinet-b": "other-product",
+    }
+
+    ambiguous = build_measurement_rows(
+        [
+            _measurement_sku(),
+            _measurement_sku(
+                client_company_id="company-2",
+                product_ref="product-ref-2",
+            ),
+        ],
+        [_measurement_penalty()],
+        [],
+    )[0]
+    assert ambiguous["coverage_status"] == "ambiguous_product_scope"
+    assert ambiguous["client_company_id"] is None
+    assert ambiguous["product_ref"] is None
+    assert ambiguous["penalty_amount"] == Decimal("10")
+
+    unmatched = build_measurement_rows([], [_measurement_penalty()], [])[0]
+    assert unmatched["coverage_status"] == "unmatched_product"
+    assert unmatched["product_ref"] is None
+
+
+def test_build_measurement_rows_conflicts_fail_closed_without_fanout() -> None:
+    penalty = _measurement_penalty()
+    conflicting_warehouse = _warehouse_measurement(volume="3")
+    row = build_measurement_rows(
+        [_measurement_sku()],
+        [penalty],
+        [conflicting_warehouse],
+    )[0]
+
+    assert row["coverage_status"] == "conflicting_measurement"
+    assert row["measured_volume_l"] is None
+    assert row["penalty_amount"] is None
+    assert row["net_penalty_amount"] is None
+
+    repeated_dim = build_measurement_rows(
+        [_measurement_sku()],
+        [
+            penalty,
+            _measurement_penalty(nm_id="202", source_hash="other-nm-hash"),
+        ],
+        [],
+    )
+    assert len(repeated_dim) == 2
+    assert {item["coverage_status"] for item in repeated_dim} == {
+        "conflicting_measurement"
+    }
+
+    within_endpoint = build_measurement_rows(
+        [_measurement_sku()],
+        [penalty, _measurement_penalty(volume="4", source_hash="duplicate-hash")],
+        [],
+    )[0]
+    assert within_endpoint["coverage_status"] == "conflicting_measurement"
+    assert within_endpoint["event_kind"] == "measurement_penalty"
+    assert within_endpoint["measured_volume_l"] is None
+
+
+def test_build_measurement_rows_keeps_missing_and_invalid_explicit() -> None:
+    invalid = _measurement_penalty(
+        volume="0",
+        width="bad",
+        length=None,
+        height="-1",
+        volume_sup=None,
+        width_sup=None,
+        length_sup=None,
+        height_sup=None,
+        prc_over="0",
+        penalty_amount="-1",
+        reversal_amount="0",
+    )
+    row = build_measurement_rows([_measurement_sku()], [invalid], [])[0]
+
+    assert row["coverage_status"] == "invalid_measurement"
+    assert row["measured_volume_l"] is None
+    assert row["measured_width_cm"] is None
+    assert row["measured_calculated_volume_l"] is None
+    assert row["volume_ratio_percent"] is None
+    assert row["penalty_amount"] is None
+    assert row["reversal_amount"] == Decimal("0")
+    assert row["net_penalty_amount"] is None
+
+    rounded = build_measurement_rows(
+        [_measurement_sku()],
+        [
+            _measurement_penalty(
+                volume="1",
+                length="10.1",
+                width="10.1",
+                height="10.1",
+                penalty_amount="0",
+                reversal_amount="1",
+            )
+        ],
+        [],
+    )[0]
+    assert rounded["measured_calculated_volume_l"] == Decimal("1.03")
+    assert rounded["net_penalty_amount"] == Decimal("-1")
 
 
 def test_build_tariff_rows_uses_historical_fact_and_current_estimate() -> None:
@@ -642,5 +915,116 @@ def test_route_analysis_is_atomic_and_published_report_is_immutable(
                 db,
                 report,
                 context=_route_context(report, rows),
+                rows=rows,
+            )
+
+
+def _measurement_context(
+    report: ReportRun,
+    rows,
+    *,
+    tenant_id: str = "tenant",
+    row_count: int | None = None,
+):
+    return {
+        "tenant_id": tenant_id,
+        "client_id": report.client_id,
+        "factor_methodology_version": LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
+        "data_status": "ready",
+        "input_hash": "measurement-input-hash",
+        "penalty_source_snapshot_hash": "penalty-snapshot-hash",
+        "warehouse_source_snapshot_hash": "warehouse-snapshot-hash",
+        "penalty_source_loaded_at": datetime(2026, 7, 21, 12, 0),
+        "warehouse_source_loaded_at": datetime(2026, 7, 21, 12, 0),
+        "factor_snapshot_at": datetime(2026, 7, 21, 12, 0),
+        "source_coverage_start": date(2026, 4, 1),
+        "source_coverage_end": date(2026, 4, 30),
+        "expected_endpoint_count": 2,
+        "complete_endpoint_count": 2,
+        "unavailable_endpoint_count": 0,
+        "source_event_count": 2,
+        "provider_event_count": 2,
+        "measurement_row_count": len(rows) if row_count is None else row_count,
+        "scoped_product_count": 1,
+        "product_with_event_count": 1,
+        "matched_event_count": len(rows),
+        "unmatched_event_count": 0,
+        "ambiguous_event_count": 0,
+        "invalid_event_count": 0,
+        "conflicting_event_count": 0,
+        "penalty_event_count": len(rows),
+        "reversal_event_count": len(rows),
+        "warehouse_only_event_count": 0,
+        "blocking_reasons": [],
+        "review_reasons": [],
+        "created_at": datetime(2026, 7, 21, 12, 1),
+    }
+
+
+def test_measurement_analysis_is_atomic_and_published_report_is_immutable(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        report = _seed_tariff_report(db)
+        rows = build_measurement_rows(
+            [
+                _measurement_sku(
+                    wb_cabinet_id="cabinet",
+                    nm_id="101",
+                )
+            ],
+            [
+                _measurement_penalty(
+                    wb_cabinet_id="cabinet",
+                    nm_id="101",
+                )
+            ],
+            [
+                _warehouse_measurement(
+                    wb_cabinet_id="cabinet",
+                    nm_id="101",
+                )
+            ],
+        )
+        repository.replace_report_logistics_measurement_analysis(
+            db,
+            report,
+            context=_measurement_context(report, rows),
+            rows=rows,
+        )
+        db.flush()
+        persisted_uids = sorted(
+            row.row_uid for row in db.query(repository.ReportLogisticsMeasurementRow)
+        )
+
+        with pytest.raises(ValueError, match="tenant does not match report"):
+            repository.replace_report_logistics_measurement_analysis(
+                db,
+                report,
+                context=_measurement_context(report, rows, tenant_id="other"),
+                rows=rows,
+            )
+        assert sorted(
+            row.row_uid for row in db.query(repository.ReportLogisticsMeasurementRow)
+        ) == persisted_uids
+        assert report.logistics_measurements_required is True
+
+        with pytest.raises(ValueError, match="row count does not match"):
+            repository.replace_report_logistics_measurement_analysis(
+                db,
+                report,
+                context=_measurement_context(report, rows, row_count=0),
+                rows=rows,
+            )
+
+        report.publication_status = "published"
+        with pytest.raises(ValueError, match="published logistics measurement"):
+            repository.replace_report_logistics_measurement_analysis(
+                db,
+                report,
+                context=_measurement_context(report, rows),
                 rows=rows,
             )
