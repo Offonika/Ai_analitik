@@ -119,9 +119,11 @@ from wb_unit_economics.wb_finance import (
     wb_finance_export_is_complete,
 )
 from wb_unit_economics.wb_goods_return import (
+    GoodsReturnSourceRow,
     WbGoodsReturnClient,
     WbGoodsReturnExportResult,
     export_wb_goods_return,
+    normalize_goods_return_source_row,
 )
 from wb_unit_economics.wb_measurements import (
     WbMeasurementExportResult,
@@ -273,9 +275,7 @@ def _default_wb_tariffs_exporter(
     for account in accounts:
         client = WbTariffsClient(api_key=account.api_key)
         seller_account_id = str(account.seller_account_id)
-        file_prefix = hashlib.sha256(
-            seller_account_id.encode("utf-8")
-        ).hexdigest()[:12]
+        file_prefix = hashlib.sha256(seller_account_id.encode("utf-8")).hexdigest()[:12]
         rate_limited = False
         for index, target_date in enumerate(ordered_dates):
             if rate_limited:
@@ -304,9 +304,7 @@ def _default_wb_tariffs_exporter(
         "source": "wb_tariffs",
         "factorSnapshotDate": factor_snapshot_date.isoformat(),
         "requestedWeekStarts": [
-            item.isoformat()
-            for item in snapshot_dates
-            if item != factor_snapshot_date
+            item.isoformat() for item in snapshot_dates if item != factor_snapshot_date
         ],
         "results": [_wb_tariffs_result_payload(item) for item in results],
     }
@@ -324,18 +322,38 @@ def _default_wb_goods_return_exporter(
     period_start: date,
     period_end: date,
 ) -> list[WbGoodsReturnExportResult]:
+    output_dir.mkdir(parents=True, exist_ok=True)
     date_from = max(
-        period_start, period_end - timedelta(days=WB_GOODS_RETURN_MAX_DAYS)
+        period_start, period_end - timedelta(days=WB_GOODS_RETURN_MAX_DAYS - 1)
     )
     results: list[WbGoodsReturnExportResult] = []
     for account in accounts:
+        seller_account_id = str(account.seller_account_id)
+        file_prefix = hashlib.sha256(seller_account_id.encode("utf-8")).hexdigest()[:12]
         client = WbGoodsReturnClient(api_key=account.api_key)
-        account_dir = output_dir / str(account.seller_account_id).lower()
         results.append(
             export_wb_goods_return(
-                client, account_dir, date_from=date_from, date_to=period_end
+                client,
+                output_dir,
+                date_from=date_from,
+                date_to=period_end,
+                seller_account_id=seller_account_id,
+                account_name=str(account.account_name),
+                file_prefix=file_prefix,
             )
         )
+    manifest = {
+        "source": "wb_goods_return",
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "coverageStart": date_from.isoformat(),
+        "coverageEnd": period_end.isoformat(),
+        "results": [_wb_goods_return_result_payload(item) for item in results],
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     return results
 
 
@@ -368,9 +386,7 @@ def _default_wb_supplier_sales_exporter(
             )
             continue
         client = WbSupplierSalesClient(api_key=account.api_key)
-        file_prefix = hashlib.sha256(
-            seller_account_id.encode("utf-8")
-        ).hexdigest()[:12]
+        file_prefix = hashlib.sha256(seller_account_id.encode("utf-8")).hexdigest()[:12]
         results.append(
             export_wb_supplier_sales(
                 client,
@@ -409,21 +425,16 @@ def _default_wb_measurements_exporter(
         datetime.min.time(),
         tzinfo=MOSCOW_TZ,
     ).astimezone(UTC)
-    end_at = (
-        datetime.combine(
-            period_end + timedelta(days=1),
-            datetime.min.time(),
-            tzinfo=MOSCOW_TZ,
-        ).astimezone(UTC)
-        - timedelta(microseconds=1)
-    )
+    end_at = datetime.combine(
+        period_end + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=MOSCOW_TZ,
+    ).astimezone(UTC) - timedelta(microseconds=1)
     factor_snapshot_at = datetime.now(tz=UTC)
     results: list[WbMeasurementExportResult] = []
     for account in accounts:
         seller_account_id = str(account.seller_account_id)
-        file_prefix = hashlib.sha256(
-            seller_account_id.encode("utf-8")
-        ).hexdigest()[:12]
+        file_prefix = hashlib.sha256(seller_account_id.encode("utf-8")).hexdigest()[:12]
         client = WbMeasurementsClient(api_key=account.api_key)
         exporter = (
             export_wb_measurement_penalties
@@ -639,12 +650,8 @@ class SourceRefreshService:
         self._wb_tariffs_exporter = wb_tariffs_exporter
         self._wb_goods_return_exporter = wb_goods_return_exporter
         self._wb_supplier_sales_exporter = wb_supplier_sales_exporter
-        self._wb_measurement_penalties_exporter = (
-            wb_measurement_penalties_exporter
-        )
-        self._wb_warehouse_measurements_exporter = (
-            wb_warehouse_measurements_exporter
-        )
+        self._wb_measurement_penalties_exporter = wb_measurement_penalties_exporter
+        self._wb_warehouse_measurements_exporter = wb_warehouse_measurements_exporter
         self._ozon_cash_flow_exporter = ozon_cash_flow_exporter
         self._ozon_realization_exporter = ozon_realization_exporter
         self._ozon_realization_posting_exporter = ozon_realization_posting_exporter
@@ -3167,6 +3174,91 @@ class SourceRefreshService:
         )
         return collection
 
+    def _record_wb_goods_return(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        output_dir: Path,
+        results: Iterable[WbGoodsReturnExportResult],
+        *,
+        wb_cabinet_ids: dict[str, str],
+        period_start: date,
+        period_end: date,
+    ) -> SourceRefreshCollection:
+        result_items = list(results)
+        payload_items = [
+            _wb_goods_return_result_payload(
+                item,
+                wb_cabinet_id=wb_cabinet_ids.get(item.seller_account_id, ""),
+            )
+            for item in result_items
+        ]
+        manifest: Mapping[str, Any] = {}
+        try:
+            loaded = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            if isinstance(loaded, Mapping):
+                manifest = loaded
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        successful = [item for item in result_items if item.ok]
+        failed = [item for item in result_items if not item.ok]
+        status = (
+            "partial_source"
+            if successful and failed
+            else "loaded"
+            if successful
+            else "needs_review"
+        )
+        payload: dict[str, Any] = {
+            "results": payload_items,
+            "periodStart": period_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "coverageStart": str(manifest.get("coverageStart") or ""),
+            "coverageEnd": str(manifest.get("coverageEnd") or ""),
+        }
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_goods_return",
+            source_label="WB goods return reasons",
+            required=False,
+            status=status,
+            snapshot_hash=_hash_payload(payload_items),
+            row_count=sum(item.row_count for item in successful),
+            raw_path=str(output_dir),
+            error_message=(
+                "Some WB goods-return sources are unavailable."
+                if successful and failed
+                else "WB goods-return source is unavailable."
+                if failed
+                else ""
+            ),
+            payload=payload,
+        )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        if self.settings.source_refresh_raw_db_mode == "files_only":
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "file_authoritative",
+                    "rawFilesAuthoritative": True,
+                },
+            }
+            db.flush()
+            return collection
+        _persist_wb_goods_return_rows(
+            db,
+            collection,
+            result_items,
+            wb_cabinet_ids=wb_cabinet_ids,
+        )
+        return collection
+
     def _record_wb_supplier_sales(
         self,
         db: Session,
@@ -3210,9 +3302,7 @@ class SourceRefreshService:
             "periodEnd": period_end.isoformat(),
             "coverageStart": str(manifest.get("coverageStart") or ""),
             "coverageEnd": str(manifest.get("coverageEnd") or ""),
-            "factorSnapshotDate": str(
-                manifest.get("factorSnapshotDate") or ""
-            ),
+            "factorSnapshotDate": str(manifest.get("factorSnapshotDate") or ""),
         }
         collection = repository.add_source_refresh_collection(
             db,
@@ -3540,9 +3630,7 @@ class SourceRefreshService:
                 for qualified_source_type in OZON_TYPED_FILE_AUTHORITATIVE_TYPES
             }
             missing_qualifications = sorted(
-                item
-                for item, run_id in qualification_run_ids.items()
-                if not run_id
+                item for item, run_id in qualification_run_ids.items() if not run_id
             )
             if missing_qualifications:
                 raise SourceRefreshConfigError(
@@ -5195,13 +5283,22 @@ def _collect_wb_goods_return(
     if context.credentials.wb_settings is None:
         return CollectorResult()
     output_dir = context.root_dir / "wb_goods_return"
-    service._wb_goods_return_exporter(
+    results = service._wb_goods_return_exporter(
         context.credentials.wb_settings.accounts,
         output_dir,
         period_start=context.period_start,
         period_end=context.period_end,
     )
-    return CollectorResult(output_dir=output_dir)
+    collection = service._record_wb_goods_return(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    return CollectorResult(collection=collection, output_dir=output_dir)
 
 
 def _collect_wb_supplier_sales(
@@ -6075,9 +6172,43 @@ def _wb_tariffs_result_payload(
         "statusCode": item.status_code,
         "rawPayloadHash": item.raw_payload_hash,
         "flatPayloadHash": item.flat_payload_hash,
-        "outputFile": (
-            item.raw_output_path.name if item.raw_output_path else None
+        "outputFile": (item.raw_output_path.name if item.raw_output_path else None),
+        "flatOutputFile": (
+            item.flat_output_path.name if item.flat_output_path else None
         ),
+        "error": item.error,
+    }
+
+
+def _wb_goods_return_result_payload(
+    item: WbGoodsReturnExportResult,
+    *,
+    wb_cabinet_id: str = "",
+) -> dict[str, Any]:
+    if item.ok:
+        status = "loaded" if item.row_count else "empty_expected"
+    elif item.status_code in {401, 403}:
+        status = "auth_failed"
+    elif item.status_code == 429:
+        status = "rate_limited"
+    else:
+        status = "failed"
+    return {
+        "sellerAccountId": item.seller_account_id,
+        "accountName": item.account_name,
+        "wbCabinetId": wb_cabinet_id,
+        "pageIndex": 1,
+        "status": status,
+        "ok": item.ok,
+        "rowCount": item.row_count,
+        "statusCode": item.status_code,
+        "coverageStart": (
+            item.coverage_start.isoformat() if item.coverage_start else ""
+        ),
+        "coverageEnd": item.coverage_end.isoformat() if item.coverage_end else "",
+        "rawPayloadHash": item.raw_payload_hash,
+        "flatPayloadHash": item.flat_payload_hash,
+        "outputFile": (item.raw_output_path.name if item.raw_output_path else None),
         "flatOutputFile": (
             item.flat_output_path.name if item.flat_output_path else None
         ),
@@ -6111,9 +6242,7 @@ def _wb_supplier_sales_result_payload(
         "statusCode": item.status_code,
         "rawPayloadHash": item.raw_payload_hash,
         "flatPayloadHash": item.flat_payload_hash,
-        "outputFile": (
-            item.raw_output_path.name if item.raw_output_path else None
-        ),
+        "outputFile": (item.raw_output_path.name if item.raw_output_path else None),
         "flatOutputFile": (
             item.flat_output_path.name if item.flat_output_path else None
         ),
@@ -6146,9 +6275,7 @@ def _wb_measurement_result_payload(
         "statusCode": item.status_code,
         "rawPayloadHash": item.raw_payload_hash,
         "flatPayloadHash": item.flat_payload_hash,
-        "outputFile": (
-            item.raw_output_path.name if item.raw_output_path else None
-        ),
+        "outputFile": (item.raw_output_path.name if item.raw_output_path else None),
         "flatOutputFile": (
             item.flat_output_path.name if item.flat_output_path else None
         ),
@@ -6892,11 +7019,7 @@ def _file_authoritative_wb_collection(
     run: SourceRefreshRun,
 ) -> SourceRefreshCollection | None:
     collection = next(
-        (
-            item
-            for item in run.collections
-            if item.source_type == "wb_finance_detail"
-        ),
+        (item for item in run.collections if item.source_type == "wb_finance_detail"),
         None,
     )
     if collection is None:
@@ -6934,9 +7057,7 @@ def _iter_file_authoritative_logistics_inputs(
             raw_dir,
             source_type="wb_finance_detail",
             source_root=source_root,
-            collection_results=[
-                item for item in results if isinstance(item, Mapping)
-            ],
+            collection_results=[item for item in results if isinstance(item, Mapping)],
             collection_row_count=collection.row_count,
             collection_snapshot_hash=collection.snapshot_hash,
         )
@@ -7138,9 +7259,7 @@ def _build_and_persist_logistics_dimensions(
         if not blocking
         else []
     )
-    missing = sum(
-        row["data_quality_status"] == "missing_dimensions" for row in rows
-    )
+    missing = sum(row["data_quality_status"] == "missing_dimensions" for row in rows)
     invalid = sum(
         row["data_quality_status"] in {"invalid_dimensions", "identity_conflict"}
         for row in rows
@@ -7209,9 +7328,7 @@ def _select_dimension_snapshot(
             if collection.source_type == "wb_product_cards":
                 candidates.append((priority, run, collection))
     if not candidates:
-        return _DimensionSnapshotSelection(
-            review_reasons=("dimension_source_missing",)
-        )
+        return _DimensionSnapshotSelection(review_reasons=("dimension_source_missing",))
     selected_priority = min(item[0] for item in candidates)
     selected = [item for item in candidates if item[0] == selected_priority]
     snapshot_hashes = {item[2].snapshot_hash for item in selected}
@@ -7250,9 +7367,8 @@ def _select_dimension_snapshot(
     )
     collection_payload = collection.payload or {}
     collection_results = collection_payload.get("results")
-    if (
-        not isinstance(collection_results, list)
-        or not all(isinstance(item, Mapping) for item in collection_results)
+    if not isinstance(collection_results, list) or not all(
+        isinstance(item, Mapping) for item in collection_results
     ):
         return _DimensionSnapshotSelection(
             source_snapshot_hash=collection.snapshot_hash,
@@ -7433,6 +7549,303 @@ def _dimension_card_scope_errors(
 
 
 @dataclass(frozen=True)
+class _GoodsReturnSnapshotSelection:
+    source_rows: tuple[GoodsReturnSourceRow, ...] = ()
+    source_snapshot_hash: str = ""
+    source_loaded_at: datetime | None = None
+    source_coverage_start: date | None = None
+    source_coverage_end: date | None = None
+    source_row_count: int = 0
+    blocking_reasons: tuple[str, ...] = ()
+    review_reasons: tuple[str, ...] = ()
+
+
+def _select_goods_return_snapshot(
+    db: Session,
+    report: ReportRun,
+    *,
+    roles: Iterable[tuple[int, SourceRefreshRun]],
+) -> _GoodsReturnSnapshotSelection:
+    candidates: list[tuple[int, SourceRefreshRun, SourceRefreshCollection]] = []
+    for priority, run in roles:
+        for collection in run.collections:
+            if collection.source_type == "wb_goods_return":
+                candidates.append((priority, run, collection))
+    if not candidates:
+        return _GoodsReturnSnapshotSelection(
+            review_reasons=("goods_return_source_missing",)
+        )
+    selected_priority = min(item[0] for item in candidates)
+    selected = [item for item in candidates if item[0] == selected_priority]
+    if len({item[2].snapshot_hash for item in selected}) != 1:
+        return _GoodsReturnSnapshotSelection(
+            blocking_reasons=("goods_return_source_revision_conflict",)
+        )
+    _priority, run, collection = sorted(
+        selected,
+        key=lambda item: (
+            _dimension_loaded_at_timestamp(item[2].loaded_at),
+            item[1].id,
+            item[2].id,
+        ),
+        reverse=True,
+    )[0]
+    if (
+        collection.tenant_id != report.tenant_id
+        or collection.client_id != report.client_id
+    ):
+        return _GoodsReturnSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            blocking_reasons=("goods_return_source_scope_mismatch",),
+        )
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list) or not all(
+        isinstance(item, Mapping) for item in results
+    ):
+        return _GoodsReturnSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("goods_return_source_manifest_invalid",),
+        )
+    if _hash_payload(results) != collection.snapshot_hash:
+        return _GoodsReturnSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("goods_return_source_snapshot_hash_mismatch",),
+        )
+    try:
+        declared_count = sum(int(item.get("rowCount") or 0) for item in results)
+    except (TypeError, ValueError):
+        declared_count = -1
+    if declared_count != collection.row_count:
+        return _GoodsReturnSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("goods_return_source_manifest_row_count_mismatch",),
+        )
+    manifest_scope = _goods_return_manifest_scope_errors(db, report, results)
+    if manifest_scope:
+        return _GoodsReturnSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=tuple(manifest_scope),
+        )
+    snapshots = list(
+        db.scalars(
+            select(SourceSnapshotRow)
+            .where(
+                SourceSnapshotRow.refresh_run_id == run.id,
+                SourceSnapshotRow.collection_id == collection.id,
+                SourceSnapshotRow.source_type == "wb_goods_return",
+            )
+            .order_by(SourceSnapshotRow.row_number)
+        )
+    )
+    persistence = payload.get("rowPersistence") or {}
+    file_authoritative = (
+        persistence.get("status") in {"file_authoritative", "skipped_large_snapshot"}
+        and persistence.get("rawFilesAuthoritative") is True
+    )
+    if file_authoritative and snapshots:
+        return _GoodsReturnSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("goods_return_source_storage_ambiguity",),
+        )
+    blocking: list[str] = []
+    source_rows: list[GoodsReturnSourceRow] = []
+    if file_authoritative:
+        try:
+            source_rows.extend(
+                _iter_file_authoritative_goods_return_rows(
+                    collection,
+                    refresh_run=run,
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                )
+            )
+        except (OSError, TypeError, ValueError, RawIntegrityError):
+            blocking.append("goods_return_file_snapshot_invalid")
+    else:
+        if len(snapshots) != collection.row_count:
+            blocking.append("goods_return_database_row_count_mismatch")
+        for snapshot in snapshots:
+            row_payload = snapshot.row_payload
+            if not isinstance(row_payload, Mapping):
+                blocking.append("goods_return_source_payload_invalid")
+                continue
+            if snapshot.raw_payload_hash != _hash_payload(row_payload):
+                blocking.append("goods_return_source_payload_hash_mismatch")
+                continue
+            source_rows.append(
+                normalize_goods_return_source_row(
+                    row_payload,
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    wb_cabinet_id=snapshot.wb_cabinet_id,
+                )
+            )
+    try:
+        if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+            raise RawIntegrityError("goods-return raw integrity is not verified")
+        raw_dir = Path(collection.raw_path)
+        source_root = Path(run.root_dir) if run.root_dir else raw_dir
+        verify_raw_directory(
+            raw_dir,
+            source_type="wb_goods_return",
+            source_root=source_root,
+            collection_results=[item for item in results if isinstance(item, Mapping)],
+            collection_row_count=collection.row_count,
+            collection_snapshot_hash=collection.snapshot_hash,
+        )
+    except (OSError, TypeError, ValueError, RawIntegrityError):
+        blocking.append("goods_return_raw_snapshot_invalid")
+    blocking.extend(_goods_return_scope_errors(db, report, source_rows))
+    coverage_start = _safe_iso_date(payload.get("coverageStart"))
+    coverage_end = _safe_iso_date(payload.get("coverageEnd"))
+    review: list[str] = []
+    if coverage_start is None or coverage_end is None:
+        review.append("goods_return_source_coverage_missing")
+    elif coverage_start > report.period_start or coverage_end < report.period_end:
+        review.append("goods_return_source_period_partial")
+    if any(row.validation_errors for row in source_rows):
+        review.append("goods_return_source_identity_invalid")
+    if collection.status == "partial_source":
+        review.append("goods_return_source_partial")
+    if collection.status not in {"loaded", "partial_source"}:
+        review.append("goods_return_source_unavailable")
+    return _GoodsReturnSnapshotSelection(
+        source_rows=tuple(source_rows) if not blocking else (),
+        source_snapshot_hash=collection.snapshot_hash,
+        source_loaded_at=collection.loaded_at,
+        source_coverage_start=coverage_start,
+        source_coverage_end=coverage_end,
+        source_row_count=len(source_rows),
+        blocking_reasons=tuple(dict.fromkeys(blocking)),
+        review_reasons=tuple(dict.fromkeys(review)),
+    )
+
+
+def _iter_file_authoritative_goods_return_rows(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+    tenant_id: str,
+    client_id: str,
+) -> Iterable[GoodsReturnSourceRow]:
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RawIntegrityError("goods-return results are missing")
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    verify_raw_directory(
+        raw_dir,
+        source_type="wb_goods_return",
+        source_root=source_root,
+        collection_results=[item for item in results if isinstance(item, Mapping)],
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    count = 0
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise RawIntegrityError("goods-return result is not an object")
+        output_name = str(result.get("flatOutputFile") or "").strip()
+        if not output_name:
+            continue
+        if Path(output_name).name != output_name:
+            raise RawIntegrityError("goods-return flat output path is unsafe")
+        output_path = (raw_dir / output_name).resolve()
+        if not output_path.is_relative_to(raw_dir.resolve()):
+            raise RawIntegrityError("goods-return flat output path is unsafe")
+        rows = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            raise RawIntegrityError("goods-return flat rows are not a list")
+        cabinet_id = str(result.get("wbCabinetId") or "").strip()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise RawIntegrityError("goods-return row is not an object")
+            count += 1
+            yield normalize_goods_return_source_row(
+                row,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                wb_cabinet_id=cabinet_id,
+            )
+    if count != collection.row_count:
+        raise RawIntegrityError("goods-return row count changed")
+
+
+def _goods_return_manifest_scope_errors(
+    db: Session,
+    report: ReportRun,
+    results: Iterable[Mapping[str, Any]],
+) -> list[str]:
+    cabinet_ids = {str(item.get("wbCabinetId") or "").strip() for item in results}
+    if "" in cabinet_ids:
+        return ["goods_return_source_cabinet_missing"]
+    return _goods_return_cabinet_scope_errors(db, report, cabinet_ids)
+
+
+def _goods_return_scope_errors(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[GoodsReturnSourceRow],
+) -> list[str]:
+    values = list(rows)
+    if any(
+        row.tenant_id != report.tenant_id or row.client_id != report.client_id
+        for row in values
+    ):
+        return ["goods_return_source_scope_mismatch"]
+    cabinet_ids = {row.wb_cabinet_id for row in values}
+    if "" in cabinet_ids:
+        return ["goods_return_source_cabinet_missing"]
+    return _goods_return_cabinet_scope_errors(db, report, cabinet_ids)
+
+
+def _goods_return_cabinet_scope_errors(
+    db: Session,
+    report: ReportRun,
+    cabinet_ids: set[str],
+) -> list[str]:
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
+    for cabinet_id in cabinet_ids:
+        cabinet = cabinets.get(cabinet_id)
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+        ):
+            return ["goods_return_source_scope_mismatch"]
+        company = db.get(ClientCompany, cabinet.client_company_id)
+        if (
+            company is None
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            return ["goods_return_source_scope_mismatch"]
+    return []
+
+
+@dataclass(frozen=True)
 class _MeasurementSnapshotSelection:
     source_type: str
     measurement_rows: tuple[dict[str, Any], ...] = ()
@@ -7484,9 +7897,7 @@ def _build_and_persist_logistics_measurements(
     blocking = [
         reason for selection in selections for reason in selection.blocking_reasons
     ]
-    review = [
-        reason for selection in selections for reason in selection.review_reasons
-    ]
+    review = [reason for selection in selections for reason in selection.review_reasons]
     if logistics_result.context.data_status == "blocked":
         blocking.append("logistics_analysis_blocked")
     rows = (
@@ -7499,15 +7910,9 @@ def _build_and_persist_logistics_measurements(
         else []
     )
 
-    unmatched = sum(
-        row["coverage_status"] == "unmatched_product" for row in rows
-    )
-    ambiguous = sum(
-        row["coverage_status"] == "ambiguous_product_scope" for row in rows
-    )
-    invalid = sum(
-        row["coverage_status"] == "invalid_measurement" for row in rows
-    )
+    unmatched = sum(row["coverage_status"] == "unmatched_product" for row in rows)
+    ambiguous = sum(row["coverage_status"] == "ambiguous_product_scope" for row in rows)
+    invalid = sum(row["coverage_status"] == "invalid_measurement" for row in rows)
     conflicting = sum(
         row["coverage_status"] == "conflicting_measurement" for row in rows
     )
@@ -7554,12 +7959,10 @@ def _build_and_persist_logistics_measurements(
             "penaltySnapshotHash": penalty.source_snapshot_hash,
             "warehouseSnapshotHash": warehouse.source_snapshot_hash,
             "penaltySourceHashes": sorted(
-                str(row.get("source_hash") or "")
-                for row in penalty.measurement_rows
+                str(row.get("source_hash") or "") for row in penalty.measurement_rows
             ),
             "warehouseSourceHashes": sorted(
-                str(row.get("source_hash") or "")
-                for row in warehouse.measurement_rows
+                str(row.get("source_hash") or "") for row in warehouse.measurement_rows
             ),
             "skuSourceHashes": sorted(
                 row.source_hash_digest for row in logistics_result.sku_rows
@@ -7574,9 +7977,7 @@ def _build_and_persist_logistics_measurements(
         context={
             "tenant_id": report.tenant_id,
             "client_id": report.client_id,
-            "factor_methodology_version": (
-                LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION
-            ),
+            "factor_methodology_version": (LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION),
             "data_status": data_status,
             "input_hash": input_hash,
             "penalty_source_snapshot_hash": penalty.source_snapshot_hash,
@@ -7745,8 +8146,7 @@ def _select_measurement_snapshot(
     )
     persistence = payload.get("rowPersistence") or {}
     file_authoritative = (
-        persistence.get("status")
-        in {"file_authoritative", "skipped_large_snapshot"}
+        persistence.get("status") in {"file_authoritative", "skipped_large_snapshot"}
         and persistence.get("rawFilesAuthoritative") is True
     )
     if file_authoritative and snapshots:
@@ -7883,9 +8283,7 @@ def _measurement_row_scope_errors(
     *,
     code: str,
 ) -> list[str]:
-    cabinet_ids = {
-        str(item.get("wb_cabinet_id") or "").strip() for item in rows
-    }
+    cabinet_ids = {str(item.get("wb_cabinet_id") or "").strip() for item in rows}
     if "" in cabinet_ids:
         return [f"{code}_source_cabinet_missing"]
     cabinets = (
@@ -8111,9 +8509,7 @@ def _build_and_persist_logistics_tariffs(
         len(unavailable_points - set(point_evidence)),
     )
     invalid = sum(row["coverage_status"] == "invalid_tariff" for row in rows)
-    conflicting = sum(
-        row["coverage_status"] == "conflicting_tariff" for row in rows
-    )
+    conflicting = sum(row["coverage_status"] == "conflicting_tariff" for row in rows)
     warehouses = len({row["warehouse"] for row in rows if row["warehouse"]})
     if estimated_points:
         review.append("tariff_archive_estimate_used")
@@ -8130,8 +8526,7 @@ def _build_and_persist_logistics_tariffs(
             "sourceSnapshotHash": selection.source_snapshot_hash,
             "factorSnapshotDate": selection.factor_snapshot_date,
             "tariffSourceHashes": sorted(
-                str(row.get("source_hash") or "")
-                for row in selection.tariff_rows
+                str(row.get("source_hash") or "") for row in selection.tariff_rows
             ),
             "skuSourceHashes": sorted(
                 row.source_hash_digest for row in logistics_result.sku_rows
@@ -8181,9 +8576,7 @@ def _select_tariff_snapshot(
             if collection.source_type == "wb_tariffs":
                 candidates.append((priority, run, collection))
     if not candidates:
-        return _TariffSnapshotSelection(
-            review_reasons=("tariff_source_missing",)
-        )
+        return _TariffSnapshotSelection(review_reasons=("tariff_source_missing",))
     selected_priority = min(item[0] for item in candidates)
     selected = [item for item in candidates if item[0] == selected_priority]
     snapshot_hashes = {item[2].snapshot_hash for item in selected}
@@ -8300,9 +8693,7 @@ def _select_tariff_snapshot(
             raw_dir,
             source_type="wb_tariffs",
             source_root=source_root,
-            collection_results=[
-                item for item in results if isinstance(item, Mapping)
-            ],
+            collection_results=[item for item in results if isinstance(item, Mapping)],
             collection_row_count=collection.row_count,
             collection_snapshot_hash=collection.snapshot_hash,
         )
@@ -8413,9 +8804,8 @@ def _tariff_input(
         "wb_cabinet_id": str(wb_cabinet_id or "").strip(),
         **{key: payload.get(key) for key in keys},
     }
-    normalized["requested_date"] = (
-        normalized.get("requested_date")
-        or normalized.get("source_tariff_date")
+    normalized["requested_date"] = normalized.get("requested_date") or normalized.get(
+        "source_tariff_date"
     )
     normalized["source_hash"] = _hash_payload(normalized)
     return normalized
@@ -8429,10 +8819,16 @@ def _tariff_scope_errors(
     cabinet_ids = {str(row.get("wb_cabinet_id") or "") for row in rows}
     if "" in cabinet_ids:
         return ["tariff_source_cabinet_missing"]
-    cabinets = {
-        item.id: item
-        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
-    } if cabinet_ids else {}
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
     for cabinet_id in cabinet_ids:
         cabinet = cabinets.get(cabinet_id)
         if (
@@ -8537,9 +8933,7 @@ def _build_and_persist_logistics_routes(
             by_chain[chain_key] = status
     total_chains = len({row.chain_key for row in logistics_result.order_rows})
     matched = sum(status == "ready" for status in by_chain.values())
-    conflicting = sum(
-        status == "conflicting_route" for status in by_chain.values()
-    )
+    conflicting = sum(status == "conflicting_route" for status in by_chain.values())
     missing = max(0, total_chains - matched - conflicting)
     linked_logistics = sum(
         (
@@ -8898,10 +9292,16 @@ def _route_cabinet_scope_errors(
     report: ReportRun,
     cabinet_ids: set[str],
 ) -> list[str]:
-    cabinets = {
-        item.id: item
-        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
-    } if cabinet_ids else {}
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
     for cabinet_id in cabinet_ids:
         cabinet = cabinets.get(cabinet_id)
         if (
@@ -8954,9 +9354,7 @@ def _select_logistics_source_rows(
             .group_by(SourceSnapshotRow.refresh_run_id)
         )
     }
-    file_collections: dict[
-        str, tuple[SourceRefreshRun, SourceRefreshCollection]
-    ] = {}
+    file_collections: dict[str, tuple[SourceRefreshRun, SourceRefreshCollection]] = {}
     database_run_ids: list[str] = []
     for run_id in run_ids:
         run, _role = roles[run_id]
@@ -9089,9 +9487,7 @@ def _select_logistics_source_rows(
         provider_row_id = _first_row_id(payload, "rrdId", "rrd_id")
         snapshot_row_id = str(snapshot.source_row_id or "").strip()
         stable_identity = bool(
-            provider_row_id
-            and snapshot_row_id
-            and provider_row_id == snapshot_row_id
+            provider_row_id and snapshot_row_id and provider_row_id == snapshot_row_id
         )
         if not snapshot_row_id or (multiple_runs and not provider_row_id):
             source_identity_errors += 1
@@ -9448,9 +9844,7 @@ def _persist_wb_tariff_rows(
                         "marketplace": "wb",
                         "tariff_type": tariff_type,
                         "source_tariff_date": (
-                            result.target_date.isoformat()
-                            if result.target_date
-                            else ""
+                            result.target_date.isoformat() if result.target_date else ""
                         ),
                         "source_output_file": result.flat_output_path.name,
                     }
@@ -9478,6 +9872,56 @@ def _persist_wb_tariff_rows(
                     )
                     row_number += 1
                     _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_wb_goods_return_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    results: Iterable[WbGoodsReturnExportResult],
+    *,
+    wb_cabinet_ids: dict[str, str],
+) -> None:
+    try:
+        row_number = 1
+        batch: list[dict[str, Any]] = []
+        for result in results:
+            if not result.ok or result.flat_output_path is None:
+                continue
+            rows = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("goods-return flat rows must be a list")
+            cabinet_id = wb_cabinet_ids.get(result.seller_account_id, "")
+            for local_index, row in enumerate(rows, 1):
+                if not isinstance(row, Mapping):
+                    raise ValueError("goods-return flat row must be an object")
+                row_payload = {
+                    **row,
+                    "marketplace": "wb",
+                    "source_output_file": result.flat_output_path.name,
+                }
+                source_row_id = _hash_payload(
+                    {
+                        "wbCabinetId": cabinet_id,
+                        "srid": row.get("srid"),
+                        "nmId": row.get("nm_id"),
+                        "rowNumber": local_index,
+                    }
+                )
+                batch.append(
+                    {
+                        "row_number": row_number,
+                        "raw_payload_hash": _hash_payload(row_payload),
+                        "row_payload": row_payload,
+                        "source_row_id": source_row_id,
+                        "wb_cabinet_id": cabinet_id,
+                        "loaded_at": collection.loaded_at,
+                    }
+                )
+                row_number += 1
+                _flush_snapshot_batch(db, collection, batch)
         _flush_snapshot_batch(db, collection, batch, force=True)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         _mark_raw_row_persistence_failure(db, collection, exc)
@@ -9618,23 +10062,26 @@ def _iter_ozon_snapshot_row_values(
         if _is_ozon_report_control_result(result):
             continue
         for local_index, row in enumerate(_read_ozon_rows(result.output_path), 1):
-            source_row_id = _first_row_id(
-                row,
-                "id",
-                "operation_id",
-                "posting_number",
-                "product_id",
-                "offer_id",
-                "sku",
-                "code",
-                "ID товара",
-                "Идентификатор товара",
-                "Артикул",
-                "Артикул продавца",
-                "SKU",
-                "Штрихкод",
-                "Баркод",
-            ) or f"{result.source_type}:{result.page_index}:{local_index}"
+            source_row_id = (
+                _first_row_id(
+                    row,
+                    "id",
+                    "operation_id",
+                    "posting_number",
+                    "product_id",
+                    "offer_id",
+                    "sku",
+                    "code",
+                    "ID товара",
+                    "Идентификатор товара",
+                    "Артикул",
+                    "Артикул продавца",
+                    "SKU",
+                    "Штрихкод",
+                    "Баркод",
+                )
+                or f"{result.source_type}:{result.page_index}:{local_index}"
+            )
             row_payload = {
                 **row,
                 "marketplace": "ozon",
@@ -9770,10 +10217,7 @@ def _materialize_ozon_typed_collection(
     qualification_run_id = str(
         (payload.get("rowPersistence") or {}).get("qualificationRunId") or ""
     )
-    if (
-        legacy_parity.get("status") == "not_run_no_legacy_rows"
-        and qualification_run_id
-    ):
+    if legacy_parity.get("status") == "not_run_no_legacy_rows" and qualification_run_id:
         legacy_parity = {
             "status": "qualified_file_reference",
             "legacyRows": 0,
@@ -10300,8 +10744,7 @@ def _merge_ozon_operation_facts(
 
 def _ozon_fact_uses_fallback(row: dict[str, Any]) -> bool:
     return bool(row.get("_preserve_occurrences")) or not (
-        str(row.get("operation_id") or "")
-        or str(row.get("posting_number") or "")
+        str(row.get("operation_id") or "") or str(row.get("posting_number") or "")
     )
 
 
@@ -10530,9 +10973,7 @@ def _ozon_operation_fact(
         "currency": _text_value(item, "currency", "currency_code", "Валюта") or "RUB",
         "source_endpoint": result.source_endpoint,
         "raw_payload_hash": _hash_payload(item),
-        "_stable_payload_hash": _ozon_stable_payload_hash(
-            {"row": row, "item": item}
-        ),
+        "_stable_payload_hash": _ozon_stable_payload_hash({"row": row, "item": item}),
         "_preserve_occurrences": preserve_occurrences,
     }
     fact["source_key"] = _ozon_fact_source_key(fact)

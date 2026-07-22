@@ -314,9 +314,7 @@ def source_row_from_payload(
     if order_date_status == "invalid":
         errors.append("order_date_invalid")
     operation_name = _text(
-        _raw_first(
-            payload, "sellerOperName", "supplierOperName", "operation_type"
-        )
+        _raw_first(payload, "sellerOperName", "supplierOperName", "operation_type")
     )
     scheme, scheme_status = normalize_logistics_scheme(
         _raw_first(payload, "deliveryMethod", "delivery_method"),
@@ -325,9 +323,7 @@ def source_row_from_payload(
     if scheme_status != "ready":
         errors.append(f"scheme_{scheme_status}")
 
-    quantity = _parse_optional_decimal(
-        payload, errors, "quantity", "quantity"
-    )
+    quantity = _parse_optional_decimal(payload, errors, "quantity", "quantity")
     retail_amount = _parse_optional_decimal(
         payload, errors, "retail_amount", "retailAmount", "retail_amount"
     )
@@ -533,9 +529,7 @@ def build_logistics_analysis(
         len(errors) for errors in report_required_errors.values()
     )
     report_error_codes = {
-        error
-        for errors in report_required_errors.values()
-        for error in errors
+        error for errors in report_required_errors.values() for error in errors
     }
     optional_error_count = sum(
         0
@@ -645,12 +639,8 @@ def build_logistics_analysis(
             diagnostics.invalid_source_payload_shape_count
         ),
         source_identity_error_count=diagnostics.source_identity_error_count,
-        source_revision_conflict_count=(
-            diagnostics.source_revision_conflict_count
-        ),
-        source_revision_discarded_count=(
-            diagnostics.source_revision_discarded_count
-        ),
+        source_revision_conflict_count=(diagnostics.source_revision_conflict_count),
+        source_revision_discarded_count=(diagnostics.source_revision_discarded_count),
         scope_mismatch_count=scope_mismatches,
         key_coverage_pct=_pct(keyed_count, len(valid_logistics_rows)),
         product_coverage_pct=_pct(product_count, len(valid_logistics_rows)),
@@ -709,14 +699,10 @@ def build_logistics_analysis(
         ):
             post_build_blocking.append(reason)
     post_build_delta_count = sum(
-        comparison["delta_count"]
-        for comparison in post_build_reconciliations.values()
+        comparison["delta_count"] for comparison in post_build_reconciliations.values()
     )
     post_build_max_delta = max(
-        (
-            comparison["max_delta"]
-            for comparison in post_build_reconciliations.values()
-        ),
+        (comparison["max_delta"] for comparison in post_build_reconciliations.values()),
         default=Decimal("0"),
     )
     classified_count = sum(row.classified_row_count for row in order_rows)
@@ -738,12 +724,8 @@ def build_logistics_analysis(
         sku_logistics_total=sku_total,
         order_delta=order_total - raw_total,
         sku_delta=sku_total - report_total,
-        dimension_delta_count=(
-            reconciliation["delta_count"] + post_build_delta_count
-        ),
-        max_dimension_delta=max(
-            reconciliation["max_delta"], post_build_max_delta
-        ),
+        dimension_delta_count=(reconciliation["delta_count"] + post_build_delta_count),
+        max_dimension_delta=max(reconciliation["max_delta"], post_build_max_delta),
         blocking_reasons=tuple(post_build_blocking),
         review_reasons=review,
     )
@@ -802,9 +784,7 @@ def build_order_rows(
             if value:
                 bucket[field].add(value)
         bucket["hashes"].append(row.source_hash)
-        bucket["quality_errors"].update(
-            _effective_logistics_validation_errors(row)
-        )
+        bucket["quality_errors"].update(_effective_logistics_validation_errors(row))
         if row.delivery_service not in (None, Decimal("0")):
             bucket["row"] = row
             category = classify_logistics_row(row)
@@ -823,8 +803,7 @@ def build_order_rows(
         week_start = financial_date - timedelta(days=financial_date.weekday())
         segment_key = hashlib.sha256(
             (
-                f"{chain_key}\x1f{financial_date.isoformat()}"
-                f"\x1f{scheme_segment}"
+                f"{chain_key}\x1f{financial_date.isoformat()}\x1f{scheme_segment}"
             ).encode()
         ).hexdigest()
         order_date = min(bucket["order_dates"]) if bucket["order_dates"] else None
@@ -833,10 +812,7 @@ def build_order_rows(
             if order_date is not None
             and report_period_start is not None
             and order_date < report_period_start
-            and (
-                bucket["reverse"] != 0
-                or bucket["returns"] != 0
-            )
+            and (bucket["reverse"] != 0 or bucket["returns"] != 0)
             else "order_before_report_period"
             if order_date is not None
             and report_period_start is not None
@@ -1076,14 +1052,13 @@ def _sku_key(
 
 def _dimension_key(
     row: (
-        LogisticsSourceRow
-        | UnitEconomicsSlice
-        | LogisticsOrderRow
-        | LogisticsSkuRow
+        LogisticsSourceRow | UnitEconomicsSlice | LogisticsOrderRow | LogisticsSkuRow
     ),
 ) -> tuple[Any, ...]:
-    week_start = row.week_start if isinstance(row, LogisticsSourceRow) else (
-        row.financial_week_start
+    week_start = (
+        row.week_start
+        if isinstance(row, LogisticsSourceRow)
+        else (row.financial_week_start)
     )
     return (
         row.tenant_id.strip(),
@@ -1250,10 +1225,11 @@ def _source_row_required_errors(row: LogisticsSourceRow) -> set[str]:
         errors.add("client_company_id_missing")
     if row.financial_date is None:
         errors.add("financial_date_missing")
-    if (
-        row.delivery_service != Decimal("0")
-        and row.scheme not in {"fbo", "fbs", "not_applicable"}
-    ):
+    if row.delivery_service != Decimal("0") and row.scheme not in {
+        "fbo",
+        "fbs",
+        "not_applicable",
+    }:
         errors.add("scheme_invalid" if row.scheme.strip() else "scheme_missing")
     if row.delivery_service is None:
         errors.add("delivery_service_missing")
@@ -1375,9 +1351,7 @@ def _scope_mismatch_count(
         (row.tenant_id.strip(), row.client_id.strip())
         for row in (*source_rows, *unit_rows)
     ]
-    nonempty_scopes = sorted(
-        {scope for scope in row_scopes if scope[0] and scope[1]}
-    )
+    nonempty_scopes = sorted({scope for scope in row_scopes if scope[0] and scope[1]})
     if not all(expected):
         if len(nonempty_scopes) <= 1:
             return 0
@@ -1474,6 +1448,8 @@ def _source_hash_record(row: LogisticsSourceRow) -> dict[str, Any]:
         "financialDate": _date_text(row.financial_date),
         "orderDate": _date_text(row.order_date),
         "orderUid": row.order_uid.strip(),
+        "financeSrid": row.finance_srid.strip(),
+        "financeOrderId": row.finance_order_id.strip(),
         "nmId": row.nm_id.strip(),
         "sku": row.sku.strip(),
         "vendorCode": row.vendor_code,
@@ -1530,8 +1506,7 @@ def _report_period(
         return report_period_start, report_period_end
     return (
         report_period_start or min(dated_rows),
-        report_period_end
-        or max(dated_rows) + timedelta(days=6),
+        report_period_end or max(dated_rows) + timedelta(days=6),
     )
 
 
@@ -1705,9 +1680,7 @@ def _volume_liters(
 
 
 def _dimension_row_uid(identity: Sequence[str]) -> str:
-    identity = "\x1f".join(
-        _text(part) for part in identity
-    )
+    identity = "\x1f".join(_text(part) for part in identity)
     return "dim:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
@@ -1740,11 +1713,7 @@ def _dimension_source_hash(row: Mapping[str, Any]) -> str:
 
 def _dimension_display_value(rows: Sequence[LogisticsSkuRow], field: str) -> str:
     values = sorted(
-        {
-            _text(getattr(row, field))
-            for row in rows
-            if _text(getattr(row, field))
-        }
+        {_text(getattr(row, field)) for row in rows if _text(getattr(row, field))}
     )
     if not values:
         return ""
@@ -1792,9 +1761,7 @@ def build_dimension_rows(
         )
         identity_conflict = len(nm_ids) != 1 or len(product_keys) > 1
         card_candidates = (
-            cards_by_key.get((identity[2], nm_ids[0]), [])
-            if len(nm_ids) == 1
-            else []
+            cards_by_key.get((identity[2], nm_ids[0]), []) if len(nm_ids) == 1 else []
         )
         parsed_candidates: list[
             tuple[
@@ -2025,9 +1992,7 @@ def _normalized_measurement_candidate(
         "penalty_amount": penalty,
         "reversal_amount": reversal,
         "net_penalty_amount": (
-            penalty - reversal
-            if penalty is not None and reversal is not None
-            else None
+            penalty - reversal if penalty is not None and reversal is not None else None
         ),
         "measured_calculated_volume_l": _measurement_calculated_volume(
             measured["measured_length_cm"],
@@ -2059,9 +2024,12 @@ def _measurement_signature(candidate: Mapping[str, Any]) -> str:
 
 
 def _measurement_row_uid(identity: Sequence[str]) -> str:
-    return "measurement:" + hashlib.sha256(
-        "\x1f".join(_text(item) for item in identity).encode("utf-8")
-    ).hexdigest()
+    return (
+        "measurement:"
+        + hashlib.sha256(
+            "\x1f".join(_text(item) for item in identity).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def build_measurement_rows(
@@ -2077,9 +2045,7 @@ def build_measurement_rows(
     """
 
     sku_by_product: dict[tuple[str, str], list[LogisticsSkuRow]] = defaultdict(list)
-    report_scopes = {
-        (_text(row.tenant_id), _text(row.client_id)) for row in sku_rows
-    }
+    report_scopes = {(_text(row.tenant_id), _text(row.client_id)) for row in sku_rows}
     default_scope = next(iter(report_scopes)) if len(report_scopes) == 1 else ("", "")
     for row in sku_rows:
         cabinet = _text(row.wb_cabinet_id)
@@ -2087,9 +2053,9 @@ def build_measurement_rows(
         if cabinet and nm_id:
             sku_by_product[(cabinet, nm_id)].append(row)
 
-    grouped: dict[
-        tuple[str, str, str], dict[str, list[Mapping[str, Any]]]
-    ] = defaultdict(lambda: defaultdict(list))
+    grouped: dict[tuple[str, str, str], dict[str, list[Mapping[str, Any]]]] = (
+        defaultdict(lambda: defaultdict(list))
+    )
     dim_nm_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
     for source_type, rows in (
         ("wb_measurement_penalties", measurement_penalty_rows),
@@ -2230,9 +2196,7 @@ def build_measurement_rows(
                 **selected,
                 "accounting_reconciliation_status": "unreconciled",
                 "included_in_financial_kpi": False,
-                "evidence_type": (
-                    "fact" if quality == "ready" else "data_unavailable"
-                ),
+                "evidence_type": ("fact" if quality == "ready" else "data_unavailable"),
                 "coverage_status": quality,
                 "data_quality_status": quality,
                 "row_uid": _measurement_row_uid(identity),
@@ -2331,9 +2295,12 @@ def _normalized_tariff_candidate(
 
 
 def _tariff_row_uid(identity: Sequence[str]) -> str:
-    return "tariff:" + hashlib.sha256(
-        "\x1f".join(_text(item) for item in identity).encode("utf-8")
-    ).hexdigest()
+    return (
+        "tariff:"
+        + hashlib.sha256(
+            "\x1f".join(_text(item) for item in identity).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def build_tariff_rows(
@@ -2356,9 +2323,9 @@ def build_tariff_rows(
         )
         scopes[identity].append(row)
 
-    source_by_point: dict[
-        tuple[str, date, str], list[Mapping[str, Any]]
-    ] = defaultdict(list)
+    source_by_point: dict[tuple[str, date, str], list[Mapping[str, Any]]] = defaultdict(
+        list
+    )
     for row in tariff_rows:
         cabinet = _text(row.get("wb_cabinet_id"))
         tariff_type = _text(row.get("tariff_type")).casefold()
@@ -2379,9 +2346,7 @@ def build_tariff_rows(
         week_start = date.fromisoformat(identity[5])
         sku_hashes = sorted({_text(row.source_hash_digest) for row in group})
         for tariff_type in ("box", "pallet"):
-            candidates = source_by_point.get(
-                (identity[2], week_start, tariff_type), []
-            )
+            candidates = source_by_point.get((identity[2], week_start, tariff_type), [])
             evidence_type = "fact"
             if not candidates and factor_snapshot_date is not None:
                 candidates = source_by_point.get(
@@ -2390,9 +2355,7 @@ def build_tariff_rows(
                 evidence_type = "estimate"
             by_warehouse: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
             for candidate in candidates:
-                by_warehouse[_text(candidate.get("warehouse_name"))].append(
-                    candidate
-                )
+                by_warehouse[_text(candidate.get("warehouse_name"))].append(candidate)
             if not by_warehouse:
                 by_warehouse[""] = []
 
@@ -2609,16 +2572,20 @@ def build_route_rows(
         )
         evidence_type = "fact" if route_ready else "data_unavailable"
 
-        tariff_candidates = tariffs_by_point.get(
-            (
-                order.wb_cabinet_id,
-                order.client_company_id,
-                order.scheme.casefold(),
-                order.financial_week_start,
-                warehouse.casefold(),
-            ),
-            [],
-        ) if warehouse_status == "ready" else []
+        tariff_candidates = (
+            tariffs_by_point.get(
+                (
+                    order.wb_cabinet_id,
+                    order.client_company_id,
+                    order.scheme.casefold(),
+                    order.financial_week_start,
+                    warehouse.casefold(),
+                ),
+                [],
+            )
+            if warehouse_status == "ready"
+            else []
+        )
         coefficient_values = {
             value
             for item in tariff_candidates
@@ -2637,8 +2604,7 @@ def build_route_rows(
         source_hashes = sorted({_route_source_hash(item) for item in source_rows})
         tariff_hashes = sorted(
             {
-                _text(item.get("source_hash_digest"))
-                or _route_source_hash(item)
+                _text(item.get("source_hash_digest")) or _route_source_hash(item)
                 for item in tariff_candidates
             }
         )

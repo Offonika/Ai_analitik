@@ -16,7 +16,7 @@ accepted-спецификацию. При расхождении следова�
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
 
-Последнее записанное operational evidence датировано **21 июля 2026 года**.
+Последнее записанное operational evidence датировано **22 июля 2026 года**.
 Перед любым утверждением о текущих feature flags, runtime, gate или rollout
 обязательно повторно проверить соответствующую среду; приведенное ниже
 состояние не является доказательством на более позднюю дату. Code defaults
@@ -28,7 +28,9 @@ accepted-спецификацию. При расхождении следова�
 login выключены. Новый F-4 draft из verified read-only snapshots сохранен, но
 не опубликован. Production остается на
 `runtime-fcfc52b-tax-profile-configured-20260721`; production и клиентское
-включение F-4 не выполнялись.
+включение F-4 не выполнялись. На production 22 июля отдельно разрешённый full
+source refresh создал новый неопубликованный draft; current report, runtime и
+client flags не изменены, health остался `ok`.
 
 # Текст для нового чата
 
@@ -43,7 +45,11 @@ blocking reasons; справочные суммы F-4 исключены из ф
 Staff API/UI, desktop 1440x900 и mobile 390x844 приняты; client-role получает
 HTTP 404, блок скрыт и запрос не выполняется. Временные пользователи, пароли,
 сессии, browser script и screenshots удалены. Production не менять без
-отдельного разрешения; production runtime и client flags не менялись.
+отдельного разрешения; production runtime и client flags не менялись. Для F-5
+новый production draft имеет verified unambiguous Finance lineage. Повторный
+R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys в текущем
+окне отсутствуют; общий implementation gate закрыт. R-1 не начинать без
+отдельного accepted-решения по контракту, R-2 — без положительного claims gate.
 ```
 
 # Текущее состояние
@@ -70,6 +76,10 @@ HTTP 404, блок скрыт и запрос не выполняется. Вр�
 - F-4 draft не публиковался. Общие publication blockers не скрыты и не
   переопределены. Factor-spec остается `accepted`: вся вторая очередь не
   завершена.
+- Для F-5 на production создан отдельный неопубликованный immutable draft с
+  verified file-authoritative Finance без DB/file ambiguity. Goods-return
+  identity gate открыт, claims/complete gates и implementation gate закрыты;
+  published current report и client flags не менялись.
 - Временные acceptance users деактивированы, пароли повторно сброшены, sessions,
   credential-файлы, screenshots и browser script удалены.
 - Production symlink остается на
@@ -349,6 +359,29 @@ Rollback F-4: вернуть measurement master, а при необходимо�
 immutable release. Additive schema, snapshots и неопубликованный immutable
 draft при этом не удалять и не перезаписывать.
 
+# Operational evidence F-5 R-0I на production draft — 22 июля 2026 года
+
+Операция выполнена только после отдельного разрешения пользователя. До неё
+создан production backup. Из точной ревизии `e0d6578` штатный dry-run завершён
+ожидаемым `needs_review`, затем full source refresh создал новый immutable draft
+с `publicationStatus=draft` и `isCurrent=false`. Finance collection имеет
+`loaded`, `rowPersistence=skipped_large_snapshot` и verified
+file-authoritative storage; DB-строк той же collection нет, ambiguity
+устранена. Logistics context нового draft имеет `ready`.
+
+Финальный boolean-only R-0I подтвердил `completeSourceGate=true`, выровненное
+report window и verified Finance lineage. Exact
+`goods-return.srid → Finance.srid` совпал и однозначно разрешился в canonical
+return chain; `goodsReturnIdentityGate=true`. Baseline `srid → orderUid` не
+совпал. Claims source keys в текущем окне отсутствуют, поэтому
+`claimsIdentityGate=false`, `completeIdentityGate=false`,
+`contractChangeRequired=true` и общий `implementationGate=false`.
+
+Draft не публиковался и не стал current. Production runtime, service и client
+flags не менялись; health после операции остался `ok`, опубликованный current
+report не изменился. В evidence не переносились client/report identifiers,
+counts, причины, комментарии, суммы, paths, hashes или raw rows.
+
 # Последнее UX-решение
 
 Пользователь подтвердил, что текущая структура интерфейса непонятна: она
@@ -417,6 +450,10 @@ criteria. Текущий production/test URL пока использует ра�
   `(cabinet, srid, nm_id)` join. `goods-return.reason` и факт наличия
   `claims.user_comment` не взаимозаменяемы; raw комментарии и media не попадают
   в mart/API/AI.
+- Новый unambiguous Finance draft подтвердил exact
+  `goods-return.srid → Finance.srid` и единственную canonical return chain.
+  Baseline `srid → orderUid` не подтвердился. Claims в текущем окне не дали
+  source keys, поэтому общий implementation gate остаётся закрыт.
 
 # Реализованные правила v4
 
@@ -649,14 +686,15 @@ deployment и без write-операций во внешние системы:
 
 Обновление 2026-07-22: F-1 «Габариты», F-2 «Тарифы», F-3 «Склады и
 направления» и F-4 «Замеры и удержания» приняты на staff-only test. Для F-5
-«Причины возвратов» принят отдельный spec-first контракт. Следующий разрешённый
-data-шаг после boolean-only R-0I/R-0L — новый immutable report из однозначного
-verified Finance storage и повтор того же identity evidence. Source schema
-подтверждена, но выбранный lineage имеет DB/file ambiguity, а newest-first R-0L
-не нашёл пригодного существующего report: `newReportRequired=true`, exact
-crosswalk не оценён как verified и `implementationGate=false`. R-1…R-5 не
-начинаются. Создание report требует отдельного operational решения; R-0L не
-разрешает production migration/runtime rollout или retention deletion.
+«Причины возвратов» принят отдельный spec-first контракт. Новый разрешённый
+immutable draft и повторный R-0I подтвердили verified lineage и exact
+`goods-return.srid → Finance.srid`; goods-return identity gate открыт. Claims
+keys в текущем окне отсутствуют, поэтому claims/complete gates и общий
+`implementationGate` закрыты. Source-specific контракт R-1 отдельно принят и
+реализован в локальном change set: registered immutable goods-return source,
+DB/file selector, normalization и internal exact link/coverage без mart/API/UI.
+Environment rollout не выполнен. R-2 начинается только после собственного
+положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
 Factor-spec остаётся `accepted`, потому что F-5, объединённая staff-приёмка и
 client/production решения не завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
@@ -665,14 +703,13 @@ client/production решения не завершены. Общий опера�
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. Отдельно согласовать безопасный способ получить новый immutable report из
-   однозначно выбранного Finance storage без DB/file ambiguity. Не применять
-   production migrations/runtime rollout и не завершать retention deletion без
-   их собственных approval, backup и rollback prerequisites. После создания
-   повторить готовый `--mode r0-identity` на том же report window. Выводить
-   только boolean overlap; не разрешать одиночный identifier, product-only join
-   или ручной выбор одной из конфликтующих копий.
-3. Для повторной клиентской приемки использовать текущую ссылку вида
+2. Провести review/CI R-1 пакета. После merge отдельно согласовать test-only
+   full/weekly source refresh для проверки зарегистрированной
+   `wb_goods_return` collection и DB/file selector без публикации report и без
+   client flags. R-3 mart/API/UI автоматически не начинать.
+3. Для R-2 отдельно получить окно с claims source keys и положительный claims
+   identity gate; не ослаблять join до product/date/одиночного identifier.
+4. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода

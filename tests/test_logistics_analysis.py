@@ -272,6 +272,19 @@ def test_result_hash_is_repeatable_and_return_can_reference_previous_order() -> 
     assert first.order_rows[0].classification_status == "ready"
 
 
+def test_result_hash_includes_finance_same_name_return_identity() -> None:
+    baseline = build_logistics_analysis(
+        [_source_row(finance_srid="finance-srid-1")],
+        [_unit_row()],
+    )
+    changed = build_logistics_analysis(
+        [_source_row(finance_srid="finance-srid-2")],
+        [_unit_row()],
+    )
+
+    assert baseline.context.input_hash != changed.context.input_hash
+
+
 def test_source_payload_uses_nm_id_then_sku_and_does_not_use_srid() -> None:
     row = source_row_from_payload(
         {
@@ -396,9 +409,7 @@ def test_chain_dimension_conflict_blocks_mixed_scheme_and_company() -> None:
         ],
         [
             _unit_row(logistics=Decimal("10")),
-            _unit_row(
-                client_company_id="company-2", logistics=Decimal("20")
-            ),
+            _unit_row(client_company_id="company-2", logistics=Decimal("20")),
         ],
     )
 
@@ -641,10 +652,7 @@ def test_streaming_input_hash_matches_legacy_canonical_payload() -> None:
             ),
         },
         "source": sorted(
-            (
-                logistics_analysis._source_hash_record(row)
-                for row in source_rows
-            ),
+            (logistics_analysis._source_hash_record(row) for row in source_rows),
             key=lambda item: logistics_analysis.json.dumps(
                 item, ensure_ascii=False, sort_keys=True
             ),
@@ -918,9 +926,7 @@ def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report() -> 
     assert result.context.raw_logistics_total == Decimal("30")
     assert result.context.report_logistics_total == Decimal("30")
     boundary_sku = next(
-        row
-        for row in result.sku_rows
-        if row.financial_week_start == date(2026, 3, 30)
+        row for row in result.sku_rows if row.financial_week_start == date(2026, 3, 30)
     )
     assert boundary_sku.profit_before_tax is None
 
@@ -1094,8 +1100,9 @@ def test_dimension_rows_mark_conflicts_and_invalid_values_without_zero() -> None
     assert invalid["weight_brutto_kg"] is None
 
 
-def test_dimension_rows_compute_volume_with_valid_dimensions_and_missing_weight(
-) -> None:
+def test_dimension_rows_compute_volume_with_valid_dimensions_and_missing_weight() -> (
+    None
+):
     sku = build_logistics_analysis([_source_row()], [_unit_row()]).sku_rows[0]
     row = logistics_analysis.build_dimension_rows(
         [sku],

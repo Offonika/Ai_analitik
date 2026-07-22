@@ -28,6 +28,7 @@ from wb_unit_economics.wb_finance import (
     WbFinanceSettings,
     WbSalesReportListPageResult,
 )
+from wb_unit_economics.wb_goods_return import WbGoodsReturnExportResult
 from wb_unit_economics.wb_stocks import WbStockExportResult
 from wb_unit_economics.web import integrations, repository, source_refresh
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
@@ -930,9 +931,7 @@ def test_logistics_analysis_reads_verified_file_authoritative_snapshot(
         )
         assert collection.payload["rawIntegrity"]["status"] == "verified"
         assert (
-            db.query(SourceSnapshotRow)
-            .filter_by(collection_id=collection.id)
-            .count()
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).count()
             == 0
         )
         if tamper_after_verify:
@@ -1015,6 +1014,187 @@ def test_dimension_snapshot_db_and_file_authoritative_are_equivalent(
     assert file_selection.blocking_reasons == ()
     assert db_selection.card_rows == file_selection.card_rows
     assert db_selection.source_row_count == file_selection.source_row_count == 1
+
+
+def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        rows = [_goods_return_source_row()]
+        db_run, _, _ = _add_goods_return_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="goods-return-db",
+            cabinet_id=cabinet_id,
+            rows=rows,
+            file_authoritative=False,
+        )
+        file_run, _, _ = _add_goods_return_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="goods-return-file",
+            cabinet_id=cabinet_id,
+            rows=rows,
+            file_authoritative=True,
+        )
+
+        db_selection = source_refresh._select_goods_return_snapshot(
+            db, report, roles=[(0, db_run)]
+        )
+        file_selection = source_refresh._select_goods_return_snapshot(
+            db, report, roles=[(0, file_run)]
+        )
+
+    assert db_selection.blocking_reasons == ()
+    assert file_selection.blocking_reasons == ()
+    assert db_selection.source_rows == file_selection.source_rows
+    assert db_selection.source_row_count == file_selection.source_row_count == 1
+
+
+def test_goods_return_record_registers_verified_collection_and_rows(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="goods-return-record",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="goods-return record test",
+            enforce_active_check=False,
+        )
+        run_root = settings.source_refresh_root_path / "goods-return-record"
+        output_dir = run_root / "wb_goods_return"
+        output_dir.mkdir(parents=True)
+        run.root_dir = str(run_root)
+        raw_payload = {"report": []}
+        flat_rows = [_goods_return_source_row()]
+        raw_path = output_dir / "goods-return.raw.json"
+        flat_path = output_dir / "goods-return.flat.json"
+        raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+        flat_path.write_text(json.dumps(flat_rows), encoding="utf-8")
+        result = WbGoodsReturnExportResult(
+            ok=True,
+            seller_account_id="WB_ACCOUNT_SAFE",
+            account_name="Кабинет",
+            row_count=1,
+            raw_output_path=raw_path,
+            flat_output_path=flat_path,
+            raw_payload_hash=source_refresh._hash_payload(raw_payload),
+            flat_payload_hash=source_refresh._hash_payload(flat_rows),
+            coverage_start=report.period_start,
+            coverage_end=report.period_end,
+            status_code=200,
+        )
+        (output_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "coverageStart": report.period_start.isoformat(),
+                    "coverageEnd": report.period_end.isoformat(),
+                    "results": [source_refresh._wb_goods_return_result_payload(result)],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        collection = service._record_wb_goods_return(
+            db,
+            run,
+            output_dir,
+            [result],
+            wb_cabinet_ids={"WB_ACCOUNT_SAFE": cabinet_id},
+            period_start=report.period_start,
+            period_end=report.period_end,
+        )
+        db.flush()
+
+        snapshots = (
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).all()
+        )
+
+    assert collection.status == "loaded"
+    assert collection.row_count == 1
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    assert collection.payload["coverageStart"] == report.period_start.isoformat()
+    assert len(snapshots) == 1
+    assert snapshots[0].wb_cabinet_id == cabinet_id
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("snapshot_hash", "goods_return_source_snapshot_hash_mismatch"),
+        ("tenant_scope", "goods_return_source_scope_mismatch"),
+        ("storage_ambiguity", "goods_return_source_storage_ambiguity"),
+        ("file_tamper", "goods_return_file_snapshot_invalid"),
+    ],
+)
+def test_goods_return_snapshot_integrity_failures_are_blocking(
+    tmp_path: Path,
+    failure: str,
+    expected_code: str,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        file_authoritative = failure in {"storage_ambiguity", "file_tamper"}
+        run, collection, flat_path = _add_goods_return_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id=f"goods-return-{failure}",
+            cabinet_id=cabinet_id,
+            rows=[_goods_return_source_row()],
+            file_authoritative=file_authoritative,
+        )
+        if failure == "snapshot_hash":
+            collection.snapshot_hash = "changed"
+        elif failure == "tenant_scope":
+            collection.tenant_id = "other"
+        elif failure == "storage_ambiguity":
+            row_payload = _goods_return_source_row()
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=1,
+                raw_payload_hash=source_refresh._hash_payload(row_payload),
+                source_row_id="safe-hash",
+                wb_cabinet_id=cabinet_id,
+                row_payload=row_payload,
+            )
+        elif failure == "file_tamper":
+            flat_path.write_text(
+                json.dumps([{**_goods_return_source_row(), "reason": "changed"}]),
+                encoding="utf-8",
+            )
+
+        selection = source_refresh._select_goods_return_snapshot(
+            db, report, roles=[(0, run)]
+        )
+
+    assert selection.source_rows == ()
+    assert expected_code in selection.blocking_reasons
 
 
 def test_tariff_snapshot_db_and_file_authoritative_are_equivalent(
@@ -1107,9 +1287,7 @@ def test_tariff_snapshot_integrity_failures_are_blocking(
                 flat_path.write_text(
                     json.dumps(
                         {
-                            "box": [
-                                {**rows[0], "box_delivery_coef_expr": "999"}
-                            ],
+                            "box": [{**rows[0], "box_delivery_coef_expr": "999"}],
                             "pallet": [],
                         }
                     ),
@@ -1151,9 +1329,7 @@ def test_tariff_snapshot_integrity_failures_are_blocking(
                     "rawIntegrity": {"status": "failed"},
                 }
 
-        selection = source_refresh._select_tariff_snapshot(
-            db, report, roles=[(0, run)]
-        )
+        selection = source_refresh._select_tariff_snapshot(db, report, roles=[(0, run)])
 
     assert selection.tariff_rows == ()
     assert expected_code in selection.blocking_reasons
@@ -1223,9 +1399,7 @@ def test_tariff_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> Non
         )
         collection.status = "partial_source"
 
-        selection = source_refresh._select_tariff_snapshot(
-            db, report, roles=[(0, run)]
-        )
+        selection = source_refresh._select_tariff_snapshot(db, report, roles=[(0, run)])
 
     assert selection.blocking_reasons == ()
     assert selection.review_reasons == ("tariff_source_partial",)
@@ -1357,9 +1531,7 @@ def test_route_snapshot_integrity_failures_are_blocking(
             collection.snapshot_hash = source_refresh._hash_payload(results)
             collection.payload = {**collection.payload, "results": results}
 
-        selection = source_refresh._select_route_snapshot(
-            db, report, roles=[(0, run)]
-        )
+        selection = source_refresh._select_route_snapshot(db, report, roles=[(0, run)])
 
     assert selection.route_rows == ()
     assert expected_code in selection.blocking_reasons
@@ -1432,9 +1604,7 @@ def test_route_snapshot_partial_collection_is_reviewable(tmp_path: Path) -> None
             file_authoritative=False,
         )
         collection.status = "partial_source"
-        selection = source_refresh._select_route_snapshot(
-            db, report, roles=[(0, run)]
-        )
+        selection = source_refresh._select_route_snapshot(db, report, roles=[(0, run)])
 
     assert selection.blocking_reasons == ()
     assert selection.review_reasons == ("route_source_partial",)
@@ -1539,15 +1709,11 @@ def test_measurement_snapshot_integrity_failures_are_blocking(
                 collection_id=collection.id
             ).one().raw_payload_hash = "changed"
         elif failure == "database_row_count":
-            db.query(SourceSnapshotRow).filter_by(
-                collection_id=collection.id
-            ).delete()
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).delete()
         elif failure == "snapshot_hash":
             collection.snapshot_hash = "changed"
         elif failure == "provider_total":
-            results = [
-                {**collection.payload["results"][0], "providerTotal": 2}
-            ]
+            results = [{**collection.payload["results"][0], "providerTotal": 2}]
             collection.snapshot_hash = source_refresh._hash_payload(results)
             collection.payload = {**collection.payload, "results": results}
         elif failure == "tenant_scope":
@@ -7670,6 +7836,132 @@ def _route_source_row(
         "oblast_okrug_name": "Округ",
         "region_name": region,
     }
+
+
+def _goods_return_source_row(
+    *,
+    srid: str = "return-srid-1",
+    nm_id: str = "1001",
+    reason: str | None = "Не подошёл размер",
+) -> dict[str, object]:
+    return {
+        "srid": srid,
+        "order_id": "assembly-safe-1",
+        "nm_id": nm_id,
+        "barcode": "BAR-1",
+        "reason": reason,
+        "status": "returned",
+        "return_type": "seller_return",
+    }
+
+
+def _add_goods_return_snapshot(
+    db,
+    report,
+    *,
+    settings: WebSettings,
+    snapshot_set_id: str,
+    cabinet_id: str,
+    rows: list[dict[str, object]],
+    file_authoritative: bool,
+):
+    run = repository.create_source_refresh_run(
+        db,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        snapshot_set_id=snapshot_set_id,
+        period_start=report.period_start,
+        period_end=report.period_end,
+        reason="goods-return source test",
+        enforce_active_check=False,
+    )
+    run_root = settings.source_refresh_root_path / snapshot_set_id
+    raw_dir = run_root / "wb_goods_return"
+    raw_dir.mkdir(parents=True)
+    run.root_dir = str(run_root)
+    raw_payload = {
+        "report": [
+            {
+                "srid": row["srid"],
+                "orderId": row["order_id"],
+                "nmId": int(str(row["nm_id"])),
+                "barcode": row["barcode"],
+                "reason": row["reason"],
+                "status": row["status"],
+                "returnType": row["return_type"],
+            }
+            for row in rows
+        ]
+    }
+    raw_path = raw_dir / "goods-return.raw.json"
+    flat_path = raw_dir / "goods-return.flat.json"
+    raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+    flat_path.write_text(json.dumps(rows), encoding="utf-8")
+    results = [
+        {
+            "sellerAccountId": "WB_ACCOUNT_SAFE",
+            "accountName": "Кабинет",
+            "wbCabinetId": cabinet_id,
+            "pageIndex": 1,
+            "status": "loaded",
+            "ok": True,
+            "rowCount": len(rows),
+            "statusCode": 200,
+            "coverageStart": report.period_start.isoformat(),
+            "coverageEnd": report.period_end.isoformat(),
+            "rawPayloadHash": source_refresh._hash_payload(raw_payload),
+            "flatPayloadHash": source_refresh._hash_payload(rows),
+            "outputFile": raw_path.name,
+            "flatOutputFile": flat_path.name,
+            "error": "",
+        }
+    ]
+    (raw_dir / "manifest.json").write_text(
+        json.dumps({"results": results}),
+        encoding="utf-8",
+    )
+    payload: dict[str, object] = {
+        "results": results,
+        "coverageStart": report.period_start.isoformat(),
+        "coverageEnd": report.period_end.isoformat(),
+    }
+    if file_authoritative:
+        payload["rowPersistence"] = {
+            "status": "file_authoritative",
+            "rawFilesAuthoritative": True,
+        }
+    collection = repository.add_source_refresh_collection(
+        db,
+        run,
+        source_type="wb_goods_return",
+        source_label="WB goods return reasons",
+        required=False,
+        status="loaded",
+        snapshot_hash=source_refresh._hash_payload(results),
+        row_count=len(rows),
+        raw_path=str(raw_dir),
+        payload=payload,
+    )
+    source_refresh._attach_collection_raw_integrity(
+        collection,
+        source_root=settings.source_refresh_root_path,
+    )
+    assert collection.payload["rawIntegrity"]["status"] == "verified"
+    if not file_authoritative:
+        for row_number, row in enumerate(rows, 1):
+            repository.add_source_snapshot_row(
+                db,
+                collection,
+                row_number=row_number,
+                raw_payload_hash=source_refresh._hash_payload(row),
+                source_row_id=f"goods-return-{row_number}",
+                wb_cabinet_id=cabinet_id,
+                row_payload=row,
+            )
+    return run, collection, flat_path
 
 
 def _add_route_snapshot(

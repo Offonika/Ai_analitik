@@ -36,9 +36,7 @@ def test_max_list_len_finds_deepest_list() -> None:
 
 def test_summarize_reports_field_presence_without_values() -> None:
     payload = {
-        "data": [
-            {"reason": "RAWVALUE", "status": "RAWSTATUS", "srid": "z", "nmId": 1}
-        ]
+        "data": [{"reason": "RAWVALUE", "status": "RAWSTATUS", "srid": "z", "nmId": 1}]
     }
     summary = probe.summarize("goods_return", payload)
     present = summary["fields_present_anywhere"]
@@ -279,12 +277,11 @@ def test_r0_response_classifier_checks_goods_and_claims_contracts() -> None:
     assert probe.classify_r0_response("goods_return", _Response(402)) == (
         "paid_scope_required"
     )
-    assert probe.classify_r0_response("goods_return", _Response(429)) == (
-        "unavailable"
+    assert probe.classify_r0_response("goods_return", _Response(429)) == ("unavailable")
+    assert (
+        probe.classify_r0_response("goods_return", _Response(200, broken_json=True))
+        == "schema_mismatch"
     )
-    assert probe.classify_r0_response(
-        "goods_return", _Response(200, broken_json=True)
-    ) == "schema_mismatch"
 
 
 def test_r0_status_aggregation_is_boolean_only_and_allows_partial_source() -> None:
@@ -301,9 +298,7 @@ def test_r0_status_aggregation_is_boolean_only_and_allows_partial_source() -> No
     assert report["completeSourceGate"] is False
     assert report["implementationGate"] is True
     assert report["endpoints"]["goods_return"]["confirmedNonemptyPresent"] is True
-    assert report["endpoints"]["claims_archive"][
-        "paidScopeRequiredPresent"
-    ] is True
+    assert report["endpoints"]["claims_archive"]["paidScopeRequiredPresent"] is True
     rendered = str(report)
     for forbidden in (
         "RAW_REASON",
@@ -416,9 +411,7 @@ def test_run_r0_probe_aligns_window_and_returns_only_safe_booleans(
     monkeypatch.setattr(probe.httpx, "Client", _Client)
     monkeypatch.setattr(probe, "evaluate_r0_join", _evaluate)
 
-    report = probe.run_r0_probe(
-        [account], object(), date(2026, 7, 22), days=7
-    )
+    report = probe.run_r0_probe([account], object(), date(2026, 7, 22), days=7)
 
     assert requested_params[0] == {
         "dateFrom": "2026-07-14",
@@ -564,9 +557,11 @@ def test_r0_identity_same_name_match_opens_only_source_specific_gate() -> None:
     assert report["goodsReturnIdentityGate"] is True
     assert report["claimsIdentityGate"] is False
     assert report["completeIdentityGate"] is False
+    assert report["goodsReturnImplementationGate"] is True
+    assert report["claimsImplementationGate"] is False
     assert report["sameNameEvidencePresent"] is True
     assert report["baselineDirectMatchPresent"] is False
-    assert report["contractChangeRequired"] is True
+    assert report["contractChangeRequired"] is False
 
 
 def test_r0_identity_canonical_ambiguity_blocks_candidate() -> None:
@@ -767,9 +762,7 @@ def test_r0_lineage_preflight_finds_existing_verified_file_report(
         )
 
     monkeypatch.setattr(probe, "make_engine", lambda _url: object())
-    monkeypatch.setattr(
-        probe, "make_session_factory", lambda _engine: lambda: _Db()
-    )
+    monkeypatch.setattr(probe, "make_session_factory", lambda _engine: lambda: _Db())
     monkeypatch.setattr(
         probe,
         "_r0_report_candidates",
@@ -885,9 +878,7 @@ def test_r0_lineage_preflight_preserves_storage_evidence_across_scopes(
         )
 
     monkeypatch.setattr(probe, "make_engine", lambda _url: object())
-    monkeypatch.setattr(
-        probe, "make_session_factory", lambda _engine: lambda: _Db()
-    )
+    monkeypatch.setattr(probe, "make_session_factory", lambda _engine: lambda: _Db())
     monkeypatch.setattr(probe, "_r0_report_candidates", _candidates)
     monkeypatch.setattr(probe, "_selected_finance_identity_rows", _selected)
 
@@ -957,12 +948,12 @@ def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
     monkeypatch.setattr(probe.httpx, "Client", _Client)
     monkeypatch.setattr(probe, "load_r0_finance_identity", _load)
 
-    report = probe.run_r0_identity_probe(
-        [account], object(), date(2026, 7, 22), days=7
-    )
+    report = probe.run_r0_identity_probe([account], object(), date(2026, 7, 22), days=7)
 
     assert report["identity"]["goodsReturnIdentityGate"] is True
     assert report["identity"]["completeIdentityGate"] is False
+    assert report["goodsReturnImplementationGate"] is True
+    assert report["claimsImplementationGate"] is False
     assert report["implementationGate"] is False
     rendered = str(report)
     for forbidden in (

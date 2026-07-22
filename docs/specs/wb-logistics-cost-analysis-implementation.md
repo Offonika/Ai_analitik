@@ -9,8 +9,8 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: logistics-cost-analysis
 truth_priority: 100
-related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py]
-related_tests: [tests/test_logistics_analysis.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
+related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py]
+related_tests: [tests/test_logistics_analysis.py, tests/test_wb_goods_return.py, tests/test_probe_wb_logistics_factors.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -32,14 +32,18 @@ code_anchors:
   - path: src/wb_unit_economics/web/repository.py
     symbols: ["def replace_report_logistics_analysis", "def report_logistics_summary_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload", "def _logistics_context_state", "def _logistics_recommendations"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _build_and_persist_logistics_analysis", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
+    symbols: ["def _build_and_persist_logistics_analysis", "def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
+  - path: src/wb_unit_economics/wb_goods_return.py
+    symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links"]
   - path: src/wb_unit_economics/web/settings.py
     symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool", "logistics_routes_enabled: bool", "logistics_routes_client_enabled: bool"]
 test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_context_and_rows_are_built_for_new_draft"]
+    symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot", "def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_context_and_rows_are_built_for_new_draft"]
+  - path: tests/test_wb_goods_return.py
+    symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity"]
   - path: tests/test_web_app.py
     symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
@@ -78,13 +82,25 @@ Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
 Ближайший factor rollout допускается только на test; factor client flags
 остаются выключенными до отдельного согласования. F-1…F-4 приняты на staff-only
-test. Для F-5 принят отдельный контракт причин возвратов; следующий разрешённый
-шаг — отдельно разрешённое создание нового immutable report с однозначным
-Finance storage и повторное identity evidence. Boolean-only R-0I подтвердил
-source schema, production selector обнаружил DB/file ambiguity, а read-only
-R-0L не нашёл пригодного прежнего report. Поэтому
-`newReportRequired=true`, verified lineage и exact crosswalk не доказаны,
-`implementationGate=false`. R-1…R-5 не начинаются.
+test. Для F-5 принят отдельный контракт причин возвратов. После закрытого R-0I
+и R-0L отдельно разрешённый production full source refresh создал новый
+неопубликованный immutable draft: Finance загружен в verified
+file-authoritative storage без DB-строк и ambiguity, logistics context имеет
+`ready`, опубликованный current report и feature flags не изменены.
+
+Повторный boolean-only R-0I на новом lineage подтвердил exact
+`goods-return.srid → Finance.srid` и однозначное разрешение в canonical return
+chain (`goodsReturnIdentityGate=true`). Baseline `srid → orderUid` не совпал, а
+в текущем claims window source keys отсутствуют (`claimsIdentityGate=false`).
+Поэтому `completeIdentityGate=false` и общий `implementationGate=false`.
+Пользователь отдельно принял source-specific контракт R-1: exact
+`goods-return.srid → Finance.srid` с tenant/client/cabinet/nm scope и одной
+canonical return chain; `goodsReturnImplementationGate=true`, исторический
+`contractChangeRequired=true` закрыт этим решением. R-2 требует отдельного
+положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
+В текущем change set R-1 реализован до registered immutable source,
+DB/file-authoritative selector, normalization и internal exact link/coverage;
+mart/API/UI и environment rollout не выполнялись.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -1028,12 +1044,32 @@ rollout и rollback не изменяются.
 
 # Changelog
 
+- 2026-07-22 — реализован F-5/R-1 source package без rollout: registered
+  `wb_goods_return` collection, raw integrity, DB/file selector, strict
+  envelope/window, deterministic normalization и exact Finance.srid linker.
+  Claims, R-3 mart/API/UI, publication readiness и flags не менялись.
+
+- 2026-07-22 — отдельно принят source-specific контракт F-5/R-1: exact
+  `goods-return.srid → Finance.srid`, обязательные tenant/client/cabinet/nm
+  dimensions и одна canonical return chain с return fact. Открыт только R-1;
+  claims/complete и общий implementation gate остаются закрыты, mart/API/UI и
+  rollout не разрешены.
+
+- 2026-07-22 — после отдельно разрешённого production full source refresh
+  создан новый неопубликованный immutable draft с verified file-authoritative
+  Finance без DB/file ambiguity; опубликованный current report и flags не
+  менялись. Повторный R-0I подтвердил exact
+  `goods-return.srid → Finance.srid` и canonical return chain, но claims source
+  keys в текущем окне отсутствуют. Goods-return gate открыт, claims/complete
+  gates закрыты; `contractChangeRequired=true`, `implementationGate=false` до
+  отдельного accepted-решения.
+
 - 2026-07-22 — F-5 R-0L read-only проверил существующие immutable reports и
   не нашёл verified unambiguous Finance return lineage. Наличие кандидатов и
-  return fact подтверждено, но source integrity failure и DB/file ambiguity
-  сохраняются; `newReportRequired=true`, implementation gate закрыт. Evidence
-  не разрешает production migration/runtime rollout, retention mutation или
-  изменение опубликованного report.
+  return fact подтверждено, но на момент этого прохода source integrity failure
+  и DB/file ambiguity сохранялись; `newReportRequired=true`, implementation
+  gate был закрыт. Evidence не разрешало production migration/runtime rollout,
+  retention mutation или изменение опубликованного report.
 
 - 2026-07-22 — F-5 R-0I выполнен fail closed: внешний source gate пройден, но
   выбранный Finance lineage имеет DB/file storage ambiguity. Exact same-name

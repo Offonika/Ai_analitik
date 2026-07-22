@@ -27,8 +27,10 @@ code_anchors:
     symbols: ["def build_dimension_rows", "def build_measurement_rows", "def build_tariff_rows", "def build_route_rows"]
   - path: src/wb_unit_economics/wb_measurements.py
     symbols: ["def flatten_measurement_penalties", "def flatten_warehouse_measurements", "def export_wb_measurement_penalties", "def export_wb_warehouse_measurements"]
+  - path: src/wb_unit_economics/wb_goods_return.py
+    symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links", "def export_wb_goods_return"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_measurements", "def _select_measurement_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
+    symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_measurements", "def _select_measurement_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/web/repository.py
     symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_measurement_analysis", "def report_logistics_measurements_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload"]
 test_anchors:
@@ -37,7 +39,9 @@ test_anchors:
   - path: tests/test_web_app.py
     symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_measurements_api_states_filters_and_full_slice_coverage", "def test_logistics_measurements_role_and_flag_matrix", "def test_required_measurement_context_controls_publication_readiness", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_db_and_file_authoritative_are_equivalent", "def test_measurement_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_precedence_partial_and_context_build", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
+    symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_db_and_file_authoritative_are_equivalent", "def test_measurement_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_precedence_partial_and_context_build", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
+  - path: tests/test_wb_goods_return.py
+    symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity"]
   - path: tests/test_wb_tariffs.py
     symbols: ["def test_build_tariff_snapshot_dates_uses_calendar_weeks", "def test_flatten_box_tariffs_keeps_period_and_none_for_missing"]
   - path: tests/test_logistics_factor_marts.py
@@ -123,14 +127,18 @@ readiness, read-only API и responsive UI работают за отдельны
 зафиксирован в runbook. Production и client enable не выполнялись.
 
 F-5 «Причины возвратов» принят как отдельный spec-first контракт 22 июля 2026
-года. Boolean-only R-0I подтвердил source schema, но Finance selector fail
-closed на DB/file storage ambiguity выбранного immutable report. Verified
-lineage и exact same-name crosswalk не доказаны. Read-only R-0L затем не нашёл
-подходящего verified unambiguous lineage среди прежних immutable reports;
-`newReportRequired=true`, `implementationGate=false`. Существующий goods-return
-client считается prework, а не end-to-end реализацией. Claims,
-context/mart/API/UI и rollout не начинаются до повторного identity evidence на
-новом unambiguous verified snapshot.
+года. Первый R-0I fail closed на DB/file ambiguity, а R-0L не нашёл пригодного
+прежнего lineage. После отдельно разрешённого full source refresh новый
+неопубликованный immutable draft получил verified file-authoritative Finance
+без DB-строк и ambiguity. Повторный boolean-only R-0I подтвердил exact
+`goods-return.srid → Finance.srid` и однозначную canonical return chain;
+`goodsReturnIdentityGate=true`. Claims source keys в текущем окне отсутствуют,
+поэтому `claimsIdentityGate=false`, `completeIdentityGate=false` и общий
+`implementationGate=false`. Пользователь отдельно принял exact goods-return
+`srid → Finance.srid` контракт; `goodsReturnImplementationGate=true`, поэтому
+R-1 реализован как registered snapshot/selector/normalization/internal join без
+mart/API/UI и rollout. R-2 остаётся закрыт до положительного claims identity evidence;
+context/mart/API/UI и rollout автоматически не начинаются.
 
 # Цель
 
@@ -1121,14 +1129,32 @@ blocker с report run, который обязан был пройти gate, н�
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
 Закрытые probe и staff-приёмка (2026-07-19…21): F-1, F-2, F-3 и F-4 приняты на
-staff-only test; production/client enable не выполнялся. F-5 R-0I 22 июля
-подтвердил внешний source gate, но остановился на DB/file ambiguity Finance
-lineage. Последующий read-only R-0L не нашёл пригодного существующего report и
-подтвердил `newReportRequired=true`. F-5 implementation и rollout не начинаются
-до нового unambiguous verified snapshot и положительного source-specific
-identity gate.
+staff-only test; production/client enable не выполнялся. Для F-5 новый
+неопубликованный draft устранил Finance DB/file ambiguity, и повторный R-0I
+открыл goods-return identity gate. Claims source keys в текущем окне не
+обнаружены, поэтому claims/complete gates и общий implementation gate закрыты.
+Source-specific accepted-решение для R-1 принято; R-2 остаётся закрыт до
+собственного положительного identity evidence.
 
 # Changelog
+
+- 2026-07-22 — реализован R-1 source package: registered goods-return
+  collection, raw integrity, DB/file selector, strict envelope/window,
+  deterministic normalization и exact Finance.srid internal link/coverage.
+  Report mart/API/UI и environment rollout не выполнялись.
+
+- 2026-07-22 — принят exact goods-return R-1 контракт
+  `srid → Finance.srid` с tenant/client/cabinet/nm scope и одной canonical
+  return chain. Открыт только R-1 без mart/API/UI; claims и общий F-5 gate,
+  client/production rollout остаются закрыты.
+
+- 2026-07-22 — отдельно разрешённый production full source refresh создал
+  неопубликованный immutable draft с verified file-authoritative Finance без
+  DB/file ambiguity; current report и feature flags не менялись. Повторный R-0I
+  открыл exact goods-return `srid → Finance.srid` gate и подтвердил canonical
+  return chain. Claims source keys отсутствуют, поэтому claims/complete gates и
+  `implementationGate` закрыты; контракт требует отдельного accepted-изменения
+  перед R-1.
 
 - 2026-07-22 — F-5 R-0L newest-first проверил существующие immutable reports
   без внешних API и записей. Verified unambiguous return lineage не найден;
