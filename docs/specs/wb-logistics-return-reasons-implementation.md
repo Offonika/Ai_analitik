@@ -30,14 +30,14 @@ code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
     symbols: ["def source_row_from_payload", "def _source_hash_record"]
   - path: scripts/probe_wb_logistics_factors.py
-    symbols: ["def evaluate_r0_identity", "def run_r0_identity_probe"]
+    symbols: ["def fetch_r0_source_payload", "def evaluate_r0_identity", "def run_r0_identity_probe"]
 test_anchors:
   - path: tests/test_wb_goods_return.py
     symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity", "def test_goods_return_link_marks_invalid_identity_and_source_conflict"]
   - path: tests/test_source_refresh.py
     symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking"]
   - path: tests/test_probe_wb_logistics_factors.py
-    symbols: ["def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_is_boolean_only_and_never_implements"]
+    symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-22"
@@ -79,8 +79,9 @@ R-2 требует собственного положительного identit
 недоступна в Finance`.
 
 В исходном `main` был предварительный read-only `goods-return`
-client/flatten/export и файловый вызов из full/weekly source refresh. Текущий
-R-1 change set довёл его до registered optional collection: result manifest,
+client/flatten/export и файловый вызов из full/weekly source refresh. PR №56,
+влитый в `main` 22 июля 2026 года, довёл R-1 до registered optional collection:
+result manifest,
 cabinet/coverage metadata, raw integrity, DB/file-authoritative persistence и
 selector, строгая `report` envelope, deterministic normalization и internal
 exact link/coverage model. Finance `srid` и `orderId` включены в logistics input
@@ -343,6 +344,14 @@ names, counts, периоды, identifiers, hashes, причины, коммен
 только соответствующий R-1 или R-2. Для goods-return такое отдельное решение
 принято; claims остаётся без принятого implementation join.
 
+Claims active/archive в R-0/R-0I читаются полной bounded pagination с
+`limit=200`, последовательными `offset` и точной сверкой неизменного provider
+`total`. Повтор claim `id`, изменение `total`, пустая промежуточная страница,
+превышение page cap или несовпадение итогового числа строк дают только
+`pagination_mismatch`; частичный набор identity keys в candidate evaluation не
+попадает. Ограничитель ставится перед каждым claims GET, включая границы
+active/archive и кабинетов, и соблюдает не более 20 запросов в минуту.
+
 ## R-0I live evidence — 22 июля 2026 года
 
 Test service environment не содержал usable WB integration; внешний запрос из
@@ -597,7 +606,8 @@ factors и return-reasons master; client дополнительно требуе
    реальном снимке; выполнен, direct source `srid → Finance.orderUid` не доказан.
 2. `R-0I Identity crosswalk` — после нового unambiguous draft подтверждён
    goods-return `srid → Finance.srid`; отдельное accepted-решение для R-1
-   принято. Claims и complete gates закрыты.
+   принято. Claims evidence runner выполняет полную provider-total pagination,
+   но live claims keys всё ещё не подтверждены; claims и complete gates закрыты.
 3. `R-0L Existing lineage discovery` — read-only поиск уже существующего
    verified unambiguous return lineage до нового report; выполнен с
    `newReportRequired=true`, сам ничего не создавал.
@@ -732,6 +742,15 @@ Rollback отключает новые маршруты и блок причин
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-22 — R-0/R-0I claims evidence приведён к принятому pagination
+  контракту: active/archive читаются отдельно с `limit=200`, bounded offset
+  loop, rate-limit pacing, неизменным provider `total` и запретом duplicate
+  claim IDs. Любая неполнота даёт boolean
+  `paginationMismatchPresent=true` и закрывает claims gate; raw comments,
+  identifiers, provider total и counts не выводятся. Это hardening probe, а не
+  реализация R-2; live claims identity evidence и accepted join по-прежнему
+  отсутствуют.
 
 - 2026-07-22 — реализован R-1 без rollout: `wb_goods_return` зарегистрирован как
   optional immutable collection с manifest/cabinet/coverage/raw-integrity,

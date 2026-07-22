@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time as time_module
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, NamedTuple, Protocol
 
@@ -64,6 +65,9 @@ from wb_unit_economics.web.source_refresh import (
 
 TIMEOUT = 30.0
 MOSCOW = timezone(timedelta(hours=3))
+CLAIMS_PAGE_LIMIT = 200
+CLAIMS_MAX_PAGES = 100
+CLAIMS_REQUEST_INTERVAL_SECONDS = 3.1
 
 F4_REQUIRED_FIELDS = {
     "measurement_penalties": {
@@ -278,12 +282,20 @@ def r0_endpoints(today: date, *, days: int = 7) -> list[tuple[str, str, dict]]:
         (
             "claims_active",
             "https://returns-api.wildberries.ru/api/v1/claims",
-            {"is_archive": False, "limit": 1, "offset": 0},
+            {
+                "is_archive": False,
+                "limit": CLAIMS_PAGE_LIMIT,
+                "offset": 0,
+            },
         ),
         (
             "claims_archive",
             "https://returns-api.wildberries.ru/api/v1/claims",
-            {"is_archive": True, "limit": 1, "offset": 0},
+            {
+                "is_archive": True,
+                "limit": CLAIMS_PAGE_LIMIT,
+                "offset": 0,
+            },
         ),
     ]
 
@@ -583,6 +595,136 @@ def classify_r0_response(name: str, response: ResponseLike) -> str:
     if not isinstance(first, dict) or not R0_REQUIRED_FIELDS[name].issubset(first):
         return "schema_mismatch"
     return "confirmed_nonempty"
+
+
+def fetch_r0_source_payload(
+    client: Any,
+    name: str,
+    url: str,
+    params: dict[str, Any],
+    *,
+    claims_max_pages: int | None = None,
+    claims_request_interval_seconds: float | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Fetch one R-0 source, reconciling claims pagination without logging raw."""
+
+    if name == "goods_return":
+        try:
+            response = client.get(url, params=params)
+        except httpx.HTTPError:
+            return "unavailable", None
+        status = classify_r0_response(name, response)
+        if not status.startswith("confirmed_"):
+            return status, None
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            return "schema_mismatch", None
+        if not isinstance(payload, dict):
+            return "schema_mismatch", None
+        return status, payload
+
+    if name not in {"claims_active", "claims_archive"}:
+        return "schema_mismatch", None
+    if claims_max_pages is None:
+        claims_max_pages = CLAIMS_MAX_PAGES
+    if claims_request_interval_seconds is None:
+        claims_request_interval_seconds = CLAIMS_REQUEST_INTERVAL_SECONDS
+    if claims_max_pages < 1 or claims_request_interval_seconds < 0:
+        return "schema_mismatch", None
+
+    request_params = dict(params)
+    limit = request_params.get("limit")
+    offset = request_params.get("offset")
+    is_archive = request_params.get("is_archive")
+    if (
+        not isinstance(is_archive, bool)
+        or not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or limit < 1
+        or limit > 200
+        or not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset != 0
+    ):
+        return "schema_mismatch", None
+
+    expected_total: int | None = None
+    claims: list[dict[str, Any]] = []
+    claim_ids: set[str] = set()
+    for _page_index in range(claims_max_pages):
+        if claims_request_interval_seconds:
+            time_module.sleep(claims_request_interval_seconds)
+        try:
+            response = client.get(url, params=request_params)
+        except httpx.HTTPError:
+            return "unavailable", None
+        if response.status_code in {401, 403}:
+            return "access_denied", None
+        if response.status_code == 402:
+            return "paid_scope_required", None
+        if response.status_code == 429 or response.status_code >= 500:
+            return "unavailable", None
+        if response.status_code != 200:
+            return "schema_mismatch", None
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            return "schema_mismatch", None
+        if not isinstance(payload, dict):
+            return "schema_mismatch", None
+        page_claims = payload.get("claims")
+        page_total = payload.get("total")
+        if (
+            not isinstance(page_claims, list)
+            or not isinstance(page_total, int)
+            or isinstance(page_total, bool)
+            or page_total < 0
+            or len(page_claims) > limit
+        ):
+            return "schema_mismatch", None
+        if any(
+            not isinstance(row, dict)
+            or not R0_REQUIRED_FIELDS[name].issubset(row)
+            for row in page_claims
+        ):
+            return "schema_mismatch", None
+
+        if expected_total is None:
+            expected_total = page_total
+            if expected_total > limit * claims_max_pages:
+                return "pagination_mismatch", None
+        elif page_total != expected_total:
+            return "pagination_mismatch", None
+
+        if expected_total == 0:
+            if page_claims:
+                return "pagination_mismatch", None
+            return "confirmed_empty", {"claims": []}
+        if not page_claims:
+            return "pagination_mismatch", None
+
+        for row in page_claims:
+            raw_claim_id = row.get("id")
+            claim_id = (
+                ""
+                if isinstance(raw_claim_id, bool)
+                else str(raw_claim_id or "").strip()
+            )
+            if not claim_id:
+                return "schema_mismatch", None
+            if claim_id in claim_ids:
+                return "pagination_mismatch", None
+            claim_ids.add(claim_id)
+            claims.append(row)
+
+        if len(claims) > expected_total:
+            return "pagination_mismatch", None
+        if len(claims) == expected_total:
+            return "confirmed_nonempty", {"claims": claims}
+        request_params["offset"] = len(claims)
+
+    return "pagination_mismatch", None
 
 
 def r0_join_keys(
@@ -1557,9 +1699,12 @@ def aggregate_r0_statuses(statuses: dict[str, list[str]]) -> dict:
             "paidScopeRequiredPresent": "paid_scope_required" in values,
             "unavailablePresent": "unavailable" in values,
             "schemaMismatchPresent": "schema_mismatch" in values,
+            "paginationMismatchPresent": "pagination_mismatch" in values,
         }
         endpoint_gates[name] = (
-            entry["schemaConfirmedAny"] and not entry["schemaMismatchPresent"]
+            entry["schemaConfirmedAny"]
+            and not entry["schemaMismatchPresent"]
+            and not entry["paginationMismatchPresent"]
         )
         endpoints_report[name] = entry
     goods_return_gate = endpoint_gates["goods_return"]
@@ -1613,16 +1758,21 @@ def run_r0_probe(
                 report_window_aligned or account.report_window_end is not None
             )
             for name, url, params in r0_endpoints(window_end, days=days):
-                try:
-                    response = client.get(url, params=params)
-                    status = classify_r0_response(name, response)
-                except httpx.HTTPError:
-                    status = "unavailable"
+                status, payload = fetch_r0_source_payload(
+                    client,
+                    name,
+                    url,
+                    params,
+                )
                 statuses[name].append(status)
-                if status != "confirmed_nonempty" or account.scope is None:
+                if (
+                    status != "confirmed_nonempty"
+                    or account.scope is None
+                    or payload is None
+                ):
                     continue
                 try:
-                    keys, invalid = r0_join_keys(name, response.json(), account)
+                    keys, invalid = r0_join_keys(name, payload, account)
                 except Exception:  # noqa: BLE001
                     invalid_source_key_present = True
                     continue
@@ -1680,18 +1830,23 @@ def run_r0_identity_probe(
                 report_window_aligned or account.report_window_end is not None
             )
             for name, url, params in r0_endpoints(window_end, days=days):
-                try:
-                    response = client.get(url, params=params)
-                    status = classify_r0_response(name, response)
-                except httpx.HTTPError:
-                    status = "unavailable"
+                status, payload = fetch_r0_source_payload(
+                    client,
+                    name,
+                    url,
+                    params,
+                )
                 statuses[name].append(status)
-                if status != "confirmed_nonempty" or account.scope is None:
+                if (
+                    status != "confirmed_nonempty"
+                    or account.scope is None
+                    or payload is None
+                ):
                     continue
                 try:
                     keys, ambiguous, invalid = r0_identity_source_keys(
                         name,
-                        response.json(),
+                        payload,
                         account,
                     )
                 except Exception:  # noqa: BLE001

@@ -228,8 +228,8 @@ def test_r0_endpoints_are_minimal_read_only_and_claim_archive_is_boolean() -> No
     active = endpoints[1]
     archive = endpoints[2]
     assert active[1] == archive[1]
-    assert active[2] == {"is_archive": False, "limit": 1, "offset": 0}
-    assert archive[2] == {"is_archive": True, "limit": 1, "offset": 0}
+    assert active[2] == {"is_archive": False, "limit": 200, "offset": 0}
+    assert archive[2] == {"is_archive": True, "limit": 200, "offset": 0}
 
     with pytest.raises(ValueError, match="between 1 and 31"):
         probe.r0_endpoints(date(2026, 7, 22), days=32)
@@ -284,6 +284,131 @@ def test_r0_response_classifier_checks_goods_and_claims_contracts() -> None:
     )
 
 
+def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values() -> None:
+    requested_params: list[dict] = []
+    first = {**_claim_row(), "id": "RAW_CLAIM_FIRST", "srid": "RAW_SRID_FIRST"}
+    second = {
+        **_claim_row(),
+        "id": "RAW_CLAIM_SECOND",
+        "srid": "RAW_SRID_SECOND",
+    }
+
+    class _Client:
+        def get(self, _url: str, *, params: dict):
+            requested_params.append(dict(params))
+            row = first if params["offset"] == 0 else second
+            return _Response(200, {"claims": [row], "total": 2})
+
+    status, payload = probe.fetch_r0_source_payload(
+        _Client(),
+        "claims_active",
+        "https://returns-api.wildberries.ru/api/v1/claims",
+        {"is_archive": False, "limit": 1, "offset": 0},
+        claims_request_interval_seconds=0,
+    )
+
+    assert status == "confirmed_nonempty"
+    assert payload is not None and len(payload["claims"]) == 2
+    assert requested_params == [
+        {"is_archive": False, "limit": 1, "offset": 0},
+        {"is_archive": False, "limit": 1, "offset": 1},
+    ]
+    account = probe.R0ProbeAccount(
+        api_key="",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+    keys, ambiguity, invalid = probe.r0_identity_source_keys(
+        "claims_active",
+        payload,
+        account,
+    )
+    rendered = str(keys) + str(ambiguity) + str(invalid)
+    for forbidden in (
+        "RAW_CLAIM_FIRST",
+        "RAW_CLAIM_SECOND",
+        "RAW_SRID_FIRST",
+        "RAW_SRID_SECOND",
+        "RAW_USER_COMMENT",
+    ):
+        assert forbidden not in rendered
+
+
+@pytest.mark.parametrize("failure", ["duplicate", "changing_total", "empty_page"])
+def test_claims_fetch_fails_closed_on_pagination_mismatch(failure: str) -> None:
+    first = {**_claim_row(), "id": "claim-first"}
+
+    class _Client:
+        def get(self, _url: str, *, params: dict):
+            if params["offset"] == 0:
+                return _Response(200, {"claims": [first], "total": 2})
+            if failure == "duplicate":
+                return _Response(200, {"claims": [first], "total": 2})
+            if failure == "changing_total":
+                return _Response(
+                    200,
+                    {"claims": [{**_claim_row(), "id": "claim-second"}], "total": 3},
+                )
+            return _Response(200, {"claims": [], "total": 2})
+
+    status, payload = probe.fetch_r0_source_payload(
+        _Client(),
+        "claims_archive",
+        "https://returns-api.wildberries.ru/api/v1/claims",
+        {"is_archive": True, "limit": 1, "offset": 0},
+        claims_request_interval_seconds=0,
+    )
+
+    assert status == "pagination_mismatch"
+    assert payload is None
+
+
+def test_claims_fetch_caps_provider_total_before_partial_evidence() -> None:
+    class _Client:
+        def get(self, _url: str, *, params: dict):
+            return _Response(200, {"claims": [_claim_row()], "total": 3})
+
+    status, payload = probe.fetch_r0_source_payload(
+        _Client(),
+        "claims_active",
+        "https://returns-api.wildberries.ru/api/v1/claims",
+        {"is_archive": False, "limit": 1, "offset": 0},
+        claims_max_pages=2,
+        claims_request_interval_seconds=0,
+    )
+
+    assert status == "pagination_mismatch"
+    assert payload is None
+
+
+def test_claims_fetch_paces_first_page_and_active_archive_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+
+    class _Client:
+        def get(self, _url: str, *, params: dict):
+            return _Response(200, {"claims": [], "total": 0})
+
+    monkeypatch.setattr(probe.time_module, "sleep", sleeps.append)
+    for name, is_archive in (
+        ("claims_active", False),
+        ("claims_archive", True),
+    ):
+        status, payload = probe.fetch_r0_source_payload(
+            _Client(),
+            name,
+            "https://returns-api.wildberries.ru/api/v1/claims",
+            {"is_archive": is_archive, "limit": 200, "offset": 0},
+            claims_request_interval_seconds=3.1,
+        )
+        assert status == "confirmed_empty"
+        assert payload == {"claims": []}
+
+    assert sleeps == [3.1, 3.1]
+
+
 def test_r0_status_aggregation_is_boolean_only_and_allows_partial_source() -> None:
     report = probe.aggregate_r0_statuses(
         {
@@ -299,6 +424,7 @@ def test_r0_status_aggregation_is_boolean_only_and_allows_partial_source() -> No
     assert report["implementationGate"] is True
     assert report["endpoints"]["goods_return"]["confirmedNonemptyPresent"] is True
     assert report["endpoints"]["claims_archive"]["paidScopeRequiredPresent"] is True
+    assert report["endpoints"]["claims_archive"]["paginationMismatchPresent"] is False
     rendered = str(report)
     for forbidden in (
         "RAW_REASON",
@@ -359,6 +485,20 @@ def test_r0_schema_mismatch_blocks_only_affected_source_gate() -> None:
     assert report["implementationGate"] is True
 
 
+def test_r0_pagination_mismatch_blocks_claims_gate() -> None:
+    report = probe.aggregate_r0_statuses(
+        {
+            "goods_return": ["confirmed_nonempty"],
+            "claims_active": ["confirmed_nonempty", "pagination_mismatch"],
+            "claims_archive": ["confirmed_empty"],
+        }
+    )
+
+    assert report["goodsReturnGate"] is True
+    assert report["claimsGate"] is False
+    assert report["endpoints"]["claims_active"]["paginationMismatchPresent"] is True
+
+
 def test_r0_join_gate_requires_evaluated_exact_match() -> None:
     assert probe.r0_join_gate(join_evaluated=True, matched_present=True) is True
     assert probe.r0_join_gate(join_evaluated=True, matched_present=False) is False
@@ -410,6 +550,7 @@ def test_run_r0_probe_aligns_window_and_returns_only_safe_booleans(
 
     monkeypatch.setattr(probe.httpx, "Client", _Client)
     monkeypatch.setattr(probe, "evaluate_r0_join", _evaluate)
+    monkeypatch.setattr(probe, "CLAIMS_REQUEST_INTERVAL_SECONDS", 0)
 
     report = probe.run_r0_probe([account], object(), date(2026, 7, 22), days=7)
 
@@ -947,6 +1088,7 @@ def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
 
     monkeypatch.setattr(probe.httpx, "Client", _Client)
     monkeypatch.setattr(probe, "load_r0_finance_identity", _load)
+    monkeypatch.setattr(probe, "CLAIMS_REQUEST_INTERVAL_SECONDS", 0)
 
     report = probe.run_r0_identity_probe([account], object(), date(2026, 7, 22), days=7)
 
@@ -967,5 +1109,108 @@ def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
         "test-key",
         "9001",
         "canonical-chain",
+    ):
+        assert forbidden not in rendered
+
+
+def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = probe.R0ProbeAccount(
+        api_key="test-key",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+        report_window_end=date(2026, 7, 20),
+    )
+    first_claim = {
+        **_claim_row(),
+        "id": "RAW_FIRST_CLAIM",
+        "srid": "RAW_UNMATCHED_SRID",
+    }
+    matched_claim = {
+        **_claim_row(),
+        "id": "RAW_MATCHED_CLAIM",
+        "srid": "RAW_MATCHED_SRID",
+    }
+    requested_active_offsets: list[int] = []
+
+    class _Client:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, url: str, *, params: dict):
+            if "goods-return" in url:
+                return _Response(200, {"report": []})
+            if params["is_archive"]:
+                return _Response(200, {"claims": [], "total": 0})
+            requested_active_offsets.append(params["offset"])
+            row = first_claim if params["offset"] == 0 else matched_claim
+            return _Response(200, {"claims": [row], "total": 2})
+
+    source_keys, _ambiguity, _invalid = probe.r0_identity_source_keys(
+        "claims_active",
+        {"claims": [matched_claim]},
+        account,
+    )
+    matching_key = next(iter(source_keys["claimsSrid"]))
+
+    def _load(_settings, scopes):
+        assert scopes == {account.scope}
+        return (
+            {
+                account.scope: {
+                    "financeOrderUid": {},
+                    "financeSrid": {matching_key: {"canonical-chain"}},
+                    "financeOrderId": {},
+                }
+            },
+            {
+                account.scope: {
+                    "joinEvaluated": True,
+                    "verifiedLineage": True,
+                    "lineageFailurePresent": False,
+                    "financeReturnKeyPresent": True,
+                }
+            },
+        )
+
+    monkeypatch.setattr(probe, "CLAIMS_PAGE_LIMIT", 1)
+    monkeypatch.setattr(probe, "CLAIMS_REQUEST_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(probe.httpx, "Client", _Client)
+    monkeypatch.setattr(probe, "load_r0_finance_identity", _load)
+
+    report = probe.run_r0_identity_probe(
+        [account],
+        object(),
+        date(2026, 7, 22),
+        days=7,
+    )
+
+    assert requested_active_offsets == [0, 1]
+    assert report["identity"]["claimsIdentityGate"] is True
+    assert report["identity"]["goodsReturnIdentityGate"] is False
+    assert report["identity"]["completeIdentityGate"] is False
+    assert report["identity"]["claimsImplementationGate"] is False
+    assert report["claimsImplementationGate"] is False
+    assert report["implementationGate"] is False
+    rendered = str(report)
+    for forbidden in (
+        "RAW_FIRST_CLAIM",
+        "RAW_MATCHED_CLAIM",
+        "RAW_UNMATCHED_SRID",
+        "RAW_MATCHED_SRID",
+        "RAW_USER_COMMENT",
+        "canonical-chain",
+        "tenant-a",
+        "client-a",
+        "cabinet-a",
+        "test-key",
     ):
         assert forbidden not in rendered
