@@ -415,19 +415,92 @@ def _tax_load_evidence(
         "sourceKind": "onec_official_financial_results",
         "snapshotId": income_source.snapshot_id if income_source else "",
     }
-    # Доход-база по УСН без НДС из КУДиР (AccumulationRegister
-    # КнигаУчетаДоходовИРасходов, ресурс ДоходБаза) — управленческий знаменатель
-    # для ИП на УСН, у которого нет отчета о финансовых результатах (spec: Tax
-    # Methodology Boundary, решение от 21.07.2026).
-    usn_income_source = sources.get("onec_kudir")
-    usn_income_rows = _organization_period_rows(
-        usn_income_source,
+    bank_income_source = sources.get("onec_accounting_bank_in")
+    bank_income_rows = _organization_period_rows(
+        bank_income_source,
         organization_id,
         ytd_start,
         period_end,
-        date_fields=("Period", "Date", "Дата"),
+        date_fields=("Date", "Period", "Дата"),
+    )
+    bank_income_groups = _classify_usn_bank_income_rows(bank_income_rows)
+    confirmed_bank_income = bank_income_groups["confirmed"]
+    unclassified_bank_income = bank_income_groups["unclassified"]
+    excluded_bank_income = bank_income_groups["excluded"]
+    bank_income_status = _source_status(bank_income_source)
+    bank_income_available = bank_income_status in {
+        "loaded",
+        "ready",
+        "complete",
+        "confirmed",
+        "empty_expected",
+    }
+    bank_income_amounts_complete = all(
+        row.get("incomeNetAmount") not in (None, "")
+        for rows in bank_income_groups.values()
+        for row in rows
     )
     usn_income_evidence = {
+        "value": (
+            _complete_sum_rows(confirmed_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "status": bank_income_status,
+        "classificationStatus": (
+            "source_gap"
+            if not bank_income_available or not bank_income_amounts_complete
+            else ("review_required" if unclassified_bank_income else "ready")
+        ),
+        "sourceKind": "onec_accounting_bank_in",
+        "snapshotId": bank_income_source.snapshot_id if bank_income_source else "",
+        "monthlyValues": _monthly_values(
+            confirmed_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "unclassifiedValue": (
+            _complete_sum_rows(unclassified_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "monthlyUnclassifiedValues": _monthly_values(
+            unclassified_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "excludedValue": (
+            _complete_sum_rows(excluded_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "monthlyExcludedValues": _monthly_values(
+            excluded_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "confirmedRowCount": len(confirmed_bank_income),
+        "unclassifiedRowCount": len(unclassified_bank_income),
+        "excludedRowCount": len(excluded_bank_income),
+    }
+    # КУДиР остается контрольной YTD-сверкой. В текущей 1С Period регистра
+    # может быть квартальной датой и не является календарным месяцем поступления.
+    usn_income_source = sources.get("onec_kudir")
+    usn_income_rows = [
+        row
+        for row in _organization_period_rows(
+            usn_income_source,
+            organization_id,
+            ytd_start,
+            period_end,
+            date_fields=("Period", "Date", "Дата"),
+        )
+        if _is_kudir_income_row(row)
+    ]
+    kudir_income_evidence = {
         "value": _sum_rows(usn_income_rows, ("ДоходБаза", "ДоходВсего")),
         "status": _source_status(usn_income_source),
         "sourceKind": "onec_kudir",
@@ -496,11 +569,43 @@ def _tax_load_evidence(
                 ),
             }
         )
+    if unclassified_bank_income:
+        issues.append(
+            {
+                "code": "usn_bank_income_classification_required",
+                "severity": "warning",
+                "section": "Доход УСН",
+                "message": (
+                    "Часть банковских поступлений имеет вид операции «Прочее» "
+                    "и не включена в подтвержденный доход автоматически."
+                ),
+                "nextAction": (
+                    "Классифицировать прочие поступления до подтверждения "
+                    "налоговой базы."
+                ),
+            }
+        )
+    if not bank_income_amounts_complete:
+        issues.append(
+            {
+                "code": "usn_bank_income_amount_unconfirmed",
+                "severity": "warning",
+                "section": "Доход УСН",
+                "message": (
+                    "Не для всех банковских поступлений подтверждена сумма "
+                    "без НДС по расшифровке платежа."
+                ),
+                "nextAction": (
+                    "Проверить сумму платежа и НДС в расшифровке документов 1С."
+                ),
+            }
+        )
     return {
         "sourceCoverage": _coverage(sources, ytd_start, period_end),
         "taxRows": tax_rows,
         "incomeEvidence": income_evidence,
         "usnIncomeEvidence": usn_income_evidence,
+        "kudirIncomeEvidence": kudir_income_evidence,
         "usnTaxPaymentEvidence": usn_tax_payment_evidence,
         "vatSummary": {
             "status": _combined_status(
@@ -842,6 +947,92 @@ def _sum_rows(rows: list[Mapping[str, Any]], keys: tuple[str, ...]) -> str | Non
     if not present:
         return None
     return _decimal_text(sum(present, Decimal("0")))
+
+
+def _complete_sum_rows(
+    rows: list[Mapping[str, Any]], keys: tuple[str, ...]
+) -> str | None:
+    values = [_first_decimal(row, keys) for row in rows]
+    if any(value is None for value in values):
+        return None
+    return _decimal_text(
+        sum((value for value in values if value is not None), Decimal("0"))
+    )
+
+
+def _bank_income_category(row: Mapping[str, Any]) -> str:
+    normalized = "".join(
+        character
+        for character in str(row.get("ВидОперации") or "").casefold()
+        if character.isalnum()
+    )
+    if normalized in {"отпокупателя", "оплатаотпокупателя"}:
+        return "confirmed"
+    if "личн" in normalized and "предприним" in normalized:
+        return "excluded"
+    return "unclassified"
+
+
+def _is_kudir_income_row(row: Mapping[str, Any]) -> bool:
+    if row.get("Active") is False:
+        return False
+    record_kind = str(row.get("ВидЗаписи") or "").strip().casefold()
+    return not record_kind or "доход" in record_kind or "приход" in record_kind
+
+
+def _bank_income_net_amount(row: Mapping[str, Any]) -> Decimal | None:
+    document_total = _first_decimal(
+        row, ("СуммаДокумента", "Сумма", "Amount")
+    )
+    raw_breakdown = row.get("РасшифровкаПлатежа")
+    if isinstance(raw_breakdown, list) and raw_breakdown:
+        payment_total = Decimal("0")
+        vat_total = Decimal("0")
+        for item in raw_breakdown:
+            if not isinstance(item, Mapping):
+                return None
+            payment = _first_decimal(
+                item, ("СуммаПлатежа", "PaymentAmount", "Amount")
+            )
+            vat = _first_decimal(item, ("СуммаНДС", "VAT"))
+            item_vat_mode = str(item.get("НалогообложениеНДС") or "").casefold()
+            if vat is None and "необлагается" in item_vat_mode:
+                vat = Decimal("0")
+            if payment is None or vat is None:
+                return None
+            payment_total += payment
+            vat_total += vat
+        if document_total is not None and payment_total != document_total:
+            return None
+        net_amount = payment_total - vat_total
+        return net_amount if net_amount >= 0 else None
+    vat_mode = str(row.get("НалогообложениеНДС") or "").casefold()
+    if document_total is not None and "необлагается" in vat_mode:
+        return document_total if document_total >= 0 else None
+    return None
+
+
+def _classify_usn_bank_income_rows(
+    rows: list[Mapping[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {
+        "confirmed": [],
+        "unclassified": [],
+        "excluded": [],
+    }
+    for row in rows:
+        if row.get("Posted") is not True or row.get("DeletionMark") is True:
+            continue
+        net_amount = _bank_income_net_amount(row)
+        result[_bank_income_category(row)].append(
+            {
+                "Date": row.get("Date") or row.get("Period") or row.get("Дата"),
+                "incomeNetAmount": (
+                    _decimal_text(net_amount) if net_amount is not None else None
+                ),
+            }
+        )
+    return result
 
 
 def _monthly_values(
