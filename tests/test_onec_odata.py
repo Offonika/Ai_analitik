@@ -858,6 +858,14 @@ def test_accounting_report_collections_do_not_require_server_period_filters() ->
     assert accounting["accounting_taxes"].period_field == ""
     assert accounting["accounting_taxes"].page_size == 5000
     assert accounting["accounting_bank_out"].period_field == ""
+    assert accounting["accounting_counterparties"].collection_name == (
+        "Catalog_Контрагенты"
+    )
+    assert accounting["accounting_counterparties"].select_fields == (
+        "Ref_Key",
+        "Description",
+        "DeletionMark",
+    )
 
 
 def test_local_accounting_period_stops_after_selected_window(tmp_path: Path) -> None:

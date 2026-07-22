@@ -13,7 +13,7 @@ from wb_unit_economics.web.reports.contracts import (
 from wb_unit_economics.web.reports.month_close import normalize_month_close_osv
 
 MONTH_CLOSE_CONTRACT_VERSION = "month-close-control-report-v2"
-TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v2"
+TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v3"
 FNS_TAX_BURDEN_METHODOLOGY_VERSION = "fns-tax-burden-v1-2026-07-14"
 CONFIRMED_EVIDENCE_STATUSES = {"loaded", "confirmed"}
 OFFICIAL_INCOME_SOURCE_KINDS = {
@@ -349,6 +349,23 @@ def build_tax_load_payload(
         if isinstance(usn_income_evidence, Mapping)
         else None
     )
+    usn_marketplace_breakdown = []
+    if is_usn and isinstance(usn_income_evidence, Mapping):
+        for item in usn_income_evidence.get("marketplaceBreakdown") or []:
+            if not isinstance(item, Mapping):
+                continue
+            usn_marketplace_breakdown.append(
+                {
+                    "category": item.get("category"),
+                    "label": item.get("label"),
+                    "valueYtd": _decimal_text(item.get("value")),
+                    "rowCount": item.get("rowCount"),
+                    "monthlyValues": _safe_rows(
+                        item.get("monthlyValues"),
+                        ("month", "value", "status", "rowCount"),
+                    ),
+                }
+            )
     kudir_income_evidence = evidence.get("kudirIncomeEvidence")
     kudir_income_ytd = (
         _decimal_text(kudir_income_evidence.get("value"))
@@ -516,6 +533,13 @@ def build_tax_load_payload(
                 "monthlyIncome": usn_income_monthly,
                 "monthlyUnclassifiedIncome": usn_unclassified_income_monthly,
                 "monthlyExcludedIncome": usn_excluded_income_monthly,
+                "marketplaceBreakdownStatus": (
+                    usn_income_evidence.get("marketplaceBreakdownStatus")
+                    or "source_gap"
+                    if isinstance(usn_income_evidence, Mapping)
+                    else "source_gap"
+                ),
+                "marketplaceIncomeBreakdown": usn_marketplace_breakdown,
                 "monthlyKudirIncome": kudir_income_monthly,
                 "monthlyTaxPayments": usn_tax_payments_monthly,
             }
