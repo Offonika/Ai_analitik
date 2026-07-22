@@ -20,6 +20,11 @@ const state = {
   reportWizardRefresh: null,
   reportWizardRequest: null,
   reportWizardBusy: false,
+  accountingWizardBusy: false,
+  accountingWizardGeneration: null,
+  accountingWizardGeneratedReportId: "",
+  accountingWizardCurrentReport: null,
+  accountingWizardCurrentRequest: 0,
   clientLoadToken: 0,
   rowsRequestKey: "",
   drilldownRequestKey: "",
@@ -325,6 +330,69 @@ const els = {
   reportWizardSubmit: document.querySelector("#report-wizard-submit"),
   reportWizardCheck: document.querySelector("#report-wizard-check"),
   reportWizardReset: document.querySelector("#report-wizard-reset"),
+  accountingReportWizardOverlay: document.querySelector(
+    "#accounting-report-wizard-overlay",
+  ),
+  accountingReportWizardClose: document.querySelector(
+    "#accounting-report-wizard-close",
+  ),
+  accountingReportWizardTitle: document.querySelector(
+    "#accounting-report-wizard-title",
+  ),
+  accountingReportWizardSubtitle: document.querySelector(
+    "#accounting-report-wizard-subtitle",
+  ),
+  accountingReportWizardSteps: document.querySelector(
+    "#accounting-report-wizard-steps",
+  ),
+  accountingReportWizardForm: document.querySelector(
+    "#accounting-report-wizard-form",
+  ),
+  accountingReportWizardClient: document.querySelector(
+    "#accounting-report-wizard-client",
+  ),
+  accountingReportWizardKind: document.querySelector(
+    "#accounting-report-wizard-kind",
+  ),
+  accountingReportWizardCurrent: document.querySelector(
+    "#accounting-report-wizard-current",
+  ),
+  accountingReportWizardCurrentTitle: document.querySelector(
+    "#accounting-report-wizard-current-title",
+  ),
+  accountingReportWizardCurrentMeta: document.querySelector(
+    "#accounting-report-wizard-current-meta",
+  ),
+  accountingReportWizardCurrentDownload: document.querySelector(
+    "#accounting-report-wizard-current-download",
+  ),
+  accountingReportWizardOrganization: document.querySelector(
+    "#accounting-report-wizard-organization",
+  ),
+  accountingReportWizardMonth: document.querySelector(
+    "#accounting-report-wizard-month",
+  ),
+  accountingReportWizardSubmit: document.querySelector(
+    "#accounting-report-wizard-submit",
+  ),
+  accountingReportWizardReset: document.querySelector(
+    "#accounting-report-wizard-reset",
+  ),
+  accountingReportWizardStatus: document.querySelector(
+    "#accounting-report-wizard-status",
+  ),
+  accountingReportWizardResult: document.querySelector(
+    "#accounting-report-wizard-result",
+  ),
+  accountingReportWizardResultTitle: document.querySelector(
+    "#accounting-report-wizard-result-title",
+  ),
+  accountingReportWizardResultCopy: document.querySelector(
+    "#accounting-report-wizard-result-copy",
+  ),
+  accountingReportWizardResultDownload: document.querySelector(
+    "#accounting-report-wizard-result-download",
+  ),
   aiOpenButton: document.querySelector("#ai-open-button"),
   reconciliationOpenButton: document.querySelector(
     "#reconciliation-open-button",
@@ -857,6 +925,31 @@ function init() {
   els.reportWizardForm.addEventListener("submit", onReportWizardSubmit);
   els.reportWizardCheck.addEventListener("click", onReportWizardCheck);
   els.reportWizardReset.addEventListener("click", resetReportWizardSession);
+  els.accountingReportWizardClose.addEventListener(
+    "click",
+    closeAccountingReportWizard,
+  );
+  els.accountingReportWizardOverlay.addEventListener("click", (event) => {
+    if (event.target === els.accountingReportWizardOverlay) {
+      closeAccountingReportWizard();
+    }
+  });
+  els.accountingReportWizardOrganization.addEventListener(
+    "change",
+    onAccountingReportWizardContextChange,
+  );
+  els.accountingReportWizardMonth.addEventListener(
+    "change",
+    onAccountingReportWizardContextChange,
+  );
+  els.accountingReportWizardForm.addEventListener(
+    "submit",
+    onAccountingReportWizardSubmit,
+  );
+  els.accountingReportWizardReset.addEventListener(
+    "click",
+    resetAccountingReportWizard,
+  );
   els.reportWizardClientReportGenerate.addEventListener(
     "click",
     () =>
@@ -2194,26 +2287,244 @@ async function onReportBuildButtonClick() {
     return;
   }
   if (isAccountingReportKind()) {
-    await generateAccountingReport();
+    await openAccountingReportWizard();
     return;
   }
   openReportWizard();
 }
 
-async function generateAccountingReport() {
-  if (!state.clientId || !state.organizationId || !state.periodMonth) {
-    setTopbarNotice(
-      "Не заполнен контекст отчёта",
-      "Выберите организацию 1С и календарный месяц.",
-      "is-warning",
+function accountingReportKindTitle() {
+  return state.reportKinds.find((item) => item.kind === state.reportKind)?.title
+    || "Бухгалтерский отчёт";
+}
+
+function contractRevisionLabel(value) {
+  return String(value || "").match(/(?:^|-)(v\d+)$/i)?.[1]?.toLowerCase() || "";
+}
+
+function accountingReportWizardContext() {
+  return {
+    organizationId: els.accountingReportWizardOrganization.value || "",
+    periodMonth: els.accountingReportWizardMonth.value || "",
+  };
+}
+
+function accountingReportWizardOrganizationLabel() {
+  return els.accountingReportWizardOrganization.selectedOptions[0]?.textContent
+    || "Организация не выбрана";
+}
+
+async function openAccountingReportWizard() {
+  if (!state.clientId || !isStaffUser() || !isAccountingReportKind()) {
+    return;
+  }
+  const client = selectedClient();
+  const title = accountingReportKindTitle();
+  els.accountingReportWizardTitle.textContent = `Мастер: ${title}`;
+  els.accountingReportWizardSubtitle.textContent =
+    "Текущая и новая ревизии разделены: скачивается именно выбранный файл.";
+  els.accountingReportWizardClient.textContent =
+    client?.name || client?.clientId || client?.id || "Клиент не выбран";
+  els.accountingReportWizardKind.textContent = title;
+  if (!state.accountingWizardBusy) {
+    state.accountingWizardGeneration = null;
+    state.accountingWizardGeneratedReportId = "";
+    state.accountingWizardCurrentReport = null;
+    state.generationIdempotencyKey = "";
+    const organizations = accountingOrganizations();
+    const options = organizations.map((item) => {
+      const option = document.createElement("option");
+      option.value = item.onecOrganizationId;
+      option.textContent = item.label || item.onecOrganizationId;
+      return option;
+    });
+    if (!options.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Нет связанной организации 1С";
+      options.push(option);
+    }
+    els.accountingReportWizardOrganization.replaceChildren(...options);
+    els.accountingReportWizardOrganization.value = state.organizationId || "";
+    if (!els.accountingReportWizardOrganization.value && options[0]?.value) {
+      els.accountingReportWizardOrganization.value = options[0].value;
+    }
+    els.accountingReportWizardMonth.value =
+      state.periodMonth || currentCalendarMonth();
+  }
+  renderAccountingReportWizard();
+  openWidgetOverlay(els.accountingReportWizardOverlay);
+  await loadAccountingReportWizardCurrent();
+  const focusTarget = state.accountingWizardGeneratedReportId
+    ? els.accountingReportWizardReset
+    : els.accountingReportWizardOrganization;
+  window.setTimeout(() => focusTarget.focus(), 0);
+}
+
+function closeAccountingReportWizard(options = {}) {
+  closeWidgetOverlay(els.accountingReportWizardOverlay, options);
+}
+
+async function onAccountingReportWizardContextChange() {
+  if (state.accountingWizardBusy) return;
+  state.accountingWizardGeneration = null;
+  state.accountingWizardGeneratedReportId = "";
+  state.accountingWizardCurrentReport = null;
+  state.generationIdempotencyKey = "";
+  renderAccountingReportWizard();
+  await loadAccountingReportWizardCurrent();
+}
+
+async function loadAccountingReportWizardCurrent() {
+  const { organizationId, periodMonth } = accountingReportWizardContext();
+  const requestId = state.accountingWizardCurrentRequest + 1;
+  state.accountingWizardCurrentRequest = requestId;
+  state.accountingWizardCurrentReport = null;
+  renderAccountingReportWizardCurrent();
+  if (!state.clientId || !organizationId || !periodMonth) return;
+  const params = new URLSearchParams({
+    report_kind: state.reportKind,
+    organization_id: organizationId,
+  });
+  try {
+    const payload = await api(
+      `/api/clients/${encodeURIComponent(state.clientId)}/reports?${params}`,
     );
+    if (requestId !== state.accountingWizardCurrentRequest) return;
+    state.accountingWizardCurrentReport = asArray(payload.items).find(
+      (item) => String(item.periodStart || "").startsWith(periodMonth),
+    ) || null;
+  } catch (error) {
+    if (requestId !== state.accountingWizardCurrentRequest) return;
+    state.accountingWizardCurrentReport = null;
+  }
+  renderAccountingReportWizardCurrent();
+}
+
+function renderAccountingReportWizardCurrent() {
+  const report = state.accountingWizardCurrentReport;
+  els.accountingReportWizardCurrent.hidden = !report;
+  if (!report) {
+    els.accountingReportWizardCurrentDownload.href = "#";
+    els.accountingReportWizardCurrentMeta.textContent = "";
+    return;
+  }
+  const revision = contractRevisionLabel(report.methodologyVersion);
+  const generatedAt = formatDateTime(report.generatedAt);
+  const period = [formatCompactDate(report.periodStart), formatCompactDate(report.periodEnd)]
+    .filter(Boolean)
+    .join("–");
+  const currentLabel = report.isCurrent
+    ? "Текущая ревизия"
+    : "Последняя ревизия выбранного месяца";
+  els.accountingReportWizardCurrentTitle.textContent = revision
+    ? `${currentLabel} — ${revision}`
+    : currentLabel;
+  els.accountingReportWizardCurrentMeta.textContent = [
+    period ? `Период: ${period}` : "",
+    generatedAt ? `сформирована ${generatedAt}` : "",
+  ].filter(Boolean).join(" · ");
+  els.accountingReportWizardCurrentDownload.textContent = revision
+    ? `Скачать существующий Excel ${revision}`
+    : "Скачать существующий Excel";
+  els.accountingReportWizardCurrentDownload.href =
+    `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
+}
+
+function renderAccountingReportWizard() {
+  const generation = state.accountingWizardGeneration || {};
+  const generatedReportId = state.accountingWizardGeneratedReportId;
+  const busy = state.accountingWizardBusy;
+  const completed = Boolean(generatedReportId);
+  const steps = Array.from(els.accountingReportWizardSteps.querySelectorAll("li"));
+  const activeStep = completed ? 2 : generation.status ? 1 : 0;
+  steps.forEach((step, index) => {
+    step.classList.toggle("active", index === activeStep);
+    step.classList.toggle("done", index < activeStep);
+    if (index === activeStep) {
+      step.setAttribute("aria-current", "step");
+    } else {
+      step.removeAttribute("aria-current");
+    }
+  });
+  els.accountingReportWizardOrganization.disabled = busy || completed;
+  els.accountingReportWizardMonth.disabled = busy || completed;
+  els.accountingReportWizardSubmit.hidden = completed;
+  els.accountingReportWizardSubmit.disabled = busy;
+  els.accountingReportWizardReset.hidden = !completed;
+  renderAccountingReportWizardCurrent();
+
+  els.accountingReportWizardStatus.hidden = !generation.status || completed;
+  els.accountingReportWizardStatus.className = "report-wizard-status";
+  if (generation.status && !completed) {
+    const stageLabels = {
+      queued: "Отчёт поставлен в очередь. Ожидаем начало формирования.",
+      refreshing_sources: "Читаем данные 1С в режиме только для чтения.",
+      materializing_evidence: "Фиксируем проверяемые данные и их происхождение.",
+      building_report: "Строим web-представление и Excel из одного контракта.",
+    };
+    const failed = ["failed", "error"].includes(normalize(generation.status));
+    els.accountingReportWizardStatus.classList.toggle("is-blocked", failed);
+    els.accountingReportWizardStatus.textContent = failed
+      ? generation.safeMessage || "Отчёт не сформирован. Исходные данные не изменялись."
+      : stageLabels[generation.stage]
+        || generation.safeMessage
+        || "Формирование выполняется.";
+  }
+
+  els.accountingReportWizardResult.hidden = !completed;
+  if (!completed) {
+    els.accountingReportWizardResultDownload.href = "#";
+    return;
+  }
+  const report = state.reports.find((item) => item.id === generatedReportId)
+    || state.accountingWizardCurrentReport
+    || {};
+  const revision = contractRevisionLabel(
+    report.methodologyVersion || state.summary?.contractVersion,
+  );
+  els.accountingReportWizardResultTitle.textContent = revision
+    ? `Новая ревизия готова — ${revision}`
+    : "Новая ревизия готова";
+  els.accountingReportWizardResultCopy.textContent =
+    `${accountingReportWizardOrganizationLabel()} · ${formatMonthYearLabel(
+      `${els.accountingReportWizardMonth.value}-01`,
+    )}. Скачивается именно файл этого запуска.`;
+  els.accountingReportWizardResultDownload.textContent = revision
+    ? `Скачать новый Excel ${revision}`
+    : "Скачать новый Excel";
+  els.accountingReportWizardResultDownload.href =
+    `/api/reports/${encodeURIComponent(generatedReportId)}/export.xlsx`;
+  if (els.accountingReportWizardResult.dataset.focusedReportId !== generatedReportId) {
+    els.accountingReportWizardResult.dataset.focusedReportId = generatedReportId;
+    window.setTimeout(() => els.accountingReportWizardResult.focus(), 0);
+  }
+}
+
+async function onAccountingReportWizardSubmit(event) {
+  event.preventDefault();
+  if (state.accountingWizardBusy || state.accountingWizardGeneratedReportId) return;
+  const { organizationId, periodMonth } = accountingReportWizardContext();
+  if (!state.clientId || !organizationId || !periodMonth) {
+    state.accountingWizardGeneration = {
+      status: "failed",
+      safeMessage: "Выберите организацию 1С и отчётный месяц.",
+    };
+    renderAccountingReportWizard();
     return;
   }
   state.generationIdempotencyKey ||= window.crypto?.randomUUID?.()
     || `report-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  els.reportBuildButton.disabled = true;
-  els.reportBuildButton.classList.add("is-busy");
-  els.reportBuildButton.textContent = "Формируем отчёт";
+  state.accountingWizardBusy = true;
+  state.accountingWizardGeneration = { status: "queued", stage: "queued" };
+  renderAccountingReportWizard();
+  const context = {
+    clientId: state.clientId,
+    clientLoadToken: state.clientLoadToken,
+    reportKind: state.reportKind,
+    organizationId,
+    periodMonth,
+  };
   try {
     const generation = await api(
       `/api/clients/${encodeURIComponent(state.clientId)}/reports/generate`,
@@ -2222,68 +2533,93 @@ async function generateAccountingReport() {
         headers: { "Idempotency-Key": state.generationIdempotencyKey },
         body: JSON.stringify({
           reportKind: state.reportKind,
-          organizationId: state.organizationId,
-          periodMonth: state.periodMonth,
+          organizationId,
+          periodMonth,
         }),
       },
     );
+    state.accountingWizardGeneration = generation;
+    renderAccountingReportWizard();
     if (generation.reportId) {
-      state.generationIdempotencyKey = "";
-      await loadReports(currentClientLoadContext());
+      await finishAccountingReportWizard(generation.reportId, context);
       return;
     }
-    setTopbarNotice(
-      "Отчёт поставлен в очередь",
-      "Ожидаем завершения; повторный запуск не создаст дубликат.",
-      "is-info",
-    );
-    await waitForAccountingGeneration(
+    await waitForAccountingReportWizard(
       generation.generationRunId,
-      currentClientLoadContext(),
+      context,
     );
   } catch (error) {
-    setTopbarNotice(
-      "Не удалось сформировать отчёт",
-      error?.message || "Повторите запрос: исходные данные не изменялись.",
-      "is-blocked",
-    );
-  } finally {
-    updateReportBuildButton();
+    state.accountingWizardBusy = false;
+    state.accountingWizardGeneration = {
+      ...(state.accountingWizardGeneration || {}),
+      status: "failed",
+      safeMessage:
+        error?.message || "Не удалось сформировать отчёт. Исходные данные не изменялись.",
+    };
+    renderAccountingReportWizard();
   }
 }
 
-async function waitForAccountingGeneration(generationRunId, context) {
-  if (!generationRunId) return;
+function accountingReportWizardContextIsCurrent(context) {
+  return (
+    context.clientId === state.clientId
+    && context.clientLoadToken === state.clientLoadToken
+    && context.reportKind === state.reportKind
+  );
+}
+
+async function waitForAccountingReportWizard(generationRunId, context) {
+  if (!generationRunId) {
+    throw new Error("Сервис не вернул номер запуска формирования.");
+  }
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    if (!isCurrentClientLoad(context)) return;
+    if (!accountingReportWizardContextIsCurrent(context)) return;
     const generation = await api(
       `/api/report-generations/${encodeURIComponent(generationRunId)}`,
     );
-    const stageLabels = {
-      queued: ["Отчёт поставлен в очередь", "Ожидаем свободный worker."],
-      refreshing_sources: ["Читаем данные 1С", "Выполняются только read-only GET-запросы."],
-      materializing_evidence: ["Фиксируем evidence", "Собираем воспроизводимый контракт из snapshot-данных."],
-      building_report: ["Строим витрину", "Web и Excel будут читать один сохранённый payload."],
-    };
-    const stageCopy = stageLabels[generation.stage];
-    if (stageCopy) {
-      setTopbarNotice(stageCopy[0], generation.safeMessage || stageCopy[1], "is-info");
-    }
+    state.accountingWizardGeneration = generation;
+    renderAccountingReportWizard();
     if (generation.reportId) {
-      state.generationIdempotencyKey = "";
-      await loadReports(currentClientLoadContext());
+      await finishAccountingReportWizard(generation.reportId, context);
       return;
     }
-    if (["failed", "error"].includes(String(generation.status || "").toLowerCase())) {
+    if (["failed", "error"].includes(normalize(generation.status))) {
       throw new Error(generation.safeMessage || "Формирование завершилось ошибкой.");
     }
   }
-  setTopbarNotice(
-    "Отчёт ещё формируется",
-    "Можно повторить действие: тот же ключ вернёт исходный запуск без дубликата.",
-    "is-info",
-  );
+  state.accountingWizardBusy = false;
+  state.accountingWizardGeneration = {
+    ...(state.accountingWizardGeneration || {}),
+    status: "failed",
+    safeMessage: "Отчёт ещё формируется. Закройте мастер и повторите проверку позже.",
+  };
+  renderAccountingReportWizard();
+}
+
+async function finishAccountingReportWizard(reportId, context) {
+  if (!reportId || !accountingReportWizardContextIsCurrent(context)) return;
+  state.accountingWizardBusy = false;
+  state.accountingWizardGeneratedReportId = reportId;
+  state.generationIdempotencyKey = "";
+  state.organizationId = context.organizationId;
+  state.periodMonth = context.periodMonth;
+  renderReportContextControls();
+  updateReportContextLocation({ replace: true });
+  await loadReports(currentClientLoadContext());
+  renderAccountingReportWizard();
+}
+
+async function resetAccountingReportWizard() {
+  state.accountingWizardBusy = false;
+  state.accountingWizardGeneration = null;
+  state.accountingWizardGeneratedReportId = "";
+  state.accountingWizardCurrentReport = null;
+  state.generationIdempotencyKey = "";
+  els.accountingReportWizardResult.dataset.focusedReportId = "";
+  renderAccountingReportWizard();
+  await loadAccountingReportWizardCurrent();
+  window.setTimeout(() => els.accountingReportWizardOrganization.focus(), 0);
 }
 
 function openReportWizard() {
@@ -3602,6 +3938,7 @@ function closeAllWidgets() {
   closeAiWidget({ restoreFocus: false });
   closeClientOutputWidget({ restoreFocus: false });
   closeReportWizard({ restoreFocus: false });
+  closeAccountingReportWizard({ restoreFocus: false });
   closeIntegrationsWidget({ restoreFocus: false });
   closeMappingWidget({ restoreFocus: false });
   closeNewClientWidget({ restoreFocus: false });
@@ -3616,6 +3953,7 @@ function updateWidgetBodyState() {
       !els.aiWidgetOverlay.hidden ||
       !els.clientOutputWidgetOverlay.hidden ||
       !els.reportWizardOverlay.hidden ||
+      !els.accountingReportWizardOverlay.hidden ||
       !els.integrationsWidgetOverlay.hidden ||
       !els.mappingWidgetOverlay.hidden ||
       !els.newClientWidgetOverlay.hidden ||
@@ -3649,6 +3987,7 @@ function currentOpenWidgetOverlay() {
     els.aiWidgetOverlay,
     els.clientOutputWidgetOverlay,
     els.reportWizardOverlay,
+    els.accountingReportWizardOverlay,
     els.integrationsWidgetOverlay,
     els.mappingWidgetOverlay,
     els.newClientWidgetOverlay,
@@ -3725,6 +4064,11 @@ async function onLogout() {
   state.reportWizardRefresh = null;
   state.reportWizardRequest = null;
   state.reportWizardBusy = false;
+  state.accountingWizardBusy = false;
+  state.accountingWizardGeneration = null;
+  state.accountingWizardGeneratedReportId = "";
+  state.accountingWizardCurrentReport = null;
+  state.accountingWizardCurrentRequest += 1;
   state.aiThreadId = null;
   state.integrationItems = [];
   state.editingIntegrationKey = "";
@@ -3921,6 +4265,11 @@ function clearReportSelection() {
   state.reportWizardRefresh = null;
   state.reportWizardRequest = null;
   state.reportWizardBusy = false;
+  state.accountingWizardBusy = false;
+  state.accountingWizardGeneration = null;
+  state.accountingWizardGeneratedReportId = "";
+  state.accountingWizardCurrentReport = null;
+  state.accountingWizardCurrentRequest += 1;
   state.summary = null;
   state.scenario = null;
   state.freshness = null;
@@ -7705,17 +8054,18 @@ function updateReportDownloadControl() {
     return;
   }
   const { href, visible } = reportDownloadContext();
-  els.reportDownloadButton.hidden = !visible;
+  const accounting = isAccountingReportKind();
+  els.reportDownloadButton.hidden = !visible || accounting;
   els.reportDownloadButton.href = visible ? href : "#";
   els.reportDownloadButton.textContent = "Скачать Excel";
   els.reportDownloadButton.dataset.tooltip =
     "Скачать текущий опубликованный Excel-отчёт.";
-  if (visible && isAccountingReportKind()) {
+  if (visible && accounting) {
     const report = state.reports.find((item) => item.id === state.reportId) || {};
     const contract = String(
       state.summary?.contractVersion || report.methodologyVersion || "",
     );
-    const revision = contract.match(/(?:^|-)(v\d+)$/i)?.[1]?.toLowerCase() || "";
+    const revision = contractRevisionLabel(contract);
     const generatedAt = formatShortDateTime(report.generatedAt);
     const details = [revision, generatedAt].filter(Boolean).join(" · ");
     els.reportDownloadButton.textContent = details
@@ -7745,14 +8095,17 @@ function updateReportBuildButton(refresh = state.latestSourceRefresh) {
     return;
   }
   if (isAccountingReportKind()) {
-    els.reportBuildButton.textContent = state.reportId
-      ? "Сформировать новую ревизию"
-      : "Сформировать отчёт";
+    els.reportBuildButton.textContent = "Открыть мастер отчёта";
     els.reportBuildButton.dataset.tooltip =
-      "Создать внутренний advisory draft из read-only данных.";
+      "Проверить текущую ревизию, выбрать организацию и месяц, затем сформировать новый Excel.";
     els.reportBuildButton.disabled = !(state.organizationId && state.periodMonth);
+    els.reportBuildButton.setAttribute(
+      "aria-controls",
+      "accounting-report-wizard-overlay",
+    );
     return;
   }
+  els.reportBuildButton.setAttribute("aria-controls", "report-wizard-overlay");
   els.reportBuildButton.textContent = "Сформировать отчёт";
   els.reportBuildButton.dataset.tooltip =
     "Открыть мастер формирования отчета и выбрать нужные настройки.";
@@ -16590,6 +16943,11 @@ function resetClientScopedState(options = {}) {
   state.reportWizardRefresh = null;
   state.reportWizardRequest = null;
   state.reportWizardBusy = false;
+  state.accountingWizardBusy = false;
+  state.accountingWizardGeneration = null;
+  state.accountingWizardGeneratedReportId = "";
+  state.accountingWizardCurrentReport = null;
+  state.accountingWizardCurrentRequest += 1;
   state.reportKinds = [];
   state.scenario = null;
   state.generationIdempotencyKey = "";

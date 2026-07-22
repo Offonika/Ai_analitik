@@ -5499,10 +5499,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260722-tax-load-v6-download-clarity-v1"
+        "20260722-accounting-report-wizard-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260722-tax-load-v6-download-clarity-v1"
+        "20260722-accounting-report-wizard-v1"
     )
 
     page = client.get("/")
@@ -5653,9 +5653,9 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-        "styles.css?v=20260722-tax-load-v6-download-clarity-v1" in cabinet.text
+        "styles.css?v=20260722-accounting-report-wizard-v1" in cabinet.text
     )
-    assert "app.js?v=20260722-tax-load-v6-download-clarity-v1" in cabinet.text
+    assert "app.js?v=20260722-accounting-report-wizard-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -5959,6 +5959,34 @@ def test_tax_load_v3_renderer_localizes_contract_and_keeps_tables_accessible(
     assert ".scenario-heading .status-pill" in styles.text
 
 
+def test_accounting_report_wizard_separates_existing_and_new_revisions(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+
+    assert cabinet.status_code == 200
+    assert app_js.status_code == 200
+    assert 'id="accounting-report-wizard-overlay"' in cabinet.text
+    assert 'id="accounting-report-wizard-current-download"' in cabinet.text
+    assert 'id="accounting-report-wizard-organization"' in cabinet.text
+    assert 'id="accounting-report-wizard-month"' in cabinet.text
+    assert 'id="accounting-report-wizard-status"' in cabinet.text
+    assert 'id="accounting-report-wizard-result-download"' in cabinet.text
+    assert "Этот файл сохранится после формирования новой ревизии" in cabinet.text
+    assert "Скачивается именно файл, созданный этим запуском" in cabinet.text
+    assert "async function openAccountingReportWizard()" in app_js.text
+    assert "async function loadAccountingReportWizardCurrent()" in app_js.text
+    assert "async function waitForAccountingReportWizard" in app_js.text
+    assert "async function finishAccountingReportWizard" in app_js.text
+    assert "Открыть мастер отчёта" in app_js.text
+    assert "accounting-report-wizard-overlay" in app_js.text
+    assert "els.reportDownloadButton.hidden = !visible || accounting" in app_js.text
+    assert "await generateAccountingReport()" not in app_js.text
+
+
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     tmp_path: Path,
 ) -> None:
@@ -5995,7 +6023,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
         'id="logistics-products-title"'
     )
-    assert "20260722-tax-load-v6-download-clarity-v1" in cabinet.text
+    assert "20260722-accounting-report-wizard-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     measurement_cell_rule = styles.text.split(
         ".logistics-table.logistics-measurements-table th,", 1

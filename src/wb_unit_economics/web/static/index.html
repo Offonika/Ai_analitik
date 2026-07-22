@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260722-tax-load-v6-download-clarity-v1"
+      content="20260722-accounting-report-wizard-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="data:," />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260722-tax-load-v6-download-clarity-v1"
+      href="/static/styles.css?v=20260722-accounting-report-wizard-v1"
     />
     <link
       rel="stylesheet"
@@ -2528,6 +2528,135 @@
       </div>
 
       <div
+        id="accounting-report-wizard-overlay"
+        class="widget-overlay report-wizard-overlay"
+        aria-labelledby="accounting-report-wizard-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
+        <section class="panel widget-shell report-wizard">
+          <div class="panel-header widget-header">
+            <div>
+              <p class="eyebrow">Мастер формирования</p>
+              <h2 id="accounting-report-wizard-title">Бухгалтерский отчёт</h2>
+              <p id="accounting-report-wizard-subtitle" class="muted">
+                Проверьте текущую ревизию, организацию и месяц перед запуском.
+              </p>
+            </div>
+            <div class="widget-actions">
+              <button
+                id="accounting-report-wizard-close"
+                type="button"
+                class="secondary-button"
+                aria-label="Закрыть мастер бухгалтерского отчёта"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+          <ol
+            id="accounting-report-wizard-steps"
+            class="report-wizard-steps"
+            aria-label="Шаги формирования бухгалтерского отчёта"
+          >
+            <li class="active" aria-current="step"><b>1</b> Параметры</li>
+            <li><b>2</b> Формирование</li>
+            <li><b>3</b> Готовый файл</li>
+          </ol>
+          <form id="accounting-report-wizard-form" class="report-wizard-form">
+            <div class="report-wizard-context">
+              <div>
+                <span>Клиент</span>
+                <strong id="accounting-report-wizard-client">Не выбран</strong>
+              </div>
+              <div>
+                <span>Вид отчёта</span>
+                <strong id="accounting-report-wizard-kind">Не выбран</strong>
+              </div>
+            </div>
+            <section
+              id="accounting-report-wizard-current"
+              class="report-wizard-current"
+              aria-labelledby="accounting-report-wizard-current-title"
+              hidden
+            >
+              <div>
+                <strong id="accounting-report-wizard-current-title">
+                  Текущая ревизия
+                </strong>
+                <span id="accounting-report-wizard-current-meta"></span>
+                <small>Этот файл сохранится после формирования новой ревизии.</small>
+              </div>
+              <a
+                id="accounting-report-wizard-current-download"
+                class="button-link secondary-button"
+                href="#"
+              >
+                Скачать текущий Excel
+              </a>
+            </section>
+            <div class="report-wizard-period-fields">
+              <label>
+                <span>Организация 1С</span>
+                <select id="accounting-report-wizard-organization" required></select>
+                <small class="muted">Отчёты разных организаций не заменяют друг друга.</small>
+              </label>
+              <label>
+                <span>Отчётный месяц</span>
+                <input id="accounting-report-wizard-month" type="month" required />
+                <small class="muted">Расчёт налоговой нагрузки включает данные с начала года.</small>
+              </label>
+            </div>
+            <div class="report-wizard-actions">
+              <button id="accounting-report-wizard-submit" type="submit">
+                Сформировать новую ревизию
+              </button>
+              <button
+                id="accounting-report-wizard-reset"
+                type="button"
+                class="secondary-button"
+                hidden
+              >
+                Сформировать ещё одну
+              </button>
+            </div>
+            <div
+              id="accounting-report-wizard-status"
+              class="report-wizard-status"
+              role="status"
+              aria-live="polite"
+              hidden
+            ></div>
+            <section
+              id="accounting-report-wizard-result"
+              class="report-wizard-result"
+              tabindex="-1"
+              hidden
+            >
+              <div>
+                <strong id="accounting-report-wizard-result-title">
+                  Новая ревизия готова
+                </strong>
+                <span id="accounting-report-wizard-result-copy">
+                  Скачивается именно файл, созданный этим запуском.
+                </span>
+              </div>
+              <div class="report-wizard-downloads">
+                <a
+                  id="accounting-report-wizard-result-download"
+                  class="button-link"
+                  href="#"
+                >
+                  Скачать новый Excel
+                </a>
+              </div>
+            </section>
+          </form>
+        </section>
+      </div>
+
+      <div
         id="integrations-widget-overlay"
         class="widget-overlay integrations-widget-overlay"
         aria-labelledby="integrations-title"
@@ -2893,9 +3022,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260722-tax-load-v6-download-clarity-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260722-tax-load-v6-download-clarity-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260722-tax-load-v6-download-clarity-v1" defer></script>
-    <script src="/static/app.js?v=20260722-tax-load-v6-download-clarity-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260722-accounting-report-wizard-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260722-accounting-report-wizard-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260722-accounting-report-wizard-v1" defer></script>
+    <script src="/static/app.js?v=20260722-accounting-report-wizard-v1" defer></script>
   </body>
 </html>

@@ -3030,7 +3030,8 @@ button.action-insight-card {
 }
 
 .report-wizard-form select,
-.report-wizard-form input[type="date"] {
+.report-wizard-form input[type="date"],
+.report-wizard-form input[type="month"] {
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--line);
