@@ -101,7 +101,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260721-logistics-f4-measurements-v2"
+WEB_BUILD_ID = "20260722-tax-load-v6-download-clarity-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -3645,6 +3645,9 @@ def create_app(
         if report.report_kind in ACCOUNTING_REPORT_KINDS:
             _require_staff_or_403(current, report.tenant_id)
             payload = repository.scenario_payload_for_report(db, report)
+            contract_revision = _contract_revision_token(
+                str(payload.get("contractVersion") or report.methodology_version)
+            )
             payload_sha256 = str(payload.pop("payloadSha256"))
             output_dir = (
                 runtime_settings.export_root_path
@@ -3695,7 +3698,8 @@ def create_app(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 ),
                 filename=(
-                    f"Налоговая_нагрузка_{report.period_start:%Y_%m}.xlsx"
+                    f"Налоговая_нагрузка_{report.period_start:%Y_%m}"
+                    f"{f'_{contract_revision}' if contract_revision else ''}.xlsx"
                     if report.report_kind == "tax_load"
                     else f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx"
                 ),
@@ -4565,6 +4569,11 @@ def _report_excel_export_path(
         "excel",
         settings.export_root_path,
     ) or repository.report_file_path(report, settings.export_root_path)
+
+
+def _contract_revision_token(value: str) -> str:
+    match = re.search(r"(?:^|-)(v\d+)$", value.strip(), flags=re.IGNORECASE)
+    return match.group(1).lower() if match else ""
 
 
 def _require_report_or_404(db: Session, user: User, report_id: str):

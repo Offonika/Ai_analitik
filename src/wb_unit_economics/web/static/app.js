@@ -7707,6 +7707,24 @@ function updateReportDownloadControl() {
   const { href, visible } = reportDownloadContext();
   els.reportDownloadButton.hidden = !visible;
   els.reportDownloadButton.href = visible ? href : "#";
+  els.reportDownloadButton.textContent = "Скачать Excel";
+  els.reportDownloadButton.dataset.tooltip =
+    "Скачать текущий опубликованный Excel-отчёт.";
+  if (visible && isAccountingReportKind()) {
+    const report = state.reports.find((item) => item.id === state.reportId) || {};
+    const contract = String(
+      state.summary?.contractVersion || report.methodologyVersion || "",
+    );
+    const revision = contract.match(/(?:^|-)(v\d+)$/i)?.[1]?.toLowerCase() || "";
+    const generatedAt = formatShortDateTime(report.generatedAt);
+    const details = [revision, generatedAt].filter(Boolean).join(" · ");
+    els.reportDownloadButton.textContent = details
+      ? `Скачать текущий Excel — ${details}`
+      : "Скачать текущий Excel";
+    els.reportDownloadButton.dataset.tooltip = details
+      ? `Скачать текущую ревизию ${details}.`
+      : "Скачать текущую ревизию Excel-отчёта.";
+  }
   syncClientReportControls();
 }
 

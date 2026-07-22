@@ -2405,6 +2405,7 @@ def test_staff_api_generation_idempotency_current_audit_and_excel(
     tax_export = client.get(f"/api/reports/{other_kind_report_id}/export.xlsx")
     assert tax_export.status_code == 200
     assert "xlsx" in tax_export.headers["content-disposition"]
+    assert "v6" in tax_export.headers["content-disposition"]
     tax_workbook = load_workbook(BytesIO(tax_export.content), data_only=True)
     tax_overview = {
         row[0]: row[1]
