@@ -269,8 +269,6 @@ TAX_LOAD_OVERVIEW_FIELDS = (
     "businessStatus",
     "accountantApprovalStatus",
     "generatedAt",
-    "methodologyVersion",
-    "reportId",
 )
 TAX_LOAD_ROW_FIELDS = {
     "Налоги": (
@@ -704,6 +702,13 @@ def write_scenario_excel(
         workbook.properties.title = "Налоговая нагрузка"
         workbook.properties.subject = "Налоговый отчёт с начала года"
         workbook.properties.creator = "Шумейко и партнёры"
+        workbook.properties.identifier = str(
+            (payload.get("meta") or {}).get("reportId") or ""
+        )
+        workbook.properties.version = str(
+            (payload.get("meta") or {}).get("methodologyVersion") or ""
+        )
+        workbook.properties.language = "ru-RU"
         _style_tax_load(workbook)
     else:
         _style(workbook)
