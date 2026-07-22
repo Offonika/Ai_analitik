@@ -691,6 +691,216 @@ def test_latest_r0_report_reads_only_pre_factor_columns() -> None:
     )
 
 
+def test_r0_lineage_preflight_finds_existing_verified_file_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = probe.R0ProbeAccount(
+        api_key="test-key",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+    source_row = source_row_from_payload(
+        {"orderUid": "RAW_ORDER", "nmId": 101},
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+        client_company_id="company-a",
+        source_row_id="source-a",
+        source_hash="hash-a",
+        fallback_date=None,
+    )
+    return_key = source_row.chain_key
+    candidates = [
+        probe.R0ReportContext(
+            "report-new",
+            "tenant-a",
+            "client-a",
+            date(2026, 7, 1),
+            date(2026, 7, 20),
+        ),
+        probe.R0ReportContext(
+            "report-old",
+            "tenant-a",
+            "client-a",
+            date(2026, 6, 1),
+            date(2026, 6, 20),
+        ),
+    ]
+
+    class _Db:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        @staticmethod
+        def scalars(_statement):
+            return [return_key]
+
+        @staticmethod
+        def rollback() -> None:
+            return None
+
+    def _selected(_db, report):
+        if report.id == "report-new":
+            return (
+                [],
+                False,
+                {
+                    "sourceIntegrityFailurePresent": True,
+                    "databaseFileAmbiguityPresent": True,
+                    "databaseStoragePresent": True,
+                    "fileStoragePresent": True,
+                    "unambiguousStoragePresent": False,
+                },
+            )
+        return (
+            [source_row],
+            True,
+            {
+                "databaseStoragePresent": False,
+                "fileStoragePresent": True,
+                "unambiguousStoragePresent": True,
+            },
+        )
+
+    monkeypatch.setattr(probe, "make_engine", lambda _url: object())
+    monkeypatch.setattr(
+        probe, "make_session_factory", lambda _engine: lambda: _Db()
+    )
+    monkeypatch.setattr(
+        probe,
+        "_r0_report_candidates",
+        lambda *_args, **_kwargs: candidates,
+    )
+    monkeypatch.setattr(probe, "_selected_finance_identity_rows", _selected)
+
+    class _Settings:
+        database_url = "sqlite://"
+
+    report = probe.run_r0_lineage_preflight([account], _Settings())
+
+    assert report["candidateReportPresent"] is True
+    assert report["databaseFileAmbiguityPresent"] is True
+    assert report["verifiedUnambiguousReturnLineagePresent"] is True
+    assert report["databaseOnlyVerifiedPresent"] is False
+    assert report["fileOnlyVerifiedPresent"] is True
+    assert report["newReportRequired"] is False
+    assert report["acceptedReuseDecisionRequired"] is True
+    assert report["implementationGate"] is False
+    rendered = str(report)
+    for forbidden in (
+        "tenant-a",
+        "client-a",
+        "cabinet-a",
+        "report-new",
+        "report-old",
+        "RAW_ORDER",
+        "source-a",
+        "company-a",
+        "test-key",
+    ):
+        assert forbidden not in rendered
+
+
+def test_r0_lineage_preflight_preserves_storage_evidence_across_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accounts = [
+        probe.R0ProbeAccount(
+            api_key="key-a",
+            tenant_id="tenant-a",
+            client_id="client-a",
+            wb_cabinet_id="cabinet-a",
+        ),
+        probe.R0ProbeAccount(
+            api_key="key-b",
+            tenant_id="tenant-b",
+            client_id="client-b",
+            wb_cabinet_id="cabinet-b",
+        ),
+    ]
+    source_rows = {
+        "report-a": source_row_from_payload(
+            {"orderUid": "order-a", "nmId": 101},
+            tenant_id="tenant-a",
+            client_id="client-a",
+            wb_cabinet_id="cabinet-a",
+            client_company_id="company-a",
+            source_row_id="source-a",
+            source_hash="hash-a",
+            fallback_date=None,
+        ),
+        "report-b": source_row_from_payload(
+            {"orderUid": "order-b", "nmId": 202},
+            tenant_id="tenant-b",
+            client_id="client-b",
+            wb_cabinet_id="cabinet-b",
+            client_company_id="company-b",
+            source_row_id="source-b",
+            source_hash="hash-b",
+            fallback_date=None,
+        ),
+    }
+
+    class _Db:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        @staticmethod
+        def scalars(_statement):
+            return [row.chain_key for row in source_rows.values()]
+
+        @staticmethod
+        def rollback() -> None:
+            return None
+
+    def _candidates(_db, **kwargs):
+        suffix = kwargs["cabinet_id"][-1]
+        return [
+            probe.R0ReportContext(
+                f"report-{suffix}",
+                kwargs["tenant_id"],
+                kwargs["client_id"],
+                date(2026, 7, 1),
+                date(2026, 7, 20),
+            )
+        ]
+
+    def _selected(_db, report):
+        database = report.id == "report-a"
+        return (
+            [source_rows[report.id]],
+            True,
+            {
+                "databaseStoragePresent": database,
+                "fileStoragePresent": not database,
+                "unambiguousStoragePresent": True,
+            },
+        )
+
+    monkeypatch.setattr(probe, "make_engine", lambda _url: object())
+    monkeypatch.setattr(
+        probe, "make_session_factory", lambda _engine: lambda: _Db()
+    )
+    monkeypatch.setattr(probe, "_r0_report_candidates", _candidates)
+    monkeypatch.setattr(probe, "_selected_finance_identity_rows", _selected)
+
+    class _Settings:
+        database_url = "sqlite://"
+
+    report = probe.run_r0_lineage_preflight(accounts, _Settings())
+
+    assert report["verifiedUnambiguousReturnLineagePresent"] is True
+    assert report["databaseOnlyVerifiedPresent"] is True
+    assert report["fileOnlyVerifiedPresent"] is True
+
+
 def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

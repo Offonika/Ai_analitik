@@ -1,5 +1,5 @@
 ---
-title: "Probe доступности источников логистики (F-0 / R-0/R-0I / C-0)"
+title: "Probe доступности источников логистики (F-0 / R-0/R-0I/R-0L / C-0)"
 doc_type: runbook
 domain: "marketplace-analytics"
 audience: ["engineering", "agent", "operations"]
@@ -31,9 +31,10 @@ F-4 source gate двух measurement endpoints также пройден в от
 процессе: schema подтверждена без вывода raw, идентификаторов, значений, сумм
 или counts. F-5 spec принят; boolean-only R-0I подтвердил source schema, но
 Finance selector fail closed на DB/file ambiguity выбранного immutable report.
-Verified exact crosswalk не доказан, поэтому `implementationGate=false` и
-R-1…R-5 не начинаются. Ниже сохранён воспроизводимый безопасный порядок
-проверки.
+Последующий R-0L не нашёл среди существующих immutable reports ни одного
+verified unambiguous return lineage. Новый report обязателен, exact crosswalk не
+доказан, поэтому `implementationGate=false` и R-1…R-5 не начинаются. Ниже
+сохранён воспроизводимый безопасный порядок проверки.
 
 # Безопасность прогона
 
@@ -104,6 +105,12 @@ R-1…R-5 не начинаются. Ниже сохранён воспроиз�
    последнего immutable report run для кабинета, не раскрывая период. R-1…R-5
    не начинать, пока `matchedPresent=false`, даже если schema обоих источников
    подтверждена.
+8. **Existing lineage:** до создания нового report выполнить
+   `--mode r0-lineage`. Режим не делает внешних запросов, newest-first повторяет
+   production selector для прежних immutable reports и выводит только boolean
+   storage/integrity/reuse признаки. При `newReportRequired=true` остановиться:
+   ручной выбор DB/file копии, удаление одной копии и изменение опубликованного
+   report запрещены.
 
 ## C-0. Калькуляторы (третья очередь)
 
@@ -228,6 +235,36 @@ Production process, БД, configuration, reports и feature flags не меня�
 выбранного, повторно verified Finance storage и повторить тот же R-0I. R-1/R-2
 разрешаются только отдельным положительным source-specific identity gate и
 последующим accepted решением.
+
+# R-0L live existing-lineage gate — 22 июля 2026 года
+
+Перед новым full/report выполнен принятый read-only preflight:
+
+```bash
+PYTHONPATH="$PWD:$PWD/src" .venv/bin/python \
+  scripts/probe_wb_logistics_factors.py --mode r0-lineage
+```
+
+Режим не обращается к WB API. Он newest-first перебирает существующие
+immutable reports разрешённых scopes, требует Finance return fact и повторно
+применяет production lineage/storage selector. Test service environment не
+содержал usable integration и вернул закрытый результат без внешних запросов.
+Transient production-service process только читал metadata и snapshots;
+service, БД, файлы, configuration, reports и flags не менялись.
+
+Boolean-only production evidence подтвердил report candidate и Finance return
+fact, но не нашёл verified unambiguous return lineage. Selector зафиксировал
+source integrity failure и DB/file ambiguity;
+`verifiedUnambiguousReturnLineagePresent=false`, `newReportRequired=true`,
+`acceptedReuseDecisionRequired=false`, `implementationGate=false`. Ни
+database-only, ни file-only report не принят для повторного R-0I.
+
+В вывод и Markdown не переносились provider labels, counts, клиентские окна,
+identifiers, причины, комментарии, media, суммы, paths, hashes или raw rows.
+Следующий data-шаг — новый immutable report из однозначного verified Finance
+storage. Этот preflight не разрешает production migration/runtime rollout,
+retention deletion или модификацию опубликованного report; для них нужны
+отдельное решение и собственные safety-предусловия.
 
 # F-4 live source gate
 

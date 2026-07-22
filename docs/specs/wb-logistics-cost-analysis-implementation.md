@@ -44,7 +44,7 @@ test_anchors:
     symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
-updated_at: "2026-07-21"
+updated_at: "2026-07-22"
 ---
 
 # Статус документа
@@ -79,10 +79,12 @@ Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
 Ближайший factor rollout допускается только на test; factor client flags
 остаются выключенными до отдельного согласования. F-1…F-4 приняты на staff-only
 test. Для F-5 принят отдельный контракт причин возвратов; следующий разрешённый
-шаг — повторное identity evidence на новом immutable report с однозначным
-Finance storage. Boolean-only R-0I подтвердил source schema, но production
-selector обнаружил DB/file ambiguity, поэтому verified lineage и exact
-crosswalk не доказаны, а `implementationGate=false`. R-1…R-5 не начинаются.
+шаг — отдельно разрешённое создание нового immutable report с однозначным
+Finance storage и повторное identity evidence. Boolean-only R-0I подтвердил
+source schema, production selector обнаружил DB/file ambiguity, а read-only
+R-0L не нашёл пригодного прежнего report. Поэтому
+`newReportRequired=true`, verified lineage и exact crosswalk не доказаны,
+`implementationGate=false`. R-1…R-5 не начинаются.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -1025,6 +1027,13 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-22 — F-5 R-0L read-only проверил существующие immutable reports и
+  не нашёл verified unambiguous Finance return lineage. Наличие кандидатов и
+  return fact подтверждено, но source integrity failure и DB/file ambiguity
+  сохраняются; `newReportRequired=true`, implementation gate закрыт. Evidence
+  не разрешает production migration/runtime rollout, retention mutation или
+  изменение опубликованного report.
 
 - 2026-07-22 — F-5 R-0I выполнен fail closed: внешний source gate пройден, но
   выбранный Finance lineage имеет DB/file storage ambiguity. Exact same-name

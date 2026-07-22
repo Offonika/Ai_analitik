@@ -125,10 +125,12 @@ readiness, read-only API и responsive UI работают за отдельны
 F-5 «Причины возвратов» принят как отдельный spec-first контракт 22 июля 2026
 года. Boolean-only R-0I подтвердил source schema, но Finance selector fail
 closed на DB/file storage ambiguity выбранного immutable report. Verified
-lineage и exact same-name crosswalk не доказаны; `implementationGate=false`.
-Существующий goods-return client считается prework, а не end-to-end
-реализацией. Claims, context/mart/API/UI и rollout не начинаются до повторного
-identity evidence на новом unambiguous verified snapshot.
+lineage и exact same-name crosswalk не доказаны. Read-only R-0L затем не нашёл
+подходящего verified unambiguous lineage среди прежних immutable reports;
+`newReportRequired=true`, `implementationGate=false`. Существующий goods-return
+client считается prework, а не end-to-end реализацией. Claims,
+context/mart/API/UI и rollout не начинаются до повторного identity evidence на
+новом unambiguous verified snapshot.
 
 # Цель
 
@@ -1121,10 +1123,19 @@ blocker с report run, который обязан был пройти gate, н�
 Закрытые probe и staff-приёмка (2026-07-19…21): F-1, F-2, F-3 и F-4 приняты на
 staff-only test; production/client enable не выполнялся. F-5 R-0I 22 июля
 подтвердил внешний source gate, но остановился на DB/file ambiguity Finance
-lineage. F-5 implementation и rollout не начинаются до нового unambiguous
-verified snapshot и положительного source-specific identity gate.
+lineage. Последующий read-only R-0L не нашёл пригодного существующего report и
+подтвердил `newReportRequired=true`. F-5 implementation и rollout не начинаются
+до нового unambiguous verified snapshot и положительного source-specific
+identity gate.
 
 # Changelog
+
+- 2026-07-22 — F-5 R-0L newest-first проверил существующие immutable reports
+  без внешних API и записей. Verified unambiguous return lineage не найден;
+  selector повторно зафиксировал source integrity failure и DB/file ambiguity,
+  поэтому `newReportRequired=true`, reuse decision отсутствует, R-1…R-5
+  закрыты. Evidence не разрешает migration/runtime rollout или retention
+  mutation.
 
 - 2026-07-22 — F-5 R-0I выполнен fail closed: source schema доступна, но
   production selector обнаружил DB/file storage ambiguity выбранного Finance

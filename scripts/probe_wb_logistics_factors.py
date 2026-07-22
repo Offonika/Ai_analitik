@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only availability probe for WB logistics factors (F-0/F-4/R-0/R-0I).
+"""Read-only availability probe for WB logistics factors (F-0/F-4/R-0/R-0I/R-0L).
 
 Проверяет доступность внешних WB read-only источников второй/третьей очереди
 логистики (тарифы, статистика склад/направление, причины возвратов) для
@@ -22,10 +22,11 @@ read-only GET. Запускать на сервере через окружен�
 `docs/specs/wb-logistics-cost-factors-implementation.md` и runbook
 `docs/runbooks/wb-logistics-factors-probe.md`.
 
-Режимы ``--mode f4``, ``--mode r0`` и ``--mode r0-identity`` строже legacy
-F-0: они не печатают provider labels, количество интеграций/строк, HTTP body,
-идентификаторы, суммы или значения полей. В выводе остаются только булевы
-признаки доступности, schema gate и identity gate.
+Режимы ``--mode f4``, ``--mode r0``, ``--mode r0-identity`` и
+``--mode r0-lineage`` строже legacy F-0: они не печатают provider labels,
+количество интеграций/строк, HTTP body, идентификаторы, суммы или значения
+полей. В выводе остаются только булевы признаки доступности, schema, lineage и
+identity gates.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any, NamedTuple, Protocol
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from wb_unit_economics.logistics_analysis import (
     LogisticsSourceRow,
@@ -51,6 +52,7 @@ from wb_unit_economics.web.models import (
     SourceLoad,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceSnapshotRow,
     TenantIntegration,
     WbCabinet,
 )
@@ -758,6 +760,41 @@ def _latest_r0_report(
     cabinet_id: str,
 ) -> R0ReportContext | None:
     row = db.execute(
+        _r0_report_query(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            cabinet_id=cabinet_id,
+        ).limit(1)
+    ).first()
+    return R0ReportContext(*row) if row is not None else None
+
+
+def _r0_report_candidates(
+    db: Any,
+    *,
+    tenant_id: str,
+    client_id: str,
+    cabinet_id: str,
+) -> list[R0ReportContext]:
+    return [
+        R0ReportContext(*row)
+        for row in db.execute(
+            _r0_report_query(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                cabinet_id=cabinet_id,
+            )
+        )
+    ]
+
+
+def _r0_report_query(
+    *,
+    tenant_id: str,
+    client_id: str,
+    cabinet_id: str,
+) -> Any:
+    return (
         select(
             ReportRun.id,
             ReportRun.tenant_id,
@@ -788,9 +825,7 @@ def _latest_r0_report(
             ),
         )
         .order_by(ReportRun.generated_at.desc(), ReportRun.id.desc())
-        .limit(1)
-    ).first()
-    return R0ReportContext(*row) if row is not None else None
+    )
 
 
 def _selected_finance_identity_rows(
@@ -813,6 +848,9 @@ def _selected_finance_identity_rows(
         "databaseFileAmbiguityPresent": False,
         "fileSnapshotIntegrityFailurePresent": False,
         "unclassifiedBlockingFailurePresent": False,
+        "databaseStoragePresent": False,
+        "fileStoragePresent": False,
+        "unambiguousStoragePresent": False,
     }
 
     loads = list(
@@ -876,6 +914,28 @@ def _selected_finance_identity_rows(
         collections_by_run.setdefault(str(collection.refresh_run_id), []).append(
             R0RefreshCollectionContext(*collection[1:])
         )
+    file_storage_present = any(
+        ((collection.payload or {}).get("rowPersistence") or {}).get("status")
+        in {"file_authoritative", "skipped_large_snapshot"}
+        and ((collection.payload or {}).get("rowPersistence") or {}).get(
+            "rawFilesAuthoritative"
+        )
+        is True
+        for collections in collections_by_run.values()
+        for collection in collections
+    )
+    database_storage_present = bool(
+        run_ids
+        and db.scalar(
+            select(func.count(SourceSnapshotRow.id)).where(
+                SourceSnapshotRow.refresh_run_id.in_(run_ids),
+                SourceSnapshotRow.source_type == "wb_finance_detail",
+            )
+        )
+    )
+    failure["databaseStoragePresent"] = database_storage_present
+    failure["fileStoragePresent"] = file_storage_present
+    failure["unambiguousStoragePresent"] = False
     if run_ids:
         for run in db.execute(
             select(
@@ -967,6 +1027,7 @@ def _selected_finance_identity_rows(
     failure["fileSnapshotIntegrityFailurePresent"] = (
         "file_authoritative_snapshot_invalid" in blocking
     )
+    failure["unambiguousStoragePresent"] = verified
     classified_blocking = {
         "invalid_source_payload_shape",
         "source_payload_hash_mismatch",
@@ -1118,6 +1179,138 @@ def load_r0_finance_identity(
                 **failure,
             }
     return maps_by_scope, state_by_scope
+
+
+def run_r0_lineage_preflight(
+    accounts: list[R0ProbeAccount],
+    settings: WebSettings,
+) -> dict[str, bool]:
+    """Scan immutable reports without API calls and emit boolean-only evidence."""
+
+    report: dict[str, bool] = {
+        "candidateReportPresent": False,
+        "financeReturnFactPresent": False,
+        "verifiedLineagePresent": False,
+        "verifiedUnambiguousReturnLineagePresent": False,
+        "databaseOnlyVerifiedPresent": False,
+        "fileOnlyVerifiedPresent": False,
+        "lineageMetadataFailurePresent": False,
+        "schemaCompatibilityFailurePresent": False,
+        "selectorContractFailurePresent": False,
+        "sourceIntegrityFailurePresent": False,
+        "databaseFileAmbiguityPresent": False,
+        "fileSnapshotIntegrityFailurePresent": False,
+    }
+    scopes = {account.scope for account in accounts if account.scope is not None}
+    engine = make_engine(settings.database_url)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        for tenant_id, client_id, cabinet_id in sorted(scopes):
+            try:
+                candidates = _r0_report_candidates(
+                    db,
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    cabinet_id=cabinet_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                sqlstate = str(
+                    getattr(getattr(exc, "orig", None), "sqlstate", "")
+                )
+                report["schemaCompatibilityFailurePresent"] = (
+                    report["schemaCompatibilityFailurePresent"]
+                    or sqlstate == "42703"
+                )
+                report["selectorContractFailurePresent"] = (
+                    report["selectorContractFailurePresent"]
+                    or isinstance(exc, (AttributeError, TypeError))
+                )
+                continue
+            report["candidateReportPresent"] = (
+                report["candidateReportPresent"] or bool(candidates)
+            )
+            for candidate in candidates:
+                try:
+                    return_keys = set(
+                        db.scalars(
+                            select(ReportLogisticsOrderRow.chain_key).where(
+                                ReportLogisticsOrderRow.report_run_id
+                                == candidate.id,
+                                ReportLogisticsOrderRow.wb_cabinet_id == cabinet_id,
+                                or_(
+                                    ReportLogisticsOrderRow.return_quantity != 0,
+                                    ReportLogisticsOrderRow.logistics_reverse != 0,
+                                ),
+                            )
+                        )
+                    )
+                    rows, verified, state = _selected_finance_identity_rows(
+                        db, candidate
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    sqlstate = str(
+                        getattr(getattr(exc, "orig", None), "sqlstate", "")
+                    )
+                    report["schemaCompatibilityFailurePresent"] = (
+                        report["schemaCompatibilityFailurePresent"]
+                        or sqlstate == "42703"
+                    )
+                    report["selectorContractFailurePresent"] = (
+                        report["selectorContractFailurePresent"]
+                        or isinstance(exc, (AttributeError, TypeError))
+                    )
+                    continue
+                report["financeReturnFactPresent"] = (
+                    report["financeReturnFactPresent"] or bool(return_keys)
+                )
+                for field in (
+                    "lineageMetadataFailurePresent",
+                    "schemaCompatibilityFailurePresent",
+                    "selectorContractFailurePresent",
+                    "sourceIntegrityFailurePresent",
+                    "databaseFileAmbiguityPresent",
+                    "fileSnapshotIntegrityFailurePresent",
+                ):
+                    report[field] = report[field] or bool(state.get(field))
+                report["verifiedLineagePresent"] = (
+                    report["verifiedLineagePresent"] or verified
+                )
+                return_lineage_present = bool(
+                    verified
+                    and state.get("unambiguousStoragePresent")
+                    and return_keys
+                    and any(
+                        row.wb_cabinet_id == cabinet_id
+                        and row.chain_key in return_keys
+                        for row in rows
+                    )
+                )
+                if not return_lineage_present:
+                    continue
+                report["verifiedUnambiguousReturnLineagePresent"] = True
+                report["databaseOnlyVerifiedPresent"] = report[
+                    "databaseOnlyVerifiedPresent"
+                ] or bool(
+                    state.get("databaseStoragePresent")
+                    and not state.get("fileStoragePresent")
+                )
+                report["fileOnlyVerifiedPresent"] = report[
+                    "fileOnlyVerifiedPresent"
+                ] or bool(
+                    state.get("fileStoragePresent")
+                    and not state.get("databaseStoragePresent")
+                )
+                break
+    report["newReportRequired"] = not report[
+        "verifiedUnambiguousReturnLineagePresent"
+    ]
+    report["acceptedReuseDecisionRequired"] = report[
+        "verifiedUnambiguousReturnLineagePresent"
+    ]
+    report["implementationGate"] = False
+    return report
 
 
 def evaluate_r0_identity(
@@ -1541,9 +1734,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("legacy", "f4", "r0", "r0-identity"),
+        choices=("legacy", "f4", "r0", "r0-identity", "r0-lineage"),
         default="legacy",
-        help="legacy F-0 or privacy-restricted F-4/R-0/R-0I gate",
+        help="legacy F-0 or privacy-restricted F-4/R-0/R-0I/R-0L gate",
     )
     parser.add_argument(
         "--days",
@@ -1606,6 +1799,16 @@ def main(argv: list[str] | None = None) -> None:
         if not accounts:
             report["completeSourceGate"] = False
         report["implementationGate"] = False
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    if args.mode == "r0-lineage":
+        accounts, integration_access_incomplete = load_r0_accounts(settings)
+        report = {
+            "mode": "r0_existing_lineage_preflight",
+            "authorizedIntegrationPresent": bool(accounts),
+            "integrationAccessIncomplete": integration_access_incomplete,
+        }
+        report.update(run_r0_lineage_preflight(accounts, settings))
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     report: dict = {"tenant": settings.source_refresh_tenant}

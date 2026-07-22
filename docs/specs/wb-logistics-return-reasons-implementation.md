@@ -44,9 +44,11 @@ updated_at: "2026-07-22"
 содержит, и как честно показывать её отсутствие.
 
 Решения приняты 22 июля 2026 года после повторной построчной сверки текущего
-официального WB OpenAPI. После закрытого R-0 join gate выполнен отдельный
-безопасный R-0I identity probe. Он fail closed на storage ambiguity Finance
-lineage, поэтому подпакеты R-1…R-5 по-прежнему не разрешены. Они начинаются по
+официального WB OpenAPI. После закрытого R-0 join gate выполнены отдельный
+безопасный R-0I identity probe и read-only R-0L поиск пригодного прежнего
+lineage. Оба этапа fail closed: storage ambiguity Finance lineage не позволила
+доказать exact crosswalk, а подходящего существующего immutable report не
+найдено. Поэтому подпакеты R-1…R-5 по-прежнему не разрешены. Они начинаются по
 отдельности только после обезличенного live evidence совместимого exact
 crosswalk; этот статус не подтверждает реализацию, client enable или rollout.
 
@@ -77,6 +79,13 @@ R-0I также выполнен 22 июля. Внешний source gate и вы
 `source_storage_ambiguity`; verified lineage отсутствует, оба source-specific
 identity gate и общий gate закрыты. Это не доказательство отсутствия same-name
 совпадения: сравнение не принимается до нового unambiguous verified snapshot.
+
+R-0L выполнен в тот же день без внешних API-вызовов. Newest-first проверка
+существующих immutable reports нашла report candidates и Finance return fact,
+но не нашла ни одного verified unambiguous return lineage. Зафиксированы
+`sourceIntegrityFailurePresent=true`, `databaseFileAmbiguityPresent=true` и
+`newReportRequired=true`; автоматическое переиспользование прежнего report не
+разрешено, `implementationGate=false`.
 
 # Цель
 
@@ -309,6 +318,47 @@ paths, hashes или raw rows.
 Изменять опубликованный report, выбирать DB или file случайно либо начинать
 R-1/R-2 до положительного source-specific gate запрещено.
 
+## R-0L existing lineage discovery contract
+
+Перед созданием нового report разрешён отдельный read-only R-0L preflight. Он
+не обращается к WB API и не изменяет БД/файлы: для каждого разрешённого scope
+перебирает существующие immutable reports newest-first и повторно проверяет их
+Finance lineage тем же production selector. Report с DB/file ambiguity,
+metadata/scope/hash/revision/path failure или без Finance return fact не может
+считаться подходящим и не выбирается автоматически.
+
+`--mode r0-lineage` публикует только boolean-признаки: наличие report
+candidate, verified unambiguous return lineage, database-only/file-only
+storage, ambiguity/integrity/schema/selector failure и `newReportRequired`.
+Идентификаторы, число reports/rows, периоды, paths, hashes, суммы и raw rows не
+выводятся. Даже найденный старый verified report не меняет R-0I window сам:
+его применение требует отдельного accepted решения с явным выравниванием
+source window. Если verified candidate отсутствует, новый immutable report
+обязателен; R-0L сам его не создаёт.
+
+## R-0L live evidence — 22 июля 2026 года
+
+Test service environment не содержал usable WB integration и корректно вернул
+закрытый результат без внешних запросов. Transient production-service process
+не обращался к WB API и только read-only перебрал metadata и Finance lineage
+существующих immutable reports. Production service, БД, файлы, configuration,
+reports и feature flags не менялись.
+
+Boolean-only evidence подтвердил наличие report candidate и Finance return
+fact, но не подтвердил verified lineage ни в database-only, ни в file-only
+storage. Production selector обнаружил source integrity failure и DB/file
+ambiguity; `verifiedUnambiguousReturnLineagePresent=false`,
+`newReportRequired=true`, `acceptedReuseDecisionRequired=false` и
+`implementationGate=false`.
+
+В evidence не переносились provider labels, counts, клиентские периоды,
+identifiers, причины, комментарии, media, суммы, paths, hashes или raw rows.
+Следующий допустимый data-шаг — новый immutable report из однозначного verified
+Finance storage. R-0L не разрешает ради этого применять production migrations,
+менять runtime, удалять одну из копий storage или модифицировать опубликованный
+report: такие операции требуют отдельного rollout/retention решения и своих
+предусловий.
+
 # Модель связывания и покрытия
 
 - Факт и сумма возврата берутся ТОЛЬКО из Finance (первая очередь); причина —
@@ -465,15 +515,18 @@ factors и return-reasons master; client дополнительно требуе
 2. `R-0I Identity crosswalk` — выполнен fail closed: source gate пройден, но
    DB/file ambiguity не позволила получить verified Finance lineage; все
    identity gates закрыты и join не изменён.
-3. `R-1 goods-return` — довести существующий prework до зарегистрированного raw
+3. `R-0L Existing lineage discovery` — read-only поиск уже существующего
+   verified unambiguous return lineage до нового report; не меняет R-0I window
+   и ничего не создаёт.
+4. `R-1 goods-return` — довести существующий prework до зарегистрированного raw
    snapshot, selector, нормализации `reason`, exact join и статусов покрытия.
-4. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
+5. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
    наличия комментария без переноса текста из raw.
-5. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
+6. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
    «Возвраты».
-6. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
+7. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
    рекомендаций обратной логистики.
-7. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
+8. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
    клиентском включении.
 
 Каждый подпакет — за выключенным флагом и additive-миграцией схемы.
@@ -514,6 +567,9 @@ Design-часть принята 22 июля 2026 года. Реализация
 - R-0I: same-name `srid↔srid`/`orderId↔orderId`, canonical-chain resolution,
   кабинетная изоляция, incomplete key, source/canonical ambiguity, pre-factor
   schema compatibility, DB/file ambiguity, transaction isolation и запрет raw;
+- R-0L: newest-first immutable report scan, production selector reuse,
+  database-only/file-only classification, return-fact requirement, отсутствие
+  автоматического выбора и boolean-only output;
 - integration: сборка `report_logistics_return_reason_rows` из обезличенного
   снимка, lineage и hash; сумма Finance не меняется;
 - source integration: DB/file parity, primary/base precedence, manifest/hash/
@@ -541,10 +597,14 @@ Design-часть принята 22 июля 2026 года. Реализация
 
 1. Выполнить R-0 probe в авторизованном read-only service environment без
    публикации raw и без изменения среды.
-2. Собрать доступное покрытие причин для одного репрезентативного отчёта.
-3. Включить причину consultant/admin за отдельным feature flag без клиентской
+2. Выполнить R-0I и R-0L. Если R-0L не нашёл verified unambiguous lineage,
+   остановиться до отдельно разрешённого создания нового immutable report;
+   DB/file копию вручную не выбирать и не удалять.
+3. После положительного source-specific identity gate собрать доступное
+   покрытие причин для одного репрезентативного отчёта.
+4. Включить причину consultant/admin за отдельным feature flag без клиентской
    публикации.
-4. После приёмки — отдельное решение о клиентском включении с проверкой
+5. После приёмки — отдельное решение о клиентском включении с проверкой
    обработки персональных данных.
 
 Rollback отключает новые маршруты и блок причины, не меняя существующие отчёты,
@@ -577,6 +637,20 @@ Rollback отключает новые маршруты и блок причин
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-22 — выполнен read-only R-0L: среди существующих immutable reports
+  не найден verified unambiguous Finance return lineage. Report candidates и
+  return fact присутствуют, но production selector повторно зафиксировал
+  source integrity failure и DB/file ambiguity. `newReportRequired=true`,
+  автоматическое reuse отсутствует, implementation gate закрыт. Создание нового
+  report, migration/runtime rollout и retention mutation этим evidence не
+  разрешены.
+
+- 2026-07-22 — перед любым новым full/report принят read-only R-0L existing
+  lineage discovery. Он newest-first проверяет прежние immutable reports тем же
+  production selector, но публикует только booleans и ничего не выбирает/не
+  создаёт. Это отделяет необходимость нового report от возможности безопасно
+  повторить R-0I на уже существующем verified unambiguous lineage.
 
 - 2026-07-22 — R-0I live probe прошёл внешний source gate, но fail closed на
   DB/file ambiguity выбранного Finance snapshot. Verified lineage и exact
