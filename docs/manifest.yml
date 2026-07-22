@@ -179,7 +179,7 @@ documents:
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
     operational_docs: ["docs/runbooks/wb-logistics-v4-continuation.md"]
-    summary: "Accepted staff-ready реализация WB-логистики v5: строгий data gate, fail-closed финансовые KPI, фактические затраты, рекомендации и обезличенные цепочки заказов."
+    summary: "Accepted staff-ready реализация WB-логистики v5: F-1…F-4 приняты на staff-only test; F-5 R-0L требует новый immutable report с однозначным Finance lineage."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
     search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
   - path: "docs/specs/wb-logistics-cost-factors-implementation.md"
@@ -188,7 +188,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted спек второй очереди WP-5: F-1…F-4 приняты на staff-only test; F-5 R-0I source gate пройден, но Finance DB/file ambiguity закрыла verified identity gate; client/production rollout не выполнялся."
+    summary: "Accepted спек второй очереди WP-5: F-1…F-4 приняты на staff-only test; F-5 R-0L не нашёл пригодного существующего lineage и требует новый immutable report; client/production rollout не выполнялся."
     read_when: "Проектируется вторая очередь логистики WB: габариты, Analytics замеры/удержания, тарифы, склады, маршруты, витрины dimensions/measurements/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/wb-logistics-return-reasons-implementation.md"
@@ -197,7 +197,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted F-5 контракт причин возвратов: R-0I source schema подтверждена, но Finance DB/file ambiguity не дала verified exact crosswalk и implementation gate закрыт; claims остаётся только безопасным признаком без raw comment."
+    summary: "Accepted F-5 контракт причин возвратов: R-0I/R-0L fail closed на Finance DB/file ambiguity, новый immutable report обязателен, exact crosswalk и implementation gate закрыты."
     read_when: "Проектируется причина возврата WB: источники goods-return/claims, связывание по srid, покрытие причин, unmatched или обработка персональных данных покупателя."
     search_terms: ["причина возврата", "goods-return", "claims", "user_comment", "srid", "возвраты покупателей"]
   - path: "docs/specs/wb-logistics-calculators-implementation.md"
@@ -463,12 +463,12 @@ documents:
     source_of_truth: false
     summary: "Последнее записанное состояние WB-логистики по средам, evidence и безопасный путь к test-rollout v5."
   - path: "docs/runbooks/wb-logistics-factors-probe.md"
-    title: "Probe доступности источников логистики (F-0 / R-0/R-0I / C-0)"
+    title: "Probe доступности источников логистики (F-0 / R-0/R-0I/R-0L / C-0)"
     doc_type: "runbook"
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Операционный чеклист WB-источников второй/третьей очереди и причин возвратов: read-only R-0/R-0I, verified lineage/storage gates, лимиты, матрица доступности и безопасность прогона."
+    summary: "Операционный чеклист WB-источников второй/третьей очереди и причин возвратов: read-only R-0/R-0I/R-0L, verified lineage/storage gates и безопасный путь к новому immutable report."
   - path: "docs/runbooks/wb-logistics-mvp-production-rollout.md"
     title: "Production rollout MVP логистики (первая очередь)"
     doc_type: "runbook"
