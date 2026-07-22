@@ -3,12 +3,12 @@ spec_id: "workspace-shumeyko-partners-wb-logistics-return-reasons-implementation
 title: "WB: причины возвратов (goods-return и claims)"
 doc_type: spec
 domain: "marketplace-analytics"
-status: draft
+status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
-related_tests: [tests/test_wb_finance.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -24,37 +24,50 @@ ai_sections:
   tests: "Test Plan"
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
-updated_at: "2026-07-19"
+updated_at: "2026-07-22"
 ---
 
 # Статус документа
 
-Статус — `draft`. Это подчинённый design-спек внутри truth_scope
+Статус — `accepted`. Это подчинённый implementation-spec внутри truth_scope
 `logistics-cost-analysis`. Канонический документ scope — accepted
 [`docs/specs/wb-logistics-cost-analysis-implementation.md`](wb-logistics-cost-analysis-implementation.md)
-(`truth_priority: 100`); при любом расхождении действует он. Draft не является
+(`truth_priority: 100`); при любом расхождении действует он. Спек не является
 источником истины (`source_of_truth: false`) и не меняет формулы, классификацию,
 финансовый gate первой очереди или границу факт/оценка/гипотеза.
 
-Назначение draft — спроектировать ДО кода отдельный read-only источник причин
+Назначение спека — закрепить ДО end-to-end кода отдельный read-only слой причин
 возвратов покупателя и его связывание с уже готовым фактом возврата из Finance.
 Ключевое ограничение канона: Finance подтверждает ФАКТ и СУММУ возврата, но не
 причину покупателя; интерфейс не придумывает причину. Этот draft описывает, как
 безопасно добавить причину там, где отдельный WB-источник её действительно
 содержит, и как честно показывать её отсутствие.
 
-Живой probe в этом изменении не выполнялся: он требует авторизованных read-only
-токенов и обращения к внешним WB API. Здесь зафиксированы план probe и проектные
-решения. Переход в `accepted` — после probe на реальном снимке (без публикации
-raw) и построчной сверки контрактов по Swagger.
+Решения приняты 22 июля 2026 года после повторной построчной сверки текущего
+официального WB OpenAPI. `accepted` разрешает только безопасный R-0 probe.
+Подпакеты R-1…R-5 начинаются после обезличенного live evidence доступности и
+покрытия; этот статус не подтверждает реализацию, client enable или rollout.
 
 # Текущее состояние реализации
 
 Первая очередь (`wb-logistics-v5`) считает обратную логистику и суммы возвратов
 из Finance, но НЕ содержит причину возврата и корректно пишет `Причина
-недоступна в Finance`. Отдельного коннектора причин возвратов сейчас нет:
-`goods-return` и `claims` не подключены. Этот draft — отдельный источник, его
-нельзя смешивать с готовым Finance gate.
+недоступна в Finance`.
+
+В `main` уже есть предварительный read-only `goods-return` client/flatten/export
+и файловый вызов из full/weekly source refresh. Это prework, а не завершённый
+источник: коллекция не зарегистрирована как авторитетный snapshot, нет
+lineage/context/mart/API/UI и нет связывания с Finance. `claims` connector
+отсутствует. Живой probe 19 июля подтвердил доступ и ожидаемые имена полей
+`goods-return` только для разрешённых token scopes; claims доступен не для
+каждого scope.
+
+R-0 выполнен 22 июля 2026 года после принятия спека. Source schema gate пройден,
+но exact Finance/source join не подтверждён даже на максимальном 31-дневном
+goods-return window, выровненном по последнему immutable report. Поэтому
+`implementationGate=false`: R-1…R-5 не начинаются до отдельного evidence
+совместимого identity crosswalk. `nm_id`, `srid` или `orderId` отдельно не
+разрешены как обход.
 
 # Цель
 
@@ -79,11 +92,12 @@ raw) и построчной сверки контрактов по Swagger.
   финансового возврата.
 - `Заявка покупателя` — запись `claims` с `user_comment` (комментарий
   покупателя) и `wb_comment`. Ограничена недавним окном.
-- `srid` — ключ связывания заявки/возврата с заказом. Единственный внешний
-  идентификатор, допустимый для join; не раскрывается клиенту без бизнес-нужды.
-- `Персональные данные покупателя` — `user_comment`, фото и вложения заявок.
-  Обрабатываются как чувствительные: не показываются клиенту дословно без
-  необходимости и не передаются AI как raw.
+- `Return join key` — точный `(wb_cabinet_id, srid, nm_id)`. `srid` или `nm_id`
+  отдельно, совпадение в другом кабинете и order-only fallback не являются
+  достаточной связью.
+- `Персональные/чувствительные данные` — `user_comment`, `origin_id_info`, фото,
+  видео и иные вложения заявки. Они остаются только в защищённом raw snapshot;
+  в mart/API/AI переносится только безопасный признак наличия комментария.
 
 `goods-return.reason` и `claims.user_comment` НЕ взаимозаменяемы: это разные
 сущности с разными окнами и охватом. Их нельзя объединять в один «истинный»
@@ -94,8 +108,9 @@ raw) и построчной сверки контрактов по Swagger.
 ## В scope
 
 - read-only коннекторы `goods-return` и `claims` с сохранением raw snapshot до
-  нормализации;
-- связывание причины с фактом возврата по `srid`/заказу без дублирования сумм;
+  нормализации и отдельными source identities;
+- связывание причины с фактом возврата только по точному return join key без
+  дублирования сумм;
 - явные статусы покрытия: `подтверждена` / `гипотеза` / `недоступна`, включая
   `unmatched` (причина есть, а факта в срезе нет — и наоборот);
 - витрина покрытия причин на уровне товара/возврата;
@@ -106,21 +121,22 @@ raw) и построчной сверки контрактов по Swagger.
 
 Наследует Out Of Scope канона. Дополнительно вне scope:
 
-- любые write-методы, включая ответ покупателю `POST returns-api /api/v1/claim`;
+- любые write-методы, включая ответ покупателю `PATCH returns-api /api/v1/claim`;
 - трактовка `goods-return.reason` как причины каждого финансового возврата;
 - смешивание `reason` и `user_comment` в единый столбец;
-- показ дословных персональных комментариев/фото покупателя клиенту без
-  бизнес-необходимости;
+- перенос дословных комментариев, `origin_id_info`, фото, видео или ссылок на
+  вложения в mart, API, UI или AI;
 - изменение финансового факта или суммы возврата из-за наличия/отсутствия
   причины;
-- восстановление причины за исторический период, который источник не покрывает.
+- восстановление причины за исторический период, который источник не покрывает;
+- автоматическая генерация или сохранение гипотезы как source fact.
 
 # Источники и границы чтения
 
 Оба метода read-only, вызываются токенами минимально необходимых категорий.
-Имена полей/путей взяты из официальных страниц WB и НЕ сверены построчно по
-Swagger; поля с пометкой `требует подтверждения` фиксируются контрактом только
-после probe.
+Пути, параметры, поля примеров и лимиты повторно сверены 22 июля 2026 года по
+текущему официальному WB OpenAPI. Live probe всё равно обязан fail closed при
+расхождении фактической envelope/schema.
 
 ## Возвраты продавцу — `goods-return`
 
@@ -128,66 +144,118 @@ Swagger; поля с пометкой `требует подтверждения
   (токен «Аналитика»).
 - Поля: `reason` (причина), `status`, `returnType`, `srid`, `nmId`, `barcode`,
   `orderId`.
-- Ограничения: `dateFrom`/`dateTo` (`YYYY-MM-DD`), максимум **31 день** за
-  запрос; лимит **1 запрос/мин**; обновление ~30 мин; хранение до 90 дней.
+- Envelope: объект с массивом `report`; другой тип или отсутствие ожидаемой
+  envelope — `schema_mismatch`, а не пустой успешный snapshot.
+- Ограничения: обязательные `dateFrom`/`dateTo` (`YYYY-MM-DD`), максимум
+  **31 день** за запрос; лимит **1 запрос/мин**, burst 10. Официальный контракт
+  не обещает глубину истории, поэтому её определяет только live probe.
 - Описывает возврат/перемещение товара продавцу, не универсальную причину.
 
 ## Заявки покупателей — `claims`
 
 - `GET https://returns-api.wildberries.ru/api/v1/claims` (токен «Возвраты
   покупателями»).
-- Обязательный параметр `is_archive` — строка (`"false"` — активные, `"true"` —
-  архив); без него ответ 400.
+- Обязательный параметр `is_archive` — **boolean** (`false` — на рассмотрении,
+  `true` — в архиве); без него ответ 400. Legacy-описание типа string больше не
+  является контрактом.
+- Pagination: `limit` от 1 до 200 (default 50), `offset >= 0`, provider `total`;
+  active и archive собираются раздельно до точной сверки `total`.
 - Поля: `id`, `claim_type`, `status`, `nm_id`, `user_comment`, `wb_comment`,
-  `srid`, `dt`, `imt_id`, `actions`, вложения (формат WEBP с 14.10).
-- Окно: активные — последние **14 дней**; более старые — через `is_archive=true`
-  (глубина архива `требует подтверждения`). Лимит **20 запросов/мин**.
-- `POST /api/v1/claim` (ответ покупателю) — write, в read-only контур не входит.
+  `srid`, `dt`, `order_dt`, `actions`, `origin_id_info`, фото и видео.
+- Окно метода — текущие **14 дней**. `is_archive=true` выбирает статус заявки,
+  но не является документированным глубоким историческим архивом. Лимит для
+  personal/service token — **20 запросов/мин**.
+- `PATCH /api/v1/claim` (ответ покупателю) — write, в read-only контур не
+  входит.
 
 ## Read-only boundary
 
 Новые write-методы запрещены. Разные rate limits (goods-return 1/мин; claims
-20/мин) требуют раздельного бюджета запросов и backoff на HTTP 429. Raw snapshot
-причин сохраняется до нормализации; персональные данные не копируются в Git,
-Markdown или вывод.
+20/мин) требуют раздельного бюджета запросов и ограниченного backoff на HTTP
+429. HTTP 401/402/403 считается недоступным scope, а не пустым результатом. Raw
+snapshot сохраняется до нормализации в tenant/cabinet scope; чувствительные
+поля не копируются в Git, Markdown, логи, mart, API или AI.
 
 # Техническая проверка доступности источников
 
-До кода на авторизованном тестовом снимке без публикации raw подтвердить по
-каждому источнику статус `подтверждён` / `частично` / `недоступен`.
+До R-1…R-5 на авторизованном read-only контуре без публикации raw подтвердить
+по каждому кабинету и каждому source slice один из безопасных статусов:
+`confirmed_empty`, `confirmed_nonempty`, `access_denied`,
+`paid_scope_required`, `unavailable`, `schema_mismatch` или
+`pagination_mismatch`.
 
 Probe-чеклист:
 
-1. Доступ токенов «Аналитика» (goods-return) и «Возвраты покупателями» (claims)
-   в реальном environment.
-2. Покрытие: какая доля финансовых возвратов отчётного периода имеет `srid`,
-   сопоставимый с `goods-return`/`claims`.
-3. Окна: сколько исторического периода реально покрывают 31-дневный goods-return
-   и 14-дневный active-claims; какова глубина архива claims.
-4. Join по `srid`/заказу: связуемость без дублирования сумм; доля `unmatched` в
-   обе стороны.
-5. Качество: насколько `reason` и `user_comment` осмысленны и не пусты на
-   реальных заявках.
-6. Персональные данные: какие поля содержат PII и как их обезличить для клиента и
-   AI.
+1. Проверить доступ token scope «Аналитика» для `goods-return` и «Возвраты
+   покупателями» для `claims`; другой сохранённый токен не использовать как
+   молчаливый fallback.
+2. `goods-return`: минимальный GET одного окна до 31 дня; проверить object /
+   `report` envelope и имена `reason`, `srid`, `nmId`, `status`, `returnType`
+   без вывода значений.
+3. `claims`: отдельные GET для `is_archive=false` и `is_archive=true` с
+   `limit=1`, `offset=0`; проверить `claims`/`total` и имена `id`, `nm_id`,
+   `srid`, `user_comment`, `dt` без вывода значений.
+4. При доступе выполнить локальную полную pagination и зафиксировать только
+   boolean reconciliation с provider total; total/count не переносить в
+   Markdown или вывод probe.
+5. На сохранённом защищённом snapshot локально проверить exact
+   `(cabinet, srid, nm_id)` join к Finance и только boolean наличия matched и
+   unmatched в обе стороны. Goods-return window выровнять по `period_end`
+   выбранного immutable report run; конкретный период, денежные суммы и
+   identifiers не выводить.
+6. Проверить, что в flat/mart projection отсутствуют `user_comment`,
+   `wb_comment`, `origin_id_info`, media paths и другие raw значения; допустим
+   только `has_user_comment`.
 
-Результат — обезличенная матрица доступности; она определяет, какие возвраты
-получают подтверждённую причину, а какие остаются `Причина недоступна`. Источник,
-делающий покрытие неполным, не заполняется гипотезой.
+Результат — boolean-only матрица доступности без provider labels, counts,
+периодов клиентской активности, идентификаторов, причин и комментариев. Она
+определяет, какие подпакеты можно начать. R-1…R-5 разблокируются только после
+хотя бы одного доказанного exact match на согласованном source/report window;
+одна лишь доступность schema недостаточна. Недоступный или частичный источник
+не заполняется гипотезой и не блокирует основную логистику.
+
+## R-0 live evidence — 22 июля 2026 года
+
+Официальные Reports и Customer Communication OpenAPI повторно проверены до
+probe. Test service environment не содержит usable WB integration, поэтому
+внешних запросов из test не выполнялось. Отдельный transient probe через
+production service environment выполнил только разрешённые GET и не менял
+production process, БД или configuration.
+
+Boolean-only evidence подтвердил:
+
+- goods-return и обе claims envelope/schema доступны хотя бы на одном
+  разрешённом token scope; schema mismatch, paid-scope error и unavailable не
+  обнаружены;
+- goods-return имеет непустой ответ; claims active/archive на доступном scope
+  пусты, а на другом scope возвращают access denied;
+- report window выровнен, source и Finance return keys присутствуют, invalid
+  source keys отсутствуют;
+- exact `(cabinet, srid, nm_id)` match не найден, unmatched присутствует в обе
+  стороны; `joinGate=false`, итоговый `implementationGate=false`.
+
+В evidence не переносились provider labels, counts, периоды клиентской
+активности, identifiers, причины, комментарии, media или суммы. Результат не
+разрешает R-1…R-5 и не влияет на основную логистику, отчёты или feature flags.
 
 # Модель связывания и покрытия
 
 - Факт и сумма возврата берутся ТОЛЬКО из Finance (первая очередь); причина —
   дополнительный слой, не меняющий сумму.
-- Связывание по `srid` (резервно — по заказу+товару), с допуском на разные окна
-  источников. Несопоставленные записи получают явный `unmatched` статус, а не
-  тихо отбрасываются.
-- Каждой строке причины присваивается `evidenceType`: `fact` (подтверждена
-  отдельным источником), `hypothesis` (возможное объяснение) или
-  `data_unavailable` (нет покрытия). `reason` из goods-return и `user_comment`
-  из claims хранятся раздельно и не сливаются.
-- Покрытие показывается двумя явными долями: `причина получена` и `причина
-  недоступна` (в терминах UX-решения runbook).
+- Связывание только по точному `(wb_cabinet_id, srid, nm_id)`. Неполный ключ,
+  совпадение в другом кабинете или несколько кандидатов дают явный
+  `unmatched`/`conflicting`, а не fallback или случайный выбор.
+- Непустой `goods-return.reason` становится `evidenceType=fact` только после
+  exact join. Отсутствие источника/окна/join — `data_unavailable`.
+- `claims.user_comment` не переносится как текст и не подменяет reason. Exact
+  claim даёт только `claimAvailable=true` и `hasUserComment=true|false`; это
+  факт наличия заявки/комментария, а не автоматически нормализованная причина.
+- `hypothesis` допустим только как отдельно маркированная детерминированная
+  рекомендация для ручной проверки. В первой версии hypothesis не сохраняется
+  в source mart и не показывается рядом с подтверждённой причиной как равная ей.
+- Покрытие считается отдельно для Finance→goods-return, Finance→claims и
+  unmatched в обратную сторону; UX показывает `причина получена` и `причина
+  недоступна` по полному фильтрованному срезу.
 - Историю объясняют только данными периода, который источник покрывает; вне окна
   — `data_unavailable`.
 
@@ -196,29 +264,60 @@ Probe-чеклист:
 Additive, неизменяемые, с lineage до `report_run`, версий и hash входов. Старый
 отчёт без них — `needs_rebuild`, на лету не достраивается.
 
+Добавляются `report_logistics_return_reason_contexts` и
+`ReportRun.logistics_return_reasons_required`. Context хранит методику
+`wb-logistics-return-reasons-v1`, statuses двух sources, input/snapshot hashes,
+coverage windows, safe coverage counters, row-count reconciliation и только
+безопасные blocking/review codes. Авторитетный snapshot выбирается отдельно для
+`wb_goods_return` и `wb_return_claims` по lineage `primary → base → contributor`;
+peer conflict одного приоритета, hash/manifest/row-count/path/tenant mismatch и
+DB/file ambiguity блокируют только F-5.
+
 ## `report_logistics_return_reason_rows`
 
-Гранулярность — возврат (`srid`/цепочка) в срезе отчёта. Поля: `product_ref`,
-обезличенная связь с заказом, `evidenceType`, нормализованная категория причины
-(из goods-return), признак наличия комментария покупателя (из claims, без
-дословного PII), статусы `matched`/`unmatched`, source hash. Дословные
-персональные комментарии и вложения в витрину клиента не переносятся.
+Гранулярность — Finance-return/chain в срезе отчёта. Одна строка на
+`(tenant, client, cabinet, company, scheme, chain_key, product_ref)` без fanout.
+Поля: `product_ref`, обезличенный `chain_key`, дата финансового возврата,
+`reason_category`, `reason_source`, `evidence_type`, `match_status`,
+`claim_available`, `has_user_comment`, source hash digests и row hash. Raw
+`srid`, `nm_id`, claim ID, комментарии, device data и media paths не хранятся.
 
-Агрегат покрытия причин также сохраняется на уровне товара для рейтингов и
-рекомендаций обратной логистики.
+Context и rows сохраняются атомарно только при создании нового immutable draft.
+Integrity/scope/reconciliation failure создаёт `blocked` context без mart rows
+и non-overridable publication blocker, если context required. Недоступный
+source/window и unmatched дают `partial/data_unavailable`, но сами по себе не
+блокируют публикацию. Опубликованный report run изменять запрещено.
 
 # API
 
-Additive read-only. Покрытие причин и признак факт/гипотеза/недоступно
-добавляются в ответ сценария «Возвраты»/логистики; дословные персональные данные
-через открытый API не возвращаются. Отсутствие причины — явный
-`data_unavailable`, а не пустая строка, читаемая как «причин нет». Старый отчёт
-без новой витрины — `needs_rebuild`. Пустой срез — `empty` без нулей.
+Добавляется read-only
+`GET /api/reports/{report_id}/logistics/return-reasons`. Фильтры:
+`periodStart`, `periodEnd`, `wbCabinetId`, `clientCompanyId`, `scheme`,
+`product`, `reasonSource`, `evidenceType`, `matchStatus`; SQL-pagination
+`offset/limit`; сортировки `eventDate`, `product`, `reasonCategory`,
+`evidenceType`, `matchStatus`.
+
+Ответ: `dataStatus`, `sliceStatus`, `methodologyVersion`,
+`factorMethodologyVersion`, `generatedAt`, source coverage windows,
+`filterContext`, coverage полного фильтрованного среза, `rows`, `total`,
+`offset`, `limit`, `recommendations`. Raw/hash identifiers и дословные
+чувствительные поля не возвращаются. Состояния: старый/устаревший context —
+`needs_rebuild`; integrity/scope failure — `blocked`; разрешённый срез без
+Finance-возвратов — `empty`; неполный source/join — `partial`; полное покрытие —
+`ready`.
+
+Флаги по умолчанию выключены:
+`SHUMEYKO_LOGISTICS_RETURN_REASONS_ENABLED` и
+`SHUMEYKO_LOGISTICS_RETURN_REASONS_CLIENT_ENABLED`. Staff требует logistics,
+factors и return-reasons master; client дополнительно требует все client flags.
+При запрете API отвечает 404. Ошибка F-5 не ломает основную логистику.
 
 # Интерфейс
 
-Причина встраивается в существующий блок «Возвраты»/факторов логистики, не
-создавая отдельного пункта меню.
+Блок «Факторы стоимости → Причины возвратов» встраивается в существующий
+`#tables/logistics` после F-4 и до рейтинга товаров, не создавая отдельного
+пункта меню. До frontend-кода готовится синтетический visual target на текущих
+токенах кабинета.
 
 - Для каждого возврата показывается статус причины: `Причина подтверждена`,
   `Причина — гипотеза` или `Причина недоступна`; отдельно — доли покрытия
@@ -226,11 +325,15 @@ Additive read-only. Покрытие причин и признак факт/г�
 - Подтверждённая причина помечается `Факт`; гипотезы (качество фото, размер,
   несоответствие ожиданиям) показываются только как гипотезы для ручной
   проверки и никогда как установленная причина.
-- Дословный комментарий покупателя и фото по умолчанию не показываются клиенту;
-  доступен обезличенный агрегат. Полный доступ — только роли consultant/admin и
-  только при бизнес-необходимости.
+- Дословный комментарий, device data, фото и видео не показываются ни staff, ни
+  client через этот интерфейс; доступен только факт наличия заявки/комментария.
 - При отсутствии источника сохраняется формулировка канона `Причина недоступна
   в Finance` / `Причина недоступна`.
+- Показываются coverage, товар, дата финансового возврата, подтверждённая
+  категория goods-return, наличие заявки/комментария и match status. Raw IDs и
+  hashes скрыты. На mobile строки превращаются в подписанные карточки.
+- Поддерживаются `ready`/`partial`/`empty`/`needs_rebuild`/`blocked`/локальный
+  `error`; выключенный флаг скрывает секцию и предотвращает запрос.
 
 # Правила рекомендаций
 
@@ -254,37 +357,44 @@ Additive read-only. Покрытие причин и признак факт/г�
 
 # Ошибки и пограничные случаи
 
-- `srid` отсутствует или не сопоставился → `unmatched`, сумма возврата остаётся
-  фактом Finance, причина `data_unavailable`.
+- `srid`/`nm_id` отсутствует, exact key не сопоставился или дал несколько
+  кандидатов → `unmatched`/`conflicting`; сумма возврата остаётся фактом Finance,
+  причина `data_unavailable`.
 - Причина есть, а факта в срезе нет → отдельный `unmatched`, не влияет на
   денежный итог.
-- Возврат вне окна источника (старше 31 дня goods-return / 14 дней active
-  claims) → `data_unavailable`, история не досочиняется.
+- Возврат вне фактически подтверждённого окна goods-return или текущих 14 дней
+  claims → `data_unavailable`, история не досочиняется. `is_archive=true` не
+  трактуется как глубокая история.
 - `claims` без `is_archive` → ошибка запроса обрабатывается, не блокирует расчёт
   логистики.
 - Разные rate limits → backoff на 429, частичный сбор помечается `partial`.
-- Пустой `reason`/`user_comment` → не считается причиной, помечается недоступным.
-- Персональные данные в комментарии → обезличиваются до сохранения в клиентскую
-  витрину и до передачи AI.
+- Пустой `reason` → причина `data_unavailable`; пустой `user_comment` даёт
+  `hasUserComment=false`, но не меняет goods-return reason.
+- Чувствительные поля не маскируются эвристически в mart: они полностью
+  исключаются из flat/mart/API/AI projection.
 
 # Безопасность и tenant isolation
 
 - Каждый запрос ограничен tenant/client/cabinet доступами пользователя.
-- Внешние интеграции read-only; `POST claim` и любые ответы покупателю
+- Внешние интеграции read-only; `PATCH /api/v1/claim` и любые ответы покупателю
   запрещены.
-- Персональные данные покупателя (комментарии, фото) не попадают в Git, Markdown,
-  открытый API, AI и клиентскую витрину дословно; хранится обезличенный агрегат.
-- Raw snapshot причин сохраняется по действующим правилам retention и tenant
-  isolation; `srid` не раскрывается клиенту без бизнес-нужды.
+- Чувствительные данные не попадают в Git, Markdown, логи, flat snapshot,
+  открытый API, AI и mart; сохраняется только защищённый raw snapshot и
+  безопасные boolean/digest projections.
+- Raw snapshot claims сохраняется в действующем защищённом source storage по
+  общей retention policy для воспроизводимости; отдельное увеличение retention
+  и копирование в immutable runtime запрещены. Raw `srid` не раскрывается через
+  F-5 API.
 
 # Этапы реализации
 
-1. `R-0 Probe доступности` — обезличенная матрица покрытия goods-return и claims
-   на реальном снимке; определяет включаемый состав.
-2. `R-1 goods-return` — коннектор, raw snapshot, нормализация `reason`, join по
-   `srid`, статусы покрытия.
+1. `R-0 Probe доступности` — boolean-only матрица goods-return и claims на
+   реальном снимке; это единственный подпакет, разрешённый сразу после принятия
+   спека.
+2. `R-1 goods-return` — довести существующий prework до зарегистрированного raw
+   snapshot, selector, нормализации `reason`, exact join и статусов покрытия.
 3. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
-   наличия комментария без дословной выдачи.
+   наличия комментария без переноса текста из raw.
 4. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
    «Возвраты».
 5. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
@@ -296,43 +406,64 @@ Additive read-only. Покрытие причин и признак факт/г�
 
 # Acceptance Criteria
 
-Design-часть принята, когда владелец подтвердил модель покрытия и обработку
-персональных данных. Реализация готова, когда:
+Design-часть принята 22 июля 2026 года. Реализация готова, когда:
 
-1. probe зафиксировал покрытие goods-return и claims обезличенной матрицей;
+1. probe зафиксировал schema и хотя бы один exact Finance/source match
+   обезличенной boolean-only матрицей;
 2. факт и сумма возврата остаются из Finance и не меняются наличием причины;
-3. `reason` и `user_comment` хранятся раздельно и не слиты в один столбец;
+3. `reason` хранится как отдельный source fact; raw `user_comment` не попадает в
+   mart/API/AI, сохраняется только `has_user_comment`;
 4. каждая причина имеет `evidenceType`; отсутствие покрытия — `data_unavailable`,
    не пустая строка и не гипотеза;
 5. `unmatched` в обе стороны показан явно и не искажает денежный итог;
-6. персональные данные покупателя не попадают клиенту/AI/в Git дословно;
+6. чувствительные данные не попадают staff/client API, mart, AI, Git, Markdown
+   или логи;
 7. история вне окна источника не досочиняется;
 8. пользователь одного tenant не получает данные другого;
 9. старый отчёт без витрины причин возвращает `needs_rebuild`;
-10. ни один сценарий не выполняет запись во внешнюю систему.
+10. ни один сценарий не выполняет запись во внешнюю систему;
+11. context+rows атомарны, published run immutable, а row-count/source
+    reconciliation fail closed;
+12. role/flag matrix возвращает 404 при запрете и не ломает основную логистику.
 
 # Test Plan
 
-- unit: нормализация `reason`; раздельное хранение `reason` и `user_comment`;
-- unit: join по `srid`, статусы `matched`/`unmatched` в обе стороны;
-- unit: окно вне покрытия → `data_unavailable`; пустой комментарий → недоступно;
-- unit: обезличивание PII до витрины/AI; запрет дословной выдачи клиенту;
+- unit: нормализация `reason`; `user_comment` преобразуется только в boolean
+  presence до flat/mart projection;
+- unit: exact `(cabinet, srid, nm_id)` join, peer conflict и изоляция одинаковых
+  идентификаторов между кабинетами;
+- unit: claims boolean `is_archive`, limit/offset pagination и provider-total
+  reconciliation; окно вне покрытия → `data_unavailable`;
+- unit: запрет чувствительных полей в flat/mart/API/AI и стабильность hashes;
+- R-0: boolean-only output без labels, counts, IDs, периодов клиентской
+  активности и raw values для empty/nonempty/denied/402/429/schema mismatch;
 - integration: сборка `report_logistics_return_reason_rows` из обезличенного
   снимка, lineage и hash; сумма Finance не меняется;
+- source integration: DB/file parity, primary/base precedence, manifest/hash/
+  row-count/path/tenant mismatch и storage ambiguity;
+- persistence: atomic context+rows, published immutability, required-context
+  publication blocker только для missing/outdated/blocked;
 - API: покрытие причин и факт/гипотеза/недоступно в ответе «Возвраты»; пустой
-  срез → `empty`; старый отчёт → `needs_rebuild`;
+  срез → `empty`; старый отчёт → `needs_rebuild`; SQL filters/sorting/pagination
+  и coverage полного среза;
+- API: role/flag matrix, tenant isolation, отсутствие raw/hash/PII;
+- UI: reset при смене report/filter, все состояния, mobile cards, отсутствие
+  запроса при выключенном flag и отсутствие трактовки claim comment как reason;
 - tenant isolation: недоступность чужих tenant/cabinet;
 - rate limit/429: частичный сбор → `partial`, а не тихое обрезание;
 - fixtures обезличенные; реальные комментарии/идентификаторы в тесты и
   документацию не переносятся.
 
-Файлы (расширяются существующие): `tests/test_wb_finance.py`,
+Файлы (расширяются существующие): `tests/test_probe_wb_logistics_factors.py`,
+`tests/test_wb_goods_return.py`, `tests/test_wb_finance.py`,
 `tests/test_logistics_analysis.py`, `tests/test_source_refresh.py`,
-`tests/test_web_app.py`; тесты новых коннекторов добавляются вместе с ними.
+`tests/test_web_app.py`; claims получает отдельный test module вместе с
+коннектором.
 
 # Rollout And Rollback
 
-1. Выполнить R-0 probe в staff-only test без публикации raw.
+1. Выполнить R-0 probe в авторизованном read-only service environment без
+   публикации raw и без изменения среды.
 2. Собрать доступное покрытие причин для одного репрезентативного отчёта.
 3. Включить причину consultant/admin за отдельным feature flag без клиентской
    публикации.
@@ -343,29 +474,45 @@ Rollback отключает новые маршруты и блок причин
 финансовый факт и первую очередь. Витрина additive и неизменяема. Внешние
 источники при rollout/rollback не изменяются.
 
-# Предлагаемые решения (на утверждение)
+# Согласованные решения
 
 1. Причина — отдельный read-only слой поверх Finance; сумма и факт возврата не
    меняются.
-2. `goods-return.reason` и `claims.user_comment` хранятся и показываются
-   раздельно, не сливаются.
-3. Дословные персональные данные покупателя клиенту и AI не выдаются; хранится
-   обезличенный агрегат.
+2. `goods-return.reason` — отдельный source fact; из claims в mart/API попадают
+   только `claimAvailable` и `hasUserComment`, текст не переносится.
+3. Чувствительные поля исключаются из flat/mart/API/UI/AI, а не маскируются
+   эвристически.
 4. Отсутствие покрытия — явный `data_unavailable`, а не пустая строка.
 5. `unmatched` в обе стороны показывается явно.
-6. Ответы покупателю (`POST claim`) остаются вне scope.
+6. Ответы покупателю (`PATCH /api/v1/claim`) остаются вне scope.
+7. Join только по `(cabinet, srid, nm_id)`; одиночные поля и order fallback
+   запрещены.
+8. `claims.is_archive` — boolean; обе выборки ограничены документированными
+   текущими 14 днями, глубокая история не предполагается.
 
 # Открытые вопросы
 
-- Глубина архива `claims` (`is_archive=true`) для исторического периода отчёта.
-- Реальное покрытие `srid` между Finance-возвратами, goods-return и claims.
+- Реальное per-cabinet покрытие exact join между Finance, goods-return и claims.
+- Фактическая history depth goods-return за пределами одного 31-дневного
+  request window; официальный контракт её не гарантирует.
 - Нормализованный справочник категорий `reason` (версионировать ли, как
   классификатор логистики).
-- Политика обезличивания `user_comment` (маскирование vs только факт наличия
-  комментария).
-- Нужен ли отдельный retention для raw snapshot причин с персональными данными.
 
 # Changelog
+
+- 2026-07-22 — boolean-only R-0 live gate подтвердил source schema и валидные
+  scoped keys, но не подтвердил ни одного exact Finance/source match на
+  выровненном максимальном window. `implementationGate=false`; R-1…R-5
+  остановлены до отдельного identity evidence без ослабления join.
+
+- 2026-07-22 — статус изменён на `accepted` после подтверждения пользователем и
+  повторной сверки официального WB OpenAPI: `claims.is_archive` закреплён как
+  boolean, active/archive ограничены текущими 14 днями, добавлены pagination и
+  provider-total gate; goods-return сохраняет максимум 31 день на запрос без
+  обещанной history depth. Приняты exact cabinet/srid/nm join, boolean-only R-0,
+  PII-free flat/mart/API, отдельный context, flags, state/role matrix,
+  atomicity/readiness и staff-only rollout. Существующий goods-return client
+  отмечен как prework, не end-to-end реализация.
 
 - 2026-07-19 — создан draft источника причин возвратов по запросу продолжить
   план разработки: зафиксированы отдельные read-only источники `goods-return`

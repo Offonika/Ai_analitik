@@ -54,11 +54,10 @@ updated_at: "2026-07-21"
 очередности Excel согласованы 16 июля 2026 года.
 
 `Accepted` означает утвержденную цель реализации, но не подтверждает production
-rollout или завершенную приемку. Историческое evidence v4 зафиксировало
-staff-only test, однако текущий change set v5 не развернут. Production и
-клиентское включение не выполнены; перед изменением статуса документа нужны
-автоматическая и ручная browser-приемка новой вложенной information architecture
-на новом immutable v5 report run.
+rollout или завершение всех очередей. Первая очередь v5 и подпакеты факторов
+F-1…F-4 прошли отдельные staff-only test acceptance на immutable report runs.
+Production и клиентское включение факторов не выполнены; F-5 причины возвратов
+и третья очередь остаются незавершёнными.
 
 # Текущее состояние реализации
 
@@ -68,8 +67,7 @@ staff-only test, однако текущий change set v5 не разверну
 reconciliation до действующего `ReportUnitRow`, три read-only API,
 детерминированные рекомендации и безопасный агрегатный контекст для AI.
 Вложенный маршрут `#tables/logistics`, answer-first порядок, trust strip и
-раздельные состояния реализованы локально; автоматические проверки и ручная
-browser-приемка остаются обязательными до rollout. Контексты
+раздельные состояния реализованы и приняты на test. Контексты
 `wb-logistics-v1`–`wb-logistics-v4`, несовместимая версия ключа и старый отчет
 без контекста возвращают `needs_rebuild`.
 
@@ -78,10 +76,12 @@ Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
 фактического состояния сред. Последнее записанное operational evidence и
 обязательные команды повторной проверки находятся в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Ближайший rollout допускается только на test; клиентский флаг остается
-выключенным до отдельного согласования. F-1 и F-2 уже приняты на staff-only
-test; F-3 реализован отдельным локальным пакетом поверх первой очереди и
-ожидает merge/CI/test evidence. Excel и калькуляторы в этот пакет не входят.
+Ближайший factor rollout допускается только на test; factor client flags
+остаются выключенными до отдельного согласования. F-1…F-4 приняты на staff-only
+test. Для F-5 принят отдельный контракт причин возвратов; следующий разрешённый
+шаг — отдельное identity evidence: boolean-only R-0 подтвердил source schema,
+но не нашёл exact Finance/source match и оставил `implementationGate=false`.
+R-1…R-5 не начинаются. Excel и калькуляторы в этот пакет не входят.
 
 # Цель
 
@@ -1023,6 +1023,12 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-22 — синхронизировано фактическое состояние F-1…F-4 после
+  staff-only test acceptance; принят подчинённый F-5 контракт причин возвратов.
+  `goods-return.reason` остаётся отдельным source fact, claims передаёт только
+  безопасные признаки, join точный cabinet/srid/nm, а до end-to-end кода
+  разрешён только boolean-only R-0 probe. Production/client enable не выполнен.
 
 - 2026-07-21 — F-3 уточнён до атомарной route evidence: exact
   cabinet/srid/nm join, explicit missing/mixed, полная reconciliation с order
