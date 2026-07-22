@@ -152,9 +152,9 @@ def test_generated_jsonl_has_one_safe_record_per_manifest_entry() -> None:
         {
             "path": "docs/runbooks/wb-logistics-v4-continuation.md",
             "summary": (
-                "Operational state WB-логистики: F-1…F-4 test acceptance, R-1 влит "
-                "в main без environment rollout; claims pagination hardening готовит "
-                "повторный R-0I, R-2 закрыт."
+                "Operational state WB-логистики: F-1…F-4 test acceptance, R-1 и "
+                "claims hardening в main; repeat R-0I подтвердил pagination без "
+                "mismatch, но claims keys и R-2 закрыты."
             ),
         }
     ]

@@ -104,9 +104,13 @@ canonical return chain; `goodsReturnImplementationGate=true`, историчес
 положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
 R-1 влит в `main` через PR №56: registered immutable source,
 DB/file-authoritative selector, normalization и internal exact link/coverage;
-mart/API/UI и environment rollout не выполнялись. Следующий evidence-only
-change set доводит claims active/archive до полной provider-total pagination;
-это не открывает R-2 без нового live identity gate и accepted-решения.
+mart/API/UI и environment rollout не выполнялись. Claims active/archive
+provider-total pagination hardened в PR №57. Отдельно разрешённый live R-0I из
+`main@0deacf4` подтвердил schema и полную pagination без mismatch, но доступный
+claims scope пуст, а другой scope закрыт по доступу; source keys отсутствуют,
+`claimsIdentityGate=false`. R-2 не открыт. Test-only full preflight остановлен
+выключенным source-refresh master; dry-run дал `needs_review` без нового report,
+фактический refresh и transient override не выполнялись.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -1049,6 +1053,14 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-22 — после merge PR №57 отдельно разрешённый repeat R-0I из
+  `main@0deacf4` подтвердил claims active/archive schema, полную provider-total
+  pagination и `paginationMismatchPresent=false`. Доступный scope пуст, другой
+  закрыт по доступу; claims source keys и положительный identity gate не
+  получены, поэтому R-2 и общий gate остаются закрыты. Test preflight остановлен
+  выключенным source-refresh master, dry-run не создал report; production
+  runtime, reports и flags не менялись.
 
 - 2026-07-22 — после merge PR №56 claims R-0/R-0I runner приведён к принятому
   контракту полной active/archive pagination: `limit=200`, bounded offset,

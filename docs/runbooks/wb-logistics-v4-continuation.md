@@ -30,7 +30,11 @@ login выключены. Новый F-4 draft из verified read-only snapshots
 `runtime-fcfc52b-tax-profile-configured-20260721`; production и клиентское
 включение F-4 не выполнялись. На production 22 июля отдельно разрешённый full
 source refresh создал новый неопубликованный draft; current report, runtime и
-client flags не изменены, health остался `ok`.
+client flags не изменены, health остался `ok`. После merge PR №57 отдельно
+разрешённый repeat R-0I из `main` подтвердил полную claims pagination без
+mismatch, но claims keys в доступном окне по-прежнему отсутствуют; R-2 закрыт.
+Test-only full refresh не выполнялся: exact-main preflight остановлен
+выключенным master-флагом, а dry-run завершён `needs_review` без нового report.
 
 # Текст для нового чата
 
@@ -50,9 +54,13 @@ HTTP 404, блок скрыт и запрос не выполняется. Вр�
 R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys в текущем
 окне отсутствуют; общий implementation gate закрыт. На 22 июля отдельное
 решение принято, а R-1 влит в `main` через PR №56 без environment rollout.
-Следующий кодовый пакет — hardening полной claims pagination для повторяемого
-R-0I; R-2 не начинать без положительного claims gate и отдельного accepted-
-решения.
+Claims pagination hardening влит в `main` через PR №57. Отдельно разрешённый
+live R-0I из merge `0deacf4` подтвердил active/archive schema, provider-total
+reconciliation и `paginationMismatchPresent=false`, но доступный claims scope
+пуст, а другой scope закрыт по доступу. `claimsIdentityGate=false`; R-2 не
+начинать без окна с source keys, положительного claims gate и отдельного
+accepted-решения. Test-only full refresh остаётся невыполненным: master-флаг
+source refresh на test выключен, dry-run дал `needs_review` без нового report.
 ```
 
 # Текущее состояние
@@ -388,6 +396,32 @@ flags не менялись; health после операции остался `
 report не изменился. В evidence не переносились client/report identifiers,
 counts, причины, комментарии, суммы, paths, hashes или raw rows.
 
+# Operational evidence F-5 R-0I после claims hardening — 22 июля 2026 года
+
+После отдельного разрешения пользователя test-only full preflight и dry-run
+выполнены из точной merge-ревизии `0deacf4`. Preflight fail closed на
+`source refresh enabled=false`; dry-run завершился `needs_review`, не создал
+новый report и не обращался к внешним источникам. Master-флаг не обходился,
+поэтому фактический test refresh, публикация и client flags не выполнялись.
+
+Production R-0L на том же коде повторно подтвердил подходящий immutable report,
+verified file-only Finance lineage без DB/file ambiguity, integrity, schema или
+selector failures; новый report не потребовался. После принятого reuse этого
+draft выполнен boolean-only R-0I. Claims active/archive schema и полная
+provider-total pagination подтверждены, `paginationMismatchPresent=false`.
+Доступный claims scope вернул пустое окно, другой scope остался закрыт по
+доступу; source keys не получены. Поэтому `completeSourceGate=true` и
+`goodsReturnIdentityGate=true`, но `claimsIdentityGate=false`,
+`completeIdentityGate=false`, `claimsImplementationGate=false` и общий
+`implementationGate=false`.
+
+R-2 не открыт. Production runtime, service, БД, published/current report и
+feature flags не менялись; финальный health — `ok`. Первая попытка оператора
+fail closed до evidence из-за импорта старого runtime-кода; повтор выполнен
+после явной проверки exact-main imports. В Git/Markdown не перенесены provider
+labels, counts, клиентские окна, identifiers, причины, комментарии, media,
+суммы, paths, hashes или raw rows.
+
 # Последнее UX-решение
 
 Пользователь подтвердил, что текущая структура интерфейса непонятна: она
@@ -460,7 +494,9 @@ criteria. Текущий production/test URL пока использует ра�
 - Новый unambiguous Finance draft подтвердил exact
   `goods-return.srid → Finance.srid` и единственную canonical return chain.
   Baseline `srid → orderUid` не подтвердился. Claims в текущем окне не дали
-  source keys, поэтому общий implementation gate остаётся закрыт.
+  source keys. Repeat R-0I после merge PR №57 подтвердил полную active/archive
+  pagination без mismatch, но не изменил identity evidence; общий
+  implementation gate остаётся закрыт.
 
 # Реализованные правила v4
 
@@ -710,15 +746,18 @@ client/production решения не завершены. Общий опера�
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. R-1 review/CI и merge завершены PR №56. Отдельно согласовать test-only
-   full/weekly source refresh из merge `1c0f0b2` для проверки зарегистрированной
-   `wb_goods_return` collection и DB/file selector без публикации report и без
-   client flags. R-3 mart/API/UI автоматически не начинать.
-3. До нового live R-0I влить claims pagination hardening: полная active/archive
-   pagination, provider-total reconciliation и fail-closed
-   `paginationMismatchPresent`. Затем отдельно получить окно с claims source
-   keys и положительный claims identity gate; не ослаблять join до
-   product/date/одиночного identifier.
+2. R-1 review/CI и merge завершены PR №56. Test-only full preflight из
+   `main@0deacf4` остановлен выключенным source-refresh master; dry-run дал
+   `needs_review` без нового report. Фактический refresh не запускать через
+   transient override: сначала отдельно принять включение master на test, затем
+   проверить зарегистрированную `wb_goods_return` collection и DB/file selector
+   без публикации report и client flags. R-3 mart/API/UI автоматически не
+   начинать.
+3. Claims pagination hardening влит PR №57; repeat live R-0I подтвердил полную
+   pagination и `paginationMismatchPresent=false`, но не получил claims source
+   keys. Следующий data-gate — окно и scope с непустыми claims keys и
+   положительный identity gate; не ослаблять join до product/date/одиночного
+   identifier и не начинать R-2 по одной schema-доступности.
 4. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного

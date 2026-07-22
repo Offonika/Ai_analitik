@@ -179,7 +179,7 @@ documents:
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
     operational_docs: ["docs/runbooks/wb-logistics-v4-continuation.md"]
-    summary: "Accepted WB-логистика v5: F-1…F-4 приняты на staff-only test; F-5/R-1 влит без rollout, claims probe hardened до полной pagination, R-2 и общий gate закрыты."
+    summary: "Accepted WB-логистика v5: F-1…F-4 приняты на staff-only test; F-5/R-1 влит без rollout, live claims pagination подтверждена без mismatch, но source keys и R-2 закрыты."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
     search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
   - path: "docs/specs/wb-logistics-cost-factors-implementation.md"
@@ -188,7 +188,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted WP-5: F-1…F-4 приняты на staff-only test; F-5/R-1 влит без rollout, claims R-0I использует provider-total pagination, claims/complete gates закрыты."
+    summary: "Accepted WP-5: F-1…F-4 приняты на staff-only test; F-5/R-1 влит без rollout, repeat claims R-0I прошёл полную pagination без mismatch, но identity/complete gates закрыты."
     read_when: "Проектируется вторая очередь логистики WB: габариты, Analytics замеры/удержания, тарифы, склады, маршруты, витрины dimensions/measurements/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/wb-logistics-return-reasons-implementation.md"
@@ -197,7 +197,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted F-5: R-1 goods-return влит без mart/API/UI/rollout; claims evidence использует full bounded pagination, но live identity gate и R-2 закрыты."
+    summary: "Accepted F-5: R-1 goods-return влит без mart/API/UI/rollout; live claims pagination прошла без mismatch, но окно пусто, identity gate и R-2 закрыты."
     read_when: "Проектируется причина возврата WB: источники goods-return/claims, связывание по srid, покрытие причин, unmatched или обработка персональных данных покупателя."
     search_terms: ["причина возврата", "goods-return", "claims", "user_comment", "srid", "возвраты покупателей"]
   - path: "docs/specs/wb-logistics-calculators-implementation.md"
@@ -461,14 +461,14 @@ documents:
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Operational state WB-логистики: F-1…F-4 test acceptance, R-1 влит в main без environment rollout; claims pagination hardening готовит повторный R-0I, R-2 закрыт."
+    summary: "Operational state WB-логистики: F-1…F-4 test acceptance, R-1 и claims hardening в main; repeat R-0I подтвердил pagination без mismatch, но claims keys и R-2 закрыты."
   - path: "docs/runbooks/wb-logistics-factors-probe.md"
     title: "Probe доступности источников логистики (F-0 / R-0/R-0I/R-0L / C-0)"
     doc_type: "runbook"
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Чеклист R-0/R-0I/R-0L и R-1: verified Finance draft, accepted goods-return Finance.srid contract, реализованный source selector и закрытый claims/overall gate."
+    summary: "Чеклист R-0/R-0I/R-0L и R-1: verified Finance lineage, live full claims pagination без mismatch, пустое claims window и закрытые identity/R-2 gates."
   - path: "docs/runbooks/wb-logistics-mvp-production-rollout.md"
     title: "Production rollout MVP логистики (первая очередь)"
     doc_type: "runbook"
