@@ -1485,8 +1485,10 @@ def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
     assert next(iter(workbook["НДС РВБ"].tables.values())).autoFilter is not None
 
 
+@pytest.mark.parametrize("vat_deduction_mode", ["not_applicable", "not_allowed"])
 def test_tax_load_rwb_vat_sheet_stays_visible_when_deduction_not_applicable(
     tmp_path: Path,
+    vat_deduction_mode: str,
 ) -> None:
     payload = build_tax_load_payload(
         _report("tax_load"),
@@ -1494,7 +1496,7 @@ def test_tax_load_rwb_vat_sheet_stays_visible_when_deduction_not_applicable(
             "taxSystem": "УСН Доходы",
             "profileStatus": "ready",
             "vatMode": "none",
-            "vatDeductionMode": "not_applicable",
+            "vatDeductionMode": vat_deduction_mode,
         },
         evidence=_rwb_vat_evidence(),
     )
@@ -1504,7 +1506,7 @@ def test_tax_load_rwb_vat_sheet_stays_visible_when_deduction_not_applicable(
         issue["code"] == "rwb_vat_reconciliation_review_required"
         for issue in payload["issues"]
     )
-    path = tmp_path / "tax-load-rwb-vat-not-applicable.xlsx"
+    path = tmp_path / f"tax-load-rwb-vat-{vat_deduction_mode}.xlsx"
     write_scenario_excel(payload, canonical_payload_sha256(payload), path)
     workbook = load_workbook(path, data_only=True)
     rows = list(workbook["НДС РВБ"].iter_rows(values_only=True))

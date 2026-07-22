@@ -660,6 +660,11 @@ def _write_tax_load_rows(
 def _rwb_vat_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     reconciliation = dict(payload.get("rwbVatReconciliation") or {})
     applicability = reconciliation.get("applicability") or "unknown"
+    displayed_applicability = (
+        "not_applicable"
+        if applicability in {"not_allowed", "not_applicable"}
+        else applicability
+    )
     status = reconciliation.get("status") or "source_gap"
     result: list[dict[str, Any]] = []
     for raw in reconciliation.get("rows") or []:
@@ -669,7 +674,7 @@ def _rwb_vat_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 **dict(raw),
                 "rowKind": "detail",
-                "applicability": applicability,
+                "applicability": displayed_applicability,
                 "reconciliationStatus": status,
                 "purchaseBookVatAmount": None,
                 "rwbVatDifference": None,
@@ -698,7 +703,7 @@ def _rwb_vat_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     result.append(
         {
             "rowKind": "summary",
-            "applicability": applicability,
+            "applicability": displayed_applicability,
             "reconciliationStatus": status,
             "documentDate": None,
             "documentNumber": "Итого за период",
