@@ -712,6 +712,16 @@ current других видов не меняется.
 
 ## Test Rollout Evidence
 
+- 2026-07-22: пошаговый accounting-report wizard из commit
+  `5b859bc77e4e2b2e9d63211814211589dca36d4e` собран в immutable release
+  `runtime-5b859bc-accounting-wizard-20260722` и promoted только в `test`.
+  Local/public health подтвердили `status=ok`, `environment=test` и build
+  `20260722-accounting-report-wizard-v1`; cwd и import path процесса указывают
+  на тот же release. Headless-browser smoke в реальном test runtime подтвердил
+  открытие мастера для `tax_load`, текущую ревизию v6, выбранные организацию и
+  месяц, отдельную ссылку существующего Excel и скрытие неоднозначной общей
+  download-кнопки. Smoke не запускал новую генерацию; временная staff-сессия
+  удалена. Production остался на прежнем release.
 - 2026-07-22: download-clarity hotfix из commit
   `b01d825cdb9f4755e390330a6565b88fa84bc068` собран в immutable release
   `runtime-b01d825-tax-download-v6-20260722` и promoted только в `test`.
