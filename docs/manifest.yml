@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-07-21"
+updated_at: "2026-07-22"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -188,16 +188,16 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted спек второй очереди WP-5: F-1…F-3 приняты на staff-only test; F-4 Analytics замеров/удержаний реализован за defaults-off флагами и ожидает merge и отдельную staff-only приёмку, client/production rollout не выполнялся."
+    summary: "Accepted спек второй очереди WP-5: F-1…F-4 приняты на staff-only test; F-5 source schema подтверждена, но exact join gate закрыт, client/production rollout не выполнялся."
     read_when: "Проектируется вторая очередь логистики WB: габариты, Analytics замеры/удержания, тарифы, склады, маршруты, витрины dimensions/measurements/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/wb-logistics-return-reasons-implementation.md"
     title: "WB: причины возвратов (goods-return и claims)"
     doc_type: "spec"
-    status: "draft"
+    status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Draft-проект отдельного read-only источника причин возвратов: goods-return (reason) и claims (user_comment), связывание по srid, окна/покрытие, unmatched, факт/гипотеза/недоступно и безопасная обработка персональных данных покупателя."
+    summary: "Accepted F-5 контракт причин возвратов: source schema R-0 подтверждена, но exact cabinet/srid/nm match не доказан и implementation gate закрыт; claims остаётся только безопасным признаком без raw comment."
     read_when: "Проектируется причина возврата WB: источники goods-return/claims, связывание по srid, покрытие причин, unmatched или обработка персональных данных покупателя."
     search_terms: ["причина возврата", "goods-return", "claims", "user_comment", "srid", "возвраты покупателей"]
   - path: "docs/specs/wb-logistics-calculators-implementation.md"

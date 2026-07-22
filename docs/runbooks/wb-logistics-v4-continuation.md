@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-21"
+updated_at: "2026-07-22"
 ---
 
 # Назначение
@@ -407,13 +407,16 @@ criteria. Текущий production/test URL пока использует ра�
   ограничен периодом до 31 дня.
 - Отдельный read-only метод
   `GET returns-api.wildberries.ru/api/v1/claims` содержит `user_comment`,
-  статусы, media и `srid`, но возвращает заявки покупателей только за
-  ограниченное актуальное окно (в проверенной документации — 14 дней), а не
-  полный исторический квартал.
-- До реализации перепроверить актуальные официальные WB OpenAPI Reports и
-  User Communication, выполнить безопасный probe доступов/coverage и
-  зафиксировать join/reconciliation. Не считать `goods-return.reason` и
-  `claims.user_comment` взаимозаменяемыми.
+  статусы, media и `srid`, но возвращает заявки покупателей только за текущие
+  14 дней. `is_archive` в актуальном OpenAPI — boolean и выбирает состояние
+  заявки; документированного глубокого архива нет.
+- В `main` есть prework read-only goods-return client/export и файловый вызов
+  source refresh, но нет зарегистрированного snapshot, claims connector,
+  context/mart/API/UI или Finance join. Это не end-to-end реализация.
+- Accepted F-5 spec требует boolean-only R-0 доступов/coverage и exact
+  `(cabinet, srid, nm_id)` join. `goods-return.reason` и факт наличия
+  `claims.user_comment` не взаимозаменяемы; raw комментарии и media не попадают
+  в mart/API/AI.
 
 # Реализованные правила v4
 
@@ -644,25 +647,24 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-Обновление 2026-07-21: F-1 «Габариты», F-2 «Тарифы» и F-3 «Склады и
-направления» приняты на staff-only test. Для F-4 «Замеры и удержания» принят
-отдельный spec-first контракт и собран implementation package: источник — Analytics
-`measurement-penalties`/`warehouse-measurements`, а общий Finance penalty не
-используется как fallback и не учитывается повторно. Минимальный live source
-gate пройден с boolean-only evidence; код остаётся за defaults-off флагами до
-merge. Factor-spec остаётся `accepted`, потому что вторая очередь ещё не
-завершена. Следующий этап F-4 — зелёные GitHub jobs, additive migration и
-собственный staff-only test rollout без client/production enable. Общий
-операционный чеклист проверки источников —
+Обновление 2026-07-22: F-1 «Габариты», F-2 «Тарифы», F-3 «Склады и
+направления» и F-4 «Замеры и удержания» приняты на staff-only test. Для F-5
+«Причины возвратов» принят отдельный spec-first контракт. Следующий разрешённый
+шаг после boolean-only R-0 — отдельное identity evidence: source schema
+подтверждена, но exact Finance/source match не найден и
+`implementationGate=false`. R-1…R-5 не начинаются. Factor-spec остаётся
+`accepted`, потому что F-5, объединённая staff-приёмка factors и
+client/production решения не завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
 `monthly_reconciliation_unresolved` остаётся advisory (PR №22).
 
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. Отдельно подготовить spec/probe для read-only `goods-return` и `claims`:
-   доступ токена, retention, coverage, join по `srid`/заказу и явные unmatched
-   статусы. Не смешивать этот источник с уже готовым Finance gate.
+2. Подготовить отдельный identity probe для различий Finance `orderUid` и
+   goods-return/claims `srid`/`orderId` на одном immutable window. Выводить
+   только boolean overlap; не разрешать одиночный identifier или product-only
+   join без нового accepted решения.
 3. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
@@ -673,7 +675,7 @@ merge. Factor-spec остаётся `accepted`, потому что вторая
 # Что не входит в текущий этап
 
 - Excel-экспорт анализа логистики;
-- фактические контрольные замеры и штрафы;
+- финансовое включение F-4 удержаний без exact reconciliation с Finance;
 - маршрутная оптимизация и географический калькулятор;
 - тарифный калькулятор;
 - калькулятор маржинального дохода;

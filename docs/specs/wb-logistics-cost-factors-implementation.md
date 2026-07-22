@@ -48,7 +48,7 @@ test_anchors:
     symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
-updated_at: "2026-07-21"
+updated_at: "2026-07-22"
 ---
 
 # Статус документа
@@ -93,7 +93,7 @@ boolean-only evidence; raw, IDs, значения, суммы и counts не п�
 - `scripts/probe_wb_logistics_factors.py` — read-only probe доступности.
 
 В `main` последовательно приняты additive schema, deterministic marts, verified
-snapshot selectors, persistence, read-only API и staff-only UI F-1…F-3.
+snapshot selectors, persistence, read-only API и staff-only UI F-1…F-4.
 
 F-1 «Габариты» собран сквозным пакетом и принят на staff-only test 20 июля
 2026 года: штатный report build выбирает и повторно проверяет авторитетный
@@ -101,9 +101,9 @@ snapshot карточек, атомарно сохраняет dimension context
 state matrix, фильтры, SQL-pagination и coverage полного среза, а factor-блок
 встроен в `#tables/logistics`. Operational evidence находится в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Статус всего factor-spec остаётся `accepted`: причины возвратов, staff-приёмка
-F-4, factor AI digest и клиентский/production rollout остаются следующими
-подпакетами.
+Статус всего factor-spec остаётся `accepted`: F-5 причины возвратов,
+объединённая staff-приёмка всех factors, factor AI digest и
+клиентский/production rollout остаются следующими подпакетами.
 
 F-2 «Тарифы» реализован сквозным пакетом и принят на staff-only test 21 июля
 2026 года: verified box/pallet snapshot, tariff context/mart, read-only
@@ -115,12 +115,19 @@ verified `supplier/sales` snapshot, exact chain join, route context/mart,
 read-only `/routes` и локальный UI-блок работают за отдельными defaults-off
 флагами. Production и client enable не выполнялись.
 
-F-4 реализован в отдельном implementation package за defaults-off флагами:
-read-only collectors и verified dual snapshots, нормализация/merge событий,
-immutable measurement context/mart, publication readiness, read-only API и
-локально изолированный responsive UI. Локальные unit/source/persistence/API/UI
-проверки входят в пакет; staff-only test rollout фиксируется отдельно только
-после merge и успешных GitHub jobs. Production и client enable не выполнялись.
+F-4 «Замеры и удержания» реализован сквозным пакетом и принят на staff-only test
+21 июля 2026 года: read-only collectors и verified dual snapshots,
+нормализация/merge событий, immutable measurement context/mart, publication
+readiness, read-only API и responsive UI работают за отдельными defaults-off
+флагами. Финальный desktop wrap hotfix также принят; operational evidence
+зафиксирован в runbook. Production и client enable не выполнялись.
+
+F-5 «Причины возвратов» принят как отдельный spec-first контракт 22 июля 2026
+года. Boolean-only R-0 подтвердил source schema, но exact Finance/source match
+не найден даже на выровненном максимальном window; `implementationGate=false`.
+Существующий goods-return client считается prework, а не end-to-end
+реализацией. Claims, context/mart/API/UI и rollout не начинаются до отдельного
+identity evidence.
 
 # Цель
 
