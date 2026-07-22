@@ -588,6 +588,7 @@ SERVICE_SAMPLE_COLLECTIONS = (
 )
 
 ACCOUNTING_REPORT_SAMPLE_COLLECTIONS = (
+    DEFAULT_SAMPLE_COLLECTIONS[0],  # nomenclature for RWB service labels
     DEFAULT_SAMPLE_COLLECTIONS[1],  # organizations
     DEFAULT_SAMPLE_COLLECTIONS[2],  # special-tax notifications
     *TAX_PROFILE_SAMPLE_COLLECTIONS,
@@ -694,6 +695,7 @@ ACCOUNTING_REPORT_SAMPLE_COLLECTIONS = (
         period_filter_mode="local_document_date",
         page_size=1000,
     ),
+    *SERVICE_SAMPLE_COLLECTIONS,
 )
 
 

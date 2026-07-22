@@ -328,6 +328,102 @@ def _detailed_vat_evidence(*, purchase_status: str = "empty_expected") -> dict:
     )
 
 
+def _rwb_vat_evidence(
+    *,
+    supplier_expenses_status: str = "loaded",
+    purchase_invoice_date: str | None = "2026-04-14T00:00:00",
+) -> dict:
+    return materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        refresh_run_id="generation-rwb-vat",
+        sources={
+            "onec_accounting_counterparties": AccountingEvidenceSource(
+                source_type="onec_accounting_counterparties",
+                status="loaded",
+                snapshot_id="counterparties-sha",
+                rows=(
+                    {"Ref_Key": "RWB", "Description": "ООО РВБ"},
+                    {"Ref_Key": "OTHER", "Description": "ООО Поставщик"},
+                ),
+            ),
+            "onec_nomenclature": AccountingEvidenceSource(
+                source_type="onec_nomenclature",
+                status="loaded",
+                snapshot_id="nomenclature-sha",
+                rows=(
+                    {"Ref_Key": "COMMISSION", "Description": "Комиссия WB"},
+                    {"Ref_Key": "DELIVERY", "Description": "Услуга доставки"},
+                ),
+            ),
+            "onec_supplier_receipts": AccountingEvidenceSource(
+                source_type="onec_supplier_receipts",
+                status="loaded",
+                snapshot_id="receipts-sha",
+                rows=(
+                    {
+                        "Ref_Key": "RWB-UPD-1",
+                        "Date": "2026-04-15T00:00:00",
+                        "Number": "1C-15",
+                        "Posted": True,
+                        "DeletionMark": False,
+                        "Организация_Key": "ORG-1",
+                        "Контрагент_Key": "RWB",
+                        "НомерВходящегоДокумента": "УПД-7",
+                        "ДатаВходящегоДокумента": "2026-04-14T00:00:00",
+                    },
+                ),
+            ),
+            "onec_supplier_receipt_expenses": AccountingEvidenceSource(
+                source_type="onec_supplier_receipt_expenses",
+                status=supplier_expenses_status,
+                snapshot_id="receipt-expenses-sha",
+                rows=(
+                    {
+                        "Ref_Key": "RWB-UPD-1",
+                        "LineNumber": 1,
+                        "Номенклатура_Key": "COMMISSION",
+                        "Сумма": "100",
+                        "СуммаНДС": "20",
+                        "Всего": "120",
+                    },
+                    {
+                        "Ref_Key": "RWB-UPD-1",
+                        "LineNumber": 2,
+                        "Номенклатура_Key": "DELIVERY",
+                        "Сумма": "50",
+                        "СуммаНДС": "10",
+                        "Всего": "60",
+                    },
+                )
+                if supplier_expenses_status == "loaded"
+                else (),
+            ),
+            "onec_vat_purchase_book": AccountingEvidenceSource(
+                source_type="onec_vat_purchase_book",
+                status="loaded",
+                snapshot_id="purchase-book-sha",
+                rows=(
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-04-30T00:00:00",
+                        "Active": True,
+                        "Поставщик_Key": "RWB",
+                        "СтавкаНДС": "НДС20",
+                        "СуммаБезНДС": "150",
+                        "НДС": "30",
+                        "НомерСчетаФактуры": "УПД-7",
+                        "ДатаСчетаФактуры": purchase_invoice_date,
+                        "ЗаписьДополнительногоЛиста": False,
+                    },
+                ),
+            ),
+        },
+    )
+
+
 def test_month_close_prefers_balance_and_turnovers_and_warns_on_any_delta() -> None:
     payload = build_month_close_control_payload(
         _report("month_close_control"), _month_close_evidence()
@@ -499,13 +595,13 @@ def test_tax_load_formula_excludes_agent_and_insurance_rows() -> None:
     assert summary["benchmarkValue"] is None
     assert payload["businessStatus"] == "accountant_review_required"
     assert payload["accountantApproval"] is None
-    assert payload["contractVersion"] == "tax-load-report-v4"
+    assert payload["contractVersion"] == "tax-load-report-v5"
 
 
 def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -> None:
     evidence = _detailed_vat_evidence()
 
-    assert evidence["contractVersion"] == "tax-load-evidence-v4"
+    assert evidence["contractVersion"] == "tax-load-evidence-v5"
     assert evidence["vatSummary"] == {
         "status": "loaded",
         "periodStart": "2026-06-01",
@@ -553,7 +649,7 @@ def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -
         tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
         evidence=evidence,
     )
-    assert payload["contractVersion"] == "tax-load-report-v4"
+    assert payload["contractVersion"] == "tax-load-report-v5"
     assert payload["vatBooks"]["salesRows"] == books["salesRows"]
 
     missing_purchase = _detailed_vat_evidence(purchase_status="missing")
@@ -1322,6 +1418,125 @@ def test_tax_load_excel_has_readable_detailed_vat_books(tmp_path: Path) -> None:
     assert "Покупатель_Key" not in workbook_text
     assert "Поставщик_Key" not in workbook_text
     assert "Recorder" not in workbook_text
+
+
+def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
+    tmp_path: Path,
+) -> None:
+    evidence = _rwb_vat_evidence()
+    reconciliation = evidence["rwbVatReconciliation"]
+
+    assert evidence["contractVersion"] == "tax-load-evidence-v5"
+    assert reconciliation["status"] == "matched"
+    assert reconciliation["serviceTotals"] == {
+        "rowCount": 2,
+        "amountExcludingVat": "150",
+        "vatAmount": "30",
+        "amountIncludingVat": "180",
+    }
+    assert reconciliation["purchaseBookTotals"] == {
+        "rowCount": 1,
+        "amountExcludingVat": "150",
+        "vatAmount": "30",
+        "amountIncludingVat": "180",
+    }
+    assert reconciliation["vatDifference"] == "0"
+    assert [row["serviceCategory"] for row in reconciliation["rows"]] == [
+        "Комиссия WB",
+        "Логистика",
+    ]
+    assert {row["purchaseBookIncluded"] for row in reconciliation["rows"]} == {
+        "yes"
+    }
+
+    report = _report("tax_load")
+    report.period_start = date(2026, 6, 1)
+    payload = build_tax_load_payload(
+        report,
+        tax_profile={
+            "taxSystem": "osno",
+            "profileStatus": "ready",
+            "vatMode": "included",
+            "vatDeductionMode": "allowed",
+        },
+        evidence=evidence,
+    )
+    assert payload["contractVersion"] == "tax-load-report-v5"
+    assert payload["rwbVatReconciliation"]["applicability"] == "allowed"
+    assert payload["rwbVatReconciliation"]["status"] == "matched"
+    assert not any(
+        issue["code"] == "rwb_vat_reconciliation_review_required"
+        for issue in payload["issues"]
+    )
+
+    path = tmp_path / "tax-load-rwb-vat.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    rows = list(workbook["НДС РВБ"].iter_rows(values_only=True))
+    headers = {value: index for index, value in enumerate(rows[0])}
+    summary = rows[-1]
+    assert len(rows) == 4
+    assert summary[headers["Строка"]] == "Итого"
+    assert summary[headers["Сумма НДС"]] == 30
+    assert summary[headers["НДС книги покупок РВБ"]] == 30
+    assert summary[headers["Расхождение НДС РВБ"]] == 0
+    assert summary[headers["Статус сверки"]] == "Сходится"
+    assert workbook["НДС РВБ"].freeze_panes == "A2"
+    assert next(iter(workbook["НДС РВБ"].tables.values())).autoFilter is not None
+
+
+def test_tax_load_rwb_vat_sheet_stays_visible_when_deduction_not_applicable(
+    tmp_path: Path,
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "vatMode": "none",
+            "vatDeductionMode": "not_applicable",
+        },
+        evidence=_rwb_vat_evidence(),
+    )
+
+    assert payload["rwbVatReconciliation"]["status"] == "not_applicable"
+    assert not any(
+        issue["code"] == "rwb_vat_reconciliation_review_required"
+        for issue in payload["issues"]
+    )
+    path = tmp_path / "tax-load-rwb-vat-not-applicable.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    rows = list(workbook["НДС РВБ"].iter_rows(values_only=True))
+    applicability_index = rows[0].index("Применимость вычета")
+    status_index = rows[0].index("Статус сверки")
+    assert {row[applicability_index] for row in rows[1:]} == {"Не применяется"}
+    assert {row[status_index] for row in rows[1:]} == {"Не применяется"}
+
+
+def test_tax_load_rwb_vat_keeps_incomplete_service_rows_explicit() -> None:
+    reconciliation = _rwb_vat_evidence(
+        supplier_expenses_status="missing"
+    )["rwbVatReconciliation"]
+
+    assert reconciliation["status"] == "partial_source"
+    assert reconciliation["sourceStatus"] == "partial_source"
+    assert reconciliation["serviceTotals"] == {
+        "rowCount": 0,
+        "amountExcludingVat": None,
+        "vatAmount": None,
+        "amountIncludingVat": None,
+    }
+    assert reconciliation["vatDifference"] is None
+
+
+def test_tax_load_rwb_vat_does_not_exact_match_without_invoice_date() -> None:
+    rows = _rwb_vat_evidence(purchase_invoice_date=None)[
+        "rwbVatReconciliation"
+    ]["rows"]
+
+    assert {row["purchaseBookIncluded"] for row in rows} == {"unknown"}
+    assert {row["purchaseBookInvoiceNumber"] for row in rows} == {""}
 
 
 def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> None:

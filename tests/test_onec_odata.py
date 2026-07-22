@@ -883,6 +883,13 @@ def test_accounting_report_collections_do_not_require_server_period_filters() ->
         "Description",
         "DeletionMark",
     )
+    assert accounting["nomenclature"].collection_name == "Catalog_Номенклатура"
+    assert accounting["supplier_receipts"].collection_name == (
+        "Document_ПоступлениеТоваровУслуг"
+    )
+    assert accounting["supplier_receipt_expenses"].collection_name == (
+        "Document_ПоступлениеТоваровУслуг_Услуги"
+    )
 
 
 def test_local_accounting_period_stops_after_selected_window(tmp_path: Path) -> None:

@@ -34,6 +34,7 @@ TAX_LOAD_SHEETS = (
     "Налоги",
     "График платежей",
     "НДС",
+    "НДС РВБ",
     "Книга продаж",
     "Книга покупок",
     "ЕНС",
@@ -110,6 +111,20 @@ TAX_LOAD_FIELD_LABELS = {
     "ytdOutputVat": "Начисленный НДС с начала года",
     "ytdInputVat": "Входящий НДС с начала года",
     "vatDifference": "Разница НДС по книгам с начала года",
+    "rowKind": "Строка",
+    "applicability": "Применимость вычета",
+    "reconciliationStatus": "Статус сверки",
+    "documentDate": "Дата документа 1С",
+    "documentNumber": "Номер документа 1С",
+    "inputNumber": "Входящий номер УПД",
+    "inputDate": "Дата входящего УПД",
+    "serviceCategory": "Категория услуги РВБ",
+    "serviceName": "Услуга РВБ",
+    "purchaseBookIncluded": "В книге покупок",
+    "purchaseBookInvoiceNumber": "Счёт-фактура книги покупок",
+    "purchaseBookVatAmount": "НДС книги покупок РВБ",
+    "rwbVatDifference": "Расхождение НДС РВБ",
+    "note": "Комментарий",
     "entryDate": "Дата записи",
     "counterpartyName": "Контрагент",
     "invoiceNumber": "Номер счёта-фактуры / документа",
@@ -151,6 +166,15 @@ TAX_LOAD_VALUE_LABELS = {
     "not_confirmed": "Не подтверждено",
     "unconfirmed": "Не подтверждено",
     "not_applicable": "Не применяется",
+    "not_allowed": "Вычет запрещён",
+    "allowed": "Вычет разрешён",
+    "unknown": "Не определено",
+    "matched": "Сходится",
+    "mismatch": "Есть расхождение",
+    "yes": "Да",
+    "no": "Нет",
+    "detail": "Услуга РВБ",
+    "summary": "Итого",
     "review_required": "Требуется проверка",
     "management_reference": "Управленческий ориентир",
     "pending_methodology_confirmation": "Ожидает подтверждения методики",
@@ -189,6 +213,10 @@ TAX_LOAD_SOURCE_LABELS = {
     "onec_accounting_bank_in": "Банковские поступления 1С",
     "onec_accounting_bank_out": "Банковские списания 1С",
     "onec_accounting_counterparties": "Справочник контрагентов 1С",
+    "onec_incoming_invoices": "Приходные накладные 1С",
+    "onec_nomenclature": "Справочник номенклатуры 1С",
+    "onec_supplier_receipt_expenses": "Строки услуг УПД 1С",
+    "onec_supplier_receipts": "Поступления и УПД услуг 1С",
     "onec_accounting_chart": "План счетов 1С",
     "onec_accounting_ens": "Единый налоговый счёт 1С",
     "onec_accounting_ens_sanctions": "Санкции по ЕНС в 1С",
@@ -226,6 +254,8 @@ TAX_LOAD_DATE_FIELDS = {
     "asOfDate",
     "entryDate",
     "invoiceDate",
+    "documentDate",
+    "inputDate",
 }
 TAX_LOAD_ENUM_FIELDS = {
     "reportKind",
@@ -248,6 +278,10 @@ TAX_LOAD_ENUM_FIELDS = {
     "status",
     "salesBookStatus",
     "purchaseBookStatus",
+    "applicability",
+    "reconciliationStatus",
+    "rowKind",
+    "purchaseBookIncluded",
     "severity",
     "taxSystem",
     "profileStatus",
@@ -272,6 +306,8 @@ TAX_LOAD_CURRENCY_FIELDS = {
     "amountExcludingVat",
     "vatAmount",
     "amountIncludingVat",
+    "purchaseBookVatAmount",
+    "rwbVatDifference",
 }
 TAX_LOAD_PERCENT_FIELDS = {
     "fnsTaxBurdenRatio",
@@ -347,6 +383,26 @@ TAX_LOAD_ROW_FIELDS = {
         "entryKind",
         "correctionStatus",
     ),
+    "НДС РВБ": (
+        "rowKind",
+        "applicability",
+        "reconciliationStatus",
+        "documentDate",
+        "documentNumber",
+        "inputNumber",
+        "inputDate",
+        "serviceCategory",
+        "serviceName",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "purchaseBookIncluded",
+        "purchaseBookInvoiceNumber",
+        "purchaseBookVatAmount",
+        "rwbVatDifference",
+        "sourceKind",
+        "note",
+    ),
     "Источники и статус": (
         "sourceKind",
         "periodStart",
@@ -380,6 +436,7 @@ TAX_LOAD_TABLE_NAMES = {
     "Налоги": "TaxLoadTaxes",
     "График платежей": "TaxLoadSchedule",
     "НДС": "TaxLoadVat",
+    "НДС РВБ": "TaxLoadRwbVat",
     "Книга продаж": "TaxLoadVatSalesBook",
     "Книга покупок": "TaxLoadVatPurchaseBook",
     "ЕНС": "TaxLoadEns",
@@ -598,6 +655,78 @@ def _write_tax_load_rows(
         )
         for column, key in enumerate(headers, start=1):
             _format_tax_load_cell(sheet.cell(row=sheet.max_row, column=column), key)
+
+
+def _rwb_vat_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    reconciliation = dict(payload.get("rwbVatReconciliation") or {})
+    applicability = reconciliation.get("applicability") or "unknown"
+    status = reconciliation.get("status") or "source_gap"
+    result: list[dict[str, Any]] = []
+    for raw in reconciliation.get("rows") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        result.append(
+            {
+                **dict(raw),
+                "rowKind": "detail",
+                "applicability": applicability,
+                "reconciliationStatus": status,
+                "purchaseBookVatAmount": None,
+                "rwbVatDifference": None,
+                "note": "",
+            }
+        )
+
+    service_totals = dict(reconciliation.get("serviceTotals") or {})
+    purchase_totals = dict(reconciliation.get("purchaseBookTotals") or {})
+    purchase_row_count = _tax_load_decimal(purchase_totals.get("rowCount"))
+    if not reconciliation.get("periodStart"):
+        note = "Сформируйте отчёт повторно для загрузки сверки НДС РВБ."
+    elif applicability in {"not_allowed", "not_applicable"}:
+        note = (
+            "Вычет по налоговому профилю не применяется; "
+            "расшифровка показана справочно."
+        )
+    elif status == "matched":
+        note = "НДС услуг РВБ сходится с книгой покупок."
+    elif status == "mismatch":
+        note = "НДС услуг РВБ расходится с книгой покупок; нужна проверка."
+    elif status == "empty_expected":
+        note = "За выбранный период услуги РВБ и записи книги покупок не найдены."
+    else:
+        note = "Источники сверки загружены не полностью."
+    result.append(
+        {
+            "rowKind": "summary",
+            "applicability": applicability,
+            "reconciliationStatus": status,
+            "documentDate": None,
+            "documentNumber": "Итого за период",
+            "inputNumber": "",
+            "inputDate": None,
+            "serviceCategory": "Все услуги РВБ",
+            "serviceName": "",
+            "amountExcludingVat": service_totals.get("amountExcludingVat"),
+            "vatAmount": service_totals.get("vatAmount"),
+            "amountIncludingVat": service_totals.get("amountIncludingVat"),
+            "purchaseBookIncluded": (
+                "yes"
+                if purchase_row_count is not None and purchase_row_count > 0
+                else (
+                    "no"
+                    if str(reconciliation.get("purchaseBookStatus") or "")
+                    in {"loaded", "ready", "complete", "confirmed", "empty_expected"}
+                    else "unknown"
+                )
+            ),
+            "purchaseBookInvoiceNumber": "",
+            "purchaseBookVatAmount": purchase_totals.get("vatAmount"),
+            "rwbVatDifference": reconciliation.get("vatDifference"),
+            "sourceKind": "onec_vat_books",
+            "note": note,
+        }
+    )
+    return result
 
 
 def _usn_period_columns(ytd_end: Any) -> list[dict[str, Any]]:
@@ -1060,6 +1189,7 @@ def write_scenario_excel(
         row_payloads = {
             "Налоги": payload.get("taxRows") or [],
             "График платежей": payload.get("paymentSchedule") or [],
+            "НДС РВБ": _rwb_vat_rows(payload),
             "Книга продаж": vat_books.get("salesRows") or [],
             "Книга покупок": vat_books.get("purchaseRows") or [],
             "Источники и статус": payload.get("sourceCoverage") or [],

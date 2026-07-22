@@ -10,10 +10,11 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from wb_unit_economics.onec_services import classify_marketplace_service
 from wb_unit_economics.web.report_kinds import MONTH_CLOSE_CONTROL, TAX_LOAD
 
 MONTH_CLOSE_EVIDENCE_VERSION = "month-close-evidence-v2"
-TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v4"
+TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v5"
 
 COMPLETE_SOURCE_STATUSES = frozenset(
     {"loaded", "ready", "complete", "confirmed", "empty_expected"}
@@ -470,6 +471,15 @@ def _tax_load_evidence(
         vat_sales_totals.get("vatAmount"),
         vat_purchase_totals.get("vatAmount"),
     )
+    rwb_vat_reconciliation = _rwb_vat_reconciliation(
+        sources=sources,
+        organization_id=organization_id,
+        period_start=ytd_start,
+        period_end=period_end,
+        counterparty_names=counterparty_names,
+        purchase_book_rows=vat_purchase_rows,
+        purchase_book_source=vat_purchase_source,
+    )
     counterparty_categories = _usn_marketplace_counterparty_categories(
         counterparty_source
     )
@@ -728,6 +738,7 @@ def _tax_load_evidence(
             "purchaseTotals": vat_purchase_totals,
             "vatDifference": vat_difference,
         },
+        "rwbVatReconciliation": rwb_vat_reconciliation,
         "ensSummary": {
             "status": _source_status(sources.get("onec_accounting_ens")),
             "balance": _sum_rows(ens_rows, ("Сумма", "Amount")),
@@ -1184,6 +1195,369 @@ def _vat_book_totals(
         "vatAmount": vat_amount,
         "amountIncludingVat": including_vat,
     }
+
+
+def _rwb_vat_reconciliation(
+    *,
+    sources: Mapping[str, AccountingEvidenceSource],
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+    counterparty_names: Mapping[str, str],
+    purchase_book_rows: list[dict[str, Any]],
+    purchase_book_source: AccountingEvidenceSource | None,
+) -> dict[str, Any]:
+    rwb_counterparty_ids = {
+        counterparty_id
+        for counterparty_id, name in counterparty_names.items()
+        if _is_rwb_counterparty_name(name)
+    }
+    counterparty_source = sources.get("onec_accounting_counterparties")
+    nomenclature_source = sources.get("onec_nomenclature")
+    nomenclature_names = _description_lookup(nomenclature_source)
+    supplier_receipts_source = sources.get("onec_supplier_receipts")
+    supplier_expenses_source = sources.get("onec_supplier_receipt_expenses")
+    incoming_invoices_source = sources.get("onec_incoming_invoices")
+
+    supplier_receipts = _rwb_receipt_headers(
+        supplier_receipts_source,
+        organization_id=organization_id,
+        period_start=period_start,
+        period_end=period_end,
+        rwb_counterparty_ids=rwb_counterparty_ids,
+    )
+    supplier_rows = _rwb_supplier_service_rows(
+        supplier_receipts,
+        supplier_expenses_source,
+        nomenclature_names=nomenclature_names,
+    )
+    incoming_receipts = _rwb_receipt_headers(
+        incoming_invoices_source,
+        organization_id=organization_id,
+        period_start=period_start,
+        period_end=period_end,
+        rwb_counterparty_ids=rwb_counterparty_ids,
+    )
+    incoming_rows = _rwb_incoming_invoice_service_rows(
+        incoming_receipts,
+        nomenclature_names=nomenclature_names,
+    )
+
+    supplier_status = _combined_status(
+        counterparty_source,
+        nomenclature_source,
+        supplier_receipts_source,
+        supplier_expenses_source,
+    )
+    incoming_status = _combined_status(
+        counterparty_source,
+        nomenclature_source,
+        incoming_invoices_source,
+    )
+    if supplier_rows:
+        service_rows = supplier_rows
+        service_status = supplier_status
+    elif incoming_rows:
+        service_rows = incoming_rows
+        service_status = (
+            incoming_status
+            if incoming_status in COMPLETE_SOURCE_STATUSES
+            else "partial_source"
+        )
+    else:
+        service_rows = []
+        incomplete_headers = (
+            bool(supplier_receipts)
+            and supplier_status not in COMPLETE_SOURCE_STATUSES
+        ) or (
+            bool(incoming_receipts)
+            and incoming_status not in COMPLETE_SOURCE_STATUSES
+        )
+        if incomplete_headers:
+            service_status = "partial_source"
+        elif (
+            supplier_status in COMPLETE_SOURCE_STATUSES
+            or incoming_status in COMPLETE_SOURCE_STATUSES
+        ):
+            service_status = "empty_expected"
+        elif supplier_status == "missing" and incoming_status == "missing":
+            service_status = "missing"
+        else:
+            service_status = "partial_source"
+
+    rwb_purchase_rows = [
+        row
+        for row in purchase_book_rows
+        if _is_rwb_counterparty_name(str(row.get("counterpartyName") or ""))
+    ]
+    purchase_status = _source_status(purchase_book_source)
+    for row in service_rows:
+        included, invoice_number = _rwb_purchase_book_match(
+            row,
+            rwb_purchase_rows,
+            purchase_status=purchase_status,
+        )
+        row["purchaseBookIncluded"] = included
+        row["purchaseBookInvoiceNumber"] = invoice_number
+
+    service_totals = _rwb_service_totals(service_rows, service_status)
+    purchase_totals = _rwb_service_totals(rwb_purchase_rows, purchase_status)
+    vat_difference = _decimal_difference(
+        purchase_totals.get("vatAmount"),
+        service_totals.get("vatAmount"),
+    )
+    if (
+        service_status not in COMPLETE_SOURCE_STATUSES
+        or purchase_status not in COMPLETE_SOURCE_STATUSES
+        or vat_difference is None
+    ):
+        status = (
+            "missing"
+            if service_status == "missing" and purchase_status == "missing"
+            else "partial_source"
+        )
+    elif not service_rows and not rwb_purchase_rows:
+        status = "empty_expected"
+    elif Decimal(vat_difference) == Decimal("0"):
+        status = "matched"
+    else:
+        status = "mismatch"
+
+    return {
+        "status": status,
+        "sourceStatus": service_status,
+        "purchaseBookStatus": purchase_status,
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "serviceTotals": service_totals,
+        "purchaseBookTotals": purchase_totals,
+        "vatDifference": vat_difference,
+        "rows": sorted(
+            service_rows,
+            key=lambda item: (
+                str(item.get("documentDate") or ""),
+                str(item.get("documentNumber") or ""),
+                str(item.get("serviceCategory") or ""),
+                str(item.get("serviceName") or ""),
+            ),
+        ),
+    }
+
+
+def _rwb_receipt_headers(
+    source: AccountingEvidenceSource | None,
+    *,
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+    rwb_counterparty_ids: set[str],
+) -> list[Mapping[str, Any]]:
+    return [
+        row
+        for row in _organization_period_rows(
+            source,
+            organization_id,
+            period_start,
+            period_end,
+            date_fields=("Date", "Дата"),
+        )
+        if row.get("Posted") is True
+        and row.get("DeletionMark") is not True
+        and _first_text(row, ("Контрагент_Key", "Counterparty_Key"))
+        in rwb_counterparty_ids
+    ]
+
+
+def _rwb_supplier_service_rows(
+    receipts: list[Mapping[str, Any]],
+    expense_source: AccountingEvidenceSource | None,
+    *,
+    nomenclature_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    receipts_by_id = {
+        _first_text(row, ("Ref_Key",)): row
+        for row in receipts
+        if _first_text(row, ("Ref_Key",))
+    }
+    if expense_source is None or not receipts_by_id:
+        return []
+    result: list[dict[str, Any]] = []
+    for expense in expense_source.rows:
+        receipt_id = _first_text(expense, ("Ref_Key", "Recorder", "Документ_Key"))
+        receipt = receipts_by_id.get(receipt_id)
+        if receipt is None:
+            continue
+        result.append(
+            _rwb_service_row(
+                receipt,
+                expense,
+                nomenclature_names=nomenclature_names,
+                source_kind="onec_supplier_receipt_expenses",
+            )
+        )
+    return result
+
+
+def _rwb_incoming_invoice_service_rows(
+    receipts: list[Mapping[str, Any]],
+    *,
+    nomenclature_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for receipt in receipts:
+        expense_rows = receipt.get("Расходы") or receipt.get("Услуги")
+        if not isinstance(expense_rows, list):
+            continue
+        for expense in expense_rows:
+            if not isinstance(expense, Mapping):
+                continue
+            result.append(
+                _rwb_service_row(
+                    receipt,
+                    expense,
+                    nomenclature_names=nomenclature_names,
+                    source_kind="onec_incoming_invoices",
+                )
+            )
+    return result
+
+
+def _rwb_service_row(
+    receipt: Mapping[str, Any],
+    expense: Mapping[str, Any],
+    *,
+    nomenclature_names: Mapping[str, str],
+    source_kind: str,
+) -> dict[str, Any]:
+    service_name = _first_text(
+        expense,
+        ("Содержание", "Наименование", "Description"),
+    )
+    if not service_name:
+        service_name = nomenclature_names.get(
+            _first_text(expense, ("Номенклатура_Key",)),
+            "",
+        )
+    if not service_name:
+        service_name = "Не определено"
+    amount_excluding_vat, vat_amount, amount_including_vat = _rwb_service_amounts(
+        receipt,
+        expense,
+    )
+    return {
+        "rowKind": "detail",
+        "documentDate": _date_text(receipt.get("Date") or receipt.get("Дата")),
+        "documentNumber": _first_text(receipt, ("Number", "Номер"))
+        or "Не указан",
+        "inputNumber": _first_text(
+            receipt,
+            ("НомерВходящегоДокумента", "InputDocumentNumber"),
+        )
+        or "Не указан",
+        "inputDate": _date_text(
+            receipt.get("ДатаВходящегоДокумента")
+            or receipt.get("InputDocumentDate")
+        ),
+        "serviceCategory": (
+            classify_marketplace_service(service_name)
+            if service_name != "Не определено"
+            else "Не определено"
+        ),
+        "serviceName": service_name,
+        "amountExcludingVat": amount_excluding_vat,
+        "vatAmount": vat_amount,
+        "amountIncludingVat": amount_including_vat,
+        "purchaseBookIncluded": "unknown",
+        "purchaseBookInvoiceNumber": "",
+        "sourceKind": source_kind,
+    }
+
+
+def _rwb_service_amounts(
+    receipt: Mapping[str, Any],
+    expense: Mapping[str, Any],
+) -> tuple[str | None, str | None, str | None]:
+    amount = _first_decimal(expense, ("СуммаБезНДС", "Сумма", "Amount"))
+    vat = _first_decimal(expense, ("СуммаНДС", "НДС", "VAT"))
+    total = _first_decimal(expense, ("Всего", "СуммаСНДС", "Total"))
+    includes_vat = receipt.get("СуммаВключаетНДС") is True
+    if amount is None and total is not None and vat is not None:
+        amount = total - vat
+    elif amount is not None and vat is not None:
+        if includes_vat or (total is not None and total == amount):
+            total = total if total is not None else amount
+            amount = amount - vat
+        elif total is None:
+            total = amount + vat
+    return (
+        _decimal_text(amount) if amount is not None else None,
+        _decimal_text(vat) if vat is not None else None,
+        _decimal_text(total) if total is not None else None,
+    )
+
+
+def _rwb_purchase_book_match(
+    service_row: Mapping[str, Any],
+    purchase_rows: list[dict[str, Any]],
+    *,
+    purchase_status: str,
+) -> tuple[str, str]:
+    if purchase_status not in COMPLETE_SOURCE_STATUSES:
+        return "unknown", ""
+    input_number = _document_number_key(service_row.get("inputNumber"))
+    input_date = str(service_row.get("inputDate") or "")
+    if not input_number or not input_date:
+        return "unknown", ""
+    number_match_without_date = False
+    for purchase_row in purchase_rows:
+        invoice_number = _document_number_key(purchase_row.get("invoiceNumber"))
+        if not invoice_number or invoice_number != input_number:
+            continue
+        invoice_date = str(purchase_row.get("invoiceDate") or "")
+        if not invoice_date:
+            number_match_without_date = True
+            continue
+        if input_date != invoice_date:
+            continue
+        return "yes", str(purchase_row.get("invoiceNumber") or "")
+    if number_match_without_date:
+        return "unknown", ""
+    return "no", ""
+
+
+def _rwb_service_totals(
+    rows: list[Mapping[str, Any]],
+    source_status: str,
+) -> dict[str, Any]:
+    if source_status not in COMPLETE_SOURCE_STATUSES:
+        return {
+            "rowCount": len(rows),
+            "amountExcludingVat": None,
+            "vatAmount": None,
+            "amountIncludingVat": None,
+        }
+    return {
+        "rowCount": len(rows),
+        "amountExcludingVat": _complete_sum_rows(rows, ("amountExcludingVat",)),
+        "vatAmount": _complete_sum_rows(rows, ("vatAmount",)),
+        "amountIncludingVat": _complete_sum_rows(rows, ("amountIncludingVat",)),
+    }
+
+
+def _is_rwb_counterparty_name(value: str) -> bool:
+    normalized = "".join(
+        character for character in value.casefold() if character.isalnum()
+    )
+    return any(
+        marker in normalized for marker in ("рвб", "wildberries", "вайлдберриз")
+    )
+
+
+def _document_number_key(value: Any) -> str:
+    normalized = "".join(
+        character for character in str(value or "").casefold() if character.isalnum()
+    )
+    return "" if normalized in {"", "неуказан"} else normalized
 
 
 def _decimal_difference(left: Any, right: Any) -> str | None:

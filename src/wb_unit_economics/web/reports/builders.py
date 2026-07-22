@@ -13,7 +13,7 @@ from wb_unit_economics.web.reports.contracts import (
 from wb_unit_economics.web.reports.month_close import normalize_month_close_osv
 
 MONTH_CLOSE_CONTRACT_VERSION = "month-close-control-report-v2"
-TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v4"
+TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v5"
 FNS_TAX_BURDEN_METHODOLOGY_VERSION = "fns-tax-burden-v1-2026-07-14"
 CONFIRMED_EVIDENCE_STATUSES = {"loaded", "confirmed"}
 OFFICIAL_INCOME_SOURCE_KINDS = {
@@ -179,6 +179,63 @@ def _safe_vat_books(value: object) -> dict[str, Any]:
         "salesTotals": _safe_summary(value.get("salesTotals"), total_fields),
         "purchaseTotals": _safe_summary(value.get("purchaseTotals"), total_fields),
         "vatDifference": value.get("vatDifference"),
+    }
+
+
+def _safe_rwb_vat_reconciliation(
+    value: object,
+    *,
+    vat_deduction_mode: object,
+) -> dict[str, Any]:
+    applicability = str(vat_deduction_mode or "unknown").strip().lower()
+    if applicability not in {
+        "allowed",
+        "not_allowed",
+        "not_applicable",
+        "unknown",
+    }:
+        applicability = "unknown"
+    row_fields = (
+        "rowKind",
+        "documentDate",
+        "documentNumber",
+        "inputNumber",
+        "inputDate",
+        "serviceCategory",
+        "serviceName",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "purchaseBookIncluded",
+        "purchaseBookInvoiceNumber",
+        "sourceKind",
+    )
+    total_fields = (
+        "rowCount",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+    )
+    raw = value if isinstance(value, Mapping) else {}
+    source_status = str(raw.get("status") or "source_gap")
+    status = (
+        "not_applicable"
+        if applicability in {"not_allowed", "not_applicable"}
+        else source_status
+    )
+    return {
+        "applicability": applicability,
+        "status": status,
+        "sourceStatus": raw.get("sourceStatus") or "source_gap",
+        "purchaseBookStatus": raw.get("purchaseBookStatus") or "source_gap",
+        "periodStart": raw.get("periodStart"),
+        "periodEnd": raw.get("periodEnd"),
+        "serviceTotals": _safe_summary(raw.get("serviceTotals"), total_fields),
+        "purchaseBookTotals": _safe_summary(
+            raw.get("purchaseBookTotals"), total_fields
+        ),
+        "vatDifference": raw.get("vatDifference"),
+        "rows": _safe_rows(raw.get("rows"), row_fields),
     }
 
 
@@ -476,6 +533,10 @@ def build_tax_load_payload(
         evidence.get("sourceCoverage"),
         ("sourceKind", "periodStart", "periodEnd", "status", "snapshotId"),
     )
+    rwb_vat_reconciliation = _safe_rwb_vat_reconciliation(
+        evidence.get("rwbVatReconciliation"),
+        vat_deduction_mode=profile.get("vatDeductionMode"),
+    )
     issues = _safe_rows(
         evidence.get("issues"),
         ("code", "severity", "section", "message", "nextAction"),
@@ -488,6 +549,24 @@ def build_tax_load_payload(
                 "section": "Налоговая нагрузка",
                 "message": "Недостаточно подтвержденных данных для коэффициента ФНС.",
                 "nextAction": "Подтвердить уплаченные налоги и доходный знаменатель.",
+            }
+        )
+    if (
+        rwb_vat_reconciliation["applicability"] == "allowed"
+        and rwb_vat_reconciliation["status"]
+        in {"mismatch", "partial_source", "missing", "source_gap"}
+    ):
+        issues.append(
+            {
+                "code": "rwb_vat_reconciliation_review_required",
+                "severity": "warning",
+                "section": "НДС РВБ",
+                "message": (
+                    "Входящий НДС по услугам РВБ не подтверждён книгой покупок."
+                ),
+                "nextAction": (
+                    "Сверить УПД услуг РВБ и записи книги покупок за период."
+                ),
             }
         )
     payment_schedule = [
@@ -543,6 +622,7 @@ def build_tax_load_payload(
             ),
         ),
         "vatBooks": _safe_vat_books(evidence.get("vatBooks")),
+        "rwbVatReconciliation": rwb_vat_reconciliation,
         "ensSummary": _safe_summary(
             evidence.get("ensSummary"), ("status", "balance", "asOfDate")
         ),
