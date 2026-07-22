@@ -13,7 +13,7 @@ from wb_unit_economics.web.reports.contracts import (
 from wb_unit_economics.web.reports.month_close import normalize_month_close_osv
 
 MONTH_CLOSE_CONTRACT_VERSION = "month-close-control-report-v2"
-TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v5"
+TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v6"
 FNS_TAX_BURDEN_METHODOLOGY_VERSION = "fns-tax-burden-v1-2026-07-14"
 CONFIRMED_EVIDENCE_STATUSES = {"loaded", "confirmed"}
 OFFICIAL_INCOME_SOURCE_KINDS = {
@@ -440,6 +440,19 @@ def build_tax_load_payload(
         if isinstance(usn_income_evidence, Mapping)
         else None
     )
+    usn_loan_receipts = (
+        _decimal_text(usn_income_evidence.get("loanReceiptsValue"))
+        if isinstance(usn_income_evidence, Mapping)
+        else None
+    )
+    usn_loan_receipts_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyLoanReceiptValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
     usn_marketplace_breakdown = []
     if is_usn and isinstance(usn_income_evidence, Mapping):
         for item in usn_income_evidence.get("marketplaceBreakdown") or []:
@@ -457,6 +470,10 @@ def build_tax_load_payload(
                     ),
                 }
             )
+    (
+        usn_marketplace_income,
+        usn_marketplace_income_monthly,
+    ) = _marketplace_subtotal(usn_marketplace_breakdown)
     kudir_income_evidence = evidence.get("kudirIncomeEvidence")
     kudir_income_ytd = (
         _decimal_text(kudir_income_evidence.get("value"))
@@ -479,6 +496,25 @@ def build_tax_load_payload(
         )
         if is_usn and isinstance(usn_payment_evidence, Mapping)
         else []
+    )
+    usn_payroll_evidence = evidence.get("usnPayrollPaymentEvidence")
+    usn_payroll_payments = (
+        _decimal_text(usn_payroll_evidence.get("value"))
+        if is_usn and isinstance(usn_payroll_evidence, Mapping)
+        else None
+    )
+    usn_payroll_payments_monthly = (
+        _safe_rows(
+            usn_payroll_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_payroll_evidence, Mapping)
+        else []
+    )
+    usn_payroll_classification_status = (
+        str(usn_payroll_evidence.get("classificationStatus") or "source_gap")
+        if is_usn and isinstance(usn_payroll_evidence, Mapping)
+        else None
     )
     usn_tax_rows = [
         row
@@ -635,14 +671,19 @@ def build_tax_load_payload(
                     else (
                         "review_required"
                         if usn_classification_status == "review_required"
+                        or usn_payroll_classification_status == "review_required"
                         else (
                             "ready"
                             if usn_classification_status == "ready"
+                            and usn_payroll_classification_status == "ready"
                             else "source_gap"
                         )
                     )
                 ),
                 "classificationStatus": usn_classification_status,
+                "payrollClassificationStatus": (
+                    usn_payroll_classification_status
+                ),
                 "sourceKind": (
                     usn_income_evidence.get("sourceKind")
                     if isinstance(usn_income_evidence, Mapping)
@@ -652,6 +693,8 @@ def build_tax_load_payload(
                 "incomeYtd": usn_income_value,
                 "unclassifiedIncomeYtd": usn_unclassified_income,
                 "excludedIncomeYtd": usn_excluded_income,
+                "loanReceiptsYtd": usn_loan_receipts,
+                "payrollPaymentsYtd": usn_payroll_payments,
                 "kudirIncomeYtd": kudir_income_ytd,
                 "reconciliationDelta": _decimal_text(usn_reconciliation_delta),
                 "calculatedTaxYtd": _decimal_text(usn_calculated_tax),
@@ -663,6 +706,8 @@ def build_tax_load_payload(
                 "monthlyIncome": usn_income_monthly,
                 "monthlyUnclassifiedIncome": usn_unclassified_income_monthly,
                 "monthlyExcludedIncome": usn_excluded_income_monthly,
+                "monthlyLoanReceipts": usn_loan_receipts_monthly,
+                "monthlyPayrollPayments": usn_payroll_payments_monthly,
                 "marketplaceBreakdownStatus": (
                     usn_income_evidence.get("marketplaceBreakdownStatus")
                     or "source_gap"
@@ -670,6 +715,8 @@ def build_tax_load_payload(
                     else "source_gap"
                 ),
                 "marketplaceIncomeBreakdown": usn_marketplace_breakdown,
+                "marketplaceIncomeYtd": usn_marketplace_income,
+                "monthlyMarketplaceIncome": usn_marketplace_income_monthly,
                 "monthlyKudirIncome": kudir_income_monthly,
                 "monthlyTaxPayments": usn_tax_payments_monthly,
             }
@@ -713,3 +760,78 @@ def build_tax_load_payload(
         "accountantApproval": None,
     }
     return TaxLoadPayload.model_validate(payload).model_dump(mode="json")
+
+
+def _marketplace_subtotal(
+    breakdown: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    categories = {
+        str(item.get("category") or ""): item
+        for item in breakdown
+    }
+    components = [categories.get("ozon"), categories.get("wildberries")]
+    if not all(isinstance(item, Mapping) for item in components):
+        return None, []
+    ytd_values = [
+        _decimal(item.get("valueYtd"))
+        for item in components
+        if isinstance(item, Mapping)
+    ]
+    ytd_value = (
+        _decimal_text(
+            sum(
+                (value for value in ytd_values if value is not None),
+                Decimal("0"),
+            )
+        )
+        if len(ytd_values) == 2 and all(value is not None for value in ytd_values)
+        else None
+    )
+    component_months = [
+        {
+            str(row.get("month") or ""): row
+            for row in item.get("monthlyValues") or []
+            if isinstance(row, Mapping)
+        }
+        for item in components
+        if isinstance(item, Mapping)
+    ]
+    monthly_values = []
+    month_keys = sorted(
+        set().union(*(month_rows.keys() for month_rows in component_months))
+    )
+    for month in month_keys:
+        rows = [month_rows.get(month) for month_rows in component_months]
+        values = [
+            _decimal(row.get("value"))
+            for row in rows
+            if isinstance(row, Mapping)
+        ]
+        value = (
+            sum(
+                (item for item in values if item is not None),
+                Decimal("0"),
+            )
+            if len(values) == 2 and all(item is not None for item in values)
+            else None
+        )
+        monthly_values.append(
+            {
+                "month": month,
+                "value": _decimal_text(value),
+                "status": next(
+                    (
+                        row.get("status")
+                        for row in rows
+                        if isinstance(row, Mapping) and row.get("status")
+                    ),
+                    "source_gap",
+                ),
+                "rowCount": sum(
+                    int(row.get("rowCount") or 0)
+                    for row in rows
+                    if isinstance(row, Mapping)
+                ),
+            }
+        )
+    return ytd_value, monthly_values

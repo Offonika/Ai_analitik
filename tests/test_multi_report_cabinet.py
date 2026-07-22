@@ -96,6 +96,25 @@ def _bank_in_row(
     }
 
 
+def _bank_out_row(
+    row_date: str,
+    *,
+    amount: str,
+    operation: str,
+    organization_id: str = "ORG-1",
+    posted: bool = True,
+    deleted: bool = False,
+) -> dict:
+    return {
+        "Организация_Key": organization_id,
+        "Date": f"{row_date}T00:00:00",
+        "Posted": posted,
+        "DeletionMark": deleted,
+        "ВидОперации": operation,
+        "СуммаДокумента": amount,
+    }
+
+
 def _month_close_evidence() -> dict:
     return {
         "organizationId": "ORG-1",
@@ -247,6 +266,13 @@ def _usn_tax_evidence() -> dict:
             "evidenceStatus": "loaded",
         },
     ]
+    evidence["usnPayrollPaymentEvidence"] = {
+        "value": "0",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_accounting_bank_out",
+        "monthlyValues": [],
+    }
     return evidence
 
 
@@ -595,13 +621,13 @@ def test_tax_load_formula_excludes_agent_and_insurance_rows() -> None:
     assert summary["benchmarkValue"] is None
     assert payload["businessStatus"] == "accountant_review_required"
     assert payload["accountantApproval"] is None
-    assert payload["contractVersion"] == "tax-load-report-v5"
+    assert payload["contractVersion"] == "tax-load-report-v6"
 
 
 def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -> None:
     evidence = _detailed_vat_evidence()
 
-    assert evidence["contractVersion"] == "tax-load-evidence-v5"
+    assert evidence["contractVersion"] == "tax-load-evidence-v6"
     assert evidence["vatSummary"] == {
         "status": "loaded",
         "periodStart": "2026-06-01",
@@ -649,7 +675,7 @@ def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -
         tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
         evidence=evidence,
     )
-    assert payload["contractVersion"] == "tax-load-report-v5"
+    assert payload["contractVersion"] == "tax-load-report-v6"
     assert payload["vatBooks"]["salesRows"] == books["salesRows"]
 
     missing_purchase = _detailed_vat_evidence(purchase_status="missing")
@@ -857,6 +883,12 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
                     operation="ЛичныеСредстваПредпринимателя",
                 ),
                 _bank_in_row(
+                    "2026-05-09",
+                    amount="500",
+                    vat="0",
+                    operation="РасчетыПоКредитам",
+                ),
+                _bank_in_row(
                     "2026-05-10", amount="999", vat="0", posted=False
                 ),
                 _bank_in_row(
@@ -867,6 +899,34 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
                     amount="999",
                     vat="0",
                     organization_id="ORG-2",
+                ),
+            ),
+        ),
+        "onec_accounting_bank_out": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_out",
+            status="loaded",
+            snapshot_id="bank-out-sha",
+            rows=(
+                _bank_out_row(
+                    "2026-01-31",
+                    amount="70",
+                    operation="ПеречислениеЗаработнойПлаты",
+                ),
+                _bank_out_row(
+                    "2026-02-15",
+                    amount="80",
+                    operation="ОплатаПоставщику",
+                ),
+                _bank_out_row(
+                    "2026-03-31",
+                    amount="90",
+                    operation="ВыплатаЗарплаты",
+                ),
+                _bank_out_row(
+                    "2026-03-31",
+                    amount="999",
+                    operation="ВыплатаЗарплаты",
+                    posted=False,
                 ),
             ),
         ),
@@ -926,9 +986,11 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
     assert usn["value"] == "300"
     assert usn["unclassifiedValue"] == "50"
     assert usn["excludedValue"] == "1000"
+    assert usn["loanReceiptsValue"] == "500"
     assert usn["confirmedRowCount"] == 2
     assert usn["unclassifiedRowCount"] == 1
     assert usn["excludedRowCount"] == 1
+    assert usn["loanReceiptRowCount"] == 1
     assert usn["marketplaceBreakdownStatus"] == "ready"
     marketplace = {
         item["category"]: item for item in usn["marketplaceBreakdown"]
@@ -985,6 +1047,32 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
             "rowCount": 1,
         }
     ]
+    assert usn["monthlyLoanReceiptValues"] == [
+        {
+            "month": "2026-05",
+            "value": "500",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    payroll = evidence["usnPayrollPaymentEvidence"]
+    assert payroll["value"] == "160"
+    assert payroll["classificationStatus"] == "ready"
+    assert payroll["rowCount"] == 2
+    assert payroll["monthlyValues"] == [
+        {
+            "month": "2026-01",
+            "value": "70",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+        {
+            "month": "2026-03",
+            "value": "90",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+    ]
     kudir = evidence["kudirIncomeEvidence"]
     # Только ORG-1 и только период с начала года: 1200 + 800.
     assert kudir["value"] == "2000"
@@ -1004,6 +1092,40 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
     ]
     assert any(
         issue["code"] == "usn_bank_income_classification_required"
+        for issue in evidence["issues"]
+    )
+
+
+def test_tax_load_payroll_control_does_not_coerce_unknown_operation_to_zero(
+) -> None:
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        refresh_run_id="gen-payroll-review",
+        sources={
+            "onec_accounting_bank_out": AccountingEvidenceSource(
+                source_type="onec_accounting_bank_out",
+                status="loaded",
+                snapshot_id="bank-out-sha",
+                rows=(
+                    _bank_out_row(
+                        "2026-05-15",
+                        amount="100",
+                        operation="",
+                    ),
+                ),
+            )
+        },
+    )
+
+    payroll = evidence["usnPayrollPaymentEvidence"]
+    assert payroll["value"] is None
+    assert payroll["classificationStatus"] == "review_required"
+    assert payroll["monthlyValues"] == []
+    assert any(
+        issue["code"] == "usn_payroll_classification_required"
         for issue in evidence["issues"]
     )
 
@@ -1039,6 +1161,15 @@ def test_tax_load_bank_income_rejects_unreconciled_payment_breakdown() -> None:
     ]
     assert any(
         issue["code"] == "usn_bank_income_amount_unconfirmed"
+        for issue in evidence["issues"]
+    )
+    assert evidence["usnPayrollPaymentEvidence"]["value"] is None
+    assert (
+        evidence["usnPayrollPaymentEvidence"]["classificationStatus"]
+        == "source_gap"
+    )
+    assert any(
+        issue["code"] == "usn_payroll_source_gap"
         for issue in evidence["issues"]
     )
 
@@ -1426,7 +1557,7 @@ def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
     evidence = _rwb_vat_evidence()
     reconciliation = evidence["rwbVatReconciliation"]
 
-    assert evidence["contractVersion"] == "tax-load-evidence-v5"
+    assert evidence["contractVersion"] == "tax-load-evidence-v6"
     assert reconciliation["status"] == "matched"
     assert reconciliation["serviceTotals"] == {
         "rowCount": 2,
@@ -1461,7 +1592,7 @@ def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
         },
         evidence=evidence,
     )
-    assert payload["contractVersion"] == "tax-load-report-v5"
+    assert payload["contractVersion"] == "tax-load-report-v6"
     assert payload["rwbVatReconciliation"]["applicability"] == "allowed"
     assert payload["rwbVatReconciliation"]["status"] == "matched"
     assert not any(
@@ -1575,6 +1706,15 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
                 "rowCount": 1,
             }
         ],
+        "loanReceiptsValue": "250",
+        "monthlyLoanReceiptValues": [
+            {
+                "month": "2026-03",
+                "value": "250",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+        ],
         "marketplaceBreakdownStatus": "ready",
         "marketplaceBreakdown": [
             {
@@ -1651,6 +1791,26 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
             {"month": "2026-04", "value": "60", "status": "loaded", "rowCount": 1},
         ],
     }
+    evidence["usnPayrollPaymentEvidence"] = {
+        "value": "150",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_accounting_bank_out",
+        "monthlyValues": [
+            {
+                "month": "2026-01",
+                "value": "70",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+            {
+                "month": "2026-06",
+                "value": "80",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+        ],
+    }
     payload = build_tax_load_payload(
         _report("tax_load"),
         tax_profile={
@@ -1685,17 +1845,27 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
     total = rows["Итого подтверждённый доход без НДС"]
     assert total[4].value == Decimal("300")
     assert total[8].value == Decimal("600")
-    assert rows["  в том числе Wildberries (РВБ)"][1].value == Decimal("60")
-    assert rows["  в том числе Wildberries (РВБ)"][8].value == Decimal("360")
-    assert rows["  в том числе Ozon (Интернет Решения)"][1].value == Decimal(
+    assert rows["  Wildberries (РВБ)"][1].value == Decimal("60")
+    assert rows["  Wildberries (РВБ)"][8].value == Decimal("360")
+    assert rows["  Ozon (Интернет Решения)"][1].value == Decimal(
         "40"
     )
+    assert rows["Итого по маркетплейсам"][8].value == Decimal("600")
     assert rows["  другие покупатели"][8].value == Decimal("0")
     assert rows["Прочие поступления без НДС (на проверке)"][2].value == Decimal(
         "20"
     )
     assert rows["Личные средства предпринимателя (не доход)"][1].value == Decimal(
         "5"
+    )
+    assert rows["Кредиты и займы полученные (не доход)"][3].value == Decimal(
+        "250"
+    )
+    assert rows["Заработная плата (выплаты, справочно)"][1].value == Decimal(
+        "70"
+    )
+    assert rows["Заработная плата (выплаты, справочно)"][8].value == Decimal(
+        "150"
     )
     assert rows["База УСН по КУДиР (сверка)"][8].value == Decimal("580")
     assert rows["Расхождение с КУДиР"][8].value == Decimal("20.00")

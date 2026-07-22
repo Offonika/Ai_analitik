@@ -14,15 +14,15 @@ from wb_unit_economics.onec_services import classify_marketplace_service
 from wb_unit_economics.web.report_kinds import MONTH_CLOSE_CONTROL, TAX_LOAD
 
 MONTH_CLOSE_EVIDENCE_VERSION = "month-close-evidence-v2"
-TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v5"
+TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v6"
 
 COMPLETE_SOURCE_STATUSES = frozenset(
     {"loaded", "ready", "complete", "confirmed", "empty_expected"}
 )
 
 USN_MARKETPLACE_CATEGORIES = (
-    ("wildberries", "Wildberries (РВБ)"),
     ("ozon", "Ozon (Интернет Решения)"),
+    ("wildberries", "Wildberries (РВБ)"),
     ("other", "Другие покупатели"),
 )
 
@@ -490,6 +490,7 @@ def _tax_load_evidence(
     confirmed_bank_income = bank_income_groups["confirmed"]
     unclassified_bank_income = bank_income_groups["unclassified"]
     excluded_bank_income = bank_income_groups["excluded"]
+    loan_bank_income = bank_income_groups["loans"]
     bank_income_status = _source_status(bank_income_source)
     bank_income_available = bank_income_status in {
         "loaded",
@@ -551,9 +552,21 @@ def _tax_load_evidence(
             amount_fields=("incomeNetAmount",),
             source_status=bank_income_status,
         ),
+        "loanReceiptsValue": (
+            _complete_sum_rows(loan_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "monthlyLoanReceiptValues": _monthly_values(
+            loan_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
         "confirmedRowCount": len(confirmed_bank_income),
         "unclassifiedRowCount": len(unclassified_bank_income),
         "excludedRowCount": len(excluded_bank_income),
+        "loanReceiptRowCount": len(loan_bank_income),
         "marketplaceBreakdownStatus": (
             "ready" if marketplace_breakdown_available else "source_gap"
         ),
@@ -629,6 +642,10 @@ def _tax_load_evidence(
             else []
         ),
     }
+    usn_payroll_payment_evidence = _usn_payroll_payment_evidence(
+        raw_bank_payment_rows,
+        source=bank_payment_source,
+    )
     required_sources = {
         "onec_accounting_taxes": "Налоги",
         "onec_official_financial_results": "Доходный знаменатель",
@@ -701,6 +718,41 @@ def _tax_load_evidence(
                 ),
             }
         )
+    if (
+        usn_payroll_payment_evidence["classificationStatus"]
+        == "review_required"
+    ):
+        issues.append(
+            {
+                "code": "usn_payroll_classification_required",
+                "severity": "warning",
+                "section": "Денежные потоки УСН",
+                "message": (
+                    "Не во всех банковских списаниях заполнен вид операции; "
+                    "сумма заработной платы требует проверки."
+                ),
+                "nextAction": (
+                    "Проверить вид операции в проведенных банковских "
+                    "документах 1С."
+                ),
+            }
+        )
+    elif usn_payroll_payment_evidence["classificationStatus"] == "source_gap":
+        issues.append(
+            {
+                "code": "usn_payroll_source_gap",
+                "severity": "warning",
+                "section": "Денежные потоки УСН",
+                "message": (
+                    "Выплаты заработной платы по банковским списаниям "
+                    "не подтверждены полностью."
+                ),
+                "nextAction": (
+                    "Проверить полноту банковских списаний и суммы документов "
+                    "1С за период."
+                ),
+            }
+        )
     return {
         "sourceCoverage": _coverage(sources, ytd_start, period_end),
         "taxRows": tax_rows,
@@ -708,6 +760,7 @@ def _tax_load_evidence(
         "usnIncomeEvidence": usn_income_evidence,
         "kudirIncomeEvidence": kudir_income_evidence,
         "usnTaxPaymentEvidence": usn_tax_payment_evidence,
+        "usnPayrollPaymentEvidence": usn_payroll_payment_evidence,
         "vatSummary": {
             "status": _combined_status(
                 vat_sales_source,
@@ -1581,16 +1634,37 @@ def _complete_sum_rows(
 
 
 def _bank_income_category(row: Mapping[str, Any]) -> str:
-    normalized = "".join(
-        character
-        for character in str(row.get("ВидОперации") or "").casefold()
-        if character.isalnum()
-    )
+    normalized = _normalized_bank_operation(row)
     if normalized in {"отпокупателя", "оплатаотпокупателя"}:
         return "confirmed"
     if "личн" in normalized and "предприним" in normalized:
         return "excluded"
+    if _is_loan_operation(normalized):
+        return "loans"
     return "unclassified"
+
+
+def _normalized_bank_operation(row: Mapping[str, Any]) -> str:
+    return "".join(
+        character
+        for character in str(row.get("ВидОперации") or "").casefold()
+        if character.isalnum()
+    )
+
+
+def _is_loan_operation(normalized_operation: str) -> bool:
+    return "кредит" in normalized_operation or "займ" in normalized_operation
+
+
+def _is_payroll_operation(normalized_operation: str) -> bool:
+    return (
+        "зарплат" in normalized_operation
+        or "оплататруда" in normalized_operation
+        or (
+            "заработн" in normalized_operation
+            and "плат" in normalized_operation
+        )
+    )
 
 
 def _is_kudir_income_row(row: Mapping[str, Any]) -> bool:
@@ -1665,6 +1739,7 @@ def _classify_usn_bank_income_rows(
         "confirmed": [],
         "unclassified": [],
         "excluded": [],
+        "loans": [],
     }
     for row in rows:
         if row.get("Posted") is not True or row.get("DeletionMark") is True:
@@ -1684,6 +1759,60 @@ def _classify_usn_bank_income_rows(
             )
         result[income_category].append(normalized)
     return result
+
+
+def _usn_payroll_payment_evidence(
+    rows: list[Mapping[str, Any]],
+    *,
+    source: AccountingEvidenceSource | None,
+) -> dict[str, Any]:
+    source_status = _source_status(source)
+    source_available = source_status in COMPLETE_SOURCE_STATUSES
+    posted_rows = [
+        row
+        for row in rows
+        if row.get("Posted") is True and row.get("DeletionMark") is not True
+    ]
+    operations_complete = all(
+        bool(_normalized_bank_operation(row)) for row in posted_rows
+    )
+    payroll_rows = [
+        row
+        for row in posted_rows
+        if _is_payroll_operation(_normalized_bank_operation(row))
+    ]
+    amounts_complete = all(
+        _first_decimal(row, ("СуммаДокумента", "Сумма", "Amount")) is not None
+        for row in payroll_rows
+    )
+    if not source_available or not amounts_complete:
+        classification_status = "source_gap"
+    elif not operations_complete:
+        classification_status = "review_required"
+    else:
+        classification_status = "ready"
+    value = (
+        _complete_sum_rows(
+            payroll_rows,
+            ("СуммаДокумента", "Сумма", "Amount"),
+        )
+        if source_available and operations_complete and amounts_complete
+        else None
+    )
+    return {
+        "value": value,
+        "status": source_status,
+        "classificationStatus": classification_status,
+        "sourceKind": "onec_accounting_bank_out",
+        "snapshotId": source.snapshot_id if source else "",
+        "monthlyValues": _monthly_values(
+            payroll_rows,
+            date_fields=("Period", "Date", "Дата"),
+            amount_fields=("СуммаДокумента", "Сумма", "Amount"),
+            source_status=source_status,
+        ),
+        "rowCount": len(payroll_rows),
+    }
 
 
 def _usn_marketplace_breakdown(

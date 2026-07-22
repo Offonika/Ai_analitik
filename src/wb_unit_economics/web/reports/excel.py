@@ -834,6 +834,14 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         or bool(detail.get("monthlyUnclassifiedIncome"))
         or bool(detail.get("monthlyExcludedIncome"))
     )
+    has_cash_flow_controls = all(
+        key in detail
+        for key in (
+            "loanReceiptsYtd",
+            "payrollPaymentsYtd",
+            "marketplaceIncomeYtd",
+        )
+    )
     # Historical payloads used monthlyIncome for quarterly-dated KUDIR rows.
     # Do not relabel those rows as bank receipts when exporting an old report
     # with the current workbook renderer.
@@ -844,6 +852,12 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         detail.get("monthlyUnclassifiedIncome")
     )
     excluded_monthly = _usn_month_values(detail.get("monthlyExcludedIncome"))
+    loan_receipts_monthly = _usn_month_values(
+        detail.get("monthlyLoanReceipts")
+    )
+    payroll_payments_monthly = _usn_month_values(
+        detail.get("monthlyPayrollPayments")
+    )
     kudir_monthly = _usn_month_values(
         detail.get("monthlyKudirIncome")
         if has_bank_detail
@@ -851,30 +865,47 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
     )
     payment_monthly = _usn_month_values(detail.get("monthlyTaxPayments"))
     marketplace_labels = {
-        "wildberries": "  в том числе Wildberries (РВБ)",
-        "ozon": "  в том числе Ozon (Интернет Решения)",
+        "wildberries": "  Wildberries (РВБ)",
+        "ozon": "  Ozon (Интернет Решения)",
         "other": "  другие покупатели",
     }
     marketplace_rows: list[tuple[str, list[Any], str]] = []
     if detail.get("marketplaceBreakdownStatus") == "ready":
+        other_marketplace_row: tuple[str, list[Any], str] | None = None
         for item in detail.get("marketplaceIncomeBreakdown") or []:
             if not isinstance(item, Mapping):
                 continue
             label = marketplace_labels.get(str(item.get("category") or ""))
             if not label:
                 continue
-            marketplace_rows.append(
-                (
-                    label,
-                    _usn_row_values(
-                        columns,
-                        _usn_month_values(item.get("monthlyValues")),
-                        final_value=item.get("valueYtd"),
-                        require_complete_months=True,
-                    ),
-                    "currency",
-                )
+            row = (
+                label,
+                _usn_row_values(
+                    columns,
+                    _usn_month_values(item.get("monthlyValues")),
+                    final_value=item.get("valueYtd"),
+                    require_complete_months=True,
+                ),
+                "currency",
             )
+            if str(item.get("category") or "") == "other":
+                other_marketplace_row = row
+            else:
+                marketplace_rows.append(row)
+        marketplace_rows.append(
+            (
+                "Итого по маркетплейсам",
+                _usn_row_values(
+                    columns,
+                    _usn_month_values(detail.get("monthlyMarketplaceIncome")),
+                    final_value=detail.get("marketplaceIncomeYtd"),
+                    require_complete_months=True,
+                ),
+                "currency",
+            )
+        )
+        if other_marketplace_row is not None:
+            marketplace_rows.append(other_marketplace_row)
     income_values = _usn_row_values(
         columns,
         income_monthly,
@@ -891,6 +922,18 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         columns,
         excluded_monthly,
         final_value=detail.get("excludedIncomeYtd"),
+        require_complete_months=False,
+    )
+    loan_receipt_values = _usn_row_values(
+        columns,
+        loan_receipts_monthly,
+        final_value=detail.get("loanReceiptsYtd"),
+        require_complete_months=False,
+    )
+    payroll_payment_values = _usn_row_values(
+        columns,
+        payroll_payments_monthly,
+        final_value=detail.get("payrollPaymentsYtd"),
         require_complete_months=False,
     )
     kudir_values = _usn_row_values(
@@ -928,8 +971,18 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
             "currency",
         ),
         (
+            "Кредиты и займы полученные (не доход)",
+            loan_receipt_values,
+            "currency",
+        ),
+        (
             "Итого подтверждённый доход без НДС",
             income_values,
+            "currency",
+        ),
+        (
+            "Заработная плата (выплаты, справочно)",
+            payroll_payment_values,
             "currency",
         ),
         ("База УСН по КУДиР (сверка)", kudir_values, "currency"),
@@ -967,13 +1020,17 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
             "Статус данных",
             last_only(
                 _tax_load_cell("status", detail.get("status") or "source_gap")
-                if has_bank_detail
+                if has_bank_detail and has_cash_flow_controls
                 else "Требуется повторное формирование"
             ),
             "text",
         ),
     )
-    if not has_bank_detail or not detail.get("monthlyIncome"):
+    if (
+        not has_bank_detail
+        or not has_cash_flow_controls
+        or not detail.get("monthlyIncome")
+    ):
         rows += (
             (
                 "Помесячная детализация",
@@ -1050,7 +1107,7 @@ def _style_tax_load(workbook: Workbook) -> None:
             sheet.column_dimensions[column_letter].width = width
 
         if sheet.title == "Расчёт УСН":
-            sheet.column_dimensions["A"].width = 46
+            sheet.column_dimensions["A"].width = 52
             for column_index in range(2, sheet.max_column + 1):
                 header = str(sheet.cell(row=1, column=column_index).value or "")
                 if header.startswith("Итого"):
@@ -1066,6 +1123,7 @@ def _style_tax_load(workbook: Workbook) -> None:
                     for cell in sheet[row_index]:
                         cell.fill = USN_SOURCE_FILL
                 elif label in {
+                    "Итого по маркетплейсам",
                     "Итого подтверждённый доход без НДС",
                     "К доплате / переплата УСН",
                 }:
@@ -1075,6 +1133,12 @@ def _style_tax_load(workbook: Workbook) -> None:
                 elif label == "Прочие поступления без НДС (на проверке)":
                     for cell in sheet[row_index]:
                         cell.fill = USN_TOTAL_FILL
+                elif label in {
+                    "Кредиты и займы полученные (не доход)",
+                    "Заработная плата (выплаты, справочно)",
+                }:
+                    for cell in sheet[row_index]:
+                        cell.fill = USN_SOURCE_FILL
 
         if sheet.max_row >= 2 and sheet.max_column >= 2:
             reference = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
