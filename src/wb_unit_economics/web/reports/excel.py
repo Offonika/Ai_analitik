@@ -30,6 +30,7 @@ MONTH_CLOSE_SHEETS = (
 )
 TAX_LOAD_SHEETS = (
     "Обзор",
+    "Расчёт УСН",
     "Налоги",
     "График платежей",
     "НДС",
@@ -130,6 +131,7 @@ TAX_LOAD_VALUE_LABELS = {
     "published": "Опубликован",
     "not_confirmed": "Не подтверждено",
     "unconfirmed": "Не подтверждено",
+    "not_applicable": "Не применяется",
     "management_reference": "Управленческий ориентир",
     "pending_methodology_confirmation": "Ожидает подтверждения методики",
     "preliminary_ytd": "Предварительно, с начала года",
@@ -244,8 +246,8 @@ TAX_LOAD_PERCENT_FIELDS = {
     "fnsTaxBurdenRatio",
     "benchmarkValue",
     "usnIncomeTaxBurden",
-    "revenueTaxRate",
 }
+TAX_LOAD_FRACTION_PERCENT_FIELDS = {"revenueTaxRate"}
 TAX_LOAD_OVERVIEW_FIELDS = (
     "clientName",
     "organizationName",
@@ -304,6 +306,7 @@ TAX_LOAD_SUMMARY_FIELDS = {
 }
 TAX_LOAD_TABLE_NAMES = {
     "Обзор": "TaxLoadOverview",
+    "Расчёт УСН": "TaxLoadUsnCalculation",
     "Налоги": "TaxLoadTaxes",
     "График платежей": "TaxLoadSchedule",
     "НДС": "TaxLoadVat",
@@ -314,6 +317,7 @@ TAX_LOAD_TABLE_NAMES = {
 
 TAX_LOAD_CURRENCY_FORMAT = "#,##0.00 [$₽-419]"
 TAX_LOAD_PERCENT_FORMAT = '0.00 " %"'
+TAX_LOAD_FRACTION_PERCENT_FORMAT = "0.00%"
 TAX_LOAD_DATE_FORMAT = "DD.MM.YYYY"
 TAX_LOAD_DATETIME_FORMAT = "DD.MM.YYYY HH:MM"
 FORMULA_PREFIXES = ("=", "+", "-", "@")
@@ -343,6 +347,9 @@ THIN_BORDER = Border(
     top=Side(style="thin", color="D5E1E5"),
     bottom=Side(style="thin", color="D5E1E5"),
 )
+USN_TOTAL_FILL = PatternFill("solid", fgColor="FCE4C7")
+USN_INCOME_FILL = PatternFill("solid", fgColor="FFF200")
+USN_SOURCE_FILL = PatternFill("solid", fgColor="E2F0D9")
 
 
 def _cell(value: Any) -> Any:
@@ -450,7 +457,11 @@ def _tax_load_cell(key: str, value: Any) -> Any:
         return "Да" if value else "Нет"
     if key in TAX_LOAD_DATE_FIELDS:
         return _tax_load_date(value) or "Не указано"
-    if key in TAX_LOAD_CURRENCY_FIELDS or key in TAX_LOAD_PERCENT_FIELDS:
+    if (
+        key in TAX_LOAD_CURRENCY_FIELDS
+        or key in TAX_LOAD_PERCENT_FIELDS
+        or key in TAX_LOAD_FRACTION_PERCENT_FIELDS
+    ):
         return _tax_load_decimal(value)
     if key == "sourceKind":
         normalized = str(value).strip().casefold()
@@ -468,6 +479,8 @@ def _tax_load_cell(key: str, value: Any) -> Any:
 def _format_tax_load_cell(cell: Any, key: str) -> None:
     if key in TAX_LOAD_CURRENCY_FIELDS:
         cell.number_format = TAX_LOAD_CURRENCY_FORMAT
+    elif key in TAX_LOAD_FRACTION_PERCENT_FIELDS:
+        cell.number_format = TAX_LOAD_FRACTION_PERCENT_FORMAT
     elif key in TAX_LOAD_PERCENT_FIELDS:
         cell.number_format = TAX_LOAD_PERCENT_FORMAT
     elif key == "generatedAt":
@@ -511,6 +524,171 @@ def _write_tax_load_rows(
         )
         for column, key in enumerate(headers, start=1):
             _format_tax_load_cell(sheet.cell(row=sheet.max_row, column=column), key)
+
+
+def _usn_period_columns(ytd_end: Any) -> list[dict[str, Any]]:
+    parsed = _tax_load_date(ytd_end)
+    if parsed is None:
+        return [{"kind": "total", "cutoff": 12, "label": "Итого с начала года"}]
+    result: list[dict[str, Any]] = []
+    total_labels = {
+        3: "Итого за I квартал",
+        6: "Итого за полугодие",
+        9: "Итого за 9 месяцев",
+        12: "Итого за год",
+    }
+    for month in range(1, parsed.month + 1):
+        result.append(
+            {"kind": "month", "month": month, "label": RUSSIAN_MONTHS[month]}
+        )
+        if month in total_labels:
+            result.append(
+                {"kind": "total", "cutoff": month, "label": total_labels[month]}
+            )
+    if result[-1]["kind"] != "total":
+        result.append(
+            {
+                "kind": "total",
+                "cutoff": parsed.month,
+                "label": "Итого с начала года",
+            }
+        )
+    result[-1]["isFinal"] = True
+    return result
+
+
+def _usn_month_values(rows: Any) -> dict[int, Decimal]:
+    result: dict[int, Decimal] = {}
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        month_text = str(row.get("month") or "")
+        value = _tax_load_decimal(row.get("value"))
+        status = str(row.get("status") or "").strip().casefold()
+        if value is None or status not in {"loaded", "ready", "complete", "confirmed"}:
+            continue
+        try:
+            month = int(month_text[5:7])
+        except (TypeError, ValueError):
+            continue
+        if 1 <= month <= 12:
+            result[month] = value
+    return result
+
+
+def _usn_row_values(
+    columns: list[dict[str, Any]],
+    monthly: Mapping[int, Decimal],
+    *,
+    final_value: Any,
+    require_complete_months: bool,
+) -> list[Any]:
+    result: list[Any] = []
+    final_decimal = _tax_load_decimal(final_value)
+    for column in columns:
+        if column["kind"] == "month":
+            result.append(monthly.get(int(column["month"])))
+            continue
+        cutoff = int(column["cutoff"])
+        available = [
+            monthly[month] for month in range(1, cutoff + 1) if month in monthly
+        ]
+        complete = len(available) == cutoff
+        result.append(
+            sum(available, Decimal("0"))
+            if available and (complete or not require_complete_months)
+            else None
+        )
+    if columns and columns[-1].get("isFinal") and final_decimal is not None:
+        result[-1] = final_decimal
+    return result
+
+
+def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
+    detail = dict(payload.get("usnDetail") or {})
+    if detail.get("status") == "not_applicable":
+        _append_safe_row(sheet, ["Показатель", "Значение"])
+        _append_safe_row(
+            sheet,
+            ["Статус", "Расчёт применяется только для УСН «Доходы»"],
+        )
+        return
+    columns = _usn_period_columns(payload.get("ytdEnd"))
+    _append_safe_row(sheet, ["Показатель", *(item["label"] for item in columns)])
+    summary = dict(payload.get("taxLoadSummary") or {})
+    profile = dict(payload.get("taxProfile") or {})
+    income_ytd = detail.get("incomeYtd") or summary.get("usnIncomeValue")
+    income_monthly = _usn_month_values(detail.get("monthlyIncome"))
+    payment_monthly = _usn_month_values(detail.get("monthlyTaxPayments"))
+    income_values = _usn_row_values(
+        columns,
+        income_monthly,
+        final_value=income_ytd,
+        require_complete_months=True,
+    )
+    payment_values = _usn_row_values(
+        columns,
+        payment_monthly,
+        final_value=detail.get("paidTaxYtd"),
+        require_complete_months=False,
+    )
+    def last_only(value: Any) -> list[Any]:
+        return [None] * (len(columns) - 1) + [value]
+
+    rows = (
+        ("Доход по КУДиР 1С", income_values, "currency"),
+        ("Итого доход без НДС", income_values, "currency"),
+        (
+            "Ставка УСН",
+            last_only(
+                _tax_load_decimal(
+                    detail.get("revenueTaxRate") or profile.get("revenueTaxRate")
+                )
+            ),
+            "rate",
+        ),
+        (
+            "Исчислено УСН с начала года",
+            last_only(_tax_load_decimal(detail.get("calculatedTaxYtd"))),
+            "currency",
+        ),
+        ("Уплачено УСН", payment_values, "currency"),
+        (
+            "К доплате / переплата УСН",
+            last_only(_tax_load_decimal(detail.get("taxPayable"))),
+            "currency",
+        ),
+        (
+            "Срок уплаты",
+            last_only(_tax_load_date(detail.get("dueDate")) or "Не указано"),
+            "date",
+        ),
+        (
+            "Статус данных",
+            last_only(_tax_load_cell("status", detail.get("status") or "source_gap")),
+            "text",
+        ),
+    )
+    if not detail.get("monthlyIncome"):
+        rows += (
+            (
+                "Помесячная детализация",
+                last_only("Сформируйте отчёт повторно для заполнения месяцев"),
+                "text",
+            ),
+        )
+    for label, values, value_kind in rows:
+        _append_safe_row(sheet, [label, *values])
+        for column in range(2, sheet.max_column + 1):
+            cell = sheet.cell(row=sheet.max_row, column=column)
+            if value_kind == "currency":
+                cell.number_format = TAX_LOAD_CURRENCY_FORMAT
+            elif value_kind == "rate":
+                cell.number_format = TAX_LOAD_FRACTION_PERCENT_FORMAT
+            elif value_kind == "date" and isinstance(cell.value, (date, datetime)):
+                cell.number_format = TAX_LOAD_DATE_FORMAT
 
 
 def _style(workbook: Workbook) -> None:
@@ -568,6 +746,30 @@ def _style_tax_load(workbook: Workbook) -> None:
             content_width = max((len(item) for item in values), default=0) + 2
             width = min(max(content_width, minimum), maximum)
             sheet.column_dimensions[column_letter].width = width
+
+        if sheet.title == "Расчёт УСН":
+            sheet.column_dimensions["A"].width = 34
+            for column_index in range(2, sheet.max_column + 1):
+                header = str(sheet.cell(row=1, column=column_index).value or "")
+                if header.startswith("Итого"):
+                    for row_index in range(1, sheet.max_row + 1):
+                        sheet.cell(row=row_index, column=column_index).fill = (
+                            USN_TOTAL_FILL
+                        )
+                    sheet.cell(row=1, column=column_index).font = LABEL_FONT
+            for row_index in range(2, sheet.max_row + 1):
+                label = str(sheet.cell(row=row_index, column=1).value or "")
+                sheet.cell(row=row_index, column=1).font = LABEL_FONT
+                if label == "Доход по КУДиР 1С":
+                    for cell in sheet[row_index]:
+                        cell.fill = USN_SOURCE_FILL
+                elif label in {
+                    "Итого доход без НДС",
+                    "К доплате / переплата УСН",
+                }:
+                    for cell in sheet[row_index]:
+                        cell.fill = USN_INCOME_FILL
+                        cell.font = LABEL_FONT
 
         if sheet.max_row >= 2 and sheet.max_column >= 2:
             reference = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
@@ -682,6 +884,7 @@ def write_scenario_excel(
             "reportId": meta.get("reportId"),
         }
         _write_tax_load_mapping(workbook["Обзор"], overview, TAX_LOAD_OVERVIEW_FIELDS)
+        _write_usn_calculation(workbook["Расчёт УСН"], payload)
         row_payloads = {
             "Налоги": payload.get("taxRows") or [],
             "График платежей": payload.get("paymentSchedule") or [],

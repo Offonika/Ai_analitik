@@ -16,6 +16,7 @@ related_code:
   - src/wb_unit_economics/web/models.py
   - src/wb_unit_economics/web/reports/builders.py
   - src/wb_unit_economics/web/reports/evidence.py
+  - src/wb_unit_economics/web/reports/excel.py
   - src/wb_unit_economics/web/repository.py
 related_tests:
   - tests/test_onec_month_close_audit_pack.py
@@ -45,7 +46,7 @@ related_specs:
   - docs/specs/accounting-reports-smart-process-onepage.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-21"
+updated_at: "2026-07-22"
 ---
 
 # Статус документа
@@ -310,6 +311,11 @@ tax_load_summary:
   denominator_kind, denominator_value
   fns_tax_burden_ratio, calculation_period_kind
   methodology_status, comparison_status
+usn_detail:
+  status, source_kind, revenue_tax_rate
+  income_ytd, calculated_tax_ytd, paid_tax_ytd, tax_payable, due_date
+  monthly_income[]: month, value, status, row_count
+  monthly_tax_payments[]: month, value, status, row_count
 issues[]:
   code, severity, section, message, next_action
 business_status
@@ -390,6 +396,7 @@ Web-представление v2 показывает бухгалтеру по
 Минимальные листы:
 
 - `Обзор`;
+- `Расчёт УСН`;
 - `Налоги`;
 - `График платежей`;
 - `НДС`;
@@ -400,6 +407,22 @@ Web-представление v2 показывает бухгалтеру по
 При необходимости добавляются детальные листы по налогам, но они строятся из
 того же contract и не содержат raw snapshots. Workbook показывает `report_id`,
 периоды, организацию, методику, coverage, business status и accountant approval.
+
+Для профиля `УСН Доходы` лист `Расчёт УСН` повторяет управленческую структуру
+согласованного образца в пределах подтвержденных источников: месяцы идут по
+колонкам, после марта/июня/сентября/декабря показываются промежуточные итоги, а
+последняя колонка содержит итог с начала года. Строки включают доход без НДС по
+КУДиР 1С, итог дохода, ставку УСН, исчисленный налог, подтвержденные платежи,
+сумму к доплате или переплату и срок из source evidence. Квартальные и YTD
+значения рассчитываются в backend из сохраненного evidence, а не скрытыми
+Excel-формулами.
+
+КУДиР не содержит надежного признака канала `Озон`/`РВБ`/`выкуп комиссионером`.
+Поэтому первая детализация не придумывает такой разрез: он добавляется только
+после подключения и сверки соответствующих marketplace/bank источников.
+Отсутствующий месяц, платеж или срок остается пустым/`Не указано`, а не нулем.
+Для сохраненного payload без `usn_detail` лист показывает доступный YTD-итог и
+явно сообщает, что помесячная детализация требует повторного формирования.
 
 Пользовательский Excel локализуется на уровне представления: названия полей и
 столбцов, статусы, виды периодов, платежей, источников и причины исключения
@@ -543,6 +566,9 @@ checks и клиентскую публикацию, но не accepted staff-on
 
 # Changelog
 
+- 2026-07-22: принят подробный лист `Расчёт УСН` по образцу: помесячный доход
+  КУДиР, квартальные/YTD итоги, ставка, исчисление, платежи и доплата без
+  выдуманного разреза по маркетплейсам.
 - 2026-07-22: ID отчёта и версия методики перенесены из видимого `Обзора` в
   свойства XLSX, чтобы пользовательская книга не содержала технических кодов.
 - 2026-07-22: пользовательские сообщения web/Excel больше не показывают

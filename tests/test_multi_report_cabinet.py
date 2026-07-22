@@ -473,7 +473,7 @@ def test_tax_load_ip_usn_without_financial_results_keeps_ratio_null_without_zero
         tax_profile={
             "taxSystem": "УСН Доходы",
             "profileStatus": "ready",
-            "revenueTaxRate": "1",
+            "revenueTaxRate": "0.01",
             "sourceKind": "1c",
         },
         evidence=evidence,
@@ -512,7 +512,7 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
         tax_profile={
             "taxSystem": "usn_income",
             "profileStatus": "ready",
-            "revenueTaxRate": "1",
+            "revenueTaxRate": "0.01",
             "sourceKind": "1c",
         },
         evidence=evidence,
@@ -526,6 +526,10 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
     assert summary["usnIncomeTaxBurden"] == "5.0000"
     assert summary["usnIncomeStatus"] == "management_reference"
     assert summary["usnIncomeDenominatorKind"] == "usn_income_receipts_excluding_vat"
+    assert payload["usnDetail"]["calculatedTaxYtd"] == "20.00"
+    assert payload["usnDetail"]["paidTaxYtd"] == "100"
+    assert payload["usnDetail"]["taxPayable"] == "-80.00"
+    assert payload["usnDetail"]["status"] == "ready"
     assert payload["businessStatus"] == "preliminary"
 
 
@@ -587,6 +591,20 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
     assert usn["status"] == "loaded"
     # Только ORG-1 и только период с начала года: 1200 + 800.
     assert usn["value"] == "2000"
+    assert usn["monthlyValues"] == [
+        {
+            "month": "2026-05",
+            "value": "1200",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+        {
+            "month": "2026-06",
+            "value": "800",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+    ]
 
 
 def test_tax_load_uses_classified_bank_tax_payments_when_ens_is_empty() -> None:
@@ -689,6 +707,14 @@ def test_tax_load_uses_classified_bank_tax_payments_when_ens_is_empty() -> None:
         }
         for issue in evidence["issues"]
     )
+    assert evidence["usnTaxPaymentEvidence"]["monthlyValues"] == [
+        {
+            "month": "2026-03",
+            "value": "100",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
     assert payload["taxLoadSummary"]["usnIncomeTaxBurden"] == "7.5000"
 
 
@@ -727,6 +753,7 @@ def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
     assert summary["usnIncomeValue"] is None
     assert summary["usnIncomeTaxBurden"] is None
     assert summary["usnIncomeStatus"] == "source_gap"
+    assert payload["usnDetail"]["status"] == "source_gap"
 
 
 def test_scenario_excel_has_exact_sheets_and_traceable_overview(tmp_path: Path) -> None:
@@ -778,7 +805,7 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
         tax_profile={
             "taxSystem": "УСН Доходы",
             "profileStatus": "ready",
-            "revenueTaxRate": "6",
+            "revenueTaxRate": "0.06",
         },
         evidence=_tax_evidence(),
     )
@@ -886,6 +913,78 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
     assert "только для чтения" in workbook_text
     assert payload["meta"]["reportId"] not in workbook_text
     assert payload["meta"]["methodologyVersion"] not in workbook_text
+
+
+def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> None:
+    evidence = _usn_tax_evidence()
+    evidence["usnIncomeEvidence"] = {
+        "value": "600",
+        "status": "loaded",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {
+                "month": f"2026-{month:02d}",
+                "value": "100",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+            for month in range(1, 7)
+        ],
+    }
+    evidence["usnTaxPaymentEvidence"] = {
+        "status": "loaded",
+        "sourceKind": "onec_accounting_bank_out",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "40", "status": "loaded", "rowCount": 1},
+            {"month": "2026-04", "value": "60", "status": "loaded", "rowCount": 1},
+        ],
+    }
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "revenueTaxRate": "0.01",
+        },
+        evidence=evidence,
+    )
+    path = tmp_path / "tax-load-usn-detail.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=False)
+    sheet = workbook["Расчёт УСН"]
+    rows = {
+        row[0].value: row
+        for row in sheet.iter_rows(min_row=2)
+        if row[0].value is not None
+    }
+    headers = [cell.value for cell in sheet[1]]
+
+    assert headers == [
+        "Показатель",
+        "Январь",
+        "Февраль",
+        "Март",
+        "Итого за I квартал",
+        "Апрель",
+        "Май",
+        "Июнь",
+        "Итого за полугодие",
+    ]
+    assert rows["Итого доход без НДС"][4].value == Decimal("300")
+    assert rows["Итого доход без НДС"][8].value == Decimal("600")
+    assert rows["Ставка УСН"][8].value == pytest.approx(0.01)
+    assert rows["Ставка УСН"][8].number_format == "0.00%"
+    assert rows["Исчислено УСН с начала года"][8].value == Decimal("6.00")
+    assert rows["Уплачено УСН"][8].value == Decimal("100")
+    assert rows["К доплате / переплата УСН"][8].value == Decimal("-94.00")
+    assert rows["Итого доход без НДС"][0].fill.fgColor.rgb.endswith("FFF200")
+    assert len(sheet.tables) == 1
+    assert not any(
+        cell.data_type == "f"
+        for worksheet in workbook.worksheets
+        for row in worksheet.iter_rows()
+        for cell in row
+    )
 
 
 def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:

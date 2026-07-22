@@ -310,6 +310,63 @@ def build_tax_load_payload(
             "exclusionReason",
         ),
     )
+    usn_income_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_payment_evidence = evidence.get("usnTaxPaymentEvidence")
+    usn_tax_payments_monthly = (
+        _safe_rows(
+            usn_payment_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_payment_evidence, Mapping)
+        else []
+    )
+    usn_tax_rows = [
+        row
+        for row in tax_rows
+        if any(
+            marker in str(row.get("taxName") or "").casefold()
+            for marker in ("усн", "упрощ")
+        )
+    ]
+    usn_paid_tax: Decimal | None = None
+    if usn_tax_rows and all(
+        str(row.get("evidenceStatus") or "").strip().lower()
+        in CONFIRMED_EVIDENCE_STATUSES
+        and _decimal(row.get("paid")) is not None
+        for row in usn_tax_rows
+    ):
+        usn_paid_tax = sum(
+            (_decimal(row.get("paid")) or Decimal("0") for row in usn_tax_rows),
+            Decimal("0"),
+        )
+    usn_due_dates = {
+        str(row.get("dueDate")) for row in usn_tax_rows if row.get("dueDate")
+    }
+    revenue_tax_rate = _decimal(profile.get("revenueTaxRate"))
+    usn_calculated_tax: Decimal | None = None
+    if (
+        is_usn
+        and revenue_tax_rate is not None
+        and Decimal("0") < revenue_tax_rate <= Decimal("1")
+        and (usn_income_decimal := _decimal(usn_income_value)) is not None
+    ):
+        usn_calculated_tax = (usn_income_decimal * revenue_tax_rate).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    usn_tax_payable = (
+        (usn_calculated_tax - usn_paid_tax).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if usn_calculated_tax is not None and usn_paid_tax is not None
+        else None
+    )
     coverage = _safe_rows(
         evidence.get("sourceCoverage"),
         ("sourceKind", "periodStart", "periodEnd", "status", "snapshotId"),
@@ -369,6 +426,32 @@ def build_tax_load_payload(
             evidence.get("ensSummary"), ("status", "balance", "asOfDate")
         ),
         "paymentSchedule": payment_schedule,
+        "usnDetail": (
+            {
+                "status": (
+                    "ready"
+                    if usn_calculated_tax is not None and usn_paid_tax is not None
+                    else "source_gap"
+                ),
+                "sourceKind": (
+                    usn_income_evidence.get("sourceKind")
+                    if isinstance(usn_income_evidence, Mapping)
+                    else None
+                ),
+                "revenueTaxRate": _decimal_text(revenue_tax_rate),
+                "incomeYtd": usn_income_value,
+                "calculatedTaxYtd": _decimal_text(usn_calculated_tax),
+                "paidTaxYtd": _decimal_text(usn_paid_tax),
+                "taxPayable": _decimal_text(usn_tax_payable),
+                "dueDate": (
+                    next(iter(usn_due_dates)) if len(usn_due_dates) == 1 else None
+                ),
+                "monthlyIncome": usn_income_monthly,
+                "monthlyTaxPayments": usn_tax_payments_monthly,
+            }
+            if is_usn
+            else {"status": "not_applicable"}
+        ),
         "taxLoadSummary": {
             "metricKind": "fns_tax_risk",
             "numeratorKind": (
