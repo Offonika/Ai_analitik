@@ -656,6 +656,24 @@ XLSX и не занимают пользовательские ячейки; в 
 Rollback скрывает `tax_load` в registry. Report runs и audit сохраняются;
 current других видов не меняется.
 
+## Test Rollout Evidence
+
+- 2026-07-22: immutable release
+  `runtime-0c63a7a8cfb3-20260722-134917` из commit
+  `0c63a7a8cfb330427bedc082e5756d50b48cc970` атомарно promoted в `test`;
+  local и public `check_runtime_health.py` подтвердили `status=ok` и
+  `environment=test`, а cwd/import-path запущенного процесса указывают на тот
+  же release.
+- Июньский staff-only `tax_load` завершен штатным canary worker с контрактом
+  `tax-load-report-v5`. Повторный Excel-export подтвердил 11 обязательных
+  листов, отдельный `НДС РВБ`, пользовательское `Не применяется` для УСН,
+  фильтры, календарные и числовые ячейки, отсутствие формул, UUID и внутренних
+  ключей в пользовательских ячейках; НДС книги покупок присутствует только в
+  единственной итоговой строке и не размножается по услугам.
+- До release полный `pytest -q` на implementation commit `3d01ae5` завершился
+  результатом `969 passed`; последующая view-only нормализация `not_allowed` в
+  `Не применяется` на `0c63a7a` прошла Ruff и `27` профильных tax-load тестов.
+
 # Deferred Decisions
 
 - Какие источники обязательны для статуса `accountant_confirmed`.
