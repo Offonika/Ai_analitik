@@ -692,6 +692,14 @@ current других видов не меняется.
 
 ## Test Rollout Evidence
 
+- 2026-07-22: download-clarity hotfix из commit
+  `b01d825cdb9f4755e390330a6565b88fa84bc068` собран в immutable release
+  `runtime-b01d825-tax-download-v6-20260722` и promoted только в `test`.
+  Local/public health подтвердили `status=ok`, `environment=test` и build
+  `20260722-tax-load-v6-download-clarity-v1`; cwd и import path процесса
+  указывают на тот же release. UI показывает текущую ревизию и время сборки,
+  а имя скачиваемого налогового Excel получает суффикс `_v6`. Production
+  остался на прежнем release.
 - 2026-07-22: immutable release
   `runtime-26c6b9299ade-20260722-152539` из commit
   `26c6b9299ade52b6a59e1bf80fbfa1a59f808bc1` атомарно promoted в `test`;
