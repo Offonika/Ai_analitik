@@ -250,6 +250,84 @@ def _usn_tax_evidence() -> dict:
     return evidence
 
 
+def _detailed_vat_evidence(*, purchase_status: str = "empty_expected") -> dict:
+    return materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        refresh_run_id="generation-vat-books",
+        sources={
+            "onec_accounting_counterparties": AccountingEvidenceSource(
+                source_type="onec_accounting_counterparties",
+                status="loaded",
+                snapshot_id="counterparties-sha",
+                rows=(
+                    {"Ref_Key": "BUYER-1", "Description": "ООО Покупатель"},
+                    {"Ref_Key": "BUYER-2", "Description": "ИП Заказчик"},
+                ),
+            ),
+            "onec_vat_sales_book": AccountingEvidenceSource(
+                source_type="onec_vat_sales_book",
+                status="loaded",
+                snapshot_id="sales-book-sha",
+                rows=(
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-03-31T00:00:00",
+                        "Active": True,
+                        "Покупатель_Key": "BUYER-1",
+                        "СтавкаНДС": "НДС5",
+                        "СуммаБезНДС": "100",
+                        "НДС": "5",
+                        "НомерСчетаФактурыНаАванс": "СФ-1",
+                        "ДатаСчетаФактурыНаАванс": "2026-03-30T00:00:00",
+                        "ЗаписьДополнительногоЛиста": False,
+                        "Исправление": False,
+                    },
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-06-30T00:00:00",
+                        "Active": True,
+                        "Покупатель_Key": "BUYER-2",
+                        "СтавкаНДС": "БезНДС",
+                        "СуммаБезНДС": "50",
+                        "НДС": "0",
+                        "НомерДокументаОплаты": "ПЛ-2",
+                        "ДатаДокументаОплаты": "2026-06-29T00:00:00",
+                        "ЗаписьДополнительногоЛиста": True,
+                        "Исправление": True,
+                    },
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-05-31T00:00:00",
+                        "Active": False,
+                        "Покупатель_Key": "BUYER-1",
+                        "СтавкаНДС": "НДС20",
+                        "СуммаБезНДС": "999",
+                        "НДС": "199.8",
+                    },
+                    {
+                        "Организация_Key": "ORG-2",
+                        "Period": "2026-06-30T00:00:00",
+                        "Active": True,
+                        "Покупатель_Key": "BUYER-1",
+                        "СтавкаНДС": "НДС20",
+                        "СуммаБезНДС": "999",
+                        "НДС": "199.8",
+                    },
+                ),
+            ),
+            "onec_vat_purchase_book": AccountingEvidenceSource(
+                source_type="onec_vat_purchase_book",
+                status=purchase_status,
+                snapshot_id="purchase-book-sha",
+                rows=(),
+            ),
+        },
+    )
+
+
 def test_month_close_prefers_balance_and_turnovers_and_warns_on_any_delta() -> None:
     payload = build_month_close_control_payload(
         _report("month_close_control"), _month_close_evidence()
@@ -421,7 +499,73 @@ def test_tax_load_formula_excludes_agent_and_insurance_rows() -> None:
     assert summary["benchmarkValue"] is None
     assert payload["businessStatus"] == "accountant_review_required"
     assert payload["accountantApproval"] is None
-    assert payload["contractVersion"] == "tax-load-report-v3"
+    assert payload["contractVersion"] == "tax-load-report-v4"
+
+
+def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -> None:
+    evidence = _detailed_vat_evidence()
+
+    assert evidence["contractVersion"] == "tax-load-evidence-v4"
+    assert evidence["vatSummary"] == {
+        "status": "loaded",
+        "periodStart": "2026-06-01",
+        "periodEnd": "2026-06-30",
+        "salesBookStatus": "loaded",
+        "purchaseBookStatus": "empty_expected",
+        "outputVat": "0",
+        "inputVat": "0",
+        "payableVat": None,
+        "salesBookRows": 2,
+        "purchaseBookRows": 0,
+        "ytdOutputVat": "5",
+        "ytdInputVat": "0",
+        "vatDifference": "5",
+        "sourceKind": "onec_vat_books",
+    }
+    books = evidence["vatBooks"]
+    assert books["periodStart"] == "2026-01-01"
+    assert books["periodEnd"] == "2026-06-30"
+    assert books["salesTotals"] == {
+        "rowCount": 2,
+        "amountExcludingVat": "150",
+        "vatAmount": "5",
+        "amountIncludingVat": "155",
+    }
+    assert books["purchaseTotals"] == {
+        "rowCount": 0,
+        "amountExcludingVat": "0",
+        "vatAmount": "0",
+        "amountIncludingVat": "0",
+    }
+    assert [row["counterpartyName"] for row in books["salesRows"]] == [
+        "ООО Покупатель",
+        "ИП Заказчик",
+    ]
+    assert [row["vatRate"] for row in books["salesRows"]] == ["5 %", "Без НДС"]
+    assert books["salesRows"][1]["entryKind"] == "Дополнительный лист"
+    assert books["salesRows"][1]["correctionStatus"] == "Исправление"
+    serialized = json.dumps(books, ensure_ascii=False)
+    assert "Покупатель_Key" not in serialized
+    assert "Recorder" not in serialized
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
+        evidence=evidence,
+    )
+    assert payload["contractVersion"] == "tax-load-report-v4"
+    assert payload["vatBooks"]["salesRows"] == books["salesRows"]
+
+    missing_purchase = _detailed_vat_evidence(purchase_status="missing")
+    assert missing_purchase["vatSummary"]["status"] == "partial_source"
+    assert missing_purchase["vatSummary"]["inputVat"] is None
+    assert missing_purchase["vatSummary"]["vatDifference"] is None
+    assert missing_purchase["vatBooks"]["purchaseTotals"] == {
+        "rowCount": 0,
+        "amountExcludingVat": None,
+        "vatAmount": None,
+        "amountIncludingVat": None,
+    }
 
 
 def test_tax_load_requires_confirmed_classified_numerator_and_denominator() -> None:
@@ -1117,6 +1261,67 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
     assert "только для чтения" in workbook_text
     assert payload["meta"]["reportId"] not in workbook_text
     assert payload["meta"]["methodologyVersion"] not in workbook_text
+
+
+def test_tax_load_excel_has_readable_detailed_vat_books(tmp_path: Path) -> None:
+    report = _report("tax_load")
+    report.period_start = date(2026, 6, 1)
+    payload = build_tax_load_payload(
+        report,
+        tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
+        evidence=_detailed_vat_evidence(),
+    )
+    path = tmp_path / "tax-load-vat-books.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+
+    assert "Книга продаж" in workbook.sheetnames
+    assert "Книга покупок" in workbook.sheetnames
+    sales = list(workbook["Книга продаж"].iter_rows(values_only=True))
+    assert sales[0] == (
+        "Дата записи",
+        "Контрагент",
+        "Номер счёта-фактуры / документа",
+        "Дата счёта-фактуры / документа",
+        "Ставка НДС",
+        "Сумма без НДС",
+        "Сумма НДС",
+        "Сумма с НДС",
+        "Вид записи",
+        "Исправление",
+    )
+    assert sales[1][1] == "ООО Покупатель"
+    assert sales[1][2] == "СФ-1"
+    assert sales[1][4] == "5 %"
+    assert sales[1][3].date() == date(2026, 3, 30)
+    assert sales[1][5:8] == (100, 5, 105)
+    assert sales[2][8:] == ("Дополнительный лист", "Исправление")
+    assert workbook["Книга продаж"]["A2"].data_type == "d"
+    assert workbook["Книга продаж"]["F2"].data_type == "n"
+    assert "₽" in workbook["Книга продаж"]["F2"].number_format
+
+    purchase = list(workbook["Книга покупок"].iter_rows(values_only=True))
+    assert purchase[1][0] == "За период в 1С записей нет"
+    for title in ("Книга продаж", "Книга покупок"):
+        table = next(iter(workbook[title].tables.values()))
+        assert table.autoFilter is not None
+        assert workbook[title].freeze_panes == "A2"
+
+    vat_summary = {
+        row[0]: row[1] for row in workbook["НДС"].iter_rows(values_only=True) if row[0]
+    }
+    assert vat_summary["Статус книги покупок"] == "Ожидаемо нет данных"
+    assert vat_summary["Записей в книге продаж с начала года"] == 2
+    assert vat_summary["Разница НДС по книгам с начала года"] == 5
+    workbook_text = " ".join(
+        str(cell.value or "")
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+    )
+    assert "Покупатель_Key" not in workbook_text
+    assert "Поставщик_Key" not in workbook_text
+    assert "Recorder" not in workbook_text
 
 
 def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> None:

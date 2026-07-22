@@ -34,6 +34,8 @@ TAX_LOAD_SHEETS = (
     "Налоги",
     "График платежей",
     "НДС",
+    "Книга продаж",
+    "Книга покупок",
     "ЕНС",
     "Источники и статус",
     "Дозапросы",
@@ -101,6 +103,23 @@ TAX_LOAD_FIELD_LABELS = {
     "outputVat": "Начисленный НДС",
     "inputVat": "Входящий НДС",
     "payableVat": "НДС к уплате",
+    "salesBookStatus": "Статус книги продаж",
+    "purchaseBookStatus": "Статус книги покупок",
+    "salesBookRows": "Записей в книге продаж с начала года",
+    "purchaseBookRows": "Записей в книге покупок с начала года",
+    "ytdOutputVat": "Начисленный НДС с начала года",
+    "ytdInputVat": "Входящий НДС с начала года",
+    "vatDifference": "Разница НДС по книгам с начала года",
+    "entryDate": "Дата записи",
+    "counterpartyName": "Контрагент",
+    "invoiceNumber": "Номер счёта-фактуры / документа",
+    "invoiceDate": "Дата счёта-фактуры / документа",
+    "vatRate": "Ставка НДС",
+    "amountExcludingVat": "Сумма без НДС",
+    "vatAmount": "Сумма НДС",
+    "amountIncludingVat": "Сумма с НДС",
+    "entryKind": "Вид записи",
+    "correctionStatus": "Исправление",
     "asOfDate": "Дата состояния",
     "snapshotId": "ID снимка",
     "code": "Код замечания",
@@ -205,6 +224,8 @@ TAX_LOAD_DATE_FIELDS = {
     "generatedAt",
     "dueDate",
     "asOfDate",
+    "entryDate",
+    "invoiceDate",
 }
 TAX_LOAD_ENUM_FIELDS = {
     "reportKind",
@@ -225,6 +246,8 @@ TAX_LOAD_ENUM_FIELDS = {
     "exclusionReason",
     "confirmationStatus",
     "status",
+    "salesBookStatus",
+    "purchaseBookStatus",
     "severity",
     "taxSystem",
     "profileStatus",
@@ -243,6 +266,12 @@ TAX_LOAD_CURRENCY_FIELDS = {
     "outputVat",
     "inputVat",
     "payableVat",
+    "ytdOutputVat",
+    "ytdInputVat",
+    "vatDifference",
+    "amountExcludingVat",
+    "vatAmount",
+    "amountIncludingVat",
 }
 TAX_LOAD_PERCENT_FIELDS = {
     "fnsTaxBurdenRatio",
@@ -294,6 +323,30 @@ TAX_LOAD_ROW_FIELDS = {
         "amount",
         "confirmationStatus",
     ),
+    "Книга продаж": (
+        "entryDate",
+        "counterpartyName",
+        "invoiceNumber",
+        "invoiceDate",
+        "vatRate",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "entryKind",
+        "correctionStatus",
+    ),
+    "Книга покупок": (
+        "entryDate",
+        "counterpartyName",
+        "invoiceNumber",
+        "invoiceDate",
+        "vatRate",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "entryKind",
+        "correctionStatus",
+    ),
     "Источники и статус": (
         "sourceKind",
         "periodStart",
@@ -303,7 +356,22 @@ TAX_LOAD_ROW_FIELDS = {
     "Дозапросы": ("severity", "section", "message", "nextAction"),
 }
 TAX_LOAD_SUMMARY_FIELDS = {
-    "НДС": ("status", "outputVat", "inputVat", "payableVat", "sourceKind"),
+    "НДС": (
+        "status",
+        "periodStart",
+        "periodEnd",
+        "salesBookStatus",
+        "purchaseBookStatus",
+        "outputVat",
+        "inputVat",
+        "payableVat",
+        "salesBookRows",
+        "purchaseBookRows",
+        "ytdOutputVat",
+        "ytdInputVat",
+        "vatDifference",
+        "sourceKind",
+    ),
     "ЕНС": ("status", "balance", "asOfDate"),
 }
 TAX_LOAD_TABLE_NAMES = {
@@ -312,6 +380,8 @@ TAX_LOAD_TABLE_NAMES = {
     "Налоги": "TaxLoadTaxes",
     "График платежей": "TaxLoadSchedule",
     "НДС": "TaxLoadVat",
+    "Книга продаж": "TaxLoadVatSalesBook",
+    "Книга покупок": "TaxLoadVatPurchaseBook",
     "ЕНС": "TaxLoadEns",
     "Источники и статус": "TaxLoadSources",
     "Дозапросы": "TaxLoadIssues",
@@ -509,6 +579,8 @@ def _write_tax_load_rows(
     sheet: Any,
     rows: Iterable[Mapping[str, Any]],
     fields: Iterable[str],
+    *,
+    empty_message: str = "Нет подтверждённых данных",
 ) -> None:
     headers = tuple(fields)
     normalized = list(rows)
@@ -516,7 +588,7 @@ def _write_tax_load_rows(
     if not normalized:
         _append_safe_row(
             sheet,
-            ["Нет подтверждённых данных", *([None] * (len(headers) - 1))],
+            [empty_message, *([None] * (len(headers) - 1))],
         )
         return
     for row in normalized:
@@ -984,14 +1056,33 @@ def write_scenario_excel(
         }
         _write_tax_load_mapping(workbook["Обзор"], overview, TAX_LOAD_OVERVIEW_FIELDS)
         _write_usn_calculation(workbook["Расчёт УСН"], payload)
+        vat_books = dict(payload.get("vatBooks") or {})
         row_payloads = {
             "Налоги": payload.get("taxRows") or [],
             "График платежей": payload.get("paymentSchedule") or [],
+            "Книга продаж": vat_books.get("salesRows") or [],
+            "Книга покупок": vat_books.get("purchaseRows") or [],
             "Источники и статус": payload.get("sourceCoverage") or [],
             "Дозапросы": payload.get("issues") or [],
         }
+        vat_book_statuses = {
+            "Книга продаж": vat_books.get("salesStatus"),
+            "Книга покупок": vat_books.get("purchaseStatus"),
+        }
         for title, fields in TAX_LOAD_ROW_FIELDS.items():
-            _write_tax_load_rows(workbook[title], row_payloads[title], fields)
+            status = vat_book_statuses.get(title)
+            empty_message = (
+                "За период в 1С записей нет"
+                if status
+                in {"loaded", "ready", "complete", "confirmed", "empty_expected"}
+                else "Нет подтверждённых данных"
+            )
+            _write_tax_load_rows(
+                workbook[title],
+                row_payloads[title],
+                fields,
+                empty_message=empty_message,
+            )
         summary_payloads = {
             "НДС": payload.get("vatSummary") or {},
             "ЕНС": payload.get("ensSummary") or {},

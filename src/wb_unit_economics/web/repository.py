@@ -3692,7 +3692,7 @@ def complete_accounting_report_generation(
         methodology_version=(
             "month-close-control-report-v2"
             if report_kind == MONTH_CLOSE_CONTROL
-            else "tax-load-report-v3"
+            else "tax-load-report-v4"
         ),
         marketplace_expense_context_version="",
         source_workbook="",
