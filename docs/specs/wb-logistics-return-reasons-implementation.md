@@ -69,6 +69,8 @@ implementation gate остаются закрыты. Пользователь о
 specific контракт R-1: exact `goods-return.srid → Finance.srid` в обязательном
 tenant/client/cabinet/nm scope с разрешением ровно в одну canonical return
 chain. Это открывает только R-1 (`goodsReturnImplementationGate=true`);
+после merge claims pagination hardening repeat live R-0I подтвердил полную
+active/archive pagination без mismatch, но source keys по-прежнему отсутствуют.
 R-2 требует собственного положительного identity evidence. Решение не
 подтверждает реализацию, client enable или rollout.
 
@@ -126,6 +128,16 @@ current report, runtime и client flags не изменены.
 `goodsReturnImplementationGate=true`, а claims/complete и общий F-5
 implementation gate остаются `false`. Реализация R-1 выполняется без R-2 и без
 изменения опубликованного report или feature flags.
+
+Claims pagination hardening влит в `main` через PR №57. После отдельного
+operational-разрешения repeat R-0L подтвердил reusable verified file-only
+Finance lineage, а R-0I из `main@0deacf4` подтвердил claims active/archive
+schema, provider-total reconciliation и `paginationMismatchPresent=false`.
+Доступный claims scope пуст, другой scope закрыт по доступу; source keys не
+получены. Поэтому `completeSourceGate=true`, но `claimsIdentityGate=false`,
+`completeIdentityGate=false`, `claimsImplementationGate=false` и общий
+`implementationGate=false`. Production runtime, reports и flags не менялись;
+health остался `ok`.
 
 # Цель
 
@@ -734,8 +746,9 @@ Rollback отключает новые маршруты и блок причин
 - Полное per-cabinet покрытие подтверждённого exact join Finance/goods-return;
   положительный goods-return gate доказывает совместимый crosswalk, но не
   обещает полное покрытие каждой строки.
-- Claims identity: в текущем окне source keys отсутствуют, поэтому применимый
-  exact crosswalk и возможность R-2 ещё не доказаны.
+- Claims identity: полная active/archive pagination live подтверждена без
+  mismatch, но в доступном окне source keys отсутствуют; применимый exact
+  crosswalk и возможность R-2 ещё не доказаны.
 - Фактическая history depth goods-return за пределами одного 31-дневного
   request window; официальный контракт её не гарантирует.
 - Нормализованный справочник категорий `reason` (версионировать ли, как
@@ -743,14 +756,21 @@ Rollback отключает новые маршруты и блок причин
 
 # Changelog
 
+- 2026-07-22 — после merge PR №57 repeat live R-0I из `main@0deacf4`
+  подтвердил claims schema, полную provider-total pagination и
+  `paginationMismatchPresent=false`. Доступный scope пуст, другой закрыт по
+  доступу; source keys и положительный claims identity gate не получены. R-2,
+  mart/API/UI и общий implementation gate остаются закрыты. Test preflight
+  остановлен выключенным source-refresh master; dry-run не создал report.
+
 - 2026-07-22 — R-0/R-0I claims evidence приведён к принятому pagination
   контракту: active/archive читаются отдельно с `limit=200`, bounded offset
   loop, rate-limit pacing, неизменным provider `total` и запретом duplicate
   claim IDs. Любая неполнота даёт boolean
   `paginationMismatchPresent=true` и закрывает claims gate; raw comments,
   identifiers, provider total и counts не выводятся. Это hardening probe, а не
-  реализация R-2; live claims identity evidence и accepted join по-прежнему
-  отсутствуют.
+  реализация R-2; положительное live claims identity evidence и accepted join
+  по-прежнему отсутствуют.
 
 - 2026-07-22 — реализован R-1 без rollout: `wb_goods_return` зарегистрирован как
   optional immutable collection с manifest/cabinet/coverage/raw-integrity,

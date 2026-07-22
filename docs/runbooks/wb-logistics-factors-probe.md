@@ -40,9 +40,10 @@ registered snapshot/selector/normalization/internal join;
 `goodsReturnImplementationGate=true`, исторический
 `contractChangeRequired=true` закрыт решением. R-2 требует собственного
 положительного gate. PR №56 с R-1 влит в `main`; environment rollout R-1 не
-выполнялся. Текущий claims-evidence hardening доводит R-0/R-0I до полной
-provider-total pagination, но сам не открывает R-2. Ниже сохранён
-воспроизводимый безопасный порядок проверки.
+выполнялся. Claims-evidence hardening влит PR №57 и отдельно проверен live
+R-0I: полная provider-total pagination прошла без mismatch, но claims source
+keys в доступном окне отсутствуют. R-2 и общий gate остаются закрыты. Ниже
+сохранён воспроизводимый безопасный порядок проверки.
 
 # Безопасность прогона
 
@@ -325,9 +326,22 @@ claims active/archive запрашивались с `limit=1`, поэтому н
   только в памяти процесса и не попадают в stdout/Markdown/Git.
 
 Локальные тесты подтверждают match на второй странице и fail-closed сценарии.
-Live R-0I после этого hardening ещё не выполнялся, поэтому
-`claimsIdentityGate=false`, `claimsImplementationGate=false` и R-2 остаётся
-закрытым.
+После merge PR №57 и отдельного разрешения выполнен repeat live R-0I из
+`main@0deacf4`. Claims active/archive schema и полная pagination подтверждены,
+provider total согласован и `paginationMismatchPresent=false`. Доступный scope
+вернул пустое окно, другой scope остался закрыт по доступу; source keys не
+получены. Поэтому `completeSourceGate=true`, но `claimsIdentityGate=false`,
+`completeIdentityGate=false`, `claimsImplementationGate=false` и общий
+`implementationGate=false`; R-2 остаётся закрытым.
+
+Перед probe test-only full preflight fail closed на выключенном
+source-refresh master. Dry-run без внешних чтений завершился `needs_review` и
+не создал report; фактический test refresh и transient override не выполнялись.
+Production R-0L подтвердил reusable verified file-only Finance lineage без
+integrity/selector/storage failures. Финальный production health — `ok`;
+service, БД, reports и feature flags не менялись. Evidence осталось
+boolean-only без labels, counts, клиентских окон, identifiers, причин,
+комментариев, media, сумм, paths, hashes или raw rows.
 
 # F-4 live source gate
 

@@ -140,8 +140,9 @@ F-5 «Причины возвратов» принят как отдельный
 `srid → Finance.srid` контракт; `goodsReturnImplementationGate=true`, поэтому
 R-1 влит в `main` через PR №56 как registered
 snapshot/selector/normalization/internal join без mart/API/UI и rollout.
-Claims evidence runner использует полную provider-total pagination, но R-2
-остаётся закрыт до положительного live identity evidence;
+Repeat live R-0I после merge PR №57 подтвердил полную provider-total pagination
+без mismatch, но claims source keys в доступном окне отсутствуют. R-2 остаётся
+закрыт до положительного identity evidence;
 context/mart/API/UI и rollout автоматически не начинаются.
 
 # Цель
@@ -1136,11 +1137,19 @@ blocker с report run, который обязан был пройти gate, н�
 staff-only test; production/client enable не выполнялся. Для F-5 новый
 неопубликованный draft устранил Finance DB/file ambiguity, и повторный R-0I
 открыл goods-return identity gate. Claims source keys в текущем окне не
-обнаружены, поэтому claims/complete gates и общий implementation gate закрыты.
+обнаружены. Repeat R-0I после pagination hardening подтвердил
+`paginationMismatchPresent=false`, но claims/complete gates и общий
+implementation gate остались закрыты.
 Source-specific accepted-решение для R-1 принято; R-2 остаётся закрыт до
 собственного положительного identity evidence.
 
 # Changelog
+
+- 2026-07-22 — repeat live R-0I из `main@0deacf4` подтвердил полную claims
+  active/archive pagination без mismatch. Доступный scope пуст, другой закрыт
+  по доступу; source keys отсутствуют, поэтому claims/complete и общий gates
+  закрыты. Test-only full preflight остановлен выключенным master-флагом;
+  dry-run не создал report, environment не менялся.
 
 - 2026-07-22 — claims R-0/R-0I runner hardened до полной active/archive
   pagination с provider-total reconciliation, duplicate-ID guard, bounded page
