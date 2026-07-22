@@ -22,6 +22,8 @@
     onec_osv: "ОСВ 1С",
     onec_official_financial_results: "Отчёт о финансовых результатах 1С",
     onec_bank: "Банк в 1С",
+    onec_accounting_bank_in: "Банковские поступления 1С",
+    onec_accounting_counterparties: "Справочник контрагентов 1С",
     accountant_confirmation: "Подтверждение бухгалтера",
   };
 

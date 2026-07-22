@@ -5925,7 +5925,7 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
     assert "word-break: break-word;" in styles.text
 
 
-def test_tax_load_v2_renderer_localizes_contract_and_keeps_tables_accessible(
+def test_tax_load_v3_renderer_localizes_contract_and_keeps_tables_accessible(
     tmp_path: Path,
 ) -> None:
     client = make_client(tmp_path)

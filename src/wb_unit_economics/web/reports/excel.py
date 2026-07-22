@@ -169,6 +169,7 @@ TAX_LOAD_SOURCE_LABELS = {
     "onec_bank": "Банк в 1С",
     "onec_accounting_bank_in": "Банковские поступления 1С",
     "onec_accounting_bank_out": "Банковские списания 1С",
+    "onec_accounting_counterparties": "Справочник контрагентов 1С",
     "onec_accounting_chart": "План счетов 1С",
     "onec_accounting_ens": "Единый налоговый счёт 1С",
     "onec_accounting_ens_sanctions": "Санкции по ЕНС в 1С",
@@ -643,6 +644,31 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         else detail.get("monthlyIncome")
     )
     payment_monthly = _usn_month_values(detail.get("monthlyTaxPayments"))
+    marketplace_labels = {
+        "wildberries": "  в том числе Wildberries (РВБ)",
+        "ozon": "  в том числе Ozon (Интернет Решения)",
+        "other": "  другие покупатели",
+    }
+    marketplace_rows: list[tuple[str, list[Any], str]] = []
+    if detail.get("marketplaceBreakdownStatus") == "ready":
+        for item in detail.get("marketplaceIncomeBreakdown") or []:
+            if not isinstance(item, Mapping):
+                continue
+            label = marketplace_labels.get(str(item.get("category") or ""))
+            if not label:
+                continue
+            marketplace_rows.append(
+                (
+                    label,
+                    _usn_row_values(
+                        columns,
+                        _usn_month_values(item.get("monthlyValues")),
+                        final_value=item.get("valueYtd"),
+                        require_complete_months=True,
+                    ),
+                    "currency",
+                )
+            )
     income_values = _usn_row_values(
         columns,
         income_monthly,
@@ -684,6 +710,7 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
             income_values,
             "currency",
         ),
+        *marketplace_rows,
         (
             "Прочие поступления без НДС (на проверке)",
             unclassified_values,

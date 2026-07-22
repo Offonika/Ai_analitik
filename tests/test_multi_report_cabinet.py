@@ -75,6 +75,7 @@ def _bank_in_row(
     vat: str,
     operation: str = "ОтПокупателя",
     organization_id: str = "ORG-1",
+    counterparty_id: str = "",
     posted: bool = True,
     deleted: bool = False,
 ) -> dict:
@@ -84,6 +85,7 @@ def _bank_in_row(
         "Posted": posted,
         "DeletionMark": deleted,
         "ВидОперации": operation,
+        "Контрагент_Key": counterparty_id,
         "СуммаДокумента": amount,
         "РасшифровкаПлатежа": [
             {
@@ -419,7 +421,7 @@ def test_tax_load_formula_excludes_agent_and_insurance_rows() -> None:
     assert summary["benchmarkValue"] is None
     assert payload["businessStatus"] == "accountant_review_required"
     assert payload["accountantApproval"] is None
-    assert payload["contractVersion"] == "tax-load-report-v2"
+    assert payload["contractVersion"] == "tax-load-report-v3"
 
 
 def test_tax_load_requires_confirmed_classified_numerator_and_denominator() -> None:
@@ -590,8 +592,18 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
             status="loaded",
             snapshot_id="bank-in-sha",
             rows=(
-                _bank_in_row("2026-01-10", amount="105", vat="5"),
-                _bank_in_row("2026-02-10", amount="210", vat="10"),
+                _bank_in_row(
+                    "2026-01-10",
+                    amount="105",
+                    vat="5",
+                    counterparty_id="RWB",
+                ),
+                _bank_in_row(
+                    "2026-02-10",
+                    amount="210",
+                    vat="10",
+                    counterparty_id="OZON",
+                ),
                 _bank_in_row(
                     "2026-03-10",
                     amount="55",
@@ -616,6 +628,23 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
                     vat="0",
                     organization_id="ORG-2",
                 ),
+            ),
+        ),
+        "onec_accounting_counterparties": AccountingEvidenceSource(
+            source_type="onec_accounting_counterparties",
+            status="loaded",
+            snapshot_id="counterparties-sha",
+            rows=(
+                {
+                    "Ref_Key": "RWB",
+                    "Description": "ООО РВБ",
+                    "DeletionMark": False,
+                },
+                {
+                    "Ref_Key": "OZON",
+                    "Description": "ООО Интернет Решения",
+                    "DeletionMark": False,
+                },
             ),
         ),
         "onec_kudir": AccountingEvidenceSource(
@@ -660,6 +689,32 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
     assert usn["confirmedRowCount"] == 2
     assert usn["unclassifiedRowCount"] == 1
     assert usn["excludedRowCount"] == 1
+    assert usn["marketplaceBreakdownStatus"] == "ready"
+    marketplace = {
+        item["category"]: item for item in usn["marketplaceBreakdown"]
+    }
+    assert marketplace["wildberries"]["value"] == "100"
+    assert marketplace["ozon"]["value"] == "200"
+    assert marketplace["other"]["value"] == "0"
+    assert len(marketplace["wildberries"]["monthlyValues"]) == 6
+    assert marketplace["wildberries"]["monthlyValues"][1]["value"] == "0"
+    assert sum(Decimal(item["value"]) for item in marketplace.values()) == Decimal(
+        usn["value"]
+    )
+    for month_index in range(6):
+        categorized = sum(
+            Decimal(item["monthlyValues"][month_index]["value"])
+            for item in marketplace.values()
+        )
+        confirmed = next(
+            (
+                Decimal(item["value"])
+                for item in usn["monthlyValues"]
+                if item["month"] == f"2026-{month_index + 1:02d}"
+            ),
+            Decimal("0"),
+        )
+        assert categorized == confirmed
     assert usn["monthlyValues"] == [
         {
             "month": "2026-01",
@@ -1098,6 +1153,54 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
                 "rowCount": 1,
             }
         ],
+        "marketplaceBreakdownStatus": "ready",
+        "marketplaceBreakdown": [
+            {
+                "category": "wildberries",
+                "label": "Wildberries (РВБ)",
+                "value": "360",
+                "rowCount": 6,
+                "monthlyValues": [
+                    {
+                        "month": f"2026-{month:02d}",
+                        "value": "60",
+                        "status": "loaded",
+                        "rowCount": 1,
+                    }
+                    for month in range(1, 7)
+                ],
+            },
+            {
+                "category": "ozon",
+                "label": "Ozon (Интернет Решения)",
+                "value": "240",
+                "rowCount": 6,
+                "monthlyValues": [
+                    {
+                        "month": f"2026-{month:02d}",
+                        "value": "40",
+                        "status": "loaded",
+                        "rowCount": 1,
+                    }
+                    for month in range(1, 7)
+                ],
+            },
+            {
+                "category": "other",
+                "label": "Другие покупатели",
+                "value": "0",
+                "rowCount": 0,
+                "monthlyValues": [
+                    {
+                        "month": f"2026-{month:02d}",
+                        "value": "0",
+                        "status": "loaded",
+                        "rowCount": 0,
+                    }
+                    for month in range(1, 7)
+                ],
+            },
+        ],
     }
     evidence["kudirIncomeEvidence"] = {
         "value": "580",
@@ -1160,6 +1263,12 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
     total = rows["Итого подтверждённый доход без НДС"]
     assert total[4].value == Decimal("300")
     assert total[8].value == Decimal("600")
+    assert rows["  в том числе Wildberries (РВБ)"][1].value == Decimal("60")
+    assert rows["  в том числе Wildberries (РВБ)"][8].value == Decimal("360")
+    assert rows["  в том числе Ozon (Интернет Решения)"][1].value == Decimal(
+        "40"
+    )
+    assert rows["  другие покупатели"][8].value == Decimal("0")
     assert rows["Прочие поступления без НДС (на проверке)"][2].value == Decimal(
         "20"
     )

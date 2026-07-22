@@ -575,6 +575,16 @@ ACCOUNTING_REPORT_SAMPLE_COLLECTIONS = (
     DEFAULT_SAMPLE_COLLECTIONS[2],  # special-tax notifications
     *TAX_PROFILE_SAMPLE_COLLECTIONS,
     OnecSampleCollection(
+        sample_id="accounting_counterparties",
+        collection_name="Catalog_Контрагенты",
+        purpose=(
+            "Read-only справочник контрагентов для подтвержденной "
+            "расшифровки банковских поступлений по маркетплейсам."
+        ),
+        page_size=1000,
+        select_fields=("Ref_Key", "Description", "DeletionMark"),
+    ),
+    OnecSampleCollection(
         sample_id="accounting_chart",
         collection_name="ChartOfAccounts_Управленческий",
         purpose="План счетов управленческого учета для нормализации ОСВ.",

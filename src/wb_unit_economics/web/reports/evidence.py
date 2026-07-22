@@ -12,7 +12,13 @@ from typing import Any
 from wb_unit_economics.web.report_kinds import MONTH_CLOSE_CONTROL, TAX_LOAD
 
 MONTH_CLOSE_EVIDENCE_VERSION = "month-close-evidence-v2"
-TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v2"
+TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v3"
+
+USN_MARKETPLACE_CATEGORIES = (
+    ("wildberries", "Wildberries (РВБ)"),
+    ("ozon", "Ozon (Интернет Решения)"),
+    ("other", "Другие покупатели"),
+)
 
 
 @dataclass(frozen=True)
@@ -423,7 +429,14 @@ def _tax_load_evidence(
         period_end,
         date_fields=("Date", "Period", "Дата"),
     )
-    bank_income_groups = _classify_usn_bank_income_rows(bank_income_rows)
+    counterparty_source = sources.get("onec_accounting_counterparties")
+    counterparty_categories = _usn_marketplace_counterparty_categories(
+        counterparty_source
+    )
+    bank_income_groups = _classify_usn_bank_income_rows(
+        bank_income_rows,
+        counterparty_categories=counterparty_categories,
+    )
     confirmed_bank_income = bank_income_groups["confirmed"]
     unclassified_bank_income = bank_income_groups["unclassified"]
     excluded_bank_income = bank_income_groups["excluded"]
@@ -439,6 +452,12 @@ def _tax_load_evidence(
         row.get("incomeNetAmount") not in (None, "")
         for rows in bank_income_groups.values()
         for row in rows
+    )
+    marketplace_breakdown_available = (
+        bank_income_available
+        and bank_income_amounts_complete
+        and _source_status(counterparty_source)
+        in {"loaded", "ready", "complete", "confirmed"}
     )
     usn_income_evidence = {
         "value": (
@@ -485,6 +504,19 @@ def _tax_load_evidence(
         "confirmedRowCount": len(confirmed_bank_income),
         "unclassifiedRowCount": len(unclassified_bank_income),
         "excludedRowCount": len(excluded_bank_income),
+        "marketplaceBreakdownStatus": (
+            "ready" if marketplace_breakdown_available else "source_gap"
+        ),
+        "marketplaceBreakdown": (
+            _usn_marketplace_breakdown(
+                confirmed_bank_income,
+                period_start=ytd_start,
+                period_end=period_end,
+                source_status=bank_income_status,
+            )
+            if marketplace_breakdown_available
+            else []
+        ),
     }
     # КУДиР остается контрольной YTD-сверкой. В текущей 1С Period регистра
     # может быть квартальной датой и не является календарным месяцем поступления.
@@ -1012,8 +1044,34 @@ def _bank_income_net_amount(row: Mapping[str, Any]) -> Decimal | None:
     return None
 
 
+def _usn_marketplace_counterparty_categories(
+    source: AccountingEvidenceSource | None,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if source is None:
+        return result
+    for row in source.rows:
+        if row.get("DeletionMark") is True:
+            continue
+        counterparty_id = str(row.get("Ref_Key") or "").strip()
+        normalized_name = "".join(
+            character
+            for character in str(row.get("Description") or "").casefold()
+            if character.isalnum()
+        )
+        if not counterparty_id:
+            continue
+        if "интернетрешения" in normalized_name:
+            result[counterparty_id] = "ozon"
+        elif "рвб" in normalized_name:
+            result[counterparty_id] = "wildberries"
+    return result
+
+
 def _classify_usn_bank_income_rows(
     rows: list[Mapping[str, Any]],
+    *,
+    counterparty_categories: Mapping[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {
         "confirmed": [],
@@ -1024,13 +1082,77 @@ def _classify_usn_bank_income_rows(
         if row.get("Posted") is not True or row.get("DeletionMark") is True:
             continue
         net_amount = _bank_income_net_amount(row)
-        result[_bank_income_category(row)].append(
+        income_category = _bank_income_category(row)
+        normalized = {
+            "Date": row.get("Date") or row.get("Period") or row.get("Дата"),
+            "incomeNetAmount": (
+                _decimal_text(net_amount) if net_amount is not None else None
+            ),
+        }
+        if income_category == "confirmed":
+            counterparty_id = str(row.get("Контрагент_Key") or "").strip()
+            normalized["marketplaceCategory"] = (
+                (counterparty_categories or {}).get(counterparty_id) or "other"
+            )
+        result[income_category].append(normalized)
+    return result
+
+
+def _usn_marketplace_breakdown(
+    rows: list[Mapping[str, Any]],
+    *,
+    period_start: date,
+    period_end: date,
+    source_status: str,
+) -> list[dict[str, Any]]:
+    month_keys = _month_keys(period_start, period_end)
+    result: list[dict[str, Any]] = []
+    for category, label in USN_MARKETPLACE_CATEGORIES:
+        category_rows = [
+            row for row in rows if row.get("marketplaceCategory") == category
+        ]
+        monthly_by_key = {
+            str(item.get("month") or ""): item
+            for item in _monthly_values(
+                category_rows,
+                date_fields=("Date",),
+                amount_fields=("incomeNetAmount",),
+                source_status=source_status,
+            )
+        }
+        result.append(
             {
-                "Date": row.get("Date") or row.get("Period") or row.get("Дата"),
-                "incomeNetAmount": (
-                    _decimal_text(net_amount) if net_amount is not None else None
+                "category": category,
+                "label": label,
+                "value": _complete_sum_rows(
+                    category_rows, ("incomeNetAmount",)
                 ),
+                "rowCount": len(category_rows),
+                "monthlyValues": [
+                    monthly_by_key.get(month)
+                    or {
+                        "month": month,
+                        "value": "0",
+                        "status": source_status,
+                        "rowCount": 0,
+                    }
+                    for month in month_keys
+                ],
             }
+        )
+    return result
+
+
+def _month_keys(period_start: date, period_end: date) -> list[str]:
+    current = period_start.replace(day=1)
+    last = period_end.replace(day=1)
+    result: list[str] = []
+    while current <= last:
+        result.append(current.strftime("%Y-%m"))
+        current = (
+            date(current.year + 1, 1, 1)
+            if current.month == 12
+            else date(current.year, current.month + 1, 1)
         )
     return result
 
