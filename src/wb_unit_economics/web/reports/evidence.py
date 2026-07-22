@@ -156,8 +156,10 @@ def _month_close_evidence(
                 "code": "osv_source_gap",
                 "severity": "warning",
                 "section": "ОСВ",
-                "message": "Ни штатная ОСВ, ни RecordType fallback не дали строк.",
-                "nextAction": "Проверить публикацию 1С и повторить read-only загрузку.",
+                "message": "Ни штатная ОСВ, ни резервный источник не дали строк.",
+                "nextAction": (
+                    "Проверить публикацию 1С и повторить загрузку только для чтения."
+                ),
             }
         )
     controls = [
@@ -527,10 +529,10 @@ def _source_gap_issues(
                 "code": f"{source_type}_gap",
                 "severity": "warning",
                 "section": section,
-                "message": (
-                    f"Источник {source_type} не подтвержден за выбранный период."
+                "message": f"Источник «{section}» не подтверждён за выбранный период.",
+                "nextAction": (
+                    "Проверить публикацию 1С и повторить загрузку только для чтения."
                 ),
-                "nextAction": "Проверить публикацию 1С и повторить read-only загрузку.",
             }
         )
     return result

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from datetime import UTC, date, datetime
@@ -419,6 +420,21 @@ def _tax_load_month_label(value: Any) -> str:
     return f"{RUSSIAN_MONTHS[parsed.month]} {parsed.year}"
 
 
+def _tax_load_user_text(value: Any) -> str:
+    text = str(value or "")
+    for source_kind, label in sorted(
+        TAX_LOAD_SOURCE_LABELS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        text = re.sub(rf"\b{re.escape(source_kind)}\b", label, text, flags=re.I)
+    text = re.sub(r"\bread-only\b", "только для чтения", text, flags=re.I)
+    return re.sub(
+        r"\bRecordType\s+fallback\b",
+        "резервный источник",
+        text,
+        flags=re.I,
+    )
+
+
 def _tax_load_decimal(value: Any) -> Decimal | None:
     if value in (None, "") or isinstance(value, bool):
         return None
@@ -446,6 +462,8 @@ def _tax_load_cell(key: str, value: Any) -> Any:
     if key in TAX_LOAD_ENUM_FIELDS:
         normalized = str(value).strip().casefold()
         return TAX_LOAD_VALUE_LABELS.get(normalized, "Не определено")
+    if key in {"taxName", "section", "message", "nextAction"}:
+        return _tax_load_user_text(value)
     return _cell(value)
 
 

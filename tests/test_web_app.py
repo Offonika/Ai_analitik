@@ -5947,6 +5947,12 @@ def test_tax_load_v2_renderer_localizes_contract_and_keeps_tables_accessible(
     assert "В нагрузке ФНС" in tax_load.text
     assert "formatMoney" in tax_load.text
     assert "formatDate" in tax_load.text
+    assert "function userText" in tax_load.text
+    assert '{ key: "message", label: "Что найдено", format: userText }' in tax_load.text
+    assert (
+        '{ key: "nextAction", label: "Что сделать", format: userText }'
+        in tax_load.text
+    )
     assert "accountingScenarioStatusLabel" in app_js.text
     assert "Внутренний предварительный отчёт" in app_js.text
     assert "status ${status}" not in app_js.text

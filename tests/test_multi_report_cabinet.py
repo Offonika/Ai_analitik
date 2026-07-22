@@ -40,6 +40,7 @@ from wb_unit_economics.web.reports.evidence import (
     AccountingEvidenceSource,
     _bank_tax_payments,
     _date_text,
+    _source_gap_issues,
     materialize_accounting_evidence,
 )
 from wb_unit_economics.web.reports.excel import (
@@ -777,6 +778,17 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
         },
         evidence=_tax_evidence(),
     )
+    payload["issues"].append(
+        {
+            "severity": "warning",
+            "section": "Доходный знаменатель",
+            "message": (
+                "Источник onec_official_financial_results не подтвержден "
+                "за выбранный период."
+            ),
+            "nextAction": "Повторить read-only загрузку.",
+        }
+    )
     path = tmp_path / "tax-load-russian.xlsx"
     write_scenario_excel(
         payload,
@@ -858,6 +870,16 @@ def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> Non
     due_date_cell = workbook["Налоги"].cell(row=2, column=due_date_column)
     assert due_date_cell.data_type == "d"
     assert due_date_cell.number_format == "DD.MM.YYYY"
+    workbook_text = " ".join(
+        str(cell.value or "")
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+    )
+    assert "onec_official_financial_results" not in workbook_text
+    assert "read-only" not in workbook_text
+    assert "Отчёт о финансовых результатах 1С" in workbook_text
+    assert "только для чтения" in workbook_text
 
 
 def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:
@@ -883,6 +905,21 @@ def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:
 def test_tax_load_evidence_rejects_1c_placeholder_date() -> None:
     assert _date_text("0001-01-01T00:00:00") is None
     assert _date_text("2026-05-31T00:00:00") == "2026-05-31"
+
+
+def test_tax_load_source_gap_issue_has_only_user_facing_russian_text() -> None:
+    issue = _source_gap_issues(
+        {}, {"onec_official_financial_results": "Доходный знаменатель"}
+    )[0]
+
+    assert issue["message"] == (
+        "Источник «Доходный знаменатель» не подтверждён за выбранный период."
+    )
+    assert issue["nextAction"] == (
+        "Проверить публикацию 1С и повторить загрузку только для чтения."
+    )
+    assert "onec_" not in issue["message"]
+    assert "read-only" not in issue["nextAction"]
 
 
 def test_tax_load_excel_ignores_unapproved_internal_field(tmp_path: Path) -> None:
