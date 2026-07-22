@@ -44,13 +44,14 @@ updated_at: "2026-07-22"
 содержит, и как честно показывать её отсутствие.
 
 Решения приняты 22 июля 2026 года после повторной построчной сверки текущего
-официального WB OpenAPI. После закрытого R-0 join gate выполнены отдельный
-безопасный R-0I identity probe и read-only R-0L поиск пригодного прежнего
-lineage. Оба этапа fail closed: storage ambiguity Finance lineage не позволила
-доказать exact crosswalk, а подходящего существующего immutable report не
-найдено. Поэтому подпакеты R-1…R-5 по-прежнему не разрешены. Они начинаются по
-отдельности только после обезличенного live evidence совместимого exact
-crosswalk; этот статус не подтверждает реализацию, client enable или rollout.
+официального WB OpenAPI. Первый безопасный R-0I fail closed на storage
+ambiguity, а read-only R-0L не нашёл пригодного прежнего lineage. После
+отдельно разрешённого нового immutable draft повторный R-0I подтвердил exact
+goods-return crosswalk `srid → Finance.srid` и однозначную canonical return
+chain. Claims source keys в текущем окне отсутствуют, поэтому общий identity и
+implementation gate остаются закрыты. R-1 требует отдельного accepted-решения
+об изменении контракта, R-2 — собственного положительного identity evidence;
+этот статус не подтверждает реализацию, client enable или rollout.
 
 # Текущее состояние реализации
 
@@ -66,19 +67,17 @@ lineage/context/mart/API/UI и нет связывания с Finance. `claims` 
 `goods-return` только для разрешённых token scopes; claims доступен не для
 каждого scope.
 
-R-0 выполнен 22 июля 2026 года после принятия спека. Source schema gate пройден,
-но exact Finance/source join не подтверждён даже на максимальном 31-дневном
-goods-return window, выровненном по последнему immutable report. Поэтому
-`implementationGate=false`: R-1…R-5 не начинаются до отдельного evidence
-совместимого identity crosswalk. `nm_id`, `srid` или `orderId` отдельно не
-разрешены как обход.
+Первичный R-0 выполнен 22 июля 2026 года после принятия спека. Source schema
+gate пройден, но direct Finance/source join не подтвердился даже на
+максимальном 31-дневном goods-return window, выровненном по последнему
+immutable report. Этот результат обосновал R-0I; он не разрешал R-1…R-5 и не
+разрешает использовать `nm_id`, `srid` или `orderId` отдельно как обход.
 
-R-0I также выполнен 22 июля. Внешний source gate и выравнивание окна прошли,
-но выбранный Finance lineage одновременно представлен DB-строками и
-`file_authoritative` коллекцией. Production selector классифицировал это как
-`source_storage_ambiguity`; verified lineage отсутствует, оба source-specific
-identity gate и общий gate закрыты. Это не доказательство отсутствия same-name
-совпадения: сравнение не принимается до нового unambiguous verified snapshot.
+Первый R-0I также выполнен 22 июля. Внешний source gate и выравнивание окна
+прошли, но выбранный Finance lineage одновременно был представлен DB-строками
+и `file_authoritative` коллекцией. Production selector классифицировал это как
+`source_storage_ambiguity`; сравнение не принималось до нового unambiguous
+verified snapshot.
 
 R-0L выполнен в тот же день без внешних API-вызовов. Newest-first проверка
 существующих immutable reports нашла report candidates и Finance return fact,
@@ -86,6 +85,19 @@ R-0L выполнен в тот же день без внешних API-вызо
 `sourceIntegrityFailurePresent=true`, `databaseFileAmbiguityPresent=true` и
 `newReportRequired=true`; автоматическое переиспользование прежнего report не
 разрешено, `implementationGate=false`.
+
+После отдельного operational-разрешения и backup выполнен production full
+source refresh из ревизии `e0d6578`. Создан новый draft с
+`publicationStatus=draft`, `isCurrent=false`: Finance collection загружена как
+verified file-authoritative (`rowPersistence=skipped_large_snapshot`), DB-строк
+для неё нет, ambiguity отсутствует, logistics context имеет `ready`. Повторный
+R-0I подтвердил `goodsReturnIdentityGate=true` для exact
+`goods-return.srid → Finance.srid`; canonical return chain разрешается
+однозначно, baseline `srid → orderUid` не совпал. Claims source keys в текущем
+окне отсутствуют, поэтому `claimsIdentityGate=false`,
+`completeIdentityGate=false`, `contractChangeRequired=true` и
+`implementationGate=false`. Production health остался `ok`, опубликованный
+current report, runtime и client flags не изменены.
 
 # Цель
 
@@ -313,10 +325,24 @@ production selector обнаружил DB/file storage ambiguity у Finance snap
 периоды клиентской активности, identifiers, причины, комментарии, media, суммы,
 paths, hashes или raw rows.
 
-Следующий допустимый шаг — создать новый immutable report из однозначно
-выбранного и повторно verified Finance storage, затем повторить тот же R-0I.
-Изменять опубликованный report, выбирать DB или file случайно либо начинать
-R-1/R-2 до положительного source-specific gate запрещено.
+Этот первый проход обосновал новый immutable report. Изменять опубликованный
+report или вручную выбирать одну из конфликтующих DB/file копий запрещено.
+
+После отдельно разрешённого full source refresh повторный проход на новом
+draft подтвердил `completeSourceGate=true`, `reportWindowAligned=true` и
+verified lineage без DB/file ambiguity. Exact
+`goods-return.srid → Finance.srid` имеет match и однозначно разрешается в
+canonical return chain; `goodsReturnIdentityGate=true`. Baseline
+`goods-return.srid → Finance.orderUid` не совпал. В claims current window source
+keys отсутствуют, поэтому `claimsIdentityGate=false` и
+`completeIdentityGate=false`. Положительный goods-return candidate не меняет
+accepted join автоматически: `contractChangeRequired=true`, общий
+`implementationGate=false`; R-1 требует отдельного accepted-решения, R-2 —
+положительного claims gate.
+
+Новый draft не опубликован и не стал current. Production/client flags не
+менялись; evidence осталось boolean-only без labels, counts, клиентских окон,
+identifiers, причин, комментариев, media, сумм, paths, hashes и raw rows.
 
 ## R-0L existing lineage discovery contract
 
@@ -512,16 +538,18 @@ factors и return-reasons master; client дополнительно требуе
 
 1. `R-0 Probe доступности` — boolean-only матрица goods-return и claims на
    реальном снимке; выполнен, direct source `srid → Finance.orderUid` не доказан.
-2. `R-0I Identity crosswalk` — выполнен fail closed: source gate пройден, но
-   DB/file ambiguity не позволила получить verified Finance lineage; все
-   identity gates закрыты и join не изменён.
+2. `R-0I Identity crosswalk` — после нового unambiguous draft подтверждён
+   goods-return `srid → Finance.srid`; claims и complete gates закрыты, join не
+   изменён автоматически, требуется отдельное accepted-решение.
 3. `R-0L Existing lineage discovery` — read-only поиск уже существующего
-   verified unambiguous return lineage до нового report; не меняет R-0I window
-   и ничего не создаёт.
-4. `R-1 goods-return` — довести существующий prework до зарегистрированного raw
-   snapshot, selector, нормализации `reason`, exact join и статусов покрытия.
+   verified unambiguous return lineage до нового report; выполнен с
+   `newReportRequired=true`, сам ничего не создавал.
+4. `R-1 goods-return` — только после отдельного accepted-решения довести
+   существующий prework до зарегистрированного raw snapshot, selector,
+   нормализации `reason`, exact join и статусов покрытия.
 5. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
-   наличия комментария без переноса текста из raw.
+   наличия комментария без переноса текста из raw; до положительного claims
+   identity evidence не начинается.
 6. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
    «Возвраты».
 7. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
@@ -534,6 +562,9 @@ factors и return-reasons master; client дополнительно требуе
 # Acceptance Criteria
 
 Design-часть принята 22 июля 2026 года. Реализация готова, когда:
+
+Первый критерий подтверждён для goods-return на новом draft, но не для claims;
+остальные критерии реализации ещё не выполнены.
 
 1. probe зафиксировал schema и хотя бы один однозначный same-name
    Finance/source crosswalk в обезличенной boolean-only матрице;
@@ -597,11 +628,11 @@ Design-часть принята 22 июля 2026 года. Реализация
 
 1. Выполнить R-0 probe в авторизованном read-only service environment без
    публикации raw и без изменения среды.
-2. Выполнить R-0I и R-0L. Если R-0L не нашёл verified unambiguous lineage,
-   остановиться до отдельно разрешённого создания нового immutable report;
-   DB/file копию вручную не выбирать и не удалять.
-3. После положительного source-specific identity gate собрать доступное
-   покрытие причин для одного репрезентативного отчёта.
+2. R-0I и R-0L выполнены; после отрицательного R-0L отдельно разрешённый новый
+   immutable draft создан без ручного выбора или удаления DB/file копии.
+3. Перед сборкой покрытия goods-return принять отдельное изменение контракта
+   по подтверждённому `srid → Finance.srid`. Claims не включать до собственного
+   положительного identity gate.
 4. Включить причину consultant/admin за отдельным feature flag без клиентской
    публикации.
 5. После приёмки — отдельное решение о клиентском включении с проверкой
@@ -629,14 +660,27 @@ Rollback отключает новые маршруты и блок причин
 
 # Открытые вопросы
 
-- Реальное per-cabinet покрытие exact join между Finance, goods-return и claims
-  после нового immutable report с unambiguous verified Finance storage.
+- Полное per-cabinet покрытие подтверждённого exact join Finance/goods-return;
+  положительный goods-return gate доказывает совместимый crosswalk, но не
+  обещает полное покрытие каждой строки.
+- Claims identity: в текущем окне source keys отсутствуют, поэтому применимый
+  exact crosswalk и возможность R-2 ещё не доказаны.
 - Фактическая history depth goods-return за пределами одного 31-дневного
   request window; официальный контракт её не гарантирует.
 - Нормализованный справочник категорий `reason` (версионировать ли, как
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-22 — после отдельно разрешённого production full source refresh из
+  `e0d6578` создан новый неопубликованный immutable draft: verified
+  file-authoritative Finance без DB rows/ambiguity, logistics context `ready`,
+  current report и flags не изменены. Повторный boolean-only R-0I подтвердил
+  exact `goods-return.srid → Finance.srid` и canonical return chain;
+  `goodsReturnIdentityGate=true`. Claims keys отсутствуют, поэтому
+  `claimsIdentityGate=false`, `completeIdentityGate=false`,
+  `contractChangeRequired=true` и `implementationGate=false` до отдельного
+  accepted-решения.
 
 - 2026-07-22 — выполнен read-only R-0L: среди существующих immutable reports
   не найден verified unambiguous Finance return lineage. Report candidates и

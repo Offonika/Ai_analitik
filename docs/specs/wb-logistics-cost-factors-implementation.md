@@ -123,14 +123,17 @@ readiness, read-only API и responsive UI работают за отдельны
 зафиксирован в runbook. Production и client enable не выполнялись.
 
 F-5 «Причины возвратов» принят как отдельный spec-first контракт 22 июля 2026
-года. Boolean-only R-0I подтвердил source schema, но Finance selector fail
-closed на DB/file storage ambiguity выбранного immutable report. Verified
-lineage и exact same-name crosswalk не доказаны. Read-only R-0L затем не нашёл
-подходящего verified unambiguous lineage среди прежних immutable reports;
-`newReportRequired=true`, `implementationGate=false`. Существующий goods-return
-client считается prework, а не end-to-end реализацией. Claims,
-context/mart/API/UI и rollout не начинаются до повторного identity evidence на
-новом unambiguous verified snapshot.
+года. Первый R-0I fail closed на DB/file ambiguity, а R-0L не нашёл пригодного
+прежнего lineage. После отдельно разрешённого full source refresh новый
+неопубликованный immutable draft получил verified file-authoritative Finance
+без DB-строк и ambiguity. Повторный boolean-only R-0I подтвердил exact
+`goods-return.srid → Finance.srid` и однозначную canonical return chain;
+`goodsReturnIdentityGate=true`. Claims source keys в текущем окне отсутствуют,
+поэтому `claimsIdentityGate=false`, `completeIdentityGate=false`,
+`contractChangeRequired=true` и общий `implementationGate=false`.
+Существующий goods-return client остаётся prework: R-1 начинается только после
+отдельного accepted-решения по контракту, R-2 — после положительного claims
+identity evidence; context/mart/API/UI и rollout автоматически не начинаются.
 
 # Цель
 
@@ -1121,14 +1124,22 @@ blocker с report run, который обязан был пройти gate, н�
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
 Закрытые probe и staff-приёмка (2026-07-19…21): F-1, F-2, F-3 и F-4 приняты на
-staff-only test; production/client enable не выполнялся. F-5 R-0I 22 июля
-подтвердил внешний source gate, но остановился на DB/file ambiguity Finance
-lineage. Последующий read-only R-0L не нашёл пригодного существующего report и
-подтвердил `newReportRequired=true`. F-5 implementation и rollout не начинаются
-до нового unambiguous verified snapshot и положительного source-specific
-identity gate.
+staff-only test; production/client enable не выполнялся. Для F-5 новый
+неопубликованный draft устранил Finance DB/file ambiguity, и повторный R-0I
+открыл goods-return identity gate. Claims source keys в текущем окне не
+обнаружены, поэтому claims/complete gates и общий implementation gate закрыты.
+Следующий шаг — отдельное accepted-решение об изменении контракта для R-1;
+R-2 остаётся закрыт до собственного положительного identity evidence.
 
 # Changelog
+
+- 2026-07-22 — отдельно разрешённый production full source refresh создал
+  неопубликованный immutable draft с verified file-authoritative Finance без
+  DB/file ambiguity; current report и feature flags не менялись. Повторный R-0I
+  открыл exact goods-return `srid → Finance.srid` gate и подтвердил canonical
+  return chain. Claims source keys отсутствуют, поэтому claims/complete gates и
+  `implementationGate` закрыты; контракт требует отдельного accepted-изменения
+  перед R-1.
 
 - 2026-07-22 — F-5 R-0L newest-first проверил существующие immutable reports
   без внешних API и записей. Verified unambiguous return lineage не найден;

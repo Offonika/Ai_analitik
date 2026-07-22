@@ -29,12 +29,15 @@ Draft-спеки, для которых нужен этот probe:
 **Статус на 2026-07-22:** базовый живой probe F-1…F-3 выполнен. Минимальный
 F-4 source gate двух measurement endpoints также пройден в отдельном read-only
 процессе: schema подтверждена без вывода raw, идентификаторов, значений, сумм
-или counts. F-5 spec принят; boolean-only R-0I подтвердил source schema, но
-Finance selector fail closed на DB/file ambiguity выбранного immutable report.
-Последующий R-0L не нашёл среди существующих immutable reports ни одного
-verified unambiguous return lineage. Новый report обязателен, exact crosswalk не
-доказан, поэтому `implementationGate=false` и R-1…R-5 не начинаются. Ниже
-сохранён воспроизводимый безопасный порядок проверки.
+или counts. F-5 spec принят. Первый R-0I fail closed на DB/file ambiguity, а
+R-0L не нашёл пригодного прежнего lineage. После отдельно разрешённого full
+source refresh новый неопубликованный draft получил verified
+file-authoritative Finance без ambiguity. Повторный R-0I открыл goods-return
+identity gate на exact `srid → Finance.srid`, но claims keys отсутствуют;
+`completeIdentityGate=false`, `contractChangeRequired=true` и
+`implementationGate=false`. R-1 требует отдельного accepted-решения, R-2 —
+собственного положительного gate. Ниже сохранён воспроизводимый безопасный
+порядок проверки.
 
 # Безопасность прогона
 
@@ -265,6 +268,36 @@ identifiers, причины, комментарии, media, суммы, paths, h
 storage. Этот preflight не разрешает production migration/runtime rollout,
 retention deletion или модификацию опубликованного report; для них нужны
 отдельное решение и собственные safety-предусловия.
+
+# R-0I repeat after new immutable draft — 22 июля 2026 года
+
+После отдельного разрешения пользователя перед production-операцией создан
+backup, затем из точной ревизии `e0d6578` выполнен штатный full source refresh.
+Dry-run завершился ожидаемым `needs_review`. Full-run создал новый immutable
+draft с `publicationStatus=draft`, `isCurrent=false`; Finance collection имеет
+`loaded`, `rowPersistence=skipped_large_snapshot` и повторно verified
+file-authoritative storage. DB-строк для этой Finance collection нет,
+DB/file ambiguity отсутствует, logistics context имеет `ready`.
+
+На новом draft повторён тот же boolean-only `--mode r0-identity`. Evidence
+подтвердило `completeSourceGate=true`, `reportWindowAligned=true` и verified
+Finance lineage без integrity/selector/storage failure. Exact
+`goods-return.srid → Finance.srid` имеет match и однозначно разрешается в
+canonical return chain; `goodsReturnIdentityGate=true`. Baseline
+`goods-return.srid → Finance.orderUid` не совпал. В текущем claims window source
+keys отсутствуют, поэтому `claimsIdentityGate=false` и
+`completeIdentityGate=false`.
+
+Положительный goods-return candidate не меняет production join автоматически:
+`contractChangeRequired=true`, общий `implementationGate=false`. R-1 требует
+отдельного accepted-решения об изменении контракта, R-2 не начинается до
+положительного claims identity gate. Draft не публиковался, current report,
+production runtime и client flags не менялись; финальный production health
+остался `ok`.
+
+Evidence сохранено локально с правами `0600`; в Git/Markdown не переносились
+provider labels, counts, клиентские окна, identifiers, причины, комментарии,
+media, суммы, paths, hashes или raw rows.
 
 # F-4 live source gate
 
