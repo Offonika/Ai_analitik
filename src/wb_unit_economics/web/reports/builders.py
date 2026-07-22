@@ -318,6 +318,51 @@ def build_tax_load_payload(
         if is_usn and isinstance(usn_income_evidence, Mapping)
         else []
     )
+    usn_unclassified_income_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyUnclassifiedValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_excluded_income_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyExcludedValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_classification_status = (
+        str(usn_income_evidence.get("classificationStatus") or "ready")
+        if isinstance(usn_income_evidence, Mapping)
+        else "source_gap"
+    )
+    usn_unclassified_income = (
+        _decimal_text(usn_income_evidence.get("unclassifiedValue"))
+        if isinstance(usn_income_evidence, Mapping)
+        else None
+    )
+    usn_excluded_income = (
+        _decimal_text(usn_income_evidence.get("excludedValue"))
+        if isinstance(usn_income_evidence, Mapping)
+        else None
+    )
+    kudir_income_evidence = evidence.get("kudirIncomeEvidence")
+    kudir_income_ytd = (
+        _decimal_text(kudir_income_evidence.get("value"))
+        if is_usn and isinstance(kudir_income_evidence, Mapping)
+        else None
+    )
+    kudir_income_monthly = (
+        _safe_rows(
+            kudir_income_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(kudir_income_evidence, Mapping)
+        else []
+    )
     usn_payment_evidence = evidence.get("usnTaxPaymentEvidence")
     usn_tax_payments_monthly = (
         _safe_rows(
@@ -365,6 +410,15 @@ def build_tax_load_payload(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         if usn_calculated_tax is not None and usn_paid_tax is not None
+        else None
+    )
+    reconciliation_income = _decimal(usn_income_value)
+    reconciliation_kudir = _decimal(kudir_income_ytd)
+    usn_reconciliation_delta = (
+        (reconciliation_income - reconciliation_kudir).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if reconciliation_income is not None and reconciliation_kudir is not None
         else None
     )
     coverage = _safe_rows(
@@ -429,10 +483,19 @@ def build_tax_load_payload(
         "usnDetail": (
             {
                 "status": (
-                    "ready"
-                    if usn_calculated_tax is not None and usn_paid_tax is not None
-                    else "source_gap"
+                    "source_gap"
+                    if usn_calculated_tax is None or usn_paid_tax is None
+                    else (
+                        "review_required"
+                        if usn_classification_status == "review_required"
+                        else (
+                            "ready"
+                            if usn_classification_status == "ready"
+                            else "source_gap"
+                        )
+                    )
                 ),
+                "classificationStatus": usn_classification_status,
                 "sourceKind": (
                     usn_income_evidence.get("sourceKind")
                     if isinstance(usn_income_evidence, Mapping)
@@ -440,6 +503,10 @@ def build_tax_load_payload(
                 ),
                 "revenueTaxRate": _decimal_text(revenue_tax_rate),
                 "incomeYtd": usn_income_value,
+                "unclassifiedIncomeYtd": usn_unclassified_income,
+                "excludedIncomeYtd": usn_excluded_income,
+                "kudirIncomeYtd": kudir_income_ytd,
+                "reconciliationDelta": _decimal_text(usn_reconciliation_delta),
                 "calculatedTaxYtd": _decimal_text(usn_calculated_tax),
                 "paidTaxYtd": _decimal_text(usn_paid_tax),
                 "taxPayable": _decimal_text(usn_tax_payable),
@@ -447,6 +514,9 @@ def build_tax_load_payload(
                     next(iter(usn_due_dates)) if len(usn_due_dates) == 1 else None
                 ),
                 "monthlyIncome": usn_income_monthly,
+                "monthlyUnclassifiedIncome": usn_unclassified_income_monthly,
+                "monthlyExcludedIncome": usn_excluded_income_monthly,
+                "monthlyKudirIncome": kudir_income_monthly,
                 "monthlyTaxPayments": usn_tax_payments_monthly,
             }
             if is_usn

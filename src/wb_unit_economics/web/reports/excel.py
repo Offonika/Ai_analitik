@@ -132,6 +132,7 @@ TAX_LOAD_VALUE_LABELS = {
     "not_confirmed": "Не подтверждено",
     "unconfirmed": "Не подтверждено",
     "not_applicable": "Не применяется",
+    "review_required": "Требуется проверка",
     "management_reference": "Управленческий ориентир",
     "pending_methodology_confirmation": "Ожидает подтверждения методики",
     "preliminary_ytd": "Предварительно, с начала года",
@@ -620,13 +621,44 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
     summary = dict(payload.get("taxLoadSummary") or {})
     profile = dict(payload.get("taxProfile") or {})
     income_ytd = detail.get("incomeYtd") or summary.get("usnIncomeValue")
+    has_bank_detail = (
+        "unclassifiedIncomeYtd" in detail
+        or "excludedIncomeYtd" in detail
+        or bool(detail.get("monthlyUnclassifiedIncome"))
+        or bool(detail.get("monthlyExcludedIncome"))
+    )
     income_monthly = _usn_month_values(detail.get("monthlyIncome"))
+    unclassified_monthly = _usn_month_values(
+        detail.get("monthlyUnclassifiedIncome")
+    )
+    excluded_monthly = _usn_month_values(detail.get("monthlyExcludedIncome"))
+    kudir_monthly = _usn_month_values(detail.get("monthlyKudirIncome"))
     payment_monthly = _usn_month_values(detail.get("monthlyTaxPayments"))
     income_values = _usn_row_values(
         columns,
         income_monthly,
-        final_value=income_ytd,
+        final_value=income_ytd if has_bank_detail else None,
         require_complete_months=True,
+    )
+    unclassified_values = _usn_row_values(
+        columns,
+        unclassified_monthly,
+        final_value=detail.get("unclassifiedIncomeYtd"),
+        require_complete_months=False,
+    )
+    excluded_values = _usn_row_values(
+        columns,
+        excluded_monthly,
+        final_value=detail.get("excludedIncomeYtd"),
+        require_complete_months=False,
+    )
+    kudir_values = _usn_row_values(
+        columns,
+        kudir_monthly,
+        final_value=(
+            detail.get("kudirIncomeYtd") if has_bank_detail else income_ytd
+        ),
+        require_complete_months=False,
     )
     payment_values = _usn_row_values(
         columns,
@@ -638,8 +670,32 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         return [None] * (len(columns) - 1) + [value]
 
     rows = (
-        ("Доход по КУДиР 1С", income_values, "currency"),
-        ("Итого доход без НДС", income_values, "currency"),
+        (
+            "Поступления от покупателей без НДС",
+            income_values,
+            "currency",
+        ),
+        (
+            "Прочие поступления без НДС (на проверке)",
+            unclassified_values,
+            "currency",
+        ),
+        (
+            "Личные средства предпринимателя (не доход)",
+            excluded_values,
+            "currency",
+        ),
+        (
+            "Итого подтверждённый доход без НДС",
+            income_values,
+            "currency",
+        ),
+        ("База УСН по КУДиР (сверка)", kudir_values, "currency"),
+        (
+            "Расхождение с КУДиР",
+            last_only(_tax_load_decimal(detail.get("reconciliationDelta"))),
+            "currency",
+        ),
         (
             "Ставка УСН",
             last_only(
@@ -748,7 +804,7 @@ def _style_tax_load(workbook: Workbook) -> None:
             sheet.column_dimensions[column_letter].width = width
 
         if sheet.title == "Расчёт УСН":
-            sheet.column_dimensions["A"].width = 34
+            sheet.column_dimensions["A"].width = 46
             for column_index in range(2, sheet.max_column + 1):
                 header = str(sheet.cell(row=1, column=column_index).value or "")
                 if header.startswith("Итого"):
@@ -760,16 +816,19 @@ def _style_tax_load(workbook: Workbook) -> None:
             for row_index in range(2, sheet.max_row + 1):
                 label = str(sheet.cell(row=row_index, column=1).value or "")
                 sheet.cell(row=row_index, column=1).font = LABEL_FONT
-                if label == "Доход по КУДиР 1С":
+                if label == "Поступления от покупателей без НДС":
                     for cell in sheet[row_index]:
                         cell.fill = USN_SOURCE_FILL
                 elif label in {
-                    "Итого доход без НДС",
+                    "Итого подтверждённый доход без НДС",
                     "К доплате / переплата УСН",
                 }:
                     for cell in sheet[row_index]:
                         cell.fill = USN_INCOME_FILL
                         cell.font = LABEL_FONT
+                elif label == "Прочие поступления без НДС (на проверке)":
+                    for cell in sheet[row_index]:
+                        cell.fill = USN_TOTAL_FILL
 
         if sheet.max_row >= 2 and sheet.max_column >= 2:
             reference = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"

@@ -68,6 +68,32 @@ def _report(kind: str, organization_id: str = "ORG-1") -> SimpleNamespace:
     )
 
 
+def _bank_in_row(
+    row_date: str,
+    *,
+    amount: str,
+    vat: str,
+    operation: str = "ОтПокупателя",
+    organization_id: str = "ORG-1",
+    posted: bool = True,
+    deleted: bool = False,
+) -> dict:
+    return {
+        "Организация_Key": organization_id,
+        "Date": f"{row_date}T00:00:00",
+        "Posted": posted,
+        "DeletionMark": deleted,
+        "ВидОперации": operation,
+        "СуммаДокумента": amount,
+        "РасшифровкаПлатежа": [
+            {
+                "СуммаПлатежа": amount,
+                "СуммаНДС": vat,
+            }
+        ],
+    }
+
+
 def _month_close_evidence() -> dict:
     return {
         "organizationId": "ORG-1",
@@ -556,8 +582,42 @@ def test_tax_load_usn_income_minus_expenses_has_no_management_ratio() -> None:
     assert summary["usnIncomeStatus"] is None
 
 
-def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
+def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation(
+) -> None:
     sources = {
+        "onec_accounting_bank_in": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_in",
+            status="loaded",
+            snapshot_id="bank-in-sha",
+            rows=(
+                _bank_in_row("2026-01-10", amount="105", vat="5"),
+                _bank_in_row("2026-02-10", amount="210", vat="10"),
+                _bank_in_row(
+                    "2026-03-10",
+                    amount="55",
+                    vat="5",
+                    operation="Прочее",
+                ),
+                _bank_in_row(
+                    "2026-04-10",
+                    amount="1000",
+                    vat="0",
+                    operation="ЛичныеСредстваПредпринимателя",
+                ),
+                _bank_in_row(
+                    "2026-05-10", amount="999", vat="0", posted=False
+                ),
+                _bank_in_row(
+                    "2026-05-11", amount="999", vat="0", deleted=True
+                ),
+                _bank_in_row(
+                    "2026-06-10",
+                    amount="999",
+                    vat="0",
+                    organization_id="ORG-2",
+                ),
+            ),
+        ),
         "onec_kudir": AccountingEvidenceSource(
             source_type="onec_kudir",
             status="loaded",
@@ -567,6 +627,10 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
                  "ДоходБаза": "1200", "ВидЗаписи": "Приход"},
                 {"Организация_Key": "ORG-1", "Period": "2026-06-20T00:00:00",
                  "ДоходБаза": "800", "ВидЗаписи": "Приход"},
+                {"Организация_Key": "ORG-1", "Period": "2026-06-21T00:00:00",
+                 "ДоходБаза": "700", "ВидЗаписи": "РасходыНаУслуги"},
+                {"Организация_Key": "ORG-1", "Period": "2026-06-22T00:00:00",
+                 "ДоходБаза": "600", "ВидЗаписи": "ДоходыПрочие", "Active": False},
                 # Другая организация — не суммируется.
                 {"Организация_Key": "ORG-2", "Period": "2026-05-10T00:00:00",
                  "ДоходБаза": "999", "ВидЗаписи": "Приход"},
@@ -587,11 +651,49 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
     )
 
     usn = evidence["usnIncomeEvidence"]
-    assert usn["sourceKind"] == "onec_kudir"
+    assert usn["sourceKind"] == "onec_accounting_bank_in"
     assert usn["status"] == "loaded"
-    # Только ORG-1 и только период с начала года: 1200 + 800.
-    assert usn["value"] == "2000"
+    assert usn["classificationStatus"] == "review_required"
+    assert usn["value"] == "300"
+    assert usn["unclassifiedValue"] == "50"
+    assert usn["excludedValue"] == "1000"
+    assert usn["confirmedRowCount"] == 2
+    assert usn["unclassifiedRowCount"] == 1
+    assert usn["excludedRowCount"] == 1
     assert usn["monthlyValues"] == [
+        {
+            "month": "2026-01",
+            "value": "100",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+        {
+            "month": "2026-02",
+            "value": "200",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+    ]
+    assert usn["monthlyUnclassifiedValues"] == [
+        {
+            "month": "2026-03",
+            "value": "50",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    assert usn["monthlyExcludedValues"] == [
+        {
+            "month": "2026-04",
+            "value": "1000",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    kudir = evidence["kudirIncomeEvidence"]
+    # Только ORG-1 и только период с начала года: 1200 + 800.
+    assert kudir["value"] == "2000"
+    assert kudir["monthlyValues"] == [
         {
             "month": "2026-05",
             "value": "1200",
@@ -605,6 +707,45 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
             "rowCount": 1,
         },
     ]
+    assert any(
+        issue["code"] == "usn_bank_income_classification_required"
+        for issue in evidence["issues"]
+    )
+
+
+def test_tax_load_bank_income_rejects_unreconciled_payment_breakdown() -> None:
+    row = _bank_in_row("2026-05-10", amount="100", vat="5")
+    row["РасшифровкаПлатежа"][0]["СуммаПлатежа"] = "90"
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        refresh_run_id="gen-invalid-bank-income",
+        sources={
+            "onec_accounting_bank_in": AccountingEvidenceSource(
+                source_type="onec_accounting_bank_in",
+                status="loaded",
+                snapshot_id="bank-in-sha",
+                rows=(row,),
+            )
+        },
+    )
+
+    assert evidence["usnIncomeEvidence"]["value"] is None
+    assert evidence["usnIncomeEvidence"]["classificationStatus"] == "source_gap"
+    assert evidence["usnIncomeEvidence"]["monthlyValues"] == [
+        {
+            "month": "2026-05",
+            "value": None,
+            "status": "partial_source",
+            "rowCount": 1,
+        }
+    ]
+    assert any(
+        issue["code"] == "usn_bank_income_amount_unconfirmed"
+        for issue in evidence["issues"]
+    )
 
 
 def test_tax_load_uses_classified_bank_tax_payments_when_ens_is_empty() -> None:
@@ -666,6 +807,14 @@ def test_tax_load_uses_classified_bank_tax_payments_when_ens_is_empty() -> None:
                     "НазначениеПлатежа": "НДС",
                     "СуммаДокумента": "50",
                 },
+            ),
+        ),
+        "onec_accounting_bank_in": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_in",
+            status="loaded",
+            snapshot_id="bank-in-sha",
+            rows=(
+                _bank_in_row("2026-05-15", amount="2000", vat="0"),
             ),
         ),
         "onec_kudir": AccountingEvidenceSource(
@@ -920,7 +1069,8 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
     evidence["usnIncomeEvidence"] = {
         "value": "600",
         "status": "loaded",
-        "sourceKind": "onec_kudir",
+        "classificationStatus": "review_required",
+        "sourceKind": "onec_accounting_bank_in",
         "monthlyValues": [
             {
                 "month": f"2026-{month:02d}",
@@ -929,6 +1079,43 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
                 "rowCount": 1,
             }
             for month in range(1, 7)
+        ],
+        "unclassifiedValue": "20",
+        "monthlyUnclassifiedValues": [
+            {
+                "month": "2026-02",
+                "value": "20",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+        ],
+        "excludedValue": "5",
+        "monthlyExcludedValues": [
+            {
+                "month": "2026-01",
+                "value": "5",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+        ],
+    }
+    evidence["kudirIncomeEvidence"] = {
+        "value": "580",
+        "status": "loaded",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {
+                "month": "2026-03",
+                "value": "290",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+            {
+                "month": "2026-06",
+                "value": "290",
+                "status": "loaded",
+                "rowCount": 1,
+            },
         ],
     }
     evidence["usnTaxPaymentEvidence"] = {
@@ -970,14 +1157,27 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
         "Июнь",
         "Итого за полугодие",
     ]
-    assert rows["Итого доход без НДС"][4].value == Decimal("300")
-    assert rows["Итого доход без НДС"][8].value == Decimal("600")
+    total = rows["Итого подтверждённый доход без НДС"]
+    assert total[4].value == Decimal("300")
+    assert total[8].value == Decimal("600")
+    assert rows["Прочие поступления без НДС (на проверке)"][2].value == Decimal(
+        "20"
+    )
+    assert rows["Личные средства предпринимателя (не доход)"][1].value == Decimal(
+        "5"
+    )
+    assert rows["База УСН по КУДиР (сверка)"][8].value == Decimal("580")
+    assert rows["Расхождение с КУДиР"][8].value == Decimal("20.00")
     assert rows["Ставка УСН"][8].value == pytest.approx(0.01)
     assert rows["Ставка УСН"][8].number_format == "0.00%"
     assert rows["Исчислено УСН с начала года"][8].value == Decimal("6.00")
     assert rows["Уплачено УСН"][8].value == Decimal("100")
     assert rows["К доплате / переплата УСН"][8].value == Decimal("-94.00")
-    assert rows["Итого доход без НДС"][0].fill.fgColor.rgb.endswith("FFF200")
+    assert total[0].fill.fgColor.rgb.endswith("FFF200")
+    assert rows["Поступления от покупателей без НДС"][0].fill.fgColor.rgb.endswith(
+        "E2F0D9"
+    )
+    assert rows["Статус данных"][8].value == "Требуется проверка"
     assert len(sheet.tables) == 1
     assert not any(
         cell.data_type == "f"
