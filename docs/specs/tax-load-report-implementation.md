@@ -693,6 +693,19 @@ current других видов не меняется.
 ## Test Rollout Evidence
 
 - 2026-07-22: immutable release
+  `runtime-26c6b9299ade-20260722-152539` из commit
+  `26c6b9299ade52b6a59e1bf80fbfa1a59f808bc1` атомарно promoted в `test`;
+  local и public health подтвердили `status=ok` и `environment=test`, cwd
+  процесса и manifest указывают на тот же release и commit. Production не
+  изменялся.
+- Июньский staff-only canary завершен с контрактом `tax-load-report-v6` и
+  фактическими read-only данными 1С. Excel содержит 11 листов и 19 строк
+  `Расчёт УСН`, включая Ozon, Wildberries, `Итого по маркетплейсам`, другие
+  покупатели, кредиты/займы и заработную плату; все три новые контрольные суммы
+  получены из источников. Классификация зарплаты имеет статус `ready`, общий
+  расчет корректно остается `review_required` из-за прочих поступлений. В книге
+  нет формул и видимых UUID.
+- 2026-07-22: immutable release
   `runtime-0c63a7a8cfb3-20260722-134917` из commit
   `0c63a7a8cfb330427bedc082e5756d50b48cc970` атомарно promoted в `test`;
   local и public `check_runtime_health.py` подтвердили `status=ok` и
