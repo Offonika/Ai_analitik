@@ -278,6 +278,7 @@ def test_source_payload_uses_nm_id_then_sku_and_does_not_use_srid() -> None:
             "rrDate": "2026-07-16",
             "orderUid": "order-1",
             "srid": "must-not-be-used",
+            "orderId": 12345,
             "sku": "sku-1",
             "deliveryService": "10",
             "deliveryAmount": 1,
@@ -291,6 +292,9 @@ def test_source_payload_uses_nm_id_then_sku_and_does_not_use_srid() -> None:
 
     assert row.product_key == "sku:sku-1"
     assert row.chain_key
+    assert row.order_uid == "order-1"
+    assert row.finance_srid == "must-not-be-used"
+    assert row.finance_order_id == "12345"
 
 
 def test_invalid_required_payload_values_block_without_silent_defaults() -> None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only availability probe for WB logistics factor sources (F-0/F-4/R-0).
+"""Read-only availability probe for WB logistics factors (F-0/F-4/R-0/R-0I).
 
 Проверяет доступность внешних WB read-only источников второй/третьей очереди
 логистики (тарифы, статистика склад/направление, причины возвратов) для
@@ -22,10 +22,10 @@ read-only GET. Запускать на сервере через окружен�
 `docs/specs/wb-logistics-cost-factors-implementation.md` и runbook
 `docs/runbooks/wb-logistics-factors-probe.md`.
 
-Режимы ``--mode f4`` и ``--mode r0`` строже legacy F-0: они не печатают
-provider labels, количество интеграций/строк, HTTP body, идентификаторы, суммы
-или значения полей. В выводе остаются только булевы признаки доступности и
-schema gate.
+Режимы ``--mode f4``, ``--mode r0`` и ``--mode r0-identity`` строже legacy
+F-0: они не печатают provider labels, количество интеграций/строк, HTTP body,
+идентификаторы, суммы или значения полей. В выводе остаются только булевы
+признаки доступности, schema gate и identity gate.
 """
 
 from __future__ import annotations
@@ -38,17 +38,27 @@ from typing import Any, NamedTuple, Protocol
 import httpx
 from sqlalchemy import or_, select
 
-from wb_unit_economics.logistics_analysis import logistics_chain_key
+from wb_unit_economics.logistics_analysis import (
+    LogisticsSourceRow,
+    logistics_chain_key,
+)
 from wb_unit_economics.web import integrations
 from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import (
+    ReportLogisticsAnalysisContext,
     ReportLogisticsOrderRow,
     ReportRun,
+    SourceLoad,
+    SourceRefreshCollection,
+    SourceRefreshRun,
     TenantIntegration,
     WbCabinet,
 )
 from wb_unit_economics.web.settings import WebSettings
-from wb_unit_economics.web.source_refresh import wb_finance_settings_from_secret
+from wb_unit_economics.web.source_refresh import (
+    _select_logistics_source_rows,
+    wb_finance_settings_from_secret,
+)
 
 TIMEOUT = 30.0
 MOSCOW = timezone(timedelta(hours=3))
@@ -89,6 +99,44 @@ R0_REQUIRED_FIELDS = {
     "claims_archive": {"id", "nm_id", "user_comment", "srid", "dt"},
 }
 
+R0_IDENTITY_SOURCE_FIELDS = (
+    "goodsReturnSrid",
+    "goodsReturnOrderId",
+    "claimsSrid",
+)
+R0_IDENTITY_FINANCE_FIELDS = (
+    "financeOrderUid",
+    "financeSrid",
+    "financeOrderId",
+)
+R0_IDENTITY_CANDIDATES = {
+    "goodsReturnSridToFinanceOrderUid": (
+        "goodsReturnSrid",
+        "financeOrderUid",
+        "baseline",
+    ),
+    "goodsReturnSridToFinanceSrid": (
+        "goodsReturnSrid",
+        "financeSrid",
+        "same_name",
+    ),
+    "goodsReturnOrderIdToFinanceOrderId": (
+        "goodsReturnOrderId",
+        "financeOrderId",
+        "same_name",
+    ),
+    "claimsSridToFinanceOrderUid": (
+        "claimsSrid",
+        "financeOrderUid",
+        "baseline",
+    ),
+    "claimsSridToFinanceSrid": (
+        "claimsSrid",
+        "financeSrid",
+        "same_name",
+    ),
+}
+
 
 class ResponseLike(Protocol):
     status_code: int
@@ -107,6 +155,40 @@ class R0ProbeAccount(NamedTuple):
     def scope(self) -> tuple[str, str, str] | None:
         values = (self.tenant_id, self.client_id, self.wb_cabinet_id)
         return values if all(value.strip() for value in values) else None
+
+
+class R0ReportContext(NamedTuple):
+    """Minimal report shape compatible with pre-factor database schemas."""
+
+    id: str
+    tenant_id: str
+    client_id: str
+    period_start: date
+    period_end: date
+
+
+class R0RefreshCollectionContext(NamedTuple):
+    id: int
+    tenant_id: str
+    client_id: str
+    source_type: str
+    snapshot_hash: str
+    row_count: int
+    raw_path: str
+    payload: dict[str, Any]
+    loaded_at: datetime
+
+
+class R0RefreshContext(NamedTuple):
+    id: str
+    tenant_id: str
+    client_id: str
+    root_dir: str
+    period_start: date
+    period_end: date
+    source_window_start: date | None
+    source_window_end: date | None
+    collections: list[R0RefreshCollectionContext]
 
 
 def endpoints(today: date) -> list[tuple[str, str, dict, str]]:
@@ -363,21 +445,13 @@ def load_r0_accounts(settings: WebSettings) -> tuple[list[R0ProbeAccount], bool]
                 incomplete = True
             report_window_end = None
             if cabinet is not None:
-                report_window_end = db.scalar(
-                    select(ReportRun.period_end)
-                    .where(
-                        ReportRun.tenant_id == settings.source_refresh_tenant,
-                        ReportRun.client_id == cabinet.client_id,
-                        ReportRun.logistics_analysis_required.is_(True),
-                        ReportRun.id.in_(
-                            select(ReportLogisticsOrderRow.report_run_id).where(
-                                ReportLogisticsOrderRow.wb_cabinet_id == cabinet.id
-                            )
-                        ),
-                    )
-                    .order_by(ReportRun.generated_at.desc(), ReportRun.id.desc())
-                    .limit(1)
+                report = _latest_r0_report(
+                    db,
+                    tenant_id=settings.source_refresh_tenant,
+                    client_id=cabinet.client_id,
+                    cabinet_id=cabinet.id,
                 )
+                report_window_end = report.period_end if report is not None else None
             for account in wb_settings.accounts:
                 marker = (account.api_key, cabinet.id if cabinet is not None else "")
                 if marker in seen:
@@ -510,6 +584,95 @@ def r0_join_keys(
     return keys, invalid_present
 
 
+def _r0_identity_key(
+    account: R0ProbeAccount,
+    *,
+    identifier: str,
+    nm_id: str,
+) -> str:
+    return logistics_chain_key(
+        tenant_id=account.tenant_id,
+        client_id=account.client_id,
+        wb_cabinet_id=account.wb_cabinet_id,
+        order_uid=identifier,
+        product_key=f"nm:{nm_id}",
+    )
+
+
+def r0_identity_source_keys(
+    name: str,
+    payload: Any,
+    account: R0ProbeAccount,
+) -> tuple[dict[str, set[str]], dict[str, bool], dict[str, bool]]:
+    """Hash R-0I source candidates and retain only boolean quality signals."""
+
+    keys = {field: set() for field in R0_IDENTITY_SOURCE_FIELDS}
+    ambiguous = {field: False for field in R0_IDENTITY_SOURCE_FIELDS}
+    invalid = {field: False for field in R0_IDENTITY_SOURCE_FIELDS}
+    if account.scope is None or not isinstance(payload, dict):
+        for field in invalid:
+            invalid[field] = True
+        return keys, ambiguous, invalid
+    rows = payload.get("report" if name == "goods_return" else "claims")
+    if not isinstance(rows, list):
+        for field in invalid:
+            invalid[field] = True
+        return keys, ambiguous, invalid
+
+    peer_keys: dict[str, dict[str, set[str]]] = {
+        "goodsReturnSrid": {},
+        "goodsReturnOrderId": {},
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            for field in invalid:
+                invalid[field] = True
+            continue
+        raw_nm_id = row.get("nmId" if name == "goods_return" else "nm_id")
+        nm_id = "" if isinstance(raw_nm_id, bool) else str(raw_nm_id or "").strip()
+        srid = str(row.get("srid") or "").strip()
+        if name == "goods_return":
+            raw_order_id = row.get("orderId")
+            order_id = (
+                ""
+                if isinstance(raw_order_id, bool)
+                else str(raw_order_id or "").strip()
+            )
+            source_values = {
+                "goodsReturnSrid": srid,
+                "goodsReturnOrderId": order_id,
+            }
+            for field, value in source_values.items():
+                if not nm_id or not value:
+                    invalid[field] = True
+                    continue
+                candidate_key = _r0_identity_key(
+                    account,
+                    identifier=value,
+                    nm_id=nm_id,
+                )
+                keys[field].add(candidate_key)
+                peer = order_id if field == "goodsReturnSrid" else srid
+                if peer:
+                    peer_key = _r0_identity_key(
+                        account,
+                        identifier=peer,
+                        nm_id=nm_id,
+                    )
+                    peer_keys[field].setdefault(candidate_key, set()).add(peer_key)
+        else:
+            if not nm_id or not srid:
+                invalid["claimsSrid"] = True
+                continue
+            keys["claimsSrid"].add(
+                _r0_identity_key(account, identifier=srid, nm_id=nm_id)
+            )
+
+    for field, candidates in peer_keys.items():
+        ambiguous[field] = any(len(peers) > 1 for peers in candidates.values())
+    return keys, ambiguous, invalid
+
+
 def evaluate_r0_join(
     settings: WebSettings,
     source_keys_by_scope: dict[tuple[str, str, str], set[str]],
@@ -585,6 +748,556 @@ def evaluate_r0_join(
 def r0_join_gate(join_evaluated: bool, matched_present: bool) -> bool:
     """Не разблокировать F-5, пока exact join не доказан хотя бы один раз."""
     return join_evaluated and matched_present
+
+
+def _latest_r0_report(
+    db: Any,
+    *,
+    tenant_id: str,
+    client_id: str,
+    cabinet_id: str,
+) -> R0ReportContext | None:
+    row = db.execute(
+        select(
+            ReportRun.id,
+            ReportRun.tenant_id,
+            ReportRun.client_id,
+            ReportRun.period_start,
+            ReportRun.period_end,
+        )
+        .join(
+            ReportLogisticsAnalysisContext,
+            ReportLogisticsAnalysisContext.report_run_id == ReportRun.id,
+        )
+        .where(
+            ReportRun.tenant_id == tenant_id,
+            ReportRun.client_id == client_id,
+            ReportRun.logistics_analysis_required.is_(True),
+            ReportLogisticsAnalysisContext.data_status.in_(
+                ("ready", "partial", "empty")
+            ),
+            ReportLogisticsAnalysisContext.source_quality_status == "ready",
+            ReportLogisticsAnalysisContext.invalid_source_payload_shape_count == 0,
+            ReportLogisticsAnalysisContext.source_identity_error_count == 0,
+            ReportLogisticsAnalysisContext.source_revision_conflict_count == 0,
+            ReportLogisticsAnalysisContext.scope_mismatch_count == 0,
+            ReportRun.id.in_(
+                select(ReportLogisticsOrderRow.report_run_id).where(
+                    ReportLogisticsOrderRow.wb_cabinet_id == cabinet_id
+                )
+            ),
+        )
+        .order_by(ReportRun.generated_at.desc(), ReportRun.id.desc())
+        .limit(1)
+    ).first()
+    return R0ReportContext(*row) if row is not None else None
+
+
+def _selected_finance_identity_rows(
+    db: Any,
+    report: R0ReportContext,
+) -> tuple[list[LogisticsSourceRow], bool, dict[str, bool]]:
+    """Reuse the production lineage selector without exposing its raw rows."""
+
+    failure = {
+        "lineageMetadataFailurePresent": False,
+        "schemaCompatibilityFailurePresent": False,
+        "selectorContractFailurePresent": False,
+        "sourceIntegrityFailurePresent": False,
+        "payloadShapeFailurePresent": False,
+        "payloadHashFailurePresent": False,
+        "sourceIdentityFailurePresent": False,
+        "sourceRevisionFailurePresent": False,
+        "scopeFailurePresent": False,
+        "storageIntegrityFailurePresent": False,
+        "databaseFileAmbiguityPresent": False,
+        "fileSnapshotIntegrityFailurePresent": False,
+        "unclassifiedBlockingFailurePresent": False,
+    }
+
+    loads = list(
+        db.execute(
+            select(
+                SourceLoad.source_refresh_run_id,
+                SourceLoad.lineage_role,
+            ).where(
+                SourceLoad.report_run_id == report.id,
+                SourceLoad.source_type == "wb_finance_detail",
+            )
+        )
+    )
+    role_by_run: dict[str, str] = {}
+    runs: dict[str, R0RefreshContext] = {}
+    integrity_ok = bool(loads)
+    for load in loads:
+        run_id = str(load.source_refresh_run_id or "").strip()
+        role = str(load.lineage_role or "").strip()
+        normalized_role = {
+            "current": "current",
+            "base": "base",
+            "overlay": "contributor",
+            "contributor": "contributor",
+        }.get(role)
+        if not run_id or normalized_role is None:
+            integrity_ok = False
+            continue
+        previous_role = role_by_run.get(run_id)
+        if previous_role is not None and previous_role != normalized_role:
+            integrity_ok = False
+            continue
+        role_by_run[run_id] = normalized_role
+
+    run_ids = sorted(role_by_run)
+    collection_rows = (
+        list(
+            db.execute(
+                select(
+                    SourceRefreshCollection.refresh_run_id,
+                    SourceRefreshCollection.id,
+                    SourceRefreshCollection.tenant_id,
+                    SourceRefreshCollection.client_id,
+                    SourceRefreshCollection.source_type,
+                    SourceRefreshCollection.snapshot_hash,
+                    SourceRefreshCollection.row_count,
+                    SourceRefreshCollection.raw_path,
+                    SourceRefreshCollection.payload,
+                    SourceRefreshCollection.loaded_at,
+                ).where(
+                    SourceRefreshCollection.refresh_run_id.in_(run_ids),
+                    SourceRefreshCollection.source_type == "wb_finance_detail",
+                )
+            )
+        )
+        if run_ids
+        else []
+    )
+    collections_by_run: dict[str, list[R0RefreshCollectionContext]] = {}
+    for collection in collection_rows:
+        collections_by_run.setdefault(str(collection.refresh_run_id), []).append(
+            R0RefreshCollectionContext(*collection[1:])
+        )
+    if run_ids:
+        for run in db.execute(
+            select(
+                SourceRefreshRun.id,
+                SourceRefreshRun.tenant_id,
+                SourceRefreshRun.client_id,
+                SourceRefreshRun.root_dir,
+                SourceRefreshRun.period_start,
+                SourceRefreshRun.period_end,
+                SourceRefreshRun.source_window_start,
+                SourceRefreshRun.source_window_end,
+            ).where(SourceRefreshRun.id.in_(run_ids))
+        ):
+            context = R0RefreshContext(
+                id=str(run.id),
+                tenant_id=str(run.tenant_id or ""),
+                client_id=str(run.client_id or ""),
+                root_dir=str(run.root_dir or ""),
+                period_start=run.period_start,
+                period_end=run.period_end,
+                source_window_start=run.source_window_start,
+                source_window_end=run.source_window_end,
+                collections=collections_by_run.get(str(run.id), []),
+            )
+            runs[context.id] = context
+    integrity_ok = integrity_ok and set(runs) == set(run_ids)
+    integrity_ok = integrity_ok and all(
+        run.tenant_id == report.tenant_id and run.client_id == report.client_id
+        for run in runs.values()
+    )
+
+    primary_runs = [run for run in runs.values() if role_by_run[run.id] == "current"]
+    base_runs = [run for run in runs.values() if role_by_run[run.id] == "base"]
+    integrity_ok = integrity_ok and len(primary_runs) == 1 and len(base_runs) <= 1
+    if not integrity_ok:
+        failure["lineageMetadataFailurePresent"] = True
+        return [], False, failure
+    primary = primary_runs[0]
+    base = base_runs[0] if base_runs else None
+    roles = {run_id: (run, role_by_run[run_id]) for run_id, run in runs.items()}
+    try:
+        rows, diagnostics = _select_logistics_source_rows(
+            db,
+            report,
+            roles=roles,
+            primary_refresh_run=primary,
+            base_refresh_run=base,
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        sqlstate = str(getattr(getattr(exc, "orig", None), "sqlstate", ""))
+        failure["schemaCompatibilityFailurePresent"] = sqlstate == "42703"
+        failure["selectorContractFailurePresent"] = isinstance(
+            exc, (AttributeError, TypeError)
+        )
+        if not any(failure.values()):
+            failure["sourceIntegrityFailurePresent"] = True
+        return [], False, failure
+    verified = not (
+        diagnostics.blocking_reasons
+        or diagnostics.invalid_source_payload_shape_count
+        or diagnostics.source_identity_error_count
+        or diagnostics.source_revision_conflict_count
+        or diagnostics.scope_mismatch_count
+    )
+    failure["sourceIntegrityFailurePresent"] = not verified
+    blocking = set(diagnostics.blocking_reasons)
+    failure["payloadShapeFailurePresent"] = bool(
+        diagnostics.invalid_source_payload_shape_count
+    )
+    failure["payloadHashFailurePresent"] = "source_payload_hash_mismatch" in blocking
+    failure["sourceIdentityFailurePresent"] = bool(
+        diagnostics.source_identity_error_count
+    )
+    failure["sourceRevisionFailurePresent"] = bool(
+        diagnostics.source_revision_conflict_count
+    )
+    failure["scopeFailurePresent"] = bool(diagnostics.scope_mismatch_count)
+    failure["storageIntegrityFailurePresent"] = bool(
+        blocking
+        & {
+            "source_storage_ambiguity",
+            "file_authoritative_snapshot_invalid",
+        }
+    )
+    failure["databaseFileAmbiguityPresent"] = (
+        "source_storage_ambiguity" in blocking
+    )
+    failure["fileSnapshotIntegrityFailurePresent"] = (
+        "file_authoritative_snapshot_invalid" in blocking
+    )
+    classified_blocking = {
+        "invalid_source_payload_shape",
+        "source_payload_hash_mismatch",
+        "source_identity_missing",
+        "source_identity_mismatch",
+        "source_window_overlap_conflict",
+        "source_revision_conflict",
+        "tenant_scope_mismatch",
+        "source_storage_ambiguity",
+        "file_authoritative_snapshot_invalid",
+    }
+    failure["unclassifiedBlockingFailurePresent"] = bool(
+        blocking - classified_blocking
+    )
+    return rows, verified, failure
+
+
+def _finance_identity_maps(
+    rows: list[LogisticsSourceRow],
+    *,
+    tenant_id: str,
+    client_id: str,
+    cabinet_id: str,
+    return_keys: set[str],
+) -> dict[str, dict[str, set[str]]]:
+    result: dict[str, dict[str, set[str]]] = {
+        field: {} for field in R0_IDENTITY_FINANCE_FIELDS
+    }
+    account = R0ProbeAccount(
+        api_key="",
+        tenant_id=tenant_id,
+        client_id=client_id,
+        wb_cabinet_id=cabinet_id,
+    )
+    for row in rows:
+        if (
+            row.tenant_id != tenant_id
+            or row.client_id != client_id
+            or row.wb_cabinet_id != cabinet_id
+            or not row.nm_id.strip()
+            or not row.chain_key
+            or row.chain_key not in return_keys
+        ):
+            continue
+        identities = {
+            "financeOrderUid": row.order_uid,
+            "financeSrid": row.finance_srid,
+            "financeOrderId": row.finance_order_id,
+        }
+        for field, identifier in identities.items():
+            if not identifier.strip():
+                continue
+            identity_key = (
+                row.chain_key
+                if field == "financeOrderUid"
+                else _r0_identity_key(
+                    account,
+                    identifier=identifier.strip(),
+                    nm_id=row.nm_id.strip(),
+                )
+            )
+            result[field].setdefault(identity_key, set()).add(row.chain_key)
+    return result
+
+
+def load_r0_finance_identity(
+    settings: WebSettings,
+    scopes: set[tuple[str, str, str]],
+) -> tuple[
+    dict[tuple[str, str, str], dict[str, dict[str, set[str]]]],
+    dict[tuple[str, str, str], dict[str, bool]],
+]:
+    """Load verified Finance identity maps and return only in-memory hashes."""
+
+    engine = make_engine(settings.database_url)
+    session_factory = make_session_factory(engine)
+    maps_by_scope: dict[
+        tuple[str, str, str], dict[str, dict[str, set[str]]]
+    ] = {}
+    state_by_scope: dict[tuple[str, str, str], dict[str, bool]] = {}
+    with session_factory() as db:
+        for tenant_id, client_id, cabinet_id in sorted(scopes):
+            scope = (tenant_id, client_id, cabinet_id)
+            empty_maps = {field: {} for field in R0_IDENTITY_FINANCE_FIELDS}
+            try:
+                report = _latest_r0_report(
+                    db,
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    cabinet_id=cabinet_id,
+                )
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                maps_by_scope[scope] = empty_maps
+                state_by_scope[scope] = {
+                    "joinEvaluated": False,
+                    "verifiedLineage": False,
+                    "lineageFailurePresent": True,
+                    "financeReturnKeyPresent": False,
+                }
+                continue
+            if report is None:
+                maps_by_scope[scope] = empty_maps
+                state_by_scope[scope] = {
+                    "joinEvaluated": False,
+                    "verifiedLineage": False,
+                    "lineageFailurePresent": True,
+                    "financeReturnKeyPresent": False,
+                }
+                continue
+            try:
+                return_keys = set(
+                    db.scalars(
+                        select(ReportLogisticsOrderRow.chain_key).where(
+                            ReportLogisticsOrderRow.report_run_id == report.id,
+                            ReportLogisticsOrderRow.wb_cabinet_id == cabinet_id,
+                            or_(
+                                ReportLogisticsOrderRow.return_quantity != 0,
+                                ReportLogisticsOrderRow.logistics_reverse != 0,
+                            ),
+                        )
+                    )
+                )
+                rows, verified, failure = _selected_finance_identity_rows(
+                    db, report
+                )
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                maps_by_scope[scope] = empty_maps
+                state_by_scope[scope] = {
+                    "joinEvaluated": False,
+                    "verifiedLineage": False,
+                    "lineageFailurePresent": True,
+                    "financeReturnKeyPresent": False,
+                }
+                continue
+            maps_by_scope[scope] = _finance_identity_maps(
+                rows,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                cabinet_id=cabinet_id,
+                return_keys=return_keys,
+            )
+            state_by_scope[scope] = {
+                "joinEvaluated": True,
+                "verifiedLineage": verified,
+                "lineageFailurePresent": not verified,
+                "financeReturnKeyPresent": bool(return_keys),
+                **failure,
+            }
+    return maps_by_scope, state_by_scope
+
+
+def evaluate_r0_identity(
+    source_keys_by_scope: dict[tuple[str, str, str], dict[str, set[str]]],
+    source_ambiguity_by_scope: dict[tuple[str, str, str], dict[str, bool]],
+    invalid_source_by_scope: dict[tuple[str, str, str], dict[str, bool]],
+    finance_maps_by_scope: dict[
+        tuple[str, str, str], dict[str, dict[str, set[str]]]
+    ],
+    finance_state_by_scope: dict[tuple[str, str, str], dict[str, bool]],
+) -> dict[str, Any]:
+    """Compare hashed candidates and emit boolean-only crosswalk evidence."""
+
+    candidates: dict[str, dict[str, bool]] = {}
+    for candidate_name, (source_field, finance_field, kind) in (
+        R0_IDENTITY_CANDIDATES.items()
+    ):
+        join_evaluated = False
+        verified_lineage = False
+        lineage_failure = False
+        lineage_metadata_failure = False
+        schema_compatibility_failure = False
+        selector_contract_failure = False
+        source_integrity_failure = False
+        payload_shape_failure = False
+        payload_hash_failure = False
+        source_identity_failure = False
+        source_revision_failure = False
+        scope_failure = False
+        storage_integrity_failure = False
+        database_file_ambiguity = False
+        file_snapshot_integrity_failure = False
+        unclassified_blocking_failure = False
+        source_present = False
+        finance_present = False
+        finance_return_present = False
+        matched_present = False
+        canonical_return_resolved = False
+        source_unmatched = False
+        finance_unmatched = False
+        source_ambiguity = False
+        finance_ambiguity = False
+        invalid_source = False
+        for scope in sorted(
+            set(source_keys_by_scope)
+            | set(finance_maps_by_scope)
+            | set(finance_state_by_scope)
+        ):
+            source_keys = source_keys_by_scope.get(scope, {}).get(source_field, set())
+            finance_map = finance_maps_by_scope.get(scope, {}).get(finance_field, {})
+            finance_keys = set(finance_map)
+            state = finance_state_by_scope.get(scope, {})
+            join_evaluated = join_evaluated or bool(state.get("joinEvaluated"))
+            verified_lineage = verified_lineage or bool(
+                state.get("verifiedLineage")
+            )
+            lineage_failure = lineage_failure or bool(
+                state.get("lineageFailurePresent")
+            )
+            lineage_metadata_failure = lineage_metadata_failure or bool(
+                state.get("lineageMetadataFailurePresent")
+            )
+            schema_compatibility_failure = schema_compatibility_failure or bool(
+                state.get("schemaCompatibilityFailurePresent")
+            )
+            selector_contract_failure = selector_contract_failure or bool(
+                state.get("selectorContractFailurePresent")
+            )
+            source_integrity_failure = source_integrity_failure or bool(
+                state.get("sourceIntegrityFailurePresent")
+            )
+            payload_shape_failure = payload_shape_failure or bool(
+                state.get("payloadShapeFailurePresent")
+            )
+            payload_hash_failure = payload_hash_failure or bool(
+                state.get("payloadHashFailurePresent")
+            )
+            source_identity_failure = source_identity_failure or bool(
+                state.get("sourceIdentityFailurePresent")
+            )
+            source_revision_failure = source_revision_failure or bool(
+                state.get("sourceRevisionFailurePresent")
+            )
+            scope_failure = scope_failure or bool(state.get("scopeFailurePresent"))
+            storage_integrity_failure = storage_integrity_failure or bool(
+                state.get("storageIntegrityFailurePresent")
+            )
+            database_file_ambiguity = database_file_ambiguity or bool(
+                state.get("databaseFileAmbiguityPresent")
+            )
+            file_snapshot_integrity_failure = (
+                file_snapshot_integrity_failure
+                or bool(state.get("fileSnapshotIntegrityFailurePresent"))
+            )
+            unclassified_blocking_failure = unclassified_blocking_failure or bool(
+                state.get("unclassifiedBlockingFailurePresent")
+            )
+            finance_return_present = finance_return_present or bool(
+                state.get("financeReturnKeyPresent")
+            )
+            source_present = source_present or bool(source_keys)
+            finance_present = finance_present or bool(finance_keys)
+            matches = source_keys & finance_keys
+            matched_present = matched_present or bool(matches)
+            source_unmatched = source_unmatched or bool(source_keys - finance_keys)
+            finance_unmatched = finance_unmatched or bool(finance_keys - source_keys)
+            source_ambiguity = source_ambiguity or bool(
+                source_ambiguity_by_scope.get(scope, {}).get(source_field)
+            )
+            invalid_source = invalid_source or bool(
+                invalid_source_by_scope.get(scope, {}).get(source_field)
+            )
+            finance_ambiguity = finance_ambiguity or any(
+                len(chains) > 1 for chains in finance_map.values()
+            )
+            canonical_return_resolved = canonical_return_resolved or any(
+                len(finance_map[key]) == 1 for key in matches
+            )
+        candidate_gate = (
+            kind == "same_name"
+            and join_evaluated
+            and verified_lineage
+            and source_present
+            and finance_present
+            and finance_return_present
+            and matched_present
+            and canonical_return_resolved
+            and not lineage_failure
+            and not source_ambiguity
+            and not finance_ambiguity
+            and not invalid_source
+        )
+        candidates[candidate_name] = {
+            "joinEvaluated": join_evaluated,
+            "verifiedLineagePresent": verified_lineage,
+            "lineageFailurePresent": lineage_failure,
+            "lineageMetadataFailurePresent": lineage_metadata_failure,
+            "schemaCompatibilityFailurePresent": schema_compatibility_failure,
+            "selectorContractFailurePresent": selector_contract_failure,
+            "sourceIntegrityFailurePresent": source_integrity_failure,
+            "payloadShapeFailurePresent": payload_shape_failure,
+            "payloadHashFailurePresent": payload_hash_failure,
+            "sourceIdentityFailurePresent": source_identity_failure,
+            "sourceRevisionFailurePresent": source_revision_failure,
+            "scopeFailurePresent": scope_failure,
+            "storageIntegrityFailurePresent": storage_integrity_failure,
+            "databaseFileAmbiguityPresent": database_file_ambiguity,
+            "fileSnapshotIntegrityFailurePresent": file_snapshot_integrity_failure,
+            "unclassifiedBlockingFailurePresent": unclassified_blocking_failure,
+            "sourceKeyPresent": source_present,
+            "financeKeyPresent": finance_present,
+            "financeReturnKeyPresent": finance_return_present,
+            "matchedPresent": matched_present,
+            "canonicalReturnResolvedPresent": canonical_return_resolved,
+            "sourceUnmatchedPresent": source_unmatched,
+            "financeUnmatchedPresent": finance_unmatched,
+            "sourceAmbiguityPresent": source_ambiguity,
+            "financeAmbiguityPresent": finance_ambiguity,
+            "invalidSourceKeyPresent": invalid_source,
+            "candidateGate": candidate_gate,
+        }
+
+    goods_gate = (
+        candidates["goodsReturnSridToFinanceSrid"]["candidateGate"]
+        or candidates["goodsReturnOrderIdToFinanceOrderId"]["candidateGate"]
+    )
+    claims_gate = candidates["claimsSridToFinanceSrid"]["candidateGate"]
+    baseline_gate = (
+        candidates["goodsReturnSridToFinanceOrderUid"]["matchedPresent"]
+        or candidates["claimsSridToFinanceOrderUid"]["matchedPresent"]
+    )
+    return {
+        "candidates": candidates,
+        "goodsReturnIdentityGate": goods_gate,
+        "claimsIdentityGate": claims_gate,
+        "completeIdentityGate": goods_gate and claims_gate,
+        "sameNameEvidencePresent": goods_gate or claims_gate,
+        "baselineDirectMatchPresent": baseline_gate,
+        "contractChangeRequired": (goods_gate or claims_gate) and not baseline_gate,
+    }
 
 
 def aggregate_f4_statuses(statuses: dict[str, list[str]]) -> dict:
@@ -716,6 +1429,92 @@ def run_r0_probe(
     return report
 
 
+def run_r0_identity_probe(
+    accounts: list[R0ProbeAccount],
+    settings: WebSettings,
+    today: date,
+    *,
+    days: int = 31,
+) -> dict[str, Any]:
+    """Run R-0I without returning raw identifiers, values or cardinality."""
+
+    statuses = {name: [] for name in R0_REQUIRED_FIELDS}
+    source_keys_by_scope: dict[tuple[str, str, str], dict[str, set[str]]] = {}
+    source_ambiguity_by_scope: dict[
+        tuple[str, str, str], dict[str, bool]
+    ] = {}
+    invalid_source_by_scope: dict[tuple[str, str, str], dict[str, bool]] = {}
+    report_window_aligned = False
+    for account in accounts:
+        if account.scope is not None:
+            source_keys_by_scope.setdefault(
+                account.scope,
+                {field: set() for field in R0_IDENTITY_SOURCE_FIELDS},
+            )
+            source_ambiguity_by_scope.setdefault(
+                account.scope,
+                {field: False for field in R0_IDENTITY_SOURCE_FIELDS},
+            )
+            invalid_source_by_scope.setdefault(
+                account.scope,
+                {field: False for field in R0_IDENTITY_SOURCE_FIELDS},
+            )
+        headers = {"Authorization": account.api_key, "Accept": "application/json"}
+        with httpx.Client(
+            headers=headers, timeout=TIMEOUT, follow_redirects=True
+        ) as client:
+            window_end = account.report_window_end or today
+            report_window_aligned = (
+                report_window_aligned or account.report_window_end is not None
+            )
+            for name, url, params in r0_endpoints(window_end, days=days):
+                try:
+                    response = client.get(url, params=params)
+                    status = classify_r0_response(name, response)
+                except httpx.HTTPError:
+                    status = "unavailable"
+                statuses[name].append(status)
+                if status != "confirmed_nonempty" or account.scope is None:
+                    continue
+                try:
+                    keys, ambiguous, invalid = r0_identity_source_keys(
+                        name,
+                        response.json(),
+                        account,
+                    )
+                except Exception:  # noqa: BLE001
+                    for field in R0_IDENTITY_SOURCE_FIELDS:
+                        invalid_source_by_scope[account.scope][field] = True
+                    continue
+                for field in R0_IDENTITY_SOURCE_FIELDS:
+                    source_keys_by_scope[account.scope][field].update(keys[field])
+                    source_ambiguity_by_scope[account.scope][field] = (
+                        source_ambiguity_by_scope[account.scope][field]
+                        or ambiguous[field]
+                    )
+                    invalid_source_by_scope[account.scope][field] = (
+                        invalid_source_by_scope[account.scope][field]
+                        or invalid[field]
+                    )
+
+    finance_maps, finance_state = load_r0_finance_identity(
+        settings,
+        set(source_keys_by_scope),
+    )
+    report = aggregate_r0_statuses(statuses)
+    report["identity"] = evaluate_r0_identity(
+        source_keys_by_scope,
+        source_ambiguity_by_scope,
+        invalid_source_by_scope,
+        finance_maps,
+        finance_state,
+    )
+    report["reportWindowAligned"] = report_window_aligned
+    report["sourceImplementationGate"] = report["implementationGate"]
+    report["implementationGate"] = False
+    return report
+
+
 def run_probe(api_key: str, today: date) -> dict:
     results: dict = {}
     headers = {"Authorization": api_key, "Accept": "application/json"}
@@ -742,9 +1541,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("legacy", "f4", "r0"),
+        choices=("legacy", "f4", "r0", "r0-identity"),
         default="legacy",
-        help="legacy F-0 matrix or privacy-restricted F-4/R-0 source gate",
+        help="legacy F-0 or privacy-restricted F-4/R-0/R-0I gate",
     )
     parser.add_argument(
         "--days",
@@ -755,8 +1554,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.days < 1 or args.days > 366:
         parser.error("--days must be between 1 and 366")
-    if args.mode == "r0" and args.days > 31:
-        parser.error("--days must be between 1 and 31 for R-0")
+    if args.mode in {"r0", "r0-identity"} and args.days > 31:
+        parser.error("--days must be between 1 and 31 for R-0/R-0I")
     return args
 
 
@@ -787,6 +1586,26 @@ def main(argv: list[str] | None = None) -> None:
         if not accounts:
             report["implementationGate"] = False
             report["completeSourceGate"] = False
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    if args.mode == "r0-identity":
+        accounts, integration_access_incomplete = load_r0_accounts(settings)
+        report = {
+            "mode": "r0_identity_crosswalk_gate",
+            "authorizedIntegrationPresent": bool(accounts),
+            "integrationAccessIncomplete": integration_access_incomplete,
+        }
+        report.update(
+            run_r0_identity_probe(
+                accounts,
+                settings,
+                today,
+                days=args.days,
+            )
+        )
+        if not accounts:
+            report["completeSourceGate"] = False
+        report["implementationGate"] = False
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     report: dict = {"tenant": settings.source_refresh_tenant}

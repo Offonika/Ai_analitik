@@ -123,11 +123,12 @@ readiness, read-only API и responsive UI работают за отдельны
 зафиксирован в runbook. Production и client enable не выполнялись.
 
 F-5 «Причины возвратов» принят как отдельный spec-first контракт 22 июля 2026
-года. Boolean-only R-0 подтвердил source schema, но exact Finance/source match
-не найден даже на выровненном максимальном window; `implementationGate=false`.
+года. Boolean-only R-0I подтвердил source schema, но Finance selector fail
+closed на DB/file storage ambiguity выбранного immutable report. Verified
+lineage и exact same-name crosswalk не доказаны; `implementationGate=false`.
 Существующий goods-return client считается prework, а не end-to-end
-реализацией. Claims, context/mart/API/UI и rollout не начинаются до отдельного
-identity evidence.
+реализацией. Claims, context/mart/API/UI и rollout не начинаются до повторного
+identity evidence на новом unambiguous verified snapshot.
 
 # Цель
 
@@ -1117,12 +1118,19 @@ blocker с report run, который обязан был пройти gate, н�
 - Отдельный retention для tariff snapshot не вводится: действует retention
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
-Частично закрытые probe (2026-07-19…21): габариты, тарифы и supplier-sales
-подтверждены read-only проверками; F-1, F-2 и F-3 приняты на staff-only test.
-F-4 schema и минимальный live token/source gate подтверждены; implementation
-package ожидает merge и отдельный staff-only test rollout.
+Закрытые probe и staff-приёмка (2026-07-19…21): F-1, F-2, F-3 и F-4 приняты на
+staff-only test; production/client enable не выполнялся. F-5 R-0I 22 июля
+подтвердил внешний source gate, но остановился на DB/file ambiguity Finance
+lineage. F-5 implementation и rollout не начинаются до нового unambiguous
+verified snapshot и положительного source-specific identity gate.
 
 # Changelog
+
+- 2026-07-22 — F-5 R-0I выполнен fail closed: source schema доступна, но
+  production selector обнаружил DB/file storage ambiguity выбранного Finance
+  snapshot. Verified lineage и exact crosswalk не доказаны; R-1…R-5 закрыты до
+  нового immutable report из однозначного verified storage. Синхронизирован
+  устаревший итоговый status F-4 с завершённой staff-only test acceptance.
 
 - 2026-07-21 — реализован F-4 package за defaults-off флагами: безопасный
   source-gate mode, read-only collectors с provider-total reconciliation,

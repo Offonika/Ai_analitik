@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from wb_unit_economics.logistics_analysis import source_row_from_payload
+
 _SPEC = importlib.util.spec_from_file_location(
     "probe_wb_logistics_factors",
     Path(__file__).resolve().parents[1] / "scripts" / "probe_wb_logistics_factors.py",
@@ -197,6 +199,7 @@ def _goods_return_row() -> dict:
         "status": "RAW_STATUS",
         "returnType": "RAW_RETURN_TYPE",
         "srid": "RAW_SRID",
+        "orderId": 9001,
         "nmId": 100,
     }
 
@@ -435,5 +438,333 @@ def test_run_r0_probe_aligns_window_and_returns_only_safe_booleans(
         "client-a",
         "cabinet-a",
         "test-key",
+    ):
+        assert forbidden not in rendered
+
+
+def test_r0_identity_source_keys_are_scoped_and_detect_order_ambiguity() -> None:
+    account = probe.R0ProbeAccount(
+        api_key="test-key",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+    second = {**_goods_return_row(), "srid": "SECOND_RAW_SRID"}
+
+    keys, ambiguous, invalid = probe.r0_identity_source_keys(
+        "goods_return",
+        {"report": [_goods_return_row(), second]},
+        account,
+    )
+
+    assert len(keys["goodsReturnSrid"]) == 2
+    assert len(keys["goodsReturnOrderId"]) == 1
+    assert ambiguous["goodsReturnSrid"] is False
+    assert ambiguous["goodsReturnOrderId"] is True
+    assert invalid["goodsReturnSrid"] is False
+    assert invalid["goodsReturnOrderId"] is False
+    rendered = str(keys) + str(ambiguous) + str(invalid)
+    for forbidden in (
+        "RAW_SRID",
+        "SECOND_RAW_SRID",
+        "tenant-a",
+        "client-a",
+        "cabinet-a",
+        "9001",
+    ):
+        assert forbidden not in rendered
+
+
+def test_finance_identity_maps_resolve_same_name_fields_to_canonical_chain() -> None:
+    row = source_row_from_payload(
+        {
+            "rrDate": "2026-07-20",
+            "orderUid": "FINANCE_ORDER_UID",
+            "srid": "SHARED_SRID",
+            "orderId": 9001,
+            "nmId": 100,
+            "deliveryMethod": "FBO",
+            "deliveryService": 10,
+            "returnAmount": 1,
+        },
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+        client_company_id="company-a",
+        fallback_date=date(2026, 7, 20),
+    )
+    account = probe.R0ProbeAccount(
+        api_key="",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+
+    maps = probe._finance_identity_maps(
+        [row],
+        tenant_id="tenant-a",
+        client_id="client-a",
+        cabinet_id="cabinet-a",
+        return_keys={row.chain_key},
+    )
+
+    srid_key = probe._r0_identity_key(
+        account,
+        identifier="SHARED_SRID",
+        nm_id="100",
+    )
+    order_id_key = probe._r0_identity_key(
+        account,
+        identifier="9001",
+        nm_id="100",
+    )
+    assert maps["financeOrderUid"] == {row.chain_key: {row.chain_key}}
+    assert maps["financeSrid"] == {srid_key: {row.chain_key}}
+    assert maps["financeOrderId"] == {order_id_key: {row.chain_key}}
+
+
+def test_r0_identity_same_name_match_opens_only_source_specific_gate() -> None:
+    account = probe.R0ProbeAccount(
+        api_key="",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+    source, ambiguity, invalid = probe.r0_identity_source_keys(
+        "goods_return",
+        {"report": [_goods_return_row()]},
+        account,
+    )
+    srid_key = next(iter(source["goodsReturnSrid"]))
+    order_id_key = next(iter(source["goodsReturnOrderId"]))
+    finance_maps = {
+        account.scope: {
+            "financeOrderUid": {},
+            "financeSrid": {srid_key: {"canonical-chain"}},
+            "financeOrderId": {order_id_key: {"canonical-chain"}},
+        }
+    }
+    finance_state = {
+        account.scope: {
+            "joinEvaluated": True,
+            "verifiedLineage": True,
+            "lineageFailurePresent": False,
+            "financeReturnKeyPresent": True,
+        }
+    }
+
+    report = probe.evaluate_r0_identity(
+        {account.scope: source},
+        {account.scope: ambiguity},
+        {account.scope: invalid},
+        finance_maps,
+        finance_state,
+    )
+
+    assert report["goodsReturnIdentityGate"] is True
+    assert report["claimsIdentityGate"] is False
+    assert report["completeIdentityGate"] is False
+    assert report["sameNameEvidencePresent"] is True
+    assert report["baselineDirectMatchPresent"] is False
+    assert report["contractChangeRequired"] is True
+
+
+def test_r0_identity_canonical_ambiguity_blocks_candidate() -> None:
+    account = probe.R0ProbeAccount(
+        api_key="",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+    source, ambiguity, invalid = probe.r0_identity_source_keys(
+        "goods_return",
+        {"report": [_goods_return_row()]},
+        account,
+    )
+    srid_key = next(iter(source["goodsReturnSrid"]))
+    empty_finance = {field: {} for field in probe.R0_IDENTITY_FINANCE_FIELDS}
+    empty_finance["financeSrid"] = {
+        srid_key: {"canonical-chain-a", "canonical-chain-b"}
+    }
+
+    report = probe.evaluate_r0_identity(
+        {account.scope: source},
+        {account.scope: ambiguity},
+        {account.scope: invalid},
+        {account.scope: empty_finance},
+        {
+            account.scope: {
+                "joinEvaluated": True,
+                "verifiedLineage": True,
+                "lineageFailurePresent": False,
+                "financeReturnKeyPresent": True,
+            }
+        },
+    )
+
+    candidate = report["candidates"]["goodsReturnSridToFinanceSrid"]
+    assert candidate["matchedPresent"] is True
+    assert candidate["financeAmbiguityPresent"] is True
+    assert candidate["candidateGate"] is False
+    assert report["goodsReturnIdentityGate"] is False
+
+
+def test_r0_identity_database_file_ambiguity_blocks_verified_match() -> None:
+    account = probe.R0ProbeAccount(
+        api_key="",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+    )
+    source, ambiguity, invalid = probe.r0_identity_source_keys(
+        "goods_return",
+        {"report": [_goods_return_row()]},
+        account,
+    )
+    srid_key = next(iter(source["goodsReturnSrid"]))
+    finance = {field: {} for field in probe.R0_IDENTITY_FINANCE_FIELDS}
+    finance["financeSrid"] = {srid_key: {"canonical-chain"}}
+
+    report = probe.evaluate_r0_identity(
+        {account.scope: source},
+        {account.scope: ambiguity},
+        {account.scope: invalid},
+        {account.scope: finance},
+        {
+            account.scope: {
+                "joinEvaluated": True,
+                "verifiedLineage": False,
+                "lineageFailurePresent": True,
+                "financeReturnKeyPresent": True,
+                "sourceIntegrityFailurePresent": True,
+                "storageIntegrityFailurePresent": True,
+                "databaseFileAmbiguityPresent": True,
+            }
+        },
+    )
+
+    candidate = report["candidates"]["goodsReturnSridToFinanceSrid"]
+    assert candidate["matchedPresent"] is True
+    assert candidate["databaseFileAmbiguityPresent"] is True
+    assert candidate["verifiedLineagePresent"] is False
+    assert candidate["candidateGate"] is False
+    assert report["goodsReturnIdentityGate"] is False
+
+
+def test_latest_r0_report_reads_only_pre_factor_columns() -> None:
+    class _Result:
+        @staticmethod
+        def first():
+            return (
+                "report-a",
+                "tenant-a",
+                "client-a",
+                date(2026, 7, 1),
+                date(2026, 7, 20),
+            )
+
+    class _Db:
+        @staticmethod
+        def execute(statement):
+            assert tuple(column.key for column in statement.selected_columns) == (
+                "id",
+                "tenant_id",
+                "client_id",
+                "period_start",
+                "period_end",
+            )
+            return _Result()
+
+    report = probe._latest_r0_report(
+        _Db(),
+        tenant_id="tenant-a",
+        client_id="client-a",
+        cabinet_id="cabinet-a",
+    )
+
+    assert report == probe.R0ReportContext(
+        "report-a",
+        "tenant-a",
+        "client-a",
+        date(2026, 7, 1),
+        date(2026, 7, 20),
+    )
+
+
+def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = probe.R0ProbeAccount(
+        api_key="test-key",
+        tenant_id="tenant-a",
+        client_id="client-a",
+        wb_cabinet_id="cabinet-a",
+        report_window_end=date(2026, 7, 20),
+    )
+
+    class _Client:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, url: str, *, params: dict):
+            if "goods-return" in url:
+                return _Response(200, {"report": [_goods_return_row()]})
+            return _Response(200, {"claims": [], "total": 0})
+
+    source_keys, _ambiguity, _invalid = probe.r0_identity_source_keys(
+        "goods_return",
+        {"report": [_goods_return_row()]},
+        account,
+    )
+    srid_key = next(iter(source_keys["goodsReturnSrid"]))
+
+    def _load(_settings, scopes):
+        assert scopes == {account.scope}
+        return (
+            {
+                account.scope: {
+                    "financeOrderUid": {},
+                    "financeSrid": {srid_key: {"canonical-chain"}},
+                    "financeOrderId": {},
+                }
+            },
+            {
+                account.scope: {
+                    "joinEvaluated": True,
+                    "verifiedLineage": True,
+                    "lineageFailurePresent": False,
+                    "financeReturnKeyPresent": True,
+                }
+            },
+        )
+
+    monkeypatch.setattr(probe.httpx, "Client", _Client)
+    monkeypatch.setattr(probe, "load_r0_finance_identity", _load)
+
+    report = probe.run_r0_identity_probe(
+        [account], object(), date(2026, 7, 22), days=7
+    )
+
+    assert report["identity"]["goodsReturnIdentityGate"] is True
+    assert report["identity"]["completeIdentityGate"] is False
+    assert report["implementationGate"] is False
+    rendered = str(report)
+    for forbidden in (
+        "RAW_REASON",
+        "RAW_STATUS",
+        "RAW_RETURN_TYPE",
+        "RAW_SRID",
+        "tenant-a",
+        "client-a",
+        "cabinet-a",
+        "test-key",
+        "9001",
+        "canonical-chain",
     ):
         assert forbidden not in rendered
