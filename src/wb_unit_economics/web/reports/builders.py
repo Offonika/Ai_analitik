@@ -13,7 +13,7 @@ from wb_unit_economics.web.reports.contracts import (
 from wb_unit_economics.web.reports.month_close import normalize_month_close_osv
 
 MONTH_CLOSE_CONTRACT_VERSION = "month-close-control-report-v2"
-TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v3"
+TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v4"
 FNS_TAX_BURDEN_METHODOLOGY_VERSION = "fns-tax-burden-v1-2026-07-14"
 CONFIRMED_EVIDENCE_STATUSES = {"loaded", "confirmed"}
 OFFICIAL_INCOME_SOURCE_KINDS = {
@@ -146,6 +146,40 @@ def _safe_summary(value: object, allowed: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     return {key: value.get(key) for key in allowed}
+
+
+def _safe_vat_books(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    row_fields = (
+        "entryDate",
+        "counterpartyName",
+        "invoiceNumber",
+        "invoiceDate",
+        "vatRate",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "entryKind",
+        "correctionStatus",
+    )
+    total_fields = (
+        "rowCount",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+    )
+    return {
+        "periodStart": value.get("periodStart"),
+        "periodEnd": value.get("periodEnd"),
+        "salesStatus": value.get("salesStatus"),
+        "purchaseStatus": value.get("purchaseStatus"),
+        "salesRows": _safe_rows(value.get("salesRows"), row_fields),
+        "purchaseRows": _safe_rows(value.get("purchaseRows"), row_fields),
+        "salesTotals": _safe_summary(value.get("salesTotals"), total_fields),
+        "purchaseTotals": _safe_summary(value.get("purchaseTotals"), total_fields),
+        "vatDifference": value.get("vatDifference"),
+    }
 
 
 def build_month_close_control_payload(
@@ -491,8 +525,24 @@ def build_tax_load_payload(
         "taxRows": tax_rows,
         "vatSummary": _safe_summary(
             evidence.get("vatSummary"),
-            ("status", "outputVat", "inputVat", "payableVat", "sourceKind"),
+            (
+                "status",
+                "periodStart",
+                "periodEnd",
+                "salesBookStatus",
+                "purchaseBookStatus",
+                "outputVat",
+                "inputVat",
+                "payableVat",
+                "salesBookRows",
+                "purchaseBookRows",
+                "ytdOutputVat",
+                "ytdInputVat",
+                "vatDifference",
+                "sourceKind",
+            ),
         ),
+        "vatBooks": _safe_vat_books(evidence.get("vatBooks")),
         "ensSummary": _safe_summary(
             evidence.get("ensSummary"), ("status", "balance", "asOfDate")
         ),

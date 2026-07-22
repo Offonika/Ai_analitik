@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,7 +13,11 @@ from typing import Any
 from wb_unit_economics.web.report_kinds import MONTH_CLOSE_CONTROL, TAX_LOAD
 
 MONTH_CLOSE_EVIDENCE_VERSION = "month-close-evidence-v2"
-TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v3"
+TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v4"
+
+COMPLETE_SOURCE_STATUSES = frozenset(
+    {"loaded", "ready", "complete", "confirmed", "empty_expected"}
+)
 
 USN_MARKETPLACE_CATEGORIES = (
     ("wildberries", "Wildberries (РВБ)"),
@@ -388,17 +393,33 @@ def _tax_load_evidence(
         tax_rows.append(item)
     tax_rows.sort(key=lambda item: (str(item["taxName"]), str(item["dueDate"] or "")))
 
+    vat_sales_source = sources.get("onec_vat_sales_book")
+    vat_purchase_source = sources.get("onec_vat_purchase_book")
     vat_sales = _organization_period_rows(
-        sources.get("onec_vat_sales_book"),
+        vat_sales_source,
         organization_id,
         period_start,
         period_end,
         date_fields=("Period",),
     )
     vat_purchase = _organization_period_rows(
-        sources.get("onec_vat_purchase_book"),
+        vat_purchase_source,
         organization_id,
         period_start,
+        period_end,
+        date_fields=("Period",),
+    )
+    vat_sales_ytd = _organization_period_rows(
+        vat_sales_source,
+        organization_id,
+        ytd_start,
+        period_end,
+        date_fields=("Period",),
+    )
+    vat_purchase_ytd = _organization_period_rows(
+        vat_purchase_source,
+        organization_id,
+        ytd_start,
         period_end,
         date_fields=("Period",),
     )
@@ -430,6 +451,25 @@ def _tax_load_evidence(
         date_fields=("Date", "Period", "Дата"),
     )
     counterparty_source = sources.get("onec_accounting_counterparties")
+    counterparty_names = _description_lookup(counterparty_source)
+    vat_sales_rows = _vat_book_rows(
+        vat_sales_ytd,
+        book_kind="sales",
+        counterparty_names=counterparty_names,
+    )
+    vat_purchase_rows = _vat_book_rows(
+        vat_purchase_ytd,
+        book_kind="purchase",
+        counterparty_names=counterparty_names,
+    )
+    vat_sales_month_totals = _vat_book_totals(vat_sales, vat_sales_source)
+    vat_purchase_month_totals = _vat_book_totals(vat_purchase, vat_purchase_source)
+    vat_sales_totals = _vat_book_totals(vat_sales_ytd, vat_sales_source)
+    vat_purchase_totals = _vat_book_totals(vat_purchase_ytd, vat_purchase_source)
+    vat_difference = _decimal_difference(
+        vat_sales_totals.get("vatAmount"),
+        vat_purchase_totals.get("vatAmount"),
+    )
     counterparty_categories = _usn_marketplace_counterparty_categories(
         counterparty_source
     )
@@ -586,6 +626,25 @@ def _tax_load_evidence(
     if not bank_payment_fallback_used:
         required_sources["onec_accounting_taxes_on_ens"] = "Платежи"
     issues = _source_gap_issues(sources, required_sources)
+    if any(
+        row.get("counterpartyName") == "Не определён"
+        for row in (*vat_sales_rows, *vat_purchase_rows)
+    ):
+        issues.append(
+            {
+                "code": "vat_book_counterparty_unresolved",
+                "severity": "warning",
+                "section": "НДС",
+                "message": (
+                    "В части строк книги продаж или покупок не определено "
+                    "название контрагента."
+                ),
+                "nextAction": (
+                    "Проверить полноту справочника контрагентов 1С, доступного "
+                    "только для чтения."
+                ),
+            }
+        )
     if any(row.get("paid") is None for row in tax_rows):
         issues.append(
             {
@@ -641,13 +700,33 @@ def _tax_load_evidence(
         "usnTaxPaymentEvidence": usn_tax_payment_evidence,
         "vatSummary": {
             "status": _combined_status(
-                sources.get("onec_vat_sales_book"),
-                sources.get("onec_vat_purchase_book"),
+                vat_sales_source,
+                vat_purchase_source,
             ),
-            "outputVat": _sum_rows(vat_sales, ("НДС", "VAT")),
-            "inputVat": _sum_rows(vat_purchase, ("НДС", "VAT")),
+            "periodStart": period_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "salesBookStatus": _source_status(vat_sales_source),
+            "purchaseBookStatus": _source_status(vat_purchase_source),
+            "outputVat": vat_sales_month_totals.get("vatAmount"),
+            "inputVat": vat_purchase_month_totals.get("vatAmount"),
             "payableVat": None,
+            "salesBookRows": len(vat_sales_rows),
+            "purchaseBookRows": len(vat_purchase_rows),
+            "ytdOutputVat": vat_sales_totals.get("vatAmount"),
+            "ytdInputVat": vat_purchase_totals.get("vatAmount"),
+            "vatDifference": vat_difference,
             "sourceKind": "onec_vat_books",
+        },
+        "vatBooks": {
+            "periodStart": ytd_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "salesStatus": _source_status(vat_sales_source),
+            "purchaseStatus": _source_status(vat_purchase_source),
+            "salesRows": vat_sales_rows,
+            "purchaseRows": vat_purchase_rows,
+            "salesTotals": vat_sales_totals,
+            "purchaseTotals": vat_purchase_totals,
+            "vatDifference": vat_difference,
         },
         "ensSummary": {
             "status": _source_status(sources.get("onec_accounting_ens")),
@@ -981,6 +1060,141 @@ def _sum_rows(rows: list[Mapping[str, Any]], keys: tuple[str, ...]) -> str | Non
     return _decimal_text(sum(present, Decimal("0")))
 
 
+def _vat_rate_label(value: Any) -> str:
+    normalized = "".join(str(value or "").strip().casefold().split())
+    if not normalized:
+        return "Не указано"
+    if "безндс" in normalized or "необлага" in normalized:
+        return "Без НДС"
+    numbers = re.findall(r"\d+", normalized)
+    if len(numbers) >= 2:
+        return f"{numbers[0]}/{numbers[1]}"
+    if numbers:
+        return f"{numbers[0]} %"
+    return "Не определено"
+
+
+def _vat_book_rows(
+    rows: list[Mapping[str, Any]],
+    *,
+    book_kind: str,
+    counterparty_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    if book_kind not in {"sales", "purchase"}:
+        raise ValueError("unsupported VAT book kind")
+    counterparty_key = "Покупатель_Key" if book_kind == "sales" else "Поставщик_Key"
+    invoice_number_keys = (
+        ("НомерСчетаФактурыНаАванс", "НомерДокументаОплаты")
+        if book_kind == "sales"
+        else ("НомерСчетаФактуры", "НомерДокументаОплаты")
+    )
+    invoice_date_keys = (
+        ("ДатаСчетаФактурыНаАванс", "ДатаДокументаОплаты")
+        if book_kind == "sales"
+        else ("ДатаСчетаФактуры", "ДатаДокументаОплаты")
+    )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("Active") is False:
+            continue
+        amount_excluding_vat = _first_decimal(row, ("СуммаБезНДС",))
+        vat_amount = _first_decimal(row, ("НДС", "VAT"))
+        amount_including_vat = (
+            amount_excluding_vat + vat_amount
+            if amount_excluding_vat is not None and vat_amount is not None
+            else None
+        )
+        counterparty_id = str(row.get(counterparty_key) or "").strip()
+        is_additional = row.get("ЗаписьДополнительногоЛиста")
+        is_correction = row.get("Исправление")
+        result.append(
+            {
+                "entryDate": _date_text(row.get("Period") or row.get("ДатаСобытия")),
+                "counterpartyName": (
+                    counterparty_names.get(counterparty_id) or "Не определён"
+                ),
+                "invoiceNumber": _first_text(row, invoice_number_keys) or "Не указан",
+                "invoiceDate": next(
+                    (
+                        parsed
+                        for key in invoice_date_keys
+                        if (parsed := _date_text(row.get(key))) is not None
+                    ),
+                    None,
+                ),
+                "vatRate": _vat_rate_label(row.get("СтавкаНДС")),
+                "amountExcludingVat": (
+                    _decimal_text(amount_excluding_vat)
+                    if amount_excluding_vat is not None
+                    else None
+                ),
+                "vatAmount": (
+                    _decimal_text(vat_amount) if vat_amount is not None else None
+                ),
+                "amountIncludingVat": (
+                    _decimal_text(amount_including_vat)
+                    if amount_including_vat is not None
+                    else None
+                ),
+                "entryKind": (
+                    "Дополнительный лист"
+                    if is_additional is True
+                    else ("Основная запись" if is_additional is False else "Не указано")
+                ),
+                "correctionStatus": (
+                    "Исправление"
+                    if is_correction is True
+                    else ("Без исправления" if is_correction is False else "Не указано")
+                ),
+            }
+        )
+    return sorted(
+        result,
+        key=lambda item: (
+            str(item.get("entryDate") or ""),
+            str(item.get("counterpartyName") or ""),
+            str(item.get("invoiceNumber") or ""),
+        ),
+    )
+
+
+def _vat_book_totals(
+    rows: list[Mapping[str, Any]],
+    source: AccountingEvidenceSource | None,
+) -> dict[str, Any]:
+    active_rows = [row for row in rows if row.get("Active") is not False]
+    status = _source_status(source)
+    if status not in COMPLETE_SOURCE_STATUSES:
+        return {
+            "rowCount": len(active_rows),
+            "amountExcludingVat": None,
+            "vatAmount": None,
+            "amountIncludingVat": None,
+        }
+    amount_excluding_vat = _complete_sum_rows(active_rows, ("СуммаБезНДС",))
+    vat_amount = _complete_sum_rows(active_rows, ("НДС", "VAT"))
+    including_vat = (
+        _decimal_text(Decimal(amount_excluding_vat) + Decimal(vat_amount))
+        if amount_excluding_vat is not None and vat_amount is not None
+        else None
+    )
+    return {
+        "rowCount": len(active_rows),
+        "amountExcludingVat": amount_excluding_vat,
+        "vatAmount": vat_amount,
+        "amountIncludingVat": including_vat,
+    }
+
+
+def _decimal_difference(left: Any, right: Any) -> str | None:
+    try:
+        if left is None or right is None:
+            return None
+        return _decimal_text(Decimal(str(left)) - Decimal(str(right)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
 def _complete_sum_rows(
     rows: list[Mapping[str, Any]], keys: tuple[str, ...]
 ) -> str | None:
@@ -1254,7 +1468,7 @@ def _source_status(source: AccountingEvidenceSource | None) -> str:
 
 def _combined_status(*sources: AccountingEvidenceSource | None) -> str:
     statuses = {_source_status(source) for source in sources}
-    if statuses and statuses.issubset({"loaded", "ready", "complete"}):
+    if statuses and statuses.issubset(COMPLETE_SOURCE_STATUSES):
         return "loaded"
     if statuses == {"missing"}:
         return "missing"

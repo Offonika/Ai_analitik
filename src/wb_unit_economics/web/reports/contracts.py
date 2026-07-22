@@ -54,6 +54,7 @@ class TaxLoadPayload(StrictPayload):
     sourceCoverage: list[dict[str, Any]] = Field(default_factory=list)
     taxRows: list[dict[str, Any]] = Field(default_factory=list)
     vatSummary: dict[str, Any] = Field(default_factory=dict)
+    vatBooks: dict[str, Any] = Field(default_factory=dict)
     ensSummary: dict[str, Any] = Field(default_factory=dict)
     paymentSchedule: list[dict[str, Any]] = Field(default_factory=list)
     usnDetail: dict[str, Any] = Field(default_factory=dict)
