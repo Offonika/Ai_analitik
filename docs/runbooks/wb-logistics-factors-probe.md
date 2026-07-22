@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-21"
+updated_at: "2026-07-22"
 ---
 
 # Назначение
@@ -26,15 +26,17 @@ Draft-спеки, для которых нужен этот probe:
 `docs/specs/wb-logistics-cost-analysis-implementation.md`; при расхождении
 действует он. Этот runbook не заменяет спеки и ничего не согласовывает сам.
 
-**Статус на 2026-07-21:** базовый живой probe F-1…F-3 выполнен. Минимальный
+**Статус на 2026-07-22:** базовый живой probe F-1…F-3 выполнен. Минимальный
 F-4 source gate двух measurement endpoints также пройден в отдельном read-only
 процессе: schema подтверждена без вывода raw, идентификаторов, значений, сумм
-или counts. Ниже сохранён воспроизводимый безопасный порядок повторной проверки.
+или counts. F-5 spec принят; boolean-only R-0 подтвердил source schema, но не
+нашёл exact Finance/source match, поэтому `implementationGate=false` и R-1…R-5
+не начинаются. Ниже сохранён воспроизводимый безопасный порядок проверки.
 
 # Безопасность прогона
 
-- Только read-only методы. Никаких write-вызовов (в частности, `POST
-  returns-api /api/v1/claim`, обновление карточек товара) — запрещено.
+- Только read-only методы. Никаких write-вызовов (в частности,
+  `PATCH returns-api /api/v1/claim`, обновление карточек товара) — запрещено.
 - Raw payload, клиентские объёмы и персональные данные покупателя (`user_comment`,
   фото) НЕ копируются в Git, Markdown, вывод или тикеты. В отчёт probe попадают
   только обезличенные агрегаты (доли покрытия, доли `unmatched`, наличие полей).
@@ -85,14 +87,21 @@ F-4 source gate двух measurement endpoints также пройден в от
 
 ## R-0. Причины возвратов
 
-5. **goods-return:** доступ токена «Аналитика»; для 31-дневных окон периода —
-   доля возвратов с непустым `reason`, распределение `status`/`returnType`.
-6. **claims:** доступ токена «Возвраты покупателями»; активные (14 дней) и архив
-   (`is_archive=true`) — глубина архива, доля непустых `user_comment`, наличие
-   `srid`.
-7. **Join по `srid`:** доля финансовых возвратов среза, сопоставимых с
-   goods-return и claims; доля `unmatched` в обе стороны. НЕ смешивать
-   `goods-return.reason` и `claims.user_comment`.
+5. **goods-return:** отдельный token scope «Аналитика», окно не более 31 дня;
+   проверить object/`report` envelope и имена `reason`, `srid`, `nmId`,
+   `status`, `returnType` без вывода значений.
+6. **claims:** отдельный scope «Возвраты покупателями»; два GET с boolean
+   `is_archive=false|true`, `limit=1`, `offset=0`. Оба состояния относятся к
+   текущим 14 дням, глубокий архив не предполагается. Проверить `claims`/
+   `total` и имена `id`, `nm_id`, `srid`, `user_comment`, `dt`.
+7. **Pagination и join:** локально сверить claims pages с provider total и
+   exact `(cabinet, srid, nm_id)` Finance join. В evidence вывести только
+   boolean reconciliation/matched/unmatched statuses. НЕ выводить total,
+   counts, identifiers, reasons/comments и НЕ смешивать reason с наличием
+   comment. Goods-return window автоматически выровнять по `period_end`
+   последнего immutable report run для кабинета, не раскрывая период. R-1…R-5
+   не начинать, пока `matchedPresent=false`, даже если schema обоих источников
+   подтверждена.
 
 ## C-0. Калькуляторы (третья очередь)
 
@@ -148,6 +157,38 @@ provider labels, клиентских объёмов или идентифика
 
 Вывод: F-1…F-3 технически доступны с явным per-cabinet partial scope. Отсутствие
 scope не обходится другим токеном и не скрывается общим успешным статусом.
+
+# R-0 live source/join gate — 22 июля 2026 года
+
+После повторной сверки официального OpenAPI выполнен privacy-restricted
+`scripts/probe_wb_logistics_factors.py --mode r0 --days 31`. Test environment
+не содержит usable WB integration, поэтому от него внешних запросов не было.
+Production EnvironmentFile использован только transient read-only процессом;
+production service, БД и configuration не менялись.
+
+Повторяемый запуск из checkout/runtime с service environment должен включать
+корень репозитория и `src` в import path (конкретный EnvironmentFile выбирает
+оператор, его содержимое не выводится):
+
+```bash
+PYTHONPATH="$PWD:$PWD/src" .venv/bin/python \
+  scripts/probe_wb_logistics_factors.py --mode r0 --days 31
+```
+
+В boolean-only evidence подтверждены goods-return и claims active/archive
+envelope/schema хотя бы на одном разрешённом scope. Goods-return непуст,
+claims на доступном scope пусты; другой scope возвращает access denied. Schema
+mismatch, paid-scope error, unavailable и invalid source key не обнаружены.
+
+Goods-return window автоматически выровнен по последнему immutable report.
+Source и Finance return keys присутствуют, но exact
+`(cabinet, srid, nm_id)` match не найден; unmatched присутствует в обе стороны.
+Итог: `sourceImplementationGate=true`, `joinGate=false`,
+`implementationGate=false`. R-1…R-5 не начинать до отдельного identity evidence;
+нельзя ослаблять join до `nm_id`, `srid` или `orderId` отдельно.
+
+В вывод и Markdown не переносились provider labels, counts, периоды клиентской
+активности, identifiers, причины, комментарии, media, суммы или HTTP bodies.
 
 # F-4 live source gate
 
