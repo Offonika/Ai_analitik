@@ -1187,6 +1187,55 @@ def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> No
     )
 
 
+def test_tax_load_excel_does_not_label_legacy_kudir_months_as_bank_receipts(
+    tmp_path: Path,
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "revenueTaxRate": "0.01",
+        },
+        evidence=_usn_tax_evidence(),
+    )
+    payload["usnDetail"] = {
+        "status": "ready",
+        "sourceKind": "onec_kudir",
+        "revenueTaxRate": "0.01",
+        "incomeYtd": "580",
+        "calculatedTaxYtd": "5.80",
+        "paidTaxYtd": "100",
+        "taxPayable": "-94.20",
+        "monthlyIncome": [
+            {"month": "2026-03", "value": "290", "status": "loaded"},
+            {"month": "2026-06", "value": "290", "status": "loaded"},
+        ],
+    }
+
+    path = tmp_path / "tax-load-legacy-kudir.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    sheet = workbook["Расчёт УСН"]
+    rows = {
+        row[0].value: row
+        for row in sheet.iter_rows(min_row=2)
+        if row[0].value is not None
+    }
+
+    bank_receipts = rows["Поступления от покупателей без НДС"]
+    assert all(cell.value is None for cell in bank_receipts[1:])
+    kudir = rows["База УСН по КУДиР (сверка)"]
+    assert kudir[3].value == Decimal("290")
+    assert kudir[7].value == Decimal("290")
+    assert kudir[8].value == Decimal("580")
+    assert rows["Статус данных"][8].value == "Требуется повторное формирование"
+    assert (
+        rows["Помесячная детализация"][8].value
+        == "Сформируйте отчёт повторно для заполнения месяцев"
+    )
+
+
 def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:
     payload = build_tax_load_payload(
         _report("tax_load"),

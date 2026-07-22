@@ -627,12 +627,21 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         or bool(detail.get("monthlyUnclassifiedIncome"))
         or bool(detail.get("monthlyExcludedIncome"))
     )
-    income_monthly = _usn_month_values(detail.get("monthlyIncome"))
+    # Historical payloads used monthlyIncome for quarterly-dated KUDIR rows.
+    # Do not relabel those rows as bank receipts when exporting an old report
+    # with the current workbook renderer.
+    income_monthly = _usn_month_values(
+        detail.get("monthlyIncome") if has_bank_detail else None
+    )
     unclassified_monthly = _usn_month_values(
         detail.get("monthlyUnclassifiedIncome")
     )
     excluded_monthly = _usn_month_values(detail.get("monthlyExcludedIncome"))
-    kudir_monthly = _usn_month_values(detail.get("monthlyKudirIncome"))
+    kudir_monthly = _usn_month_values(
+        detail.get("monthlyKudirIncome")
+        if has_bank_detail
+        else detail.get("monthlyIncome")
+    )
     payment_monthly = _usn_month_values(detail.get("monthlyTaxPayments"))
     income_values = _usn_row_values(
         columns,
@@ -723,11 +732,15 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
         ),
         (
             "Статус данных",
-            last_only(_tax_load_cell("status", detail.get("status") or "source_gap")),
+            last_only(
+                _tax_load_cell("status", detail.get("status") or "source_gap")
+                if has_bank_detail
+                else "Требуется повторное формирование"
+            ),
             "text",
         ),
     )
-    if not detail.get("monthlyIncome"):
+    if not has_bank_detail or not detail.get("monthlyIncome"):
         rows += (
             (
                 "Помесячная детализация",
