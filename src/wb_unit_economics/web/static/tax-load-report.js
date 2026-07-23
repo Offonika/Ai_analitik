@@ -14,6 +14,10 @@
     source_gap: "Недостаточно данных",
     informational: "Справочно",
     ready: "Готово",
+    review_required: "Требуется проверка",
+    reference_only: "Справочно, до годового расчёта",
+    minimum_tax_applied: "Применён минимальный налог 1%",
+    regular_tax_applied: "Применён обычный налог",
     warning: "Нужно проверить",
   };
 
@@ -23,7 +27,9 @@
     onec_official_financial_results: "Отчёт о финансовых результатах 1С",
     onec_bank: "Банк в 1С",
     onec_accounting_bank_in: "Банковские поступления 1С",
+    onec_accounting_bank_out: "Банковские списания 1С",
     onec_accounting_counterparties: "Справочник контрагентов 1С",
+    onec_kudir: "Книга учёта доходов и расходов 1С",
     accountant_confirmation: "Подтверждение бухгалтера",
   };
 
@@ -144,6 +150,7 @@
     const meta = payload.meta || {};
     const profile = payload.taxProfile || {};
     const summary = payload.taxLoadSummary || {};
+    const usnDetail = payload.usnDetail || {};
     const issues = Array.isArray(payload.issues) ? payload.issues : [];
     const ratioReady = isPresent(summary.fnsTaxBurdenRatio);
     const issueNextAction = issues.find((item) => item?.nextAction)?.nextAction;
@@ -160,6 +167,7 @@
     );
 
     const usnManagement = isPresent(summary.usnIncomeStatus);
+    const usnIncomeExpenses = usnDetail.calculationMode === "income_expenses";
     const overviewMetrics = [
       ["Нагрузка по методике ФНС", formatRatio(summary.fnsTaxBurdenRatio), ratioReady ? "" : "is-warning"],
       ["Уплаченные собственные налоги", formatMoney(summary.numeratorValue)],
@@ -170,6 +178,17 @@
       overviewMetrics.push(
         ["Управленческая нагрузка (УСН, от поступлений)", formatRatio(summary.usnIncomeTaxBurden), isPresent(summary.usnIncomeTaxBurden) ? "" : "is-warning"],
         ["Доход УСН без НДС (поступления)", formatMoney(summary.usnIncomeValue)],
+      );
+    } else if (usnIncomeExpenses) {
+      overviewMetrics.push(
+        ["Признанные доходы УСН по КУДиР", formatMoney(usnDetail.incomeYtd)],
+        ["Признанные расходы УСН по КУДиР", formatMoney(usnDetail.kudirExpenseYtd)],
+        ["Налоговая база УСН с начала года", formatMoney(usnDetail.taxBaseYtd)],
+        ["Ставка УСН", formatRatio(usnDetail.taxRate)],
+        ["Обычный налог УСН", formatMoney(usnDetail.regularTaxYtd)],
+        ["Минимальный налог 1% (справочно)", formatMoney(usnDetail.minimumTaxReferenceYtd)],
+        ["Применяемый налог УСН", formatMoney(usnDetail.calculatedTaxYtd)],
+        ["К доплате / переплата УСН", formatMoney(usnDetail.taxPayable)],
       );
     }
 
@@ -196,6 +215,15 @@
           "p",
           "scenario-note",
           "Управленческая нагрузка по УСН считается от дохода из поступлений без НДС и служит ориентиром для ИП, а не официальным коэффициентом ФНС организации.",
+        ),
+      );
+    } else if (usnIncomeExpenses) {
+      panels.overview.append(
+        node(
+          "p",
+          "scenario-note",
+          `Расчёт «Доходы минус расходы» выполнен по признанным ресурсам КУДиР. `
+            + `Минимальный налог: ${statusLabel(usnDetail.minimumTaxApplicationStatus)}.`,
         ),
       );
     }

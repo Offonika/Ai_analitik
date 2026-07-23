@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -290,9 +290,9 @@ documents:
     source_of_truth: true
     truth_scope: "tax-load-report"
     truth_priority: 100
-    summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v2, профиль 1С, web и Excel."
-    read_when: "Меняется отчет налоговой нагрузки, формула ФНС, tax profile, evidence v2, web или Excel этого report_kind."
-    search_terms: ["налоговая нагрузка", "tax load", "формула ФНС", "tax profile", "evidence v2"]
+    summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v7, профили 1С, УСН «Доходы» и «Доходы минус расходы», web и Excel."
+    read_when: "Меняется отчет налоговой нагрузки, формула ФНС, УСН Д−Р, tax profile, evidence v7, web или Excel этого report_kind."
+    search_terms: ["налоговая нагрузка", "tax load", "УСН доходы минус расходы", "КУДиР", "tax profile", "evidence v7"]
   - path: "docs/specs/accounting-reports-smart-process-onepage.md"
     title: "ONEPAGE: смарт-процесс закрытия месяца и налоговой нагрузки"
     doc_type: "spec"
