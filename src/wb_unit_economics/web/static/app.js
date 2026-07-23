@@ -8130,6 +8130,7 @@ function sourceRefreshCollectionChip(item) {
     sourceStatusText(item.status),
     requirement,
     `${number(item.rowCount || 0)} строк`,
+    item.sourceMessage || "",
     localizedOperationalMessage(item.payload?.message || ""),
   ].filter(Boolean).join(" · ");
   chip.append(title, meta);
@@ -15904,6 +15905,8 @@ function sourceLabelText(item = {}) {
     "WB Finance sales report list": "Список отчётов о продажах WB",
     "WB product cards": "Карточки товаров WB",
     "WB daily stock history": "Ежедневная история остатков WB",
+    "WB goods return reasons": "Причины возвратов продавцу WB",
+    "WB buyer return claims": "Заявки покупателей на возврат WB",
     "1С OData metadata": "Метаданные 1С OData",
     "Ozon financial cash-flow statement": "Движение денежных средств Ozon",
     "Ozon realization report": "Отчёт Ozon о реализации",
@@ -15926,6 +15929,8 @@ function sourceTypeText(sourceType) {
     wb_sales_report_list: "список отчётов WB",
     wb_product_cards: "карточки товаров WB",
     wb_stock_history_daily: "ежедневная история остатков WB",
+    wb_goods_return: "причины возвратов продавцу WB",
+    wb_return_claims: "заявки покупателей на возврат WB",
     onec_odata: "данные 1С OData",
     onec_odata_metadata: "метаданные 1С OData",
     ozon_finance_cash_flow: "движение денежных средств Ozon",

@@ -29,6 +29,7 @@ from wb_unit_economics.wb_finance import (
     WbSalesReportListPageResult,
 )
 from wb_unit_economics.wb_goods_return import WbGoodsReturnExportResult
+from wb_unit_economics.wb_return_claims import WbReturnClaimsExportResult
 from wb_unit_economics.wb_stocks import WbStockExportResult
 from wb_unit_economics.web import integrations, repository, source_refresh
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
@@ -65,6 +66,36 @@ from wb_unit_economics.web.source_refresh import (
     _read_ozon_rows,
     _safe_error,
 )
+
+
+@pytest.fixture(autouse=True)
+def _prevent_live_return_claims_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Source-refresh tests must never call the external claims endpoint."""
+
+    def fake_export(
+        _client,
+        _output_dir,
+        *,
+        as_of,
+        seller_account_id="",
+        account_name="",
+        file_prefix="",
+    ):
+        del file_prefix
+        return WbReturnClaimsExportResult(
+            ok=False,
+            source_state="access_denied",
+            active_state="access_denied",
+            archive_state="access_denied",
+            seller_account_id=seller_account_id,
+            account_name=account_name,
+            coverage_start=as_of - timedelta(days=13),
+            coverage_end=as_of,
+            status_code=403,
+            error="HTTPStatusError",
+        )
+
+    monkeypatch.setattr(source_refresh, "export_wb_return_claims", fake_export)
 
 
 def test_onec_commissioner_headers_without_financial_tables_are_partial(
@@ -1195,6 +1226,218 @@ def test_goods_return_snapshot_integrity_failures_are_blocking(
 
     assert selection.source_rows == ()
     assert expected_code in selection.blocking_reasons
+
+
+def test_return_claims_record_and_selector_keep_only_safe_flat_fields(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="return-claims-record",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="return claims record test",
+            enforce_active_check=False,
+        )
+        run_root = settings.source_refresh_root_path / "return-claims-record"
+        output_dir = run_root / "wb_return_claims"
+        output_dir.mkdir(parents=True)
+        run.root_dir = str(run_root)
+        raw_payload = {
+            "active": {
+                "claims": [
+                    {
+                        "id": "synthetic-claim-id",
+                        "srid": "synthetic-srid",
+                        "nm_id": 1001,
+                        "user_comment": "synthetic comment",
+                        "photos": ["synthetic-photo"],
+                    }
+                ],
+                "total": 1,
+            },
+            "archive": {"claims": [], "total": 0},
+        }
+        flat_rows = [
+            {
+                "srid": "synthetic-srid",
+                "nm_id": 1001,
+                "is_archive": False,
+                "has_user_comment": True,
+            }
+        ]
+        raw_path = output_dir / "return-claims.raw.json"
+        flat_path = output_dir / "return-claims.flat.json"
+        raw_path.write_text(json.dumps(raw_payload), encoding="utf-8")
+        flat_path.write_text(json.dumps(flat_rows), encoding="utf-8")
+        result = WbReturnClaimsExportResult(
+            ok=True,
+            source_state="confirmed_nonempty",
+            active_state="confirmed_nonempty",
+            archive_state="confirmed_empty",
+            seller_account_id="WB_ACCOUNT_SAFE",
+            account_name="Кабинет",
+            row_count=1,
+            raw_output_path=raw_path,
+            flat_output_path=flat_path,
+            raw_payload_hash=source_refresh._hash_payload(raw_payload),
+            flat_payload_hash=source_refresh._hash_payload(flat_rows),
+            coverage_start=report.period_end - timedelta(days=13),
+            coverage_end=report.period_end,
+            status_code=200,
+        )
+        (output_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "coverageStart": result.coverage_start.isoformat(),
+                    "coverageEnd": result.coverage_end.isoformat(),
+                    "results": [
+                        source_refresh._wb_return_claims_result_payload(result)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        collection = service._record_wb_return_claims(
+            db,
+            run,
+            output_dir,
+            [result],
+            wb_cabinet_ids={"WB_ACCOUNT_SAFE": cabinet_id},
+        )
+        db.flush()
+        selection = source_refresh._select_return_claims_snapshot(
+            db, report, roles=[(0, run)]
+        )
+        snapshot = (
+            db.query(SourceSnapshotRow).filter_by(collection_id=collection.id).one()
+        )
+        public_collection = repository.source_refresh_collection_payload(
+            collection,
+            include_sensitive=False,
+        )
+
+    assert collection.status == "loaded"
+    assert selection.blocking_reasons == ()
+    assert selection.source_state == "confirmed_nonempty"
+    assert selection.cabinet_states == ((cabinet_id, "confirmed_nonempty"),)
+    assert selection.source_rows[0].identity_key is not None
+    assert selection.source_rows[0].has_user_comment is True
+    assert public_collection["sourceState"] == "confirmed_nonempty"
+    assert public_collection["sourceMessage"] == ("Заявки за доступное окно получены")
+    assert public_collection["payload"] == {}
+    assert "user_comment" not in snapshot.row_payload
+    assert "photos" not in snapshot.row_payload
+    serialized = json.dumps(snapshot.row_payload)
+    for forbidden in (
+        "synthetic-claim-id",
+        "synthetic comment",
+        "synthetic-photo",
+    ):
+        assert forbidden not in serialized
+
+
+def test_return_claims_access_denied_is_review_state_not_blocker(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        _user, report = _session_user_report(db, user, report)
+        cabinet_id = db.query(repository.ReportUnitRow).one().wb_cabinet_id
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="return-claims-denied",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="return claims denied test",
+            enforce_active_check=False,
+        )
+        run_root = settings.source_refresh_root_path / "return-claims-denied"
+        output_dir = run_root / "wb_return_claims"
+        output_dir.mkdir(parents=True)
+        run.root_dir = str(run_root)
+        result = WbReturnClaimsExportResult(
+            ok=False,
+            source_state="access_denied",
+            active_state="access_denied",
+            archive_state="access_denied",
+            seller_account_id="WB_ACCOUNT_SAFE",
+            account_name="Кабинет",
+            coverage_start=report.period_end - timedelta(days=13),
+            coverage_end=report.period_end,
+            status_code=403,
+            error="HTTPStatusError",
+        )
+        (output_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "coverageStart": result.coverage_start.isoformat(),
+                    "coverageEnd": result.coverage_end.isoformat(),
+                    "results": [
+                        source_refresh._wb_return_claims_result_payload(result)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        collection = service._record_wb_return_claims(
+            db,
+            run,
+            output_dir,
+            [result],
+            wb_cabinet_ids={"WB_ACCOUNT_SAFE": cabinet_id},
+        )
+        db.flush()
+        selection = source_refresh._select_return_claims_snapshot(
+            db, report, roles=[(0, run)]
+        )
+        public_collection = repository.source_refresh_collection_payload(
+            collection,
+            include_sensitive=False,
+        )
+
+    assert collection.status == "needs_review"
+    assert selection.source_rows == ()
+    assert selection.source_state == "access_denied"
+    assert selection.blocking_reasons == ()
+    assert "return_claims_source_access_denied" in selection.review_reasons
+    assert public_collection["sourceState"] == "access_denied"
+    assert public_collection["sourceMessage"] == "Источник заявок недоступен"
+    assert public_collection["payload"] == {}
+
+
+def test_return_claims_empty_collection_has_reader_facing_marker() -> None:
+    state, message = repository._safe_collection_source_state(
+        SimpleNamespace(
+            source_type="wb_return_claims",
+            payload={"results": [{"status": "confirmed_empty"}]},
+        )
+    )
+
+    assert state == "confirmed_empty"
+    assert message == "Заявок за доступное окно нет"
 
 
 def test_tariff_snapshot_db_and_file_authoritative_are_equivalent(

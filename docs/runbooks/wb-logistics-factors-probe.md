@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 ---
 
 # Назначение
@@ -38,12 +38,14 @@ identity gate на exact `srid → Finance.srid`, но claims keys отсутс�
 source-specific контракт R-1 отдельно принят и реализован локальным пакетом
 registered snapshot/selector/normalization/internal join;
 `goodsReturnImplementationGate=true`, исторический
-`contractChangeRequired=true` закрыт решением. R-2 требует собственного
-положительного gate. PR №56 с R-1 влит в `main`; environment rollout R-1 не
-выполнялся. Claims-evidence hardening влит PR №57 и отдельно проверен live
-R-0I: полная provider-total pagination прошла без mismatch, но claims source
-keys в доступном окне отсутствуют. R-2 и общий gate остаются закрыты. Ниже
-сохранён воспроизводимый безопасный порядок проверки.
+`contractChangeRequired=true` закрыт решением. PR №56 с R-1 влит в `main`;
+environment rollout R-1 не выполнялся. Claims-evidence hardening влит PR №57 и
+отдельно проверен live R-0I: полная provider-total pagination прошла без
+mismatch, но claims source keys в доступном окне отсутствуют. 23 июля
+пользователь принял fail-soft R-2: empty/denied фиксируются как per-cabinet
+source state и не блокируют реализацию или основной отчёт; exact row-level
+match активируется автоматически после появления доступа. Ниже сохранён
+воспроизводимый безопасный порядок проверки.
 
 # Безопасность прогона
 
@@ -298,7 +300,8 @@ keys отсутствуют, поэтому `claimsIdentityGate=false` и
 probe зафиксировал `contractChangeRequired=true`, общий
 `implementationGate=false`. Последующим отдельным решением exact
 `goods-return.srid → Finance.srid` принят для R-1 и реализован без mart/API/UI;
-R-2 не начинается до положительного claims identity gate. Draft не
+До решения 23 июля R-2 не начинался до положительного claims identity gate.
+Draft не
 публиковался, current report, production runtime и client flags не менялись;
 финальный production health остался `ok`.
 
@@ -332,7 +335,11 @@ provider total согласован и `paginationMismatchPresent=false`. Дос
 вернул пустое окно, другой scope остался закрыт по доступу; source keys не
 получены. Поэтому `completeSourceGate=true`, но `claimsIdentityGate=false`,
 `completeIdentityGate=false`, `claimsImplementationGate=false` и общий
-`implementationGate=false`; R-2 остаётся закрытым.
+`implementationGate=false`; это исторический результат probe. По принятому
+fail-soft контракту он не блокирует R-2. Повторный runner из change set 23 июля
+должен сохранить `claimsIdentityGate=false`, но вернуть
+`claimsImplementationGate=true`; общий gate определяется отдельно принятым
+goods-return implementation join.
 
 Перед probe test-only full preflight fail closed на выключенном
 source-refresh master. Dry-run без внешних чтений завершился `needs_review` и

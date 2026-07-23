@@ -131,6 +131,13 @@ from wb_unit_economics.wb_measurements import (
     export_wb_measurement_penalties,
     export_wb_warehouse_measurements,
 )
+from wb_unit_economics.wb_return_claims import (
+    ClaimSourceRow,
+    WbReturnClaimsClient,
+    WbReturnClaimsExportResult,
+    export_wb_return_claims,
+    normalize_claim_source_row,
+)
 from wb_unit_economics.wb_stocks import (
     WbStockExportResult,
     export_wb_stock_history_daily,
@@ -349,6 +356,66 @@ def _default_wb_goods_return_exporter(
         "coverageStart": date_from.isoformat(),
         "coverageEnd": period_end.isoformat(),
         "results": [_wb_goods_return_result_payload(item) for item in results],
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return results
+
+
+def _default_wb_return_claims_exporter(
+    accounts: Any,
+    output_dir: Path,
+    *,
+    period_start: date,
+    period_end: date,
+) -> list[WbReturnClaimsExportResult]:
+    del period_start, period_end
+    output_dir.mkdir(parents=True, exist_ok=True)
+    as_of = datetime.now(tz=MOSCOW_TZ).date()
+    results: list[WbReturnClaimsExportResult] = []
+    for account in accounts:
+        seller_account_id = str(account.seller_account_id)
+        file_prefix = hashlib.sha256(seller_account_id.encode("utf-8")).hexdigest()[:12]
+        client = WbReturnClaimsClient(api_key=account.api_key)
+        results.append(
+            export_wb_return_claims(
+                client,
+                output_dir,
+                as_of=as_of,
+                seller_account_id=seller_account_id,
+                account_name=str(account.account_name),
+                file_prefix=file_prefix,
+            )
+        )
+    manifest = {
+        "source": "wb_return_claims",
+        "coverageStart": (
+            min(
+                (
+                    item.coverage_start
+                    for item in results
+                    if item.coverage_start is not None
+                ),
+                default=None,
+            ).isoformat()
+            if results and any(item.coverage_start is not None for item in results)
+            else ""
+        ),
+        "coverageEnd": (
+            max(
+                (
+                    item.coverage_end
+                    for item in results
+                    if item.coverage_end is not None
+                ),
+                default=None,
+            ).isoformat()
+            if results and any(item.coverage_end is not None for item in results)
+            else ""
+        ),
+        "results": [_wb_return_claims_result_payload(item) for item in results],
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
@@ -585,6 +652,9 @@ class SourceRefreshService:
         wb_goods_return_exporter: Callable[
             ..., list[WbGoodsReturnExportResult]
         ] = _default_wb_goods_return_exporter,
+        wb_return_claims_exporter: Callable[
+            ..., list[WbReturnClaimsExportResult]
+        ] = _default_wb_return_claims_exporter,
         wb_supplier_sales_exporter: Callable[
             ..., list[WbSupplierSalesExportResult]
         ] = _default_wb_supplier_sales_exporter,
@@ -649,6 +719,7 @@ class SourceRefreshService:
         self._wb_stock_history_exporter = wb_stock_history_exporter
         self._wb_tariffs_exporter = wb_tariffs_exporter
         self._wb_goods_return_exporter = wb_goods_return_exporter
+        self._wb_return_claims_exporter = wb_return_claims_exporter
         self._wb_supplier_sales_exporter = wb_supplier_sales_exporter
         self._wb_measurement_penalties_exporter = wb_measurement_penalties_exporter
         self._wb_warehouse_measurements_exporter = wb_warehouse_measurements_exporter
@@ -2268,6 +2339,14 @@ class SourceRefreshService:
                 collect=_collect_wb_goods_return,
             ),
             SourceCollector(
+                source_type="wb_return_claims",
+                label="WB buyer return claims",
+                required=False,
+                modes=frozenset({"weekly", "full"}),
+                roles=frozenset(WB_FINANCE_REFRESH_ROLES),
+                collect=_collect_wb_return_claims,
+            ),
+            SourceCollector(
                 source_type="wb_supplier_sales",
                 label="WB supplier sales (warehouse & direction)",
                 required=False,
@@ -3252,6 +3331,87 @@ class SourceRefreshService:
             db.flush()
             return collection
         _persist_wb_goods_return_rows(
+            db,
+            collection,
+            result_items,
+            wb_cabinet_ids=wb_cabinet_ids,
+        )
+        return collection
+
+    def _record_wb_return_claims(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        output_dir: Path,
+        results: Iterable[WbReturnClaimsExportResult],
+        *,
+        wb_cabinet_ids: dict[str, str],
+    ) -> SourceRefreshCollection:
+        result_items = list(results)
+        payload_items = [
+            _wb_return_claims_result_payload(
+                item,
+                wb_cabinet_id=wb_cabinet_ids.get(item.seller_account_id, ""),
+            )
+            for item in result_items
+        ]
+        manifest: Mapping[str, Any] = {}
+        try:
+            loaded = json.loads(
+                (output_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            if isinstance(loaded, Mapping):
+                manifest = loaded
+        except (OSError, UnicodeError, TypeError, ValueError):
+            pass
+        successful = [item for item in result_items if item.ok]
+        failed = [item for item in result_items if not item.ok]
+        status = (
+            "partial_source"
+            if successful and failed
+            else "loaded"
+            if successful
+            else "needs_review"
+        )
+        payload: dict[str, Any] = {
+            "results": payload_items,
+            "coverageStart": str(manifest.get("coverageStart") or ""),
+            "coverageEnd": str(manifest.get("coverageEnd") or ""),
+        }
+        collection = repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_return_claims",
+            source_label="WB buyer return claims",
+            required=False,
+            status=status,
+            snapshot_hash=_hash_payload(payload_items),
+            row_count=sum(item.row_count for item in successful),
+            raw_path=str(output_dir),
+            error_message=(
+                "Some WB return-claims sources are unavailable."
+                if successful and failed
+                else "WB return-claims source is unavailable."
+                if failed
+                else ""
+            ),
+            payload=payload,
+        )
+        _attach_collection_raw_integrity(
+            collection,
+            source_root=self.settings.source_refresh_root_path,
+        )
+        if self.settings.source_refresh_raw_db_mode == "files_only":
+            collection.payload = {
+                **(collection.payload or {}),
+                "rowPersistence": {
+                    "status": "file_authoritative",
+                    "rawFilesAuthoritative": True,
+                },
+            }
+            db.flush()
+            return collection
+        _persist_wb_return_claim_rows(
             db,
             collection,
             result_items,
@@ -5301,6 +5461,29 @@ def _collect_wb_goods_return(
     return CollectorResult(collection=collection, output_dir=output_dir)
 
 
+def _collect_wb_return_claims(
+    service: SourceRefreshService,
+    context: CollectorContext,
+) -> CollectorResult:
+    if context.credentials.wb_settings is None:
+        return CollectorResult()
+    output_dir = context.root_dir / "wb_return_claims"
+    results = service._wb_return_claims_exporter(
+        context.credentials.wb_settings.accounts,
+        output_dir,
+        period_start=context.period_start,
+        period_end=context.period_end,
+    )
+    collection = service._record_wb_return_claims(
+        context.db,
+        context.refresh_run,
+        output_dir,
+        results,
+        wb_cabinet_ids=context.credentials.wb_cabinet_ids,
+    )
+    return CollectorResult(collection=collection, output_dir=output_dir)
+
+
 def _collect_wb_supplier_sales(
     service: SourceRefreshService,
     context: CollectorContext,
@@ -6199,6 +6382,36 @@ def _wb_goods_return_result_payload(
         "wbCabinetId": wb_cabinet_id,
         "pageIndex": 1,
         "status": status,
+        "ok": item.ok,
+        "rowCount": item.row_count,
+        "statusCode": item.status_code,
+        "coverageStart": (
+            item.coverage_start.isoformat() if item.coverage_start else ""
+        ),
+        "coverageEnd": item.coverage_end.isoformat() if item.coverage_end else "",
+        "rawPayloadHash": item.raw_payload_hash,
+        "flatPayloadHash": item.flat_payload_hash,
+        "outputFile": (item.raw_output_path.name if item.raw_output_path else None),
+        "flatOutputFile": (
+            item.flat_output_path.name if item.flat_output_path else None
+        ),
+        "error": item.error,
+    }
+
+
+def _wb_return_claims_result_payload(
+    item: WbReturnClaimsExportResult,
+    *,
+    wb_cabinet_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "sellerAccountId": item.seller_account_id,
+        "accountName": item.account_name,
+        "wbCabinetId": wb_cabinet_id,
+        "pageIndex": 1,
+        "status": item.source_state,
+        "activeStatus": item.active_state,
+        "archiveStatus": item.archive_state,
         "ok": item.ok,
         "rowCount": item.row_count,
         "statusCode": item.status_code,
@@ -7842,6 +8055,324 @@ def _goods_return_cabinet_scope_errors(
             or company.client_id != report.client_id
         ):
             return ["goods_return_source_scope_mismatch"]
+    return []
+
+
+@dataclass(frozen=True)
+class _ReturnClaimsSnapshotSelection:
+    source_rows: tuple[ClaimSourceRow, ...] = ()
+    cabinet_states: tuple[tuple[str, str], ...] = ()
+    source_state: str = "unavailable"
+    source_snapshot_hash: str = ""
+    source_loaded_at: datetime | None = None
+    source_coverage_start: date | None = None
+    source_coverage_end: date | None = None
+    source_row_count: int = 0
+    blocking_reasons: tuple[str, ...] = ()
+    review_reasons: tuple[str, ...] = ()
+
+
+def _select_return_claims_snapshot(
+    db: Session,
+    report: ReportRun,
+    *,
+    roles: Iterable[tuple[int, SourceRefreshRun]],
+) -> _ReturnClaimsSnapshotSelection:
+    candidates: list[tuple[int, SourceRefreshRun, SourceRefreshCollection]] = []
+    for priority, run in roles:
+        for collection in run.collections:
+            if collection.source_type == "wb_return_claims":
+                candidates.append((priority, run, collection))
+    if not candidates:
+        return _ReturnClaimsSnapshotSelection(
+            review_reasons=("return_claims_source_missing",)
+        )
+    selected_priority = min(item[0] for item in candidates)
+    selected = [item for item in candidates if item[0] == selected_priority]
+    if len({item[2].snapshot_hash for item in selected}) != 1:
+        return _ReturnClaimsSnapshotSelection(
+            blocking_reasons=("return_claims_source_revision_conflict",)
+        )
+    _priority, run, collection = sorted(
+        selected,
+        key=lambda item: (
+            _dimension_loaded_at_timestamp(item[2].loaded_at),
+            item[1].id,
+            item[2].id,
+        ),
+        reverse=True,
+    )[0]
+    if (
+        collection.tenant_id != report.tenant_id
+        or collection.client_id != report.client_id
+    ):
+        return _ReturnClaimsSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            blocking_reasons=("return_claims_source_scope_mismatch",),
+        )
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list) or not all(
+        isinstance(item, Mapping) for item in results
+    ):
+        return _ReturnClaimsSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("return_claims_source_manifest_invalid",),
+        )
+    if _hash_payload(results) != collection.snapshot_hash:
+        return _ReturnClaimsSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("return_claims_source_snapshot_hash_mismatch",),
+        )
+    try:
+        declared_count = sum(int(item.get("rowCount") or 0) for item in results)
+    except (TypeError, ValueError):
+        declared_count = -1
+    if declared_count != collection.row_count:
+        return _ReturnClaimsSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("return_claims_source_manifest_row_count_mismatch",),
+        )
+    manifest_scope = _return_claims_manifest_scope_errors(db, report, results)
+    if manifest_scope:
+        return _ReturnClaimsSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=tuple(manifest_scope),
+        )
+    snapshots = list(
+        db.scalars(
+            select(SourceSnapshotRow)
+            .where(
+                SourceSnapshotRow.refresh_run_id == run.id,
+                SourceSnapshotRow.collection_id == collection.id,
+                SourceSnapshotRow.source_type == "wb_return_claims",
+            )
+            .order_by(SourceSnapshotRow.row_number)
+        )
+    )
+    persistence = payload.get("rowPersistence") or {}
+    file_authoritative = (
+        persistence.get("status") in {"file_authoritative", "skipped_large_snapshot"}
+        and persistence.get("rawFilesAuthoritative") is True
+    )
+    if file_authoritative and snapshots:
+        return _ReturnClaimsSnapshotSelection(
+            source_snapshot_hash=collection.snapshot_hash,
+            source_loaded_at=collection.loaded_at,
+            source_row_count=collection.row_count,
+            blocking_reasons=("return_claims_source_storage_ambiguity",),
+        )
+    blocking: list[str] = []
+    source_rows: list[ClaimSourceRow] = []
+    if file_authoritative:
+        try:
+            source_rows.extend(
+                _iter_file_authoritative_return_claim_rows(
+                    collection,
+                    refresh_run=run,
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                )
+            )
+        except (OSError, TypeError, ValueError, RawIntegrityError):
+            blocking.append("return_claims_file_snapshot_invalid")
+    else:
+        if len(snapshots) != collection.row_count:
+            blocking.append("return_claims_database_row_count_mismatch")
+        for snapshot in snapshots:
+            row_payload = snapshot.row_payload
+            if not isinstance(row_payload, Mapping):
+                blocking.append("return_claims_source_payload_invalid")
+                continue
+            if snapshot.raw_payload_hash != _hash_payload(row_payload):
+                blocking.append("return_claims_source_payload_hash_mismatch")
+                continue
+            source_rows.append(
+                normalize_claim_source_row(
+                    row_payload,
+                    tenant_id=report.tenant_id,
+                    client_id=report.client_id,
+                    wb_cabinet_id=snapshot.wb_cabinet_id,
+                )
+            )
+    try:
+        if (payload.get("rawIntegrity") or {}).get("status") != "verified":
+            raise RawIntegrityError("return-claims raw integrity is not verified")
+        raw_dir = Path(collection.raw_path)
+        source_root = Path(run.root_dir) if run.root_dir else raw_dir
+        verify_raw_directory(
+            raw_dir,
+            source_type="wb_return_claims",
+            source_root=source_root,
+            collection_results=[item for item in results if isinstance(item, Mapping)],
+            collection_row_count=collection.row_count,
+            collection_snapshot_hash=collection.snapshot_hash,
+        )
+    except (OSError, TypeError, ValueError, RawIntegrityError):
+        blocking.append("return_claims_raw_snapshot_invalid")
+    blocking.extend(_return_claims_scope_errors(db, report, source_rows))
+    coverage_start = _safe_iso_date(payload.get("coverageStart"))
+    coverage_end = _safe_iso_date(payload.get("coverageEnd"))
+    cabinet_states = tuple(
+        sorted(
+            (
+                str(item.get("wbCabinetId") or "").strip(),
+                str(item.get("status") or "unavailable").strip(),
+            )
+            for item in results
+        )
+    )
+    distinct_states = {state for _cabinet_id, state in cabinet_states}
+    source_state = (
+        next(iter(distinct_states)) if len(distinct_states) == 1 else "partial"
+    )
+    review: list[str] = []
+    if coverage_start is None or coverage_end is None:
+        review.append("return_claims_source_coverage_missing")
+    elif coverage_start > report.period_start or coverage_end < report.period_end:
+        review.append("return_claims_source_period_partial")
+    if any(row.validation_errors for row in source_rows):
+        review.append("return_claims_source_identity_invalid")
+    if source_state == "confirmed_empty":
+        review.append("return_claims_source_empty")
+    elif source_state in {"access_denied", "paid_scope_required"}:
+        review.append("return_claims_source_access_denied")
+    elif source_state not in {"confirmed_nonempty"}:
+        review.append("return_claims_source_unavailable")
+    if collection.status == "partial_source":
+        review.append("return_claims_source_partial")
+    return _ReturnClaimsSnapshotSelection(
+        source_rows=tuple(source_rows) if not blocking else (),
+        cabinet_states=cabinet_states,
+        source_state=source_state,
+        source_snapshot_hash=collection.snapshot_hash,
+        source_loaded_at=collection.loaded_at,
+        source_coverage_start=coverage_start,
+        source_coverage_end=coverage_end,
+        source_row_count=len(source_rows),
+        blocking_reasons=tuple(dict.fromkeys(blocking)),
+        review_reasons=tuple(dict.fromkeys(review)),
+    )
+
+
+def _iter_file_authoritative_return_claim_rows(
+    collection: SourceRefreshCollection,
+    *,
+    refresh_run: SourceRefreshRun,
+    tenant_id: str,
+    client_id: str,
+) -> Iterable[ClaimSourceRow]:
+    payload = collection.payload or {}
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise RawIntegrityError("return-claims results are missing")
+    raw_dir = Path(collection.raw_path)
+    source_root = Path(refresh_run.root_dir) if refresh_run.root_dir else raw_dir
+    verify_raw_directory(
+        raw_dir,
+        source_type="wb_return_claims",
+        source_root=source_root,
+        collection_results=[item for item in results if isinstance(item, Mapping)],
+        collection_row_count=collection.row_count,
+        collection_snapshot_hash=collection.snapshot_hash,
+    )
+    count = 0
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise RawIntegrityError("return-claims result is not an object")
+        output_name = str(result.get("flatOutputFile") or "").strip()
+        if not output_name:
+            continue
+        if Path(output_name).name != output_name:
+            raise RawIntegrityError("return-claims flat output path is unsafe")
+        output_path = (raw_dir / output_name).resolve()
+        if not output_path.is_relative_to(raw_dir.resolve()):
+            raise RawIntegrityError("return-claims flat output path is unsafe")
+        rows = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            raise RawIntegrityError("return-claims flat rows are not a list")
+        cabinet_id = str(result.get("wbCabinetId") or "").strip()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise RawIntegrityError("return-claims row is not an object")
+            count += 1
+            yield normalize_claim_source_row(
+                row,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                wb_cabinet_id=cabinet_id,
+            )
+    if count != collection.row_count:
+        raise RawIntegrityError("return-claims row count changed")
+
+
+def _return_claims_manifest_scope_errors(
+    db: Session,
+    report: ReportRun,
+    results: Iterable[Mapping[str, Any]],
+) -> list[str]:
+    cabinet_ids = {str(item.get("wbCabinetId") or "").strip() for item in results}
+    if "" in cabinet_ids:
+        return ["return_claims_source_cabinet_missing"]
+    return _return_claims_cabinet_scope_errors(db, report, cabinet_ids)
+
+
+def _return_claims_scope_errors(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[ClaimSourceRow],
+) -> list[str]:
+    values = list(rows)
+    if any(
+        row.tenant_id != report.tenant_id or row.client_id != report.client_id
+        for row in values
+    ):
+        return ["return_claims_source_scope_mismatch"]
+    cabinet_ids = {row.wb_cabinet_id for row in values}
+    if "" in cabinet_ids:
+        return ["return_claims_source_cabinet_missing"]
+    return _return_claims_cabinet_scope_errors(db, report, cabinet_ids)
+
+
+def _return_claims_cabinet_scope_errors(
+    db: Session,
+    report: ReportRun,
+    cabinet_ids: set[str],
+) -> list[str]:
+    cabinets = (
+        {
+            item.id: item
+            for item in db.scalars(
+                select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids))
+            )
+        }
+        if cabinet_ids
+        else {}
+    )
+    for cabinet_id in cabinet_ids:
+        cabinet = cabinets.get(cabinet_id)
+        if (
+            cabinet is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+        ):
+            return ["return_claims_source_scope_mismatch"]
+        company = db.get(ClientCompany, cabinet.client_company_id)
+        if (
+            company is None
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            return ["return_claims_source_scope_mismatch"]
     return []
 
 
@@ -9907,6 +10438,70 @@ def _persist_wb_goods_return_rows(
                         "wbCabinetId": cabinet_id,
                         "srid": row.get("srid"),
                         "nmId": row.get("nm_id"),
+                        "rowNumber": local_index,
+                    }
+                )
+                batch.append(
+                    {
+                        "row_number": row_number,
+                        "raw_payload_hash": _hash_payload(row_payload),
+                        "row_payload": row_payload,
+                        "source_row_id": source_row_id,
+                        "wb_cabinet_id": cabinet_id,
+                        "loaded_at": collection.loaded_at,
+                    }
+                )
+                row_number += 1
+                _flush_snapshot_batch(db, collection, batch)
+        _flush_snapshot_batch(db, collection, batch, force=True)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _mark_raw_row_persistence_failure(db, collection, exc)
+
+
+def _persist_wb_return_claim_rows(
+    db: Session,
+    collection: SourceRefreshCollection,
+    results: Iterable[WbReturnClaimsExportResult],
+    *,
+    wb_cabinet_ids: dict[str, str],
+) -> None:
+    try:
+        row_number = 1
+        batch: list[dict[str, Any]] = []
+        for result in results:
+            if not result.ok or result.flat_output_path is None:
+                continue
+            rows = json.loads(result.flat_output_path.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("return-claims flat rows must be a list")
+            cabinet_id = wb_cabinet_ids.get(result.seller_account_id, "")
+            for local_index, row in enumerate(rows, 1):
+                if not isinstance(row, Mapping):
+                    raise ValueError("return-claims flat row must be an object")
+                forbidden = {
+                    "id",
+                    "user_comment",
+                    "wb_comment",
+                    "origin_id_info",
+                    "photos",
+                    "photo",
+                    "videos",
+                    "video",
+                    "actions",
+                }
+                if forbidden.intersection(row):
+                    raise ValueError("return-claims flat row contains raw fields")
+                row_payload = {
+                    **row,
+                    "marketplace": "wb",
+                    "source_output_file": result.flat_output_path.name,
+                }
+                source_row_id = _hash_payload(
+                    {
+                        "wbCabinetId": cabinet_id,
+                        "srid": row.get("srid"),
+                        "nmId": row.get("nm_id"),
+                        "isArchive": row.get("is_archive"),
                         "rowNumber": local_index,
                     }
                 )
