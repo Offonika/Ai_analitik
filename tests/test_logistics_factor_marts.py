@@ -22,6 +22,7 @@ from wb_unit_economics.web.database import (
     DB_FIRST_SCHEMA_VERSION,
     LOGISTICS_DIMENSIONS_SCHEMA_VERSION,
     LOGISTICS_MEASUREMENTS_SCHEMA_VERSION,
+    LOGISTICS_RETURN_REASONS_SCHEMA_VERSION,
     LOGISTICS_ROUTES_SCHEMA_VERSION,
     LOGISTICS_TARIFFS_SCHEMA_VERSION,
     init_db,
@@ -46,8 +47,12 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
     assert LOGISTICS_DIMENSIONS_SCHEMA_VERSION < LOGISTICS_TARIFFS_SCHEMA_VERSION
     assert LOGISTICS_ROUTES_SCHEMA_VERSION != LOGISTICS_TARIFFS_SCHEMA_VERSION
     assert LOGISTICS_MEASUREMENTS_SCHEMA_VERSION != LOGISTICS_ROUTES_SCHEMA_VERSION
-    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
-    assert schema_version(engine) == LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
+    assert (
+        LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
+        != LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
+    )
+    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
+    assert schema_version(engine) == LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
 
     inspector = inspect(engine)
 
@@ -100,6 +105,7 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
     assert "logistics_tariffs_required" in report_columns
     assert "logistics_routes_required" in report_columns
     assert "logistics_measurements_required" in report_columns
+    assert "logistics_return_reasons_required" in report_columns
 
     tariff_cols = {
         column["name"]: column
@@ -180,6 +186,44 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
         "ambiguous_event_count",
         "blocking_reasons",
     } <= measurement_context_cols
+
+    return_reason_cols = {
+        column["name"]: column
+        for column in inspector.get_columns("report_logistics_return_reason_rows")
+    }
+    assert {
+        "chain_key",
+        "event_date",
+        "product_ref",
+        "reason_category",
+        "reason_source",
+        "evidence_type",
+        "match_status",
+        "claim_available",
+        "has_user_comment",
+        "row_hash",
+    } <= set(return_reason_cols)
+    assert return_reason_cols["reason_category"]["nullable"] is True
+    assert return_reason_cols["claim_available"]["nullable"] is True
+
+    return_reason_context_cols = {
+        column["name"]
+        for column in inspector.get_columns(
+            "report_logistics_return_reason_contexts"
+        )
+    }
+    assert {
+        "methodology_version",
+        "data_status",
+        "goods_return_source_status",
+        "claims_source_status",
+        "goods_return_coverage_start",
+        "claims_coverage_end",
+        "finance_return_chain_count",
+        "return_reason_row_count",
+        "blocking_reasons",
+        "review_reasons",
+    } <= return_reason_context_cols
 
 
 def _tariff_sku(**changes):

@@ -500,6 +500,9 @@ class ReportRun(Base):
     logistics_measurements_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    logistics_return_reasons_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -574,6 +577,19 @@ class ReportRun(Base):
         uselist=False,
     )
     logistics_measurement_rows: Mapped[list[ReportLogisticsMeasurementRow]] = (
+        relationship(
+            back_populates="report",
+            cascade="all, delete-orphan",
+        )
+    )
+    logistics_return_reason_context: Mapped[
+        ReportLogisticsReturnReasonContext | None
+    ] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    logistics_return_reason_rows: Mapped[list[ReportLogisticsReturnReasonRow]] = (
         relationship(
             back_populates="report",
             cascade="all, delete-orphan",
@@ -1205,6 +1221,101 @@ class ReportLogisticsMeasurementContext(Base):
     )
 
 
+class ReportLogisticsReturnReasonContext(Base):
+    """Versioned F-5 context for safe return reasons and claims coverage."""
+
+    __tablename__ = "report_logistics_return_reason_contexts"
+    __table_args__ = (
+        Index(
+            "ix_report_logistics_return_reason_context_status",
+            "tenant_id",
+            "data_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    methodology_version: Mapped[str] = mapped_column(String, nullable=False)
+    data_status: Mapped[str] = mapped_column(String, nullable=False)
+    input_hash: Mapped[str] = mapped_column(String, nullable=False)
+    goods_return_source_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="unavailable"
+    )
+    claims_source_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="unavailable"
+    )
+    goods_return_snapshot_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    claims_snapshot_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    goods_return_source_loaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    claims_source_loaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    goods_return_coverage_start: Mapped[date | None] = mapped_column(Date)
+    goods_return_coverage_end: Mapped[date | None] = mapped_column(Date)
+    claims_coverage_start: Mapped[date | None] = mapped_column(Date)
+    claims_coverage_end: Mapped[date | None] = mapped_column(Date)
+    finance_return_chain_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    return_reason_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    goods_return_source_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    goods_return_matched_chain_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    goods_return_reason_available_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    goods_return_source_unmatched_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    goods_return_finance_unmatched_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    claims_source_row_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    claims_matched_chain_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    claims_source_unmatched_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    claims_finance_unmatched_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    blocking_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    review_reasons: Mapped[list[Any]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_return_reason_context"
+    )
+
+
 class ReportLogisticsOrderRow(Base):
     __tablename__ = "report_logistics_order_rows"
     __table_args__ = (
@@ -1736,6 +1847,79 @@ class ReportLogisticsRouteRow(Base):
     source_hash_digest: Mapped[str] = mapped_column(String, nullable=False, default="")
 
     report: Mapped[ReportRun] = relationship(back_populates="logistics_route_rows")
+
+
+class ReportLogisticsReturnReasonRow(Base):
+    """Immutable safe F-5 row at canonical Finance return-chain grain."""
+
+    __tablename__ = "report_logistics_return_reason_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_run_id",
+            "row_uid",
+            name="uq_report_logistics_return_reason_row",
+        ),
+        Index(
+            "ix_report_logistics_return_reason_filter",
+            "report_run_id",
+            "event_date",
+            "wb_cabinet_id",
+            "client_company_id",
+            "scheme",
+        ),
+        Index(
+            "ix_report_logistics_return_reason_product",
+            "report_run_id",
+            "product_ref",
+            "reason_source",
+            "evidence_type",
+            "match_status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id"), nullable=False
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id"), nullable=False
+    )
+    row_uid: Mapped[str] = mapped_column(String, nullable=False)
+    wb_cabinet_id: Mapped[str] = mapped_column(String, nullable=False)
+    client_company_id: Mapped[str] = mapped_column(String, nullable=False)
+    scheme: Mapped[str] = mapped_column(String, nullable=False)
+    chain_key: Mapped[str] = mapped_column(String, nullable=False)
+    event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    product_ref: Mapped[str] = mapped_column(String, nullable=False)
+    product: Mapped[str] = mapped_column(String, nullable=False, default="")
+    vendor_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    reason_category: Mapped[str | None] = mapped_column(String)
+    reason_source: Mapped[str] = mapped_column(
+        String, nullable=False, default="unavailable"
+    )
+    evidence_type: Mapped[str] = mapped_column(
+        String, nullable=False, default="data_unavailable"
+    )
+    match_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="source_unavailable"
+    )
+    claim_available: Mapped[bool | None] = mapped_column(Boolean)
+    has_user_comment: Mapped[bool | None] = mapped_column(Boolean)
+    goods_return_source_hash_digest: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    claims_source_hash_digest: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    row_hash: Mapped[str] = mapped_column(String, nullable=False)
+
+    report: Mapped[ReportRun] = relationship(
+        back_populates="logistics_return_reason_rows"
+    )
 
 
 class ReportLostSalesRow(Base):

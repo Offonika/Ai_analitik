@@ -442,6 +442,9 @@ ALTER TABLE IF EXISTS wb_unit_economics.report_runs
 ALTER TABLE IF EXISTS wb_unit_economics.report_runs
     ADD COLUMN IF NOT EXISTS logistics_measurements_required boolean NOT NULL DEFAULT false;
 
+ALTER TABLE IF EXISTS wb_unit_economics.report_runs
+    ADD COLUMN IF NOT EXISTS logistics_return_reasons_required boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_dimension_rows (
     id bigserial PRIMARY KEY,
     report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
@@ -755,6 +758,81 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_measurement_contex
 CREATE INDEX IF NOT EXISTS ix_report_logistics_measurement_context_status
     ON wb_unit_economics.report_logistics_measurement_contexts (
         tenant_id, data_status
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_return_reason_contexts (
+    report_run_id text PRIMARY KEY REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    methodology_version text NOT NULL,
+    data_status text NOT NULL,
+    input_hash text NOT NULL,
+    goods_return_source_status text NOT NULL DEFAULT 'unavailable',
+    claims_source_status text NOT NULL DEFAULT 'unavailable',
+    goods_return_snapshot_hash text NOT NULL DEFAULT '',
+    claims_snapshot_hash text NOT NULL DEFAULT '',
+    goods_return_source_loaded_at timestamptz,
+    claims_source_loaded_at timestamptz,
+    goods_return_coverage_start date,
+    goods_return_coverage_end date,
+    claims_coverage_start date,
+    claims_coverage_end date,
+    finance_return_chain_count integer NOT NULL DEFAULT 0,
+    return_reason_row_count integer NOT NULL DEFAULT 0,
+    goods_return_source_row_count integer NOT NULL DEFAULT 0,
+    goods_return_matched_chain_count integer NOT NULL DEFAULT 0,
+    goods_return_reason_available_count integer NOT NULL DEFAULT 0,
+    goods_return_source_unmatched_count integer NOT NULL DEFAULT 0,
+    goods_return_finance_unmatched_count integer NOT NULL DEFAULT 0,
+    claims_source_row_count integer NOT NULL DEFAULT 0,
+    claims_matched_chain_count integer NOT NULL DEFAULT 0,
+    claims_source_unmatched_count integer NOT NULL DEFAULT 0,
+    claims_finance_unmatched_count integer NOT NULL DEFAULT 0,
+    blocking_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review_reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_return_reason_context_status
+    ON wb_unit_economics.report_logistics_return_reason_contexts (
+        tenant_id, data_status
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_logistics_return_reason_rows (
+    id bigserial PRIMARY KEY,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id),
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id),
+    row_uid text NOT NULL,
+    wb_cabinet_id text NOT NULL,
+    client_company_id text NOT NULL,
+    scheme text NOT NULL,
+    chain_key text NOT NULL,
+    event_date date NOT NULL,
+    product_ref text NOT NULL,
+    product text NOT NULL DEFAULT '',
+    vendor_code text NOT NULL DEFAULT '',
+    reason_category text,
+    reason_source text NOT NULL DEFAULT 'unavailable',
+    evidence_type text NOT NULL DEFAULT 'data_unavailable',
+    match_status text NOT NULL DEFAULT 'source_unavailable',
+    claim_available boolean,
+    has_user_comment boolean,
+    goods_return_source_hash_digest text NOT NULL DEFAULT '',
+    claims_source_hash_digest text NOT NULL DEFAULT '',
+    row_hash text NOT NULL,
+    CONSTRAINT uq_report_logistics_return_reason_row
+        UNIQUE (report_run_id, row_uid)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_return_reason_filter
+    ON wb_unit_economics.report_logistics_return_reason_rows (
+        report_run_id, event_date, wb_cabinet_id, client_company_id, scheme
+    );
+
+CREATE INDEX IF NOT EXISTS ix_report_logistics_return_reason_product
+    ON wb_unit_economics.report_logistics_return_reason_rows (
+        report_run_id, product_ref, reason_source, evidence_type, match_status
     );
 
 ALTER TABLE IF EXISTS wb_unit_economics.report_logistics_analysis_contexts

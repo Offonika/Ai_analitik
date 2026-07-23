@@ -7,8 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
-related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -23,6 +23,8 @@ ai_sections:
   acceptance: "Acceptance Criteria"
   tests: "Test Plan"
 code_anchors:
+  - path: src/wb_unit_economics/return_reason_analysis.py
+    symbols: ["class ReturnReasonMartRow", "class ReturnReasonAnalysisContext", "def build_return_reason_analysis"]
   - path: src/wb_unit_economics/wb_goods_return.py
     symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links", "def export_wb_goods_return"]
   - path: src/wb_unit_economics/wb_return_claims.py
@@ -30,20 +32,24 @@ code_anchors:
   - path: src/wb_unit_economics/web/source_refresh.py
     symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _record_wb_return_claims", "def _select_return_claims_snapshot", "def _persist_wb_return_claim_rows", "def _iter_file_authoritative_return_claim_rows"]
   - path: src/wb_unit_economics/web/repository.py
-    symbols: ["def _safe_collection_source_state"]
+    symbols: ["def replace_report_logistics_return_reason_analysis", "def report_logistics_return_reasons_payload", "def _logistics_return_reason_context_state"]
+  - path: src/wb_unit_economics/web/app.py
+    symbols: ["def report_logistics_return_reasons", "def _require_logistics_return_reasons_access_or_404"]
   - path: src/wb_unit_economics/logistics_analysis.py
     symbols: ["def source_row_from_payload", "def _source_hash_record"]
   - path: scripts/probe_wb_logistics_factors.py
     symbols: ["def fetch_r0_source_payload", "def evaluate_r0_identity", "def run_r0_identity_probe"]
 test_anchors:
+  - path: tests/test_return_reason_analysis.py
+    symbols: ["def test_builds_exact_safe_return_reason_row", "def test_denied_claims_is_partial_not_blocking_and_keeps_reason_fact", "def test_multiple_return_segments_collapse_to_latest_finance_date"]
   - path: tests/test_wb_goods_return.py
     symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity", "def test_goods_return_link_marks_invalid_identity_and_source_conflict"]
   - path: tests/test_wb_return_claims.py
     symbols: ["def test_export_marks_confirmed_empty_without_blocking", "def test_export_marks_access_denied_without_creating_snapshot_files", "def test_exact_match_activates_claim_flags_and_empty_rows_do_not", "def test_unmatched_cross_scope_and_ambiguous_finance_never_become_fact"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_claims_record_and_selector_keep_only_safe_flat_fields", "def test_return_claims_access_denied_is_review_state_not_blocker"]
+    symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_claims_record_and_selector_keep_only_safe_flat_fields", "def test_return_claims_access_denied_is_review_state_not_blocker", "def test_return_reason_context_builds_from_lineage_and_denied_claims_is_partial"]
   - path: tests/test_web_app.py
-    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker"]
+    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_logistics_return_reason_analysis_is_atomic_and_published_immutable", "def test_required_return_reason_context_controls_publication_readiness"]
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
@@ -103,16 +109,24 @@ result manifest,
 cabinet/coverage metadata, raw integrity, DB/file-authoritative persistence и
 selector, строгая `report` envelope, deterministic normalization и internal
 exact link/coverage model. Finance `srid` и `orderId` включены в logistics input
-hash. Report mart/context/API/UI намеренно не создаются до R-3.
+hash. На границе R-1 report mart/context/API/UI ещё не создавались.
 
-В текущем change set реализован R-2 source subset: GET-only active/archive
+R-2 source subset влит в `main` через PR №59: GET-only active/archive
 connector с полной provider-total pagination и pacing, protected raw snapshot,
 flat projection только из `srid`, `nm_id`, `is_archive`,
 `has_user_comment`, registered optional `wb_return_claims` collection,
 DB/file-authoritative selector, per-cabinet source states и exact
 `claims.srid → Finance.srid` internal linker. Существующая staff-панель
 обновления источников получает безопасную пометку empty/denied без raw payload.
-Report-level context/mart/API блока причин и client UI остаются границей R-3/R-4.
+
+В текущем change set реализован R-3 без UI и environment rollout:
+детерминированная витрина на canonical Finance return-chain grain, additive
+context/rows schema, атомарное сохранение нового draft, publication readiness,
+read-only `/logistics/return-reasons`, SQL-фильтры/сортировки/пагинация,
+coverage полного среза и role/flag matrix. Empty/denied claims сохраняются как
+`partial/data_unavailable`, но не становятся publication blocker; exact
+совместимые rows автоматически включают только безопасные boolean-признаки.
+R-4 UI и R-5 staff-only acceptance/rollout остаются следующими этапами.
 
 Первичный R-0 выполнен 22 июля 2026 года после принятия спека. Source schema
 gate пройден, но direct Finance/source join не подтвердился даже на
@@ -510,6 +524,10 @@ report: такие операции требуют отдельного rollout/
   недоступна` по полному фильтрованному срезу.
 - Историю объясняют только данными периода, который источник покрывает; вне окна
   — `data_unavailable`.
+- Если одна canonical Finance return chain содержит несколько подтверждённых
+  return segments, витрина сохраняет одну строку и использует последнюю
+  финансовую дату возврата для отображения и фильтров. Fanout и повторный учёт
+  возврата запрещены.
 
 R-1 реализует только source и внутреннюю deterministic link-модель:
 
@@ -679,16 +697,19 @@ factors и return-reasons master; client дополнительно требуе
 3. `R-0L Existing lineage discovery` — read-only поиск уже существующего
    verified unambiguous return lineage до нового report; выполнен с
    `newReportRequired=true`, сам ничего не создавал.
-4. `R-1 goods-return` — реализован в текущем change set: registered raw
+4. `R-1 goods-return` — реализован и влит: registered raw
    snapshot, DB/file selector, нормализация `reason`, exact internal join и
    статусы покрытия без report mart/API/UI. Environment rollout не выполнен.
-5. `R-2 claims` — реализован в текущем change set: коннектор active/archive,
+5. `R-2 claims` — реализован и влит через PR №59: коннектор active/archive,
    безопасная обработка PII, признак наличия комментария без переноса текста из
    raw, per-cabinet source states и exact linker с автоматической активацией
    при появлении совместимых keys. Empty/denied не блокируют реализацию,
    основную логистику или публикацию.
-6. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
-   «Возвраты».
+6. `R-3 Витрина и API` — реализован в текущем change set:
+   `report_logistics_return_reason_contexts`,
+   `report_logistics_return_reason_rows`, атомарная draft-only persistence,
+   readiness и read-only `/logistics/return-reasons`. Environment rollout не
+   выполнен.
 7. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
    рекомендаций обратной логистики.
 8. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
@@ -704,8 +725,9 @@ Design-часть принята 22 июля 2026 года. Реализация
 положительный live match не является acceptance prerequisite: exact linker
 доказывается обезличенными unit/integration fixtures и включается на live rows
 автоматически. R-1/R-2 source/selector/link subset покрывает критерии 2, 3,
-5–8 и 10 в своей границе; report-level критерии 4, 9, 11, 12 относятся к
-R-3…R-5 и ещё не выполнены.
+5–8 и 10 в своей границе; R-3 покрывает report-level критерии 4, 9, 11 и 12.
+UI/browser acceptance и environment rollout относятся к R-4/R-5 и не
+выполнены.
 
 1. probe зафиксировал schema/source state; goods-return имеет однозначный
    same-name Finance/source crosswalk, а claims exact linker проходит
@@ -821,6 +843,17 @@ Rollback отключает новые маршруты и блок причин
 
 # Changelog
 
+- 2026-07-23 — реализован R-3 без environment rollout: одна mart-строка на
+  canonical Finance return chain, последняя подтверждённая Finance return date
+  при нескольких segments, additive context/rows schema
+  `2026_07_23_logistics_return_reasons_context_v1`, атомарная draft-only
+  persistence, fail-closed integrity/readiness, read-only
+  `/logistics/return-reasons`, SQL-фильтры/сортировки/пагинация и role/flag
+  matrix. Empty/denied/unmatched/out-of-window остаются
+  `partial/data_unavailable` и не блокируют основную логистику или публикацию.
+  Raw comments, claim IDs, media и raw `srid` не выходят в mart/API/docs.
+  Следующий этап — R-4 UI; test/production rollout не выполнялся.
+
 - 2026-07-23 — по прямому решению пользователя принят fail-soft R-2:
   `confirmed_empty` означает «Заявок за доступное окно нет»,
   `access_denied` — «Источник заявок недоступен»; оба состояния не блокируют
@@ -828,13 +861,13 @@ Rollback отключает новые маршруты и блок причин
   Exact `(tenant, client, cabinet, nm_id, claims.srid → Finance.srid)` остаётся
   обязательным только для конкретного `claimAvailable=true`; после появления
   доступа и совместимых keys строки активируются автоматически. Raw comments,
-  IDs и media остаются только в защищённом raw snapshot. В текущем change set
+  IDs и media остаются только в защищённом raw snapshot. В R-2
   реализованы GET-only connector, safe flat, registered optional collection,
   DB/file selector, exact linker и безопасная пометка состояния в staff
   source-refresh UI. R-0I runner больше не обнуляет R-2:
   `claimsImplementationGate=true` фиксирует принятое решение независимо от
   текущего `claimsIdentityGate`, а общий implementation gate зависит от
-  принятого exact goods-return join. Report mart/API блока причин остаются R-3.
+  принятого exact goods-return join.
 
 - 2026-07-22 — после merge PR №57 repeat live R-0I из `main@0deacf4`
   подтвердил claims schema, полную provider-total pagination и

@@ -31,6 +31,9 @@ from wb_unit_economics.logistics_analysis import (
     build_route_rows,
     build_tariff_rows,
 )
+from wb_unit_economics.return_reason_analysis import build_return_reason_analysis
+from wb_unit_economics.wb_goods_return import normalize_goods_return_source_row
+from wb_unit_economics.wb_return_claims import normalize_claim_source_row
 from wb_unit_economics.web import dashboard_payload, integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.app import create_app
@@ -1564,6 +1567,123 @@ def _logistics_fixture_result(report, *, product_count: int = 1):
     return build_logistics_analysis(source_rows, unit_rows)
 
 
+def _return_reason_fixture_result(
+    report,
+    *,
+    claims_state: str = "access_denied",
+):
+    finance_row = LogisticsSourceRow(
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        wb_cabinet_id="cabinet-logistics",
+        client_company_id="company-logistics",
+        source_row_id="return-finance-row",
+        source_hash="safe-return-finance-hash",
+        financial_date=date(2026, 4, 7),
+        order_date=date(2026, 4, 5),
+        order_uid="return-order-must-not-leak",
+        nm_id="101",
+        sku="sku-101",
+        vendor_code="A-101",
+        product="Товар для возврата",
+        scheme="fbo",
+        warehouse="Коледино",
+        destination="Россия",
+        document_type="Возврат",
+        operation_name="Возврат",
+        quantity=Decimal("-1"),
+        retail_amount=Decimal("-100"),
+        delivery_service=Decimal("10"),
+        delivery_amount=Decimal("0"),
+        return_amount=Decimal("0"),
+        rebill_logistic_cost=Decimal("0"),
+        finance_srid="finance-srid-safe-internal",
+    )
+    base = build_logistics_analysis(
+        [finance_row],
+        [
+            UnitEconomicsSlice(
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                financial_week_start=date(2026, 4, 6),
+                wb_cabinet_id="cabinet-logistics",
+                client_company_id="company-logistics",
+                scheme="fbo",
+                nm_id="101",
+                sku="sku-101",
+                vendor_code="A-101",
+                product="Товар для возврата",
+                revenue=Decimal("-100"),
+                profit_before_tax=Decimal("-20"),
+                logistics=Decimal("10"),
+            )
+        ],
+    )
+    logistics_result = replace(
+        base,
+        order_rows=tuple(
+            replace(
+                row,
+                logistics_reverse=Decimal("10"),
+                return_quantity=Decimal("1"),
+            )
+            for row in base.order_rows
+        ),
+    )
+    goods_rows = [
+        normalize_goods_return_source_row(
+            {
+                "srid": "finance-srid-safe-internal",
+                "order_id": "provider-order-must-not-leak",
+                "nm_id": "101",
+                "barcode": "provider-barcode-must-not-leak",
+                "reason": "Не подошёл размер",
+                "status": "returned",
+                "return_type": "buyer",
+            },
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            wb_cabinet_id="cabinet-logistics",
+        )
+    ]
+    claim_rows = (
+        [
+            normalize_claim_source_row(
+                {
+                    "srid": "finance-srid-safe-internal",
+                    "nm_id": "101",
+                    "is_archive": False,
+                    "has_user_comment": True,
+                },
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                wb_cabinet_id="cabinet-logistics",
+            )
+        ]
+        if claims_state == "confirmed_nonempty"
+        else []
+    )
+    return_reason_result = build_return_reason_analysis(
+        [finance_row],
+        logistics_result.order_rows,
+        goods_rows,
+        claim_rows,
+        goods_return_snapshot_hash="safe-goods-return-snapshot",
+        claims_snapshot_hash="safe-claims-snapshot",
+        goods_return_coverage_start=date(2026, 4, 1),
+        goods_return_coverage_end=date(2026, 4, 30),
+        claims_coverage_start=date(2026, 4, 1),
+        claims_coverage_end=date(2026, 4, 14),
+        claims_source_status=claims_state,
+        claims_review_reasons=(
+            ("return_claims_source_access_denied",)
+            if claims_state == "access_denied"
+            else ()
+        ),
+    )
+    return logistics_result, return_reason_result
+
+
 def _dimension_context(report, rows, *, data_status: str = "ready"):
     return {
         "tenant_id": report.tenant_id,
@@ -2006,6 +2126,260 @@ def test_logistics_dimensions_role_and_flag_matrix(tmp_path: Path) -> None:
     client.app.state.settings.logistics_factors_client_enabled = True
     assert client.get("/api/reports/report-1/logistics/dimensions").status_code == 200
     assert client.get("/api/me").json()["logisticsFactorsEnabled"] is True
+
+
+def test_logistics_return_reasons_api_states_filters_and_safe_payload(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_return_reasons_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    path = "/api/reports/report-1/logistics/return-reasons"
+    legacy = client.get(path).json()
+    assert legacy["dataStatus"] == "needs_rebuild"
+    assert legacy["sliceStatus"] == "needs_rebuild"
+    assert legacy["rows"] == []
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        logistics_result, return_reason_result = _return_reason_fixture_result(report)
+        repository.replace_report_logistics_analysis(
+            db,
+            report,
+            logistics_result,
+        )
+        context = repository.replace_report_logistics_return_reason_analysis(
+            db,
+            report,
+            return_reason_result,
+            goods_return_source_loaded_at=datetime(2026, 7, 23, 10, 0),
+            claims_source_loaded_at=datetime(2026, 7, 23, 10, 1),
+        )
+        db.commit()
+        assert context.return_reason_row_count == 1
+
+    response = client.get(path)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataStatus"] == "partial"
+    assert body["sliceStatus"] == "partial"
+    assert body["total"] == 1
+    assert body["coverage"] == {
+        "totalReturnChains": 1,
+        "reasonAvailable": 1,
+        "reasonUnavailable": 0,
+        "claimAvailable": 0,
+        "hasUserComment": 0,
+        "claimCoverageUnknown": 1,
+        "reasonCoveragePct": 100,
+        "claimCoveragePct": 0,
+    }
+    assert body["sourceCoverage"]["claims"]["status"] == "access_denied"
+    assert (
+        body["sourceCoverage"]["claims"]["message"]
+        == "Источник заявок недоступен"
+    )
+    row = body["rows"][0]
+    assert row["reasonCategory"] == "Не подошёл размер"
+    assert row["reasonSource"] == "goods_return"
+    assert row["evidenceType"] == "fact"
+    assert row["claimAvailable"] is None
+    assert row["hasUserComment"] is None
+    assert len(row["chainRef"]) == 12
+    rendered = response.text
+    for forbidden in (
+        "finance-srid-safe-internal",
+        "provider-order-must-not-leak",
+        "provider-barcode-must-not-leak",
+        "sourceHashDigest",
+        "snapshotHash",
+        "rowHash",
+    ):
+        assert forbidden not in rendered
+
+    filtered = client.get(
+        path,
+        params={
+            "product": "возврата",
+            "reasonSource": "goods_return",
+            "evidenceType": "fact",
+            "matchStatus": "ready",
+        },
+    ).json()
+    assert filtered["total"] == 1
+    assert filtered["coverage"]["reasonAvailable"] == 1
+
+    empty = client.get(
+        path,
+        params={"periodStart": "2026-04-20", "periodEnd": "2026-04-25"},
+    ).json()
+    assert empty["sliceStatus"] == "empty"
+    assert empty["coverage"]["totalReturnChains"] == 0
+
+    with client.app.state.session_factory() as db:
+        context = db.get(
+            repository.ReportLogisticsReturnReasonContext,
+            "report-1",
+        )
+        assert context is not None
+        context.return_reason_row_count = 2
+        db.commit()
+    blocked = client.get(path).json()
+    assert blocked["dataStatus"] == "blocked"
+    assert blocked["sliceStatus"] == "blocked"
+    assert blocked["rows"] == []
+
+
+def test_logistics_return_reasons_exact_claim_activates_safe_booleans(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_return_reasons_enabled": True,
+        },
+        publish_report=False,
+    )
+    login(client)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        logistics_result, return_reason_result = _return_reason_fixture_result(
+            report,
+            claims_state="confirmed_nonempty",
+        )
+        repository.replace_report_logistics_analysis(db, report, logistics_result)
+        repository.replace_report_logistics_return_reason_analysis(
+            db,
+            report,
+            return_reason_result,
+        )
+        db.commit()
+
+    body = client.get(
+        "/api/reports/report-1/logistics/return-reasons"
+    ).json()
+    assert body["dataStatus"] == "ready"
+    assert body["sliceStatus"] == "ready"
+    assert body["coverage"]["claimAvailable"] == 1
+    assert body["coverage"]["hasUserComment"] == 1
+    assert body["rows"][0]["claimAvailable"] is True
+    assert body["rows"][0]["hasUserComment"] is True
+
+
+def test_logistics_return_reason_analysis_is_atomic_and_published_immutable(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        _logistics_result, result = _return_reason_fixture_result(report)
+        repository.replace_report_logistics_return_reason_analysis(
+            db,
+            report,
+            result,
+        )
+        db.flush()
+        persisted_uids = list(
+            db.scalars(
+                select(repository.ReportLogisticsReturnReasonRow.row_uid).where(
+                    repository.ReportLogisticsReturnReasonRow.report_run_id
+                    == report.id
+                )
+            )
+        )
+
+        invalid_row = replace(result.rows[0], tenant_id="other-tenant")
+        invalid_result = replace(result, rows=(invalid_row,))
+        with pytest.raises(ValueError, match="tenant does not match report"):
+            repository.replace_report_logistics_return_reason_analysis(
+                db,
+                report,
+                invalid_result,
+            )
+        assert list(
+            db.scalars(
+                select(repository.ReportLogisticsReturnReasonRow.row_uid).where(
+                    repository.ReportLogisticsReturnReasonRow.report_run_id
+                    == report.id
+                )
+            )
+        ) == persisted_uids
+        assert report.logistics_return_reasons_required is True
+
+        report.publication_status = "published"
+        with pytest.raises(ValueError, match="published logistics return-reason"):
+            repository.replace_report_logistics_return_reason_analysis(
+                db,
+                report,
+                result,
+            )
+
+
+def test_logistics_return_reasons_role_and_flag_matrix(tmp_path: Path) -> None:
+    (tmp_path / "staff").mkdir()
+    (tmp_path / "client").mkdir()
+    path = "/api/reports/report-1/logistics/return-reasons"
+    staff = make_client(
+        tmp_path / "staff",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_return_reasons_enabled": False,
+        },
+    )
+    login(staff)
+    assert staff.get(path).status_code == 404
+    assert staff.get("/api/me").json()["logisticsReturnReasonsEnabled"] is False
+    staff.app.state.settings.logistics_return_reasons_enabled = True
+    assert staff.get(path).status_code == 200
+    assert staff.get("/api/me").json()["logisticsReturnReasonsEnabled"] is True
+
+    client = make_client(
+        tmp_path / "client",
+        settings_overrides={
+            "logistics_analysis_enabled": True,
+            "logistics_analysis_client_enabled": True,
+            "logistics_factors_enabled": True,
+            "logistics_factors_client_enabled": True,
+            "logistics_return_reasons_enabled": True,
+            "logistics_return_reasons_client_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="return-reason-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    login_as(client, "return-reason-client@example.com", "secret")
+    assert client.get(path).status_code == 404
+    me = client.get("/api/me").json()
+    assert me["logisticsReturnReasonsEnabled"] is False
+    assert me["logisticsReturnReasonsClientEnabled"] is False
+    client.app.state.settings.logistics_return_reasons_client_enabled = True
+    assert client.get(path).status_code == 200
+    me = client.get("/api/me").json()
+    assert me["logisticsReturnReasonsEnabled"] is True
+    assert me["logisticsReturnReasonsClientEnabled"] is True
 
 
 def test_logistics_measurements_api_states_filters_and_full_slice_coverage(
@@ -4160,6 +4534,71 @@ def test_required_measurement_context_controls_publication_readiness(
             item
             for item in outdated
             if item["code"] == "logistics_measurements_outdated"
+        )
+        assert blocker["nonOverridable"] is True
+
+
+def test_required_return_reason_context_controls_publication_readiness(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.logistics_return_reasons_required = True
+        missing = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in missing
+            if item["code"] == "logistics_return_reasons_missing"
+        )
+        assert blocker["nonOverridable"] is True
+        db.rollback()
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        logistics_result, return_reason_result = _return_reason_fixture_result(report)
+        repository.replace_report_logistics_analysis(db, report, logistics_result)
+        repository.replace_report_logistics_return_reason_analysis(
+            db,
+            report,
+            return_reason_result,
+        )
+        db.flush()
+
+        readiness = repository.report_readiness_payload(db, report)
+        assert not any(
+            item["code"].startswith("logistics_return_reasons_")
+            for item in readiness["blockingReasons"]
+        )
+        assert any(
+            item["code"] == "logistics_return_reasons_partial"
+            for item in readiness["reviewReasons"]
+        )
+
+        context = db.get(
+            repository.ReportLogisticsReturnReasonContext,
+            report.id,
+        )
+        assert context is not None
+        context.return_reason_row_count += 1
+        mismatch = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in mismatch
+            if item["code"] == "logistics_return_reasons_row_count_mismatch"
+        )
+        assert blocker["nonOverridable"] is True
+
+        context.return_reason_row_count -= 1
+        context.methodology_version = "wb-logistics-return-reasons-legacy"
+        outdated = repository.report_publication_blockers(db, report)
+        blocker = next(
+            item
+            for item in outdated
+            if item["code"] == "logistics_return_reasons_outdated"
         )
         assert blocker["nonOverridable"] is True
 
