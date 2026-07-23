@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260721-logistics-f4-measurements-v2"
+      content="20260723-logistics-r4-return-reasons-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="data:," />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260721-logistics-f4-measurements-v2"
+      href="/static/styles.css?v=20260723-logistics-r4-return-reasons-v1"
     />
     <link
       rel="stylesheet"
@@ -701,6 +701,81 @@
               </button>
             </div>
           </section>
+
+          <details
+            id="logistics-return-reasons"
+            class="panel logistics-return-reasons-panel"
+            hidden
+            open
+          >
+            <summary class="logistics-return-reasons-summary">
+              <span>
+                <span class="eyebrow">Факторы стоимости</span>
+                <strong id="logistics-return-reasons-title">Причины возвратов</strong>
+                <small>Сначала покрытие, затем только подтверждённые факты и явные ограничения.</small>
+              </span>
+              <span
+                id="logistics-return-reasons-status"
+                class="logistics-data-status"
+                role="status"
+              ></span>
+            </summary>
+            <div class="logistics-return-reasons-body">
+              <div
+                id="logistics-return-reasons-coverage"
+                class="logistics-return-reasons-coverage"
+                aria-label="Покрытие причин возвратов"
+              ></div>
+              <div
+                id="logistics-return-reasons-sources"
+                class="logistics-return-reasons-sources"
+                aria-label="Состояние источников причин возвратов"
+              ></div>
+              <div class="table-wrap logistics-tariffs-table-wrap">
+                <table
+                  id="logistics-return-reasons-table"
+                  class="logistics-table logistics-tariffs-table logistics-return-reasons-table"
+                  data-sort-mode="remote"
+                >
+                  <thead>
+                    <tr>
+                      <th scope="col" data-sort-key="eventDate">Товар / дата возврата</th>
+                      <th scope="col" data-sort-key="reasonCategory">Категория причины</th>
+                      <th scope="col" data-sort-key="evidenceType">Основание</th>
+                      <th scope="col" data-sort-key="matchStatus">Заявка / комментарий</th>
+                    </tr>
+                  </thead>
+                  <tbody id="logistics-return-reasons-rows"></tbody>
+                </table>
+              </div>
+              <div
+                id="logistics-return-reasons-pagination"
+                class="logistics-pagination"
+                aria-label="Страницы причин возвратов"
+                hidden
+              >
+                <button
+                  id="logistics-return-reasons-prev"
+                  type="button"
+                  class="secondary-button"
+                >
+                  Назад
+                </button>
+                <span id="logistics-return-reasons-page" class="muted"></span>
+                <button
+                  id="logistics-return-reasons-next"
+                  type="button"
+                  class="secondary-button"
+                >
+                  Далее
+                </button>
+              </div>
+              <ul
+                id="logistics-return-reasons-recommendations"
+                class="logistics-factor-recommendations logistics-return-reasons-recommendations"
+              ></ul>
+            </div>
+          </details>
 
           <section class="panel" aria-labelledby="logistics-products-title">
             <div class="logistics-section-heading">
@@ -2893,9 +2968,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260721-logistics-f4-measurements-v2" defer></script>
-    <script src="/static/month-close-report.js?v=20260721-logistics-f4-measurements-v2" defer></script>
-    <script src="/static/tax-load-report.js?v=20260721-logistics-f4-measurements-v2" defer></script>
-    <script src="/static/app.js?v=20260721-logistics-f4-measurements-v2" defer></script>
+    <script src="/static/report-scenarios.js?v=20260723-logistics-r4-return-reasons-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260723-logistics-r4-return-reasons-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260723-logistics-r4-return-reasons-v1" defer></script>
+    <script src="/static/app.js?v=20260723-logistics-r4-return-reasons-v1" defer></script>
   </body>
 </html>

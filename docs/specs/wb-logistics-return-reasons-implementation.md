@@ -7,7 +7,7 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
 related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
@@ -35,6 +35,8 @@ code_anchors:
     symbols: ["def replace_report_logistics_return_reason_analysis", "def report_logistics_return_reasons_payload", "def _logistics_return_reason_context_state"]
   - path: src/wb_unit_economics/web/app.py
     symbols: ["def report_logistics_return_reasons", "def _require_logistics_return_reasons_access_or_404"]
+  - path: src/wb_unit_economics/web/static/app.js
+    symbols: ["function loadLogisticsReturnReasons", "function renderLogisticsReturnReasons", "function logisticsReturnReasonsAvailable"]
   - path: src/wb_unit_economics/logistics_analysis.py
     symbols: ["def source_row_from_payload", "def _source_hash_record"]
   - path: scripts/probe_wb_logistics_factors.py
@@ -49,7 +51,7 @@ test_anchors:
   - path: tests/test_source_refresh.py
     symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_claims_record_and_selector_keep_only_safe_flat_fields", "def test_return_claims_access_denied_is_review_state_not_blocker", "def test_return_reason_context_builds_from_lineage_and_denied_claims_is_partial"]
   - path: tests/test_web_app.py
-    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_logistics_return_reason_analysis_is_atomic_and_published_immutable", "def test_required_return_reason_context_controls_publication_readiness"]
+    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_logistics_return_reason_analysis_is_atomic_and_published_immutable", "def test_required_return_reason_context_controls_publication_readiness", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering"]
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
@@ -119,14 +121,18 @@ DB/file-authoritative selector, per-cabinet source states и exact
 `claims.srid → Finance.srid` internal linker. Существующая staff-панель
 обновления источников получает безопасную пометку empty/denied без raw payload.
 
-В текущем change set реализован R-3 без UI и environment rollout:
+В текущем change set реализованы R-3 и R-4 без environment rollout:
 детерминированная витрина на canonical Finance return-chain grain, additive
 context/rows schema, атомарное сохранение нового draft, publication readiness,
 read-only `/logistics/return-reasons`, SQL-фильтры/сортировки/пагинация,
 coverage полного среза и role/flag matrix. Empty/denied claims сохраняются как
 `partial/data_unavailable`, но не становятся publication blocker; exact
 совместимые rows автоматически включают только безопасные boolean-признаки.
-R-4 UI и R-5 staff-only acceptance/rollout остаются следующими этапами.
+Coverage-first UI встроен после фактор-блоков и до рейтинга товаров, скрывается
+и не делает request при выключенном флаге, поддерживает desktop-таблицу,
+mobile-карточки, локальные states и рекомендации только по подтверждённым
+причинам. Browser QA на synthetic fixture пройден для 1440×900 и 390×844.
+R-5 staff-only acceptance/rollout остаётся следующим этапом.
 
 Первичный R-0 выполнен 22 июля 2026 года после принятия спека. Source schema
 gate пройден, но direct Finance/source join не подтвердился даже на
@@ -710,8 +716,10 @@ factors и return-reasons master; client дополнительно требуе
    `report_logistics_return_reason_rows`, атомарная draft-only persistence,
    readiness и read-only `/logistics/return-reasons`. Environment rollout не
    выполнен.
-7. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
-   рекомендаций обратной логистики.
+7. `R-4 UI и рекомендации` — реализован в текущем change set: coverage-first
+   disclosure, source states, безопасные строки и рекомендации,
+   feature-flag/no-request boundary, desktop/mobile browser QA. Environment
+   rollout не выполнен.
 8. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
    клиентском включении.
 
@@ -725,8 +733,8 @@ Design-часть принята 22 июля 2026 года. Реализация
 положительный live match не является acceptance prerequisite: exact linker
 доказывается обезличенными unit/integration fixtures и включается на live rows
 автоматически. R-1/R-2 source/selector/link subset покрывает критерии 2, 3,
-5–8 и 10 в своей границе; R-3 покрывает report-level критерии 4, 9, 11 и 12.
-UI/browser acceptance и environment rollout относятся к R-4/R-5 и не
+5–8 и 10 в своей границе; R-3 покрывает report-level критерии 4, 9, 11 и 12,
+R-4 — UI-критерий 13. Environment acceptance и rollout относятся к R-5 и не
 выполнены.
 
 1. probe зафиксировал schema/source state; goods-return имеет однозначный
@@ -748,6 +756,9 @@ UI/browser acceptance и environment rollout относятся к R-4/R-5 и н
 11. context+rows атомарны, published run immutable, а row-count/source
     reconciliation fail closed;
 12. role/flag matrix возвращает 404 при запрете и не ломает основную логистику.
+13. UI скрыт и не делает request при выключенном флаге, показывает coverage и
+    source states без raw/PII, превращает строки в подписанные mobile-карточки,
+    а empty/denied claims не выглядят blocker основной логистики.
 
 # Test Plan
 
@@ -842,6 +853,18 @@ Rollback отключает новые маршруты и блок причин
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-23 — реализован R-4 без environment rollout: выбран coverage-first
+  visual target, блок встроен после факторов и до рейтинга товаров, добавлены
+  состояния `ready`/`partial`/`empty`/`needs_rebuild`/`blocked`/`error`,
+  SQL-сортировка/пагинация, desktop-таблица и mobile-карточки. При выключенном
+  return-reasons flag секция скрыта и request не выполняется; empty/denied
+  claims показаны как покрытие, а не blocker. Рекомендация рендерится только
+  для `evidenceType=fact`; raw comments, IDs, media, hashes и raw `srid` не
+  добавлены. Synthetic browser QA 1440×900 и 390×844 прошёл без
+  console/network errors и overflow; `design-qa.md` имеет
+  `final result: passed`. Следующий этап — R-5 staff-only acceptance/rollout;
+  test/production не менялись.
 
 - 2026-07-23 — реализован R-3 без environment rollout: одна mart-строка на
   canonical Finance return chain, последняя подтверждённая Finance return date

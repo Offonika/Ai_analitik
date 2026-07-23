@@ -1,88 +1,98 @@
-# Design QA: overview sales pattern v2.33
+# Design QA: WB-логистика R-4 «Причины возвратов»
 
 ## Comparison target
 
-- Source visual truth: `/root/.codex/attachments/bb06fefa-3e50-4560-af55-5bb1f8772e09/codex-clipboard-6fb1c69c-f422-47e7-b397-f58cedfd1080.png`
-- Source pattern: management Sales view with compact semantic KPI cards and a
-  full-width multi-series sales chart.
-- Implementation: local authenticated cabinet at `#overview`.
-- Desktop KPI evidence: `/root/.codex/visualizations/2026/07/13/019f5ac5-60cd-7941-83d4-76dbefbb3202/overview-sales-v1/02-kpis-desktop.png`
-- Desktop chart evidence: `/root/.codex/visualizations/2026/07/13/019f5ac5-60cd-7941-83d4-76dbefbb3202/overview-sales-v1/03-chart-desktop.png`
-- Mobile evidence: `/root/.codex/visualizations/2026/07/13/019f5ac5-60cd-7941-83d4-76dbefbb3202/overview-sales-v1/07-kpis-mobile.png`
-- Viewports: 1488 x 1058 and 390 x 844.
+- Source visual truth:
+  `/root/.codex/generated_images/019f89c8-fbc3-7b20-a429-86d4620d130f/call_B1YzSruMnBSo67bryvDQwKVI.png`.
+- Responsive target:
+  `docs/design/wb-logistics-v4-analytics-target.html`.
+- Browser-rendered implementation:
+  `http://127.0.0.1:18766/cabinet?client_id=shumeyko&report_id=report-1#tables/logistics`
+  on a local synthetic read-only fixture.
+- Desktop implementation evidence:
+  `/tmp/wb-r4-runtime-SRaPQ4/runtime-return-reasons-desktop.png`.
+- Mobile implementation evidence:
+  `/tmp/wb-r4-runtime-SRaPQ4/runtime-return-reasons-mobile.png`.
+- Desktop combined comparison:
+  `/tmp/wb-r4-runtime-SRaPQ4/comparison-selected-reference-vs-runtime-desktop.png`.
+- Mobile combined comparison:
+  `/tmp/wb-r4-runtime-SRaPQ4/comparison-target-vs-runtime-mobile.png`.
 
-The supplied source and the implementation KPI/chart captures were opened
-together in one visual comparison input. The source has plan, forecast and
-comparison series that do not exist in the accepted Shumeyko data contract;
-those series were deliberately not invented.
+The selected reference is 1487 × 1058 px. The browser implementation was
+captured at 1440 × 900 CSS px and 390 × 844 CSS px with
+`deviceScaleFactor: 1`; both screenshots therefore have matching pixel and CSS
+dimensions. The focused desktop implementation section is 1112 × 404 px. The
+desktop comparison uses a crop of the selected reference around the R-4 block
+and scales both focused regions to the same 1120 px display width. The mobile
+comparison uses the responsive target and implementation at the same 390 px
+width without density conversion.
+
+State: staff-only synthetic draft, `sliceStatus=partial`, a confirmed
+goods-return reason, claims `access_denied`, and one safe mart row. The
+different synthetic counts between source and implementation are dynamic
+content, not a visual mismatch.
 
 ## Full-view comparison
 
-- The source pattern is preserved: five primary cards in the first row, two in
-  the second row, semantic top borders, a restrained white surface and one
-  large chart below the decision metrics.
-- The first level now contains seven decision KPIs instead of nineteen equal
-  cards. Secondary and tax facts remain available in one disclosure, so the
-  redesign does not hide or zero unavailable values.
-- The chart follows the source visual grammar: neutral sales bars, blue revenue,
-  green marginal income and purple margin on a separate percent axis.
-- The existing product typography and teal/navy token family were retained, so
-  the borrowed pattern still belongs to the current cabinet design system.
+- The selected coverage-first hierarchy is preserved: disclosure title,
+  three coverage states, two source rows, return details, and a recommendation
+  derived only from a confirmed reason.
+- The runtime section is placed after the enabled factor blocks and before the
+  product rating, with no new sidebar item or scenario tab.
+- The runtime keeps the existing cabinet typography, borders, radii, badges,
+  table system and semantic colors. Its additional status pill is intentional:
+  it exposes the accepted `ready`/`partial`/`empty`/`needs_rebuild`/`blocked`
+  state matrix.
+- On 390 × 844 the coverage strip stacks, source rows remain readable, and the
+  desktop table becomes labelled cards. The persistent product navigation is
+  expected existing application chrome.
 
 ## Focused comparison and iteration history
 
 ### Iteration 1
 
-- [P1] Six unavailable tax values created six visually identical
-  `Не рассчитано` cards. Fix: replaced them with one explicit tax-status card
-  while keeping all six values when a tax profile is calculated.
-- [P1] The old grouped money columns were too small to support month-to-month
-  reading. Fix: replaced them with a full-width dual-axis chart and exact
-  keyboard-accessible month tooltip.
-- [P2] The chart initially kept the older title `Динамика денег`. Fix: aligned
-  the runtime title and subtitle with the implemented `Динамика продаж` scope.
-- [P2] A single filtered month could start outside the visible mobile chart
-  viewport. Fix: the chart centers a one-month state after rendering while
-  preserving local chart scrolling and preventing page overflow.
-- [P2] The desktop tooltip wrapped the currency onto a separate line. Fix:
-  increased the tooltip width without affecting the plot area.
+- [P2] Recommendation order and emphasis drifted from the selected reference.
+  The first runtime capture placed a large amber recommendation card before
+  the return table. Fix: moved the recommendation after the table and restyled
+  it as a compact green-labelled evidence line.
+- [P2] Two pieces of copy were more technical than the selected reference.
+  Fix: aligned them to `Причина подтверждается только exact-связью` and
+  `Покрытие неизвестно`, while keeping the claims source row explicit.
 
-### Post-fix checks
-
-- Seven primary KPI cards and seven secondary cards in the synthetic state.
-- Month selection works with keyboard Enter and applies the existing month
-  detail filter.
-- No duplicate DOM ids and no horizontal page overflow on desktop or mobile.
-- Long charts keep overflow inside the chart viewport rather than widening the
-  page.
-- The only console entry was the expected unauthenticated `/api/me` 401 before
-  login; no authenticated application error was observed.
+Post-fix evidence is the desktop and mobile combined comparison listed above.
+No additional focused crop is required: the complete R-4 component and all
+table text are legible in the combined desktop comparison.
 
 ## Required fidelity surfaces
 
-- Typography: existing system UI stack; primary KPI values remain readable and
-  unavailable values wrap cleanly at 390 px.
-- Spacing: card heights and gaps match the compact source rhythm; `Контроль 1С`
-  stays a separate accounting block and does not compete with primary KPIs.
-- Colors: meaning is carried by both labels and semantic top borders; chart
-  series have legend labels and do not rely on color alone.
-- Interaction: every month has a focusable hit area, exact accessible label,
-  tooltip, crosshair and existing read-only drilldown action.
-- Data integrity: no forecast or prior-period comparison was shown because the
-  current payload does not provide those facts.
+- Fonts and typography: the implementation uses the cabinet system UI stack
+  at the same hierarchy as adjacent logistics factors. Headings, coverage
+  values, source labels, badges and mobile field labels remain readable and do
+  not truncate.
+- Spacing and layout rhythm: the three-part coverage strip, source grid, table
+  and recommendation follow the selected order. The runtime uses existing
+  10–12 px radii and cabinet spacing; there is no document, section or table
+  overflow on either viewport.
+- Colors and tokens: confirmed coverage uses the existing green fact palette,
+  unavailable coverage uses neutral blue-gray, and unknown coverage uses the
+  existing amber review palette. Meaning is repeated in text, not conveyed by
+  color alone.
+- Image quality and asset fidelity: the R-4 component contains no raster
+  imagery, logos or custom illustrations. The implementation uses the native
+  disclosure marker and existing product UI primitives; no placeholder image,
+  CSS art, emoji or handcrafted SVG was introduced.
+- Copy and content: Finance is not presented as a reason source, unavailable
+  claims explicitly say that logistics calculation continues, raw comments
+  and identifiers are absent, and only `evidenceType=fact` recommendations are
+  rendered.
+- States and interactions: disclosure collapse/reopen and remote table sorting
+  were exercised. Both desktop and mobile started open, collapsed, reopened
+  and retained the loaded data.
+- Accessibility and resilience: semantic `details/summary`, status role,
+  table headers, mobile field labels and existing sortable-table keyboard
+  behavior are preserved. At 1440 × 900 and 390 × 844 there were no console
+  errors, failed requests or horizontal overflow.
 
-No actionable P0/P1/P2 visual findings remain.
+No actionable P0/P1/P2 findings remain.
 
-## Known scope limitation
-
-This comparison covers the WB consultant/admin scenario only. For Ozon-context
-clients, `#checks/cost` is not reachable: `selectWorkspace()` and
-`renderCostReview()` (`app.js`) both downgrade `checkView` back to `summary`
-when `shouldUseOzonWorkingView()` is true, and the "Разобрать себестоимость"
-next-action opens the legacy `missingCost` drilldown overlay instead of
-routing to the new cost-review page. This is intentional (the cost-review
-workflow assumes WB's weekly missing-cost model) but was not part of this
-visual QA pass and should be tracked as a separate scoping decision before
-claiming full parity across marketplaces.
-
-final result: passed (WB scenario only — see scope limitation above)
+final result: passed

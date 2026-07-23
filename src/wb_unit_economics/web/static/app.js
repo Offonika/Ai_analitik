@@ -94,6 +94,12 @@ const state = {
   logisticsRoutesSortDirection: "desc",
   logisticsRoutesRequestKey: "",
   logisticsRoutesRequestId: 0,
+  logisticsReturnReasons: null,
+  logisticsReturnReasonsOffset: 0,
+  logisticsReturnReasonsSortBy: "eventDate",
+  logisticsReturnReasonsSortDirection: "desc",
+  logisticsReturnReasonsRequestKey: "",
+  logisticsReturnReasonsRequestId: 0,
   logisticsOrders: [],
   logisticsOrdersTotal: 0,
   logisticsOrdersOffset: 0,
@@ -273,6 +279,39 @@ const els = {
   logisticsRoutesPrev: document.querySelector("#logistics-routes-prev"),
   logisticsRoutesPage: document.querySelector("#logistics-routes-page"),
   logisticsRoutesNext: document.querySelector("#logistics-routes-next"),
+  logisticsReturnReasonsSection: document.querySelector(
+    "#logistics-return-reasons",
+  ),
+  logisticsReturnReasonsStatus: document.querySelector(
+    "#logistics-return-reasons-status",
+  ),
+  logisticsReturnReasonsCoverage: document.querySelector(
+    "#logistics-return-reasons-coverage",
+  ),
+  logisticsReturnReasonsSources: document.querySelector(
+    "#logistics-return-reasons-sources",
+  ),
+  logisticsReturnReasonsRecommendations: document.querySelector(
+    "#logistics-return-reasons-recommendations",
+  ),
+  logisticsReturnReasonsTable: document.querySelector(
+    "#logistics-return-reasons-table",
+  ),
+  logisticsReturnReasonsRows: document.querySelector(
+    "#logistics-return-reasons-rows",
+  ),
+  logisticsReturnReasonsPagination: document.querySelector(
+    "#logistics-return-reasons-pagination",
+  ),
+  logisticsReturnReasonsPrev: document.querySelector(
+    "#logistics-return-reasons-prev",
+  ),
+  logisticsReturnReasonsPage: document.querySelector(
+    "#logistics-return-reasons-page",
+  ),
+  logisticsReturnReasonsNext: document.querySelector(
+    "#logistics-return-reasons-next",
+  ),
   logisticsOrdersSection: document.querySelector("#logistics-orders-section"),
   logisticsOrdersTable: document.querySelector("#logistics-orders-table"),
   logisticsOrdersSubtitle: document.querySelector("#logistics-orders-subtitle"),
@@ -705,6 +744,7 @@ function init() {
     state.logisticsMeasurementsOffset = 0;
     state.logisticsTariffsOffset = 0;
     state.logisticsRoutesOffset = 0;
+    state.logisticsReturnReasonsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
@@ -805,6 +845,28 @@ function init() {
     }
     state.logisticsRoutesOffset += LOGISTICS_PAGE_SIZE;
     loadLogisticsRoutes({ force: true });
+  });
+  els.logisticsReturnReasonsPrev?.addEventListener("click", () => {
+    if (state.logisticsReturnReasonsOffset <= 0) {
+      return;
+    }
+    state.logisticsReturnReasonsOffset = Math.max(
+      0,
+      state.logisticsReturnReasonsOffset - LOGISTICS_PAGE_SIZE,
+    );
+    loadLogisticsReturnReasons({ force: true });
+  });
+  els.logisticsReturnReasonsNext?.addEventListener("click", () => {
+    const payload = state.logisticsReturnReasons || {};
+    const itemCount = asArray(payload.rows).length;
+    if (
+      state.logisticsReturnReasonsOffset + itemCount
+      >= Number(payload.total || 0)
+    ) {
+      return;
+    }
+    state.logisticsReturnReasonsOffset += LOGISTICS_PAGE_SIZE;
+    loadLogisticsReturnReasons({ force: true });
   });
   els.logisticsOrdersClose?.addEventListener("click", closeLogisticsOrders);
   els.logisticsOrdersPrev?.addEventListener("click", () => {
@@ -1134,6 +1196,11 @@ function syncRemoteTableSortState() {
     state.logisticsRoutesSortDirection,
   );
   setRemoteTableSortState(
+    els.logisticsReturnReasonsTable,
+    state.logisticsReturnReasonsSortBy,
+    state.logisticsReturnReasonsSortDirection,
+  );
+  setRemoteTableSortState(
     els.reportRowsTable,
     state.rowsSortBy,
     state.rowsSortDirection,
@@ -1187,6 +1254,13 @@ function onRemoteTableSort(event) {
     state.logisticsRoutesSortDirection = direction;
     state.logisticsRoutesOffset = 0;
     loadLogisticsRoutes({ force: true });
+    return;
+  }
+  if (table === els.logisticsReturnReasonsTable) {
+    state.logisticsReturnReasonsSortBy = sortKey;
+    state.logisticsReturnReasonsSortDirection = direction;
+    state.logisticsReturnReasonsOffset = 0;
+    loadLogisticsReturnReasons({ force: true });
     return;
   }
   if (table === els.logisticsOrdersTable) {
@@ -4909,6 +4983,11 @@ async function loadLogisticsAnalysis(options = {}) {
   } else {
     resetLogisticsRoutes({ hide: true });
   }
+  if (logisticsReturnReasonsAvailable()) {
+    loadLogisticsReturnReasons({ force: options.force });
+  } else {
+    resetLogisticsReturnReasons({ hide: true });
+  }
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
     const [summary, products] = await Promise.all([
@@ -5170,6 +5249,63 @@ async function loadLogisticsRoutes(options = {}) {
   }
 }
 
+async function loadLogisticsReturnReasons(options = {}) {
+  if (
+    !logisticsReturnReasonsAvailable() ||
+    state.workspace !== "tables" ||
+    state.tableScenario !== "logistics" ||
+    !state.reportId
+  ) {
+    resetLogisticsReturnReasons({ hide: true });
+    return;
+  }
+  const reportId = state.reportId;
+  const params = logisticsFilterParams({
+    sortBy: state.logisticsReturnReasonsSortBy,
+    sortOrder: state.logisticsReturnReasonsSortDirection,
+    offset: state.logisticsReturnReasonsOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+  const requestKey = `${reportId}?${params}`;
+  if (
+    !options.force
+    && requestKey === state.logisticsReturnReasonsRequestKey
+  ) {
+    renderLogisticsReturnReasons();
+    return;
+  }
+  state.logisticsReturnReasonsRequestKey = requestKey;
+  const requestId = ++state.logisticsReturnReasonsRequestId;
+  els.logisticsReturnReasonsSection.hidden = false;
+  els.logisticsReturnReasonsStatus.textContent = "Загружаем причины…";
+  els.logisticsReturnReasonsStatus.dataset.status = "loading";
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/return-reasons?${params}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.logisticsReturnReasonsRequestKey !== requestKey ||
+      state.logisticsReturnReasonsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsReturnReasons = payload;
+    renderLogisticsReturnReasons();
+  } catch (error) {
+    if (
+      state.reportId !== reportId ||
+      state.logisticsReturnReasonsRequestKey !== requestKey ||
+      state.logisticsReturnReasonsRequestId !== requestId
+    ) {
+      return;
+    }
+    state.logisticsReturnReasons = { error: true, rows: [], total: 0 };
+    state.logisticsReturnReasonsRequestKey = "";
+    renderLogisticsReturnReasons();
+  }
+}
+
 function resetLogisticsWorkspace() {
   if (!els.logisticsDataStatus) {
     return;
@@ -5201,6 +5337,7 @@ function resetLogisticsWorkspace() {
   resetLogisticsMeasurements({ hide: !logisticsMeasurementsAvailable() });
   resetLogisticsTariffs({ hide: !logisticsTariffsAvailable() });
   resetLogisticsRoutes({ hide: !logisticsRoutesAvailable() });
+  resetLogisticsReturnReasons({ hide: !logisticsReturnReasonsAvailable() });
   closeLogisticsOrders();
 }
 
@@ -5288,6 +5425,29 @@ function resetLogisticsRoutes(options = {}) {
     els.logisticsRoutesPrev,
     els.logisticsRoutesPage,
     els.logisticsRoutesNext,
+    { offset: 0, itemCount: 0, total: 0 },
+  );
+}
+
+function resetLogisticsReturnReasons(options = {}) {
+  state.logisticsReturnReasons = null;
+  state.logisticsReturnReasonsRequestKey = "";
+  state.logisticsReturnReasonsRequestId += 1;
+  if (!els.logisticsReturnReasonsSection) {
+    return;
+  }
+  els.logisticsReturnReasonsSection.hidden = Boolean(options.hide);
+  els.logisticsReturnReasonsStatus.textContent = "Данные ещё не загружены.";
+  els.logisticsReturnReasonsStatus.dataset.status = "empty";
+  els.logisticsReturnReasonsCoverage.replaceChildren();
+  els.logisticsReturnReasonsSources.replaceChildren();
+  els.logisticsReturnReasonsRecommendations.replaceChildren();
+  els.logisticsReturnReasonsRows.replaceChildren();
+  renderLogisticsPagination(
+    els.logisticsReturnReasonsPagination,
+    els.logisticsReturnReasonsPrev,
+    els.logisticsReturnReasonsPage,
+    els.logisticsReturnReasonsNext,
     { offset: 0, itemCount: 0, total: 0 },
   );
 }
@@ -6224,6 +6384,248 @@ function renderLogisticsRouteRows(items, emptyText) {
       return row;
     }),
   );
+}
+
+function renderLogisticsReturnReasons() {
+  if (!logisticsReturnReasonsAvailable()) {
+    resetLogisticsReturnReasons({ hide: true });
+    return;
+  }
+  const payload = state.logisticsReturnReasons || {};
+  els.logisticsReturnReasonsSection.hidden = false;
+  if (payload.error) {
+    els.logisticsReturnReasonsStatus.textContent =
+      "Причины временно недоступны";
+    els.logisticsReturnReasonsStatus.dataset.status = "error";
+    renderLogisticsReturnReasonCoverage({});
+    renderLogisticsReturnReasonSources({});
+    renderLogisticsReturnReasonRecommendations([]);
+    renderLogisticsReturnReasonRows(
+      [],
+      "Не удалось загрузить причины. Основная логистика продолжает работать.",
+    );
+    return;
+  }
+  const status = normalize(payload.sliceStatus || payload.dataStatus);
+  const statusCopy = {
+    ready: "Покрытие подтверждено",
+    partial: "Покрытие неполное",
+    empty: "В срезе нет возвратов",
+    needs_rebuild: "Нужна новая ревизия отчёта",
+    blocked: "Проверка снимка не пройдена",
+  }[status] || "Причины ещё не загружены";
+  els.logisticsReturnReasonsStatus.textContent = statusCopy;
+  els.logisticsReturnReasonsStatus.dataset.status = status || "empty";
+  renderLogisticsReturnReasonCoverage(payload.coverage || {});
+  renderLogisticsReturnReasonSources(payload.sourceCoverage || {});
+  renderLogisticsReturnReasonRecommendations(asArray(payload.recommendations));
+  const emptyText = {
+    empty: "В выбранном периоде и фильтрах нет возвратов.",
+    needs_rebuild: "Старый отчёт не содержит контекст причин возвратов R‑4.",
+    blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
+  }[status] || "Нет строк причин возвратов для выбранного среза.";
+  renderLogisticsReturnReasonRows(asArray(payload.rows), emptyText);
+  renderLogisticsPagination(
+    els.logisticsReturnReasonsPagination,
+    els.logisticsReturnReasonsPrev,
+    els.logisticsReturnReasonsPage,
+    els.logisticsReturnReasonsNext,
+    {
+      offset: state.logisticsReturnReasonsOffset,
+      itemCount: asArray(payload.rows).length,
+      total: Number(payload.total || 0),
+    },
+  );
+}
+
+function renderLogisticsReturnReasonCoverage(coverage) {
+  const total = Number(coverage.totalReturnChains || 0);
+  const unavailablePct = total
+    ? Number(coverage.reasonUnavailable || 0) * 100 / total
+    : null;
+  const claimUnknownPct = total
+    ? Number(coverage.claimCoverageUnknown || 0) * 100 / total
+    : null;
+  const cards = [
+    {
+      kind: "confirmed",
+      label: "Причины подтверждены",
+      value: coverage.reasonCoveragePct,
+      count: coverage.reasonAvailable,
+    },
+    {
+      kind: "unavailable",
+      label: "Причина недоступна",
+      value: unavailablePct,
+      count: coverage.reasonUnavailable,
+    },
+    {
+      kind: "unknown",
+      label: "Покрытие неизвестно",
+      value: claimUnknownPct,
+      count: coverage.claimCoverageUnknown,
+    },
+  ];
+  els.logisticsReturnReasonsCoverage.replaceChildren(
+    ...cards.map((item) => {
+      const card = document.createElement("span");
+      const strong = document.createElement("strong");
+      const label = document.createElement("small");
+      card.dataset.coverage = item.kind;
+      strong.textContent = item.value === null || item.value === undefined
+        ? "—"
+        : logisticsPercent(item.value);
+      label.textContent = item.count === null || item.count === undefined
+        ? item.label
+        : `${item.label} · ${number(item.count)}`;
+      card.append(strong, label);
+      return card;
+    }),
+  );
+}
+
+function renderLogisticsReturnReasonSources(sourceCoverage) {
+  const goods = sourceCoverage.goodsReturn || {};
+  const claims = sourceCoverage.claims || {};
+  const goodsStatus = {
+    ready: "Причина подтверждается только exact-связью",
+    partial: "Часть причин недоступна; непроверенные связи не используются",
+    unavailable: "Причины из goods-return недоступны",
+    blocked: "Источник не прошёл проверку целостности",
+  }[normalize(goods.status)] || "Статус источника не подтверждён";
+  const goodsWindow = logisticsReturnReasonWindow(goods);
+  const claimsWindow = logisticsReturnReasonWindow(claims);
+  const pairs = [
+    [
+      "Источник: goods-return",
+      `${goodsStatus}${goodsWindow}`,
+    ],
+    [
+      "Источник: claims",
+      `${claims.message || "Данные заявок временно недоступны"}${claimsWindow}. Расчёт логистики продолжается`,
+    ],
+  ];
+  els.logisticsReturnReasonsSources.replaceChildren(
+    ...pairs.flatMap(([labelText, valueText]) => {
+      const label = document.createElement("span");
+      const value = document.createElement("span");
+      label.className = "logistics-return-reasons-source-label";
+      label.textContent = labelText;
+      value.textContent = valueText;
+      return [label, value];
+    }),
+  );
+}
+
+function logisticsReturnReasonWindow(source) {
+  if (!source.coverageStart && !source.coverageEnd) {
+    return "";
+  }
+  const start = source.coverageStart
+    ? formatCompactDate(source.coverageStart)
+    : "—";
+  const end = source.coverageEnd
+    ? formatCompactDate(source.coverageEnd)
+    : "—";
+  return ` · окно ${start}–${end}`;
+}
+
+function renderLogisticsReturnReasonRecommendations(items) {
+  const confirmed = items.filter(
+    (item) => normalize(item.evidenceType) === "fact",
+  );
+  if (!confirmed.length) {
+    els.logisticsReturnReasonsRecommendations.replaceChildren();
+    return;
+  }
+  els.logisticsReturnReasonsRecommendations.replaceChildren(
+    ...confirmed.map((item) => {
+      const row = document.createElement("li");
+      const title = document.createElement("strong");
+      const message = document.createElement("span");
+      title.textContent = item.title || "Проверить подтверждённую причину";
+      message.textContent = item.message || "";
+      row.append(title, message);
+      return row;
+    }),
+  );
+}
+
+function renderLogisticsReturnReasonRows(items, emptyText) {
+  if (!items.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.className = "muted";
+    cell.textContent = emptyText;
+    row.append(cell);
+    els.logisticsReturnReasonsRows.replaceChildren(row);
+    return;
+  }
+  els.logisticsReturnReasonsRows.replaceChildren(
+    ...items.map((item) => {
+      const row = document.createElement("tr");
+      const product = logisticsTableCell("");
+      product.dataset.label = "Товар / дата возврата";
+      const productWrap = document.createElement("span");
+      const productName = document.createElement("strong");
+      const productMeta = document.createElement("small");
+      productWrap.className = "logistics-return-reasons-product";
+      productName.textContent = item.product || item.vendorCode || "Товар";
+      productMeta.textContent = [
+        formatCompactDate(item.eventDate),
+        item.vendorCode || "",
+      ].filter(Boolean).join(" · ");
+      productWrap.append(productName, productMeta);
+      product.replaceChildren(productWrap);
+
+      const reason = logisticsTableCell(
+        item.reasonCategory || "Причина недоступна",
+      );
+      reason.dataset.label = "Категория причины";
+
+      const evidence = logisticsTableCell("");
+      evidence.dataset.label = "Основание";
+      const evidenceWrap = document.createElement("span");
+      const badge = document.createElement("span");
+      const match = document.createElement("small");
+      const isFact = normalize(item.evidenceType) === "fact";
+      const evidenceText = isFact ? "Факт" : "Данные недоступны";
+      evidenceWrap.className = "logistics-return-reasons-evidence";
+      badge.className = isFact
+        ? "logistics-quality-badge"
+        : "logistics-quality-badge is-warning";
+      badge.textContent = evidenceText;
+      match.textContent = {
+        ready: "Точная связь",
+        unmatched: "Связка не найдена",
+        conflicting: "Конфликт связки",
+        outside_source_window: "Вне окна источника",
+        data_unavailable: "Покрытие неизвестно",
+      }[normalize(item.matchStatus)] || "Покрытие неизвестно";
+      evidenceWrap.append(badge, match);
+      evidence.replaceChildren(evidenceWrap);
+
+      const claim = logisticsTableCell(
+        logisticsReturnReasonClaimText(item),
+      );
+      claim.dataset.label = "Заявка / комментарий";
+      row.append(product, reason, evidence, claim);
+      return row;
+    }),
+  );
+}
+
+function logisticsReturnReasonClaimText(item) {
+  if (item.claimAvailable === true) {
+    return item.hasUserComment === true
+      ? "Заявка есть · комментарий есть"
+      : "Заявка есть · без комментария";
+  }
+  if (item.claimAvailable === false) {
+    return "Заявка не подтверждена";
+  }
+  return "Покрытие неизвестно";
 }
 
 function renderLogisticsProducts(items) {
@@ -16639,6 +17041,18 @@ function resetClientScopedState(options = {}) {
   state.logisticsTariffsSortDirection = "asc";
   state.logisticsTariffsRequestKey = "";
   state.logisticsTariffsRequestId += 1;
+  state.logisticsRoutes = null;
+  state.logisticsRoutesOffset = 0;
+  state.logisticsRoutesSortBy = "logisticsTotal";
+  state.logisticsRoutesSortDirection = "desc";
+  state.logisticsRoutesRequestKey = "";
+  state.logisticsRoutesRequestId += 1;
+  state.logisticsReturnReasons = null;
+  state.logisticsReturnReasonsOffset = 0;
+  state.logisticsReturnReasonsSortBy = "eventDate";
+  state.logisticsReturnReasonsSortDirection = "desc";
+  state.logisticsReturnReasonsRequestKey = "";
+  state.logisticsReturnReasonsRequestId += 1;
   state.logisticsOrders = [];
   state.logisticsOrdersTotal = 0;
   state.logisticsOrdersOffset = 0;
@@ -16746,6 +17160,12 @@ function logisticsTariffsAvailable() {
 function logisticsRoutesAvailable() {
   return Boolean(
     logisticsFactorsAvailable() && state.user?.logisticsRoutesEnabled,
+  );
+}
+
+function logisticsReturnReasonsAvailable() {
+  return Boolean(
+    logisticsFactorsAvailable() && state.user?.logisticsReturnReasonsEnabled,
   );
 }
 

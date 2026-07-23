@@ -252,6 +252,61 @@
       summary { padding: 15px 17px; cursor: pointer; font-weight: 800; }
       summary span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; font-weight: 600; }
       .details-copy { padding: 0 17px 17px; color: var(--muted); }
+      .return-reasons summary { display: flex; justify-content: space-between; gap: 12px; }
+      .return-reasons-body { padding: 0 17px 17px; }
+
+      .reason-coverage {
+        display: grid;
+        grid-template-columns: 72fr 18fr 10fr;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .reason-coverage span {
+        min-width: 0;
+        padding: 9px 12px;
+        border-right: 1px solid var(--line);
+        font-size: 11px;
+      }
+
+      .reason-coverage span:last-child { border-right: 0; }
+      .reason-coverage strong { display: block; margin-bottom: 2px; font-size: 14px; }
+      .reason-coverage .confirmed { background: var(--ready-bg); color: var(--ready); }
+      .reason-coverage .unavailable { background: var(--surface-muted); color: var(--muted); }
+      .reason-coverage .unknown { background: var(--review-bg); color: var(--review); }
+
+      .reason-sources {
+        display: grid;
+        grid-template-columns: 190px minmax(0, 1fr);
+        margin-top: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        font-size: 11px;
+      }
+
+      .reason-sources span {
+        padding: 8px 11px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .reason-sources span:nth-last-child(-n + 2) { border-bottom: 0; }
+      .reason-sources .source-label { background: var(--surface-muted); color: var(--muted); }
+      .return-reasons h3 { margin: 14px 0 8px; font-size: 13px; }
+      .reason-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 11px; }
+      .reason-table th, .reason-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+      .reason-table th { background: var(--surface-muted); color: var(--muted); font-size: 10px; }
+      .reason-table th:first-child { border-top-left-radius: 8px; }
+      .reason-table th:last-child { border-top-right-radius: 8px; }
+      .reason-table-wrap { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; }
+      .reason-table tr:last-child td { border-bottom: 0; }
+      .reason-badge { display: inline-block; padding: 3px 7px; border-radius: 5px; font-size: 10px; font-weight: 800; }
+      .reason-badge.fact { background: var(--ready-bg); color: var(--ready); }
+      .reason-badge.unavailable { background: var(--surface-muted); color: var(--muted); }
+      .reason-badge.unknown { background: var(--review-bg); color: var(--review); }
+      .reason-recommendation { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+      .reason-recommendation strong { color: var(--brand); }
 
       @media (max-width: 900px) {
         .shell { grid-template-columns: 76px minmax(0, 1fr); gap: 14px; padding-inline: 14px; }
@@ -264,6 +319,9 @@
         .issue-head { display: none; }
         .issue { grid-template-columns: 1fr 130px; }
         .issue-cell:nth-child(n + 3) { grid-column: 1 / -1; }
+        .reason-coverage { grid-template-columns: 1fr; }
+        .reason-coverage span { border-right: 0; border-bottom: 1px solid var(--line); }
+        .reason-coverage span:last-child { border-bottom: 0; }
       }
 
       @media (max-width: 560px) {
@@ -326,6 +384,18 @@
         .field-label { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; font-weight: 850; text-transform: uppercase; }
         .amount { color: var(--blocked); }
         .trust { grid-template-columns: 1fr 1fr; }
+        .return-reasons summary { display: block; }
+        .return-reasons-body { padding-inline: 12px; }
+        .reason-sources { grid-template-columns: 1fr; }
+        .reason-sources span { border-bottom: 0; }
+        .reason-sources .source-label { border-top: 1px solid var(--line); }
+        .reason-sources .source-label:first-child { border-top: 0; }
+        .reason-table-wrap { overflow: visible; border: 0; }
+        .reason-table, .reason-table tbody { display: block; }
+        .reason-table thead { display: none; }
+        .reason-table tr { display: grid; gap: 8px; margin-top: 8px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+        .reason-table td { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; padding: 0; border: 0; text-align: right; }
+        .reason-table td::before { content: attr(data-label); color: var(--muted); font-size: 10px; font-weight: 800; text-align: left; text-transform: uppercase; }
       }
     </style>
   </head>
@@ -380,6 +450,34 @@
           <div class="panel-title"><div><h2>Можно ли действовать по этим данным</h2><p>Защитные показатели не скрывают денежный итог.</p></div></div>
           <div class="trust"><div><span>Классификация</span><strong>96,0% суммы</strong></div><div><span>Свежесть</span><strong>Актуально</strong></div><div><span>Полнота среза</span><strong>Полные недели</strong></div><div><span>Выборка</span><strong>12 480 цепочек</strong></div></div>
         </section>
+        <details class="return-reasons" open>
+          <summary>
+            <span><strong>Причины возвратов</strong><span>Покрытие причин в выбранном срезе</span></span>
+          </summary>
+          <div class="return-reasons-body">
+            <div class="reason-coverage" aria-label="Покрытие причин возвратов">
+              <span class="confirmed"><strong>72,0%</strong>Причины подтверждены</span>
+              <span class="unavailable"><strong>18,0%</strong>Причина недоступна</span>
+              <span class="unknown"><strong>10,0%</strong>Покрытие неизвестно</span>
+            </div>
+            <div class="reason-sources">
+              <span class="source-label">Источник: goods-return</span><span>Причина подтверждается только exact-связью</span>
+              <span class="source-label">Источник: claims</span><span>Источник заявок недоступен, расчёт логистики продолжается</span>
+            </div>
+            <h3>Возвраты в выбранном срезе <small class="muted">(детали)</small></h3>
+            <div class="reason-table-wrap">
+              <table class="reason-table">
+                <thead><tr><th>Товар / дата возврата</th><th>Категория причины</th><th>Тип подтверждения</th><th>Заявка / комментарий</th></tr></thead>
+                <tbody>
+                  <tr><td data-label="Товар / дата">Футболка базовая, чёрная / 18.07.2026</td><td data-label="Категория">Не подошёл размер</td><td data-label="Подтверждение"><span class="reason-badge fact">Факт</span></td><td data-label="Заявка / комментарий">Да</td></tr>
+                  <tr><td data-label="Товар / дата">Кружка керамическая / 16.07.2026</td><td data-label="Категория">Брак / повреждение</td><td data-label="Подтверждение"><span class="reason-badge unavailable">Данные недоступны</span></td><td data-label="Заявка / комментарий">Нет</td></tr>
+                  <tr><td data-label="Товар / дата">Футболка базовая, белая / 15.07.2026</td><td data-label="Категория">Причина недоступна</td><td data-label="Подтверждение"><span class="reason-badge unknown">Неизвестно</span></td><td data-label="Заявка / комментарий">Неизвестно</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="reason-recommendation"><strong>Рекомендация:</strong> больше всего подтверждённых возвратов по причине «Не подошёл размер». Проверьте размерные сетки и описания размеров.</p>
+          </div>
+        </details>
         <details><summary>Товары, динамика и обезличенные цепочки<span>Второй уровень: фильтры, рейтинг, детализация и техническая сверка</span></summary><div class="details-copy">В runtime здесь используются существующие SQL-пагинация, productRef drill-down и разрешенные роли. Raw payload и внешние идентификаторы не показываются.</div></details>
       </main>
     </div>
