@@ -13,6 +13,9 @@ from scripts.run_source_refresh_worker import (
     claim_next_run,
     process_run,
     recover_stale_worker_runs,
+    worker_heartbeat_marker_is_fresh,
+    worker_heartbeat_marker_path,
+    write_worker_heartbeat_marker,
 )
 from wb_unit_economics.web import repository, security
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
@@ -299,6 +302,127 @@ def test_worker_stale_recovery_preserves_collections(tmp_path: Path) -> None:
         assert refresh_run.failure_code == "worker_heartbeat_stale"
         assert len(refresh_run.collections) == 1
         assert refresh_run.collections[0].row_count == 35
+
+
+def test_fresh_file_heartbeat_protects_run_with_stale_db_heartbeat(
+    tmp_path: Path,
+) -> None:
+    factory = _worker_factory(tmp_path)
+    source_root = tmp_path / "source-refresh"
+    run_root = source_root / "snapshot-file-heartbeat"
+    run_root.mkdir(parents=True)
+    with factory() as db:
+        refresh_run = _queued_run(db, suffix="file-heartbeat")
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            status="rebuilding",
+            worker_id="systemd-source-refresh-worker:live",
+            heartbeat_at=security.utcnow() - timedelta(minutes=10),
+            root_dir=str(run_root),
+        )
+        refresh_run_id = refresh_run.id
+        marker = worker_heartbeat_marker_path(
+            refresh_run,
+            source_refresh_root=source_root,
+        )
+        assert write_worker_heartbeat_marker(marker) is True
+        db.commit()
+
+    with factory() as db:
+        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        assert refresh_run is not None
+        assert worker_heartbeat_marker_is_fresh(
+            refresh_run,
+            source_refresh_root=source_root,
+            cutoff=security.utcnow() - timedelta(minutes=5),
+        )
+        assert recover_stale_worker_runs(
+            db,
+            worker_name="systemd-source-refresh-worker",
+            stale_after_seconds=300,
+            source_refresh_root=source_root,
+        ) == 0
+
+    with factory() as db:
+        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        assert refresh_run is not None
+        assert refresh_run.status == "rebuilding"
+        assert refresh_run.finished_at is None
+
+
+def test_file_heartbeat_rejects_symlinked_run_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source-refresh"
+    outside = tmp_path / "outside"
+    source_root.mkdir()
+    outside.mkdir()
+    linked_root = source_root / "linked"
+    linked_root.symlink_to(outside, target_is_directory=True)
+    refresh_run = SourceRefreshRun(
+        id="source_refresh_symlink",
+        tenant_id="tenant-1",
+        client_id="tenant-1",
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        status="rebuilding",
+        snapshot_set_id="linked",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        root_dir=str(linked_root),
+        workbook_path="",
+        error_message="",
+        worker_id="systemd-source-refresh-worker:unsafe",
+        failure_code="",
+        created_at=security.utcnow(),
+        updated_at=security.utcnow(),
+    )
+
+    marker = worker_heartbeat_marker_path(
+        refresh_run,
+        source_refresh_root=source_root,
+        create_parent=True,
+    )
+
+    assert marker is None
+    assert not (outside / ".worker-heartbeat").exists()
+
+
+def test_file_heartbeat_rejects_run_root_outside_configured_root(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source-refresh"
+    outside = tmp_path / "outside"
+    source_root.mkdir()
+    outside.mkdir()
+    refresh_run = SourceRefreshRun(
+        id="source_refresh_outside",
+        tenant_id="tenant-1",
+        client_id="tenant-1",
+        mode="full",
+        credential_source="tenant",
+        dry_run=False,
+        status="rebuilding",
+        snapshot_set_id="outside",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        root_dir=str(outside),
+        workbook_path="",
+        error_message="",
+        worker_id="systemd-source-refresh-worker:unsafe",
+        failure_code="",
+        created_at=security.utcnow(),
+        updated_at=security.utcnow(),
+    )
+
+    marker = worker_heartbeat_marker_path(
+        refresh_run,
+        source_refresh_root=source_root,
+        create_parent=True,
+    )
+
+    assert marker is None
+    assert not (outside / ".worker-heartbeat").exists()
 
 
 def test_worker_interruption_marks_run_failed_and_preserves_collections(

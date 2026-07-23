@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-21"
+updated_at: "2026-07-23"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -619,10 +619,13 @@ SHUMEYKO_SOURCE_REFRESH_ENABLED=false
 3. Нажать `Проверить готовность` — это dry-run, без внешних WB/1С чтений и без
    публикации отчета.
 4. Если проверка прошла, нажать `Запустить full` — это явный read-only refresh
-   WB + 1С + mapping. Новый report публикуется только после успешной загрузки
-   обязательных источников и сборки отчета.
+   WB + 1С + mapping. После успешной загрузки обязательных источников и сборки
+   создаётся внутренний staff draft; текущий опубликованный отчёт не меняется.
 5. Смотреть статус в этом же блоке: режим, период, safe-сообщение, новый report
    id и коллекции источников.
+6. Проверить период, coverage, обязательные источники и финансовые замечания,
+   затем отдельным audited-действием финансовой приёмки опубликовать draft как
+   current. Без этого действия предыдущий current остаётся клиентским отчётом.
 
 Клиентская роль этот блок не видит. API не возвращает секреты, raw payloads и
 содержимое mapping; audit по загрузке mapping хранит только безопасное имя файла
@@ -685,8 +688,9 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   `needs_configuration` и не запускают внешние API;
 - `daily` читает rolling window и не публикует новый report run, чтобы не
   создать обрезанный отчет;
-- `weekly`/`full` читают полный настроенный период и создают новый report run
-  только если обязательные источники прошли;
+- `weekly`/`full` читают полный настроенный период и создают новый staff draft
+  только если обязательные источники прошли; автоматической публикации current
+  нет;
 - ошибка WB Finance detail, 1C nomenclature/barcodes/organizations/sales
   register или mapping блокирует новый отчет;
 - optional source failure, например weekly report list, дает report run со
@@ -695,8 +699,8 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   строки требуют проверки.
 - raw rows для WB Finance, weekly report list, 1C OData и mapping metadata
   пишутся в `source_snapshot_rows` после создания collection. Ошибка записи
-  raw rows по обязательному источнику блокирует публикацию, по optional source
-  переводит отчет в `needs_review`.
+  raw rows по обязательному источнику блокирует создание готового draft, по
+  optional source переводит draft в `needs_review`.
 
 Клиентская иерархия:
 
@@ -711,9 +715,9 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   `--client-name`, повторяемые `--company` и `--cabinet`.
 
 Для systemd использовать отдельные timers: daily каждый час на 15-й минуте по
-МСК для rolling raw refresh и weekly/full утром в понедельник для публикации
-нового отчета после закрытия недельных данных WB/1С. Сырые snapshots остаются
-в `data/source_refresh` и не публикуются клиенту.
+МСК для rolling raw refresh и weekly/full утром в понедельник для создания
+нового staff draft после закрытия недельных данных WB/1С. Сырые snapshots
+остаются в `data/source_refresh` и не публикуются клиенту.
 
 Проверка первого scheduled run:
 

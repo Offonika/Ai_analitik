@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-13"
+updated_at: "2026-07-23"
 ---
 
 # Назначение
@@ -20,8 +20,10 @@ updated_at: "2026-07-13"
 
 Этот runbook описывает безопасное расписание `source refresh` для web-кабинета
 Shumeyko. Расписание запускает только read-only CLI
-`scripts/run_source_refresh.py`; raw snapshots остаются в `data/source_refresh`
-и не публикуются клиенту напрямую.
+`scripts/run_source_refresh.py`; hourly обновляет raw sources, weekly создаёт
+staff draft, а публикация current выполняется отдельно после финансовой
+приёмки. Raw snapshots остаются в `data/source_refresh` и не публикуются
+клиенту напрямую.
 
 # Расписание
 

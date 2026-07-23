@@ -91,6 +91,7 @@ from wb_unit_economics.web.source_refresh import (
     SourceRefreshConfigError,
     SourceRefreshDisabledError,
     SourceRefreshService,
+    default_period_for_mode,
     source_refresh_progress_payload,
 )
 from wb_unit_economics.web.source_refresh_worker import (
@@ -101,7 +102,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260722-accounting-wizard-tax-profile-v2"
+WEB_BUILD_ID = "20260723-source-freshness-period-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -1310,6 +1311,13 @@ def create_app(
         payload["incrementalWindowDays"] = int(
             runtime_settings.source_refresh_incremental_window_days
         )
+        default_period_start, default_period_end = (
+            default_period_for_mode(runtime_settings, "full")
+        )
+        payload["defaultFullPeriod"] = {
+            "periodStart": default_period_start.isoformat(),
+            "periodEnd": default_period_end.isoformat(),
+        }
         return payload
 
     @app.get("/api/reports/{report_id}/ozon-diagnostics")
@@ -3339,6 +3347,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _reject_client_report_recommendations(db, current, report)
+        requested_period_start: date
+        requested_period_end: date
+        period_fallback = False
         try:
             if payload.scope == "last_closed_week":
                 if payload.periodStart is not None or payload.periodEnd is not None:
@@ -3348,8 +3359,18 @@ def create_app(
                 period_start, period_end, summary = report_summary_for_last_closed_week(
                     db, report
                 )
+                summary_meta = summary.get("meta") or {}
+                requested_period_start = date.fromisoformat(
+                    str(summary_meta["requestedPeriodStart"])
+                )
+                requested_period_end = date.fromisoformat(
+                    str(summary_meta["requestedPeriodEnd"])
+                )
+                period_fallback = bool(summary_meta.get("periodFallback"))
             else:
                 period_start, period_end = _analytical_report_period(report, payload)
+                requested_period_start = period_start
+                requested_period_end = period_end
                 summary = report_summary_for_period(
                     db,
                     report,
@@ -3398,6 +3419,9 @@ def create_app(
                 "scope": payload.scope,
                 "periodStart": period_start.isoformat(),
                 "periodEnd": period_end.isoformat(),
+                "requestedPeriodStart": requested_period_start.isoformat(),
+                "requestedPeriodEnd": requested_period_end.isoformat(),
+                "periodFallback": period_fallback,
             },
         )
         db.commit()
@@ -3407,6 +3431,9 @@ def create_app(
             scope=payload.scope,
             period_start=period_start,
             period_end=period_end,
+            requested_period_start=requested_period_start,
+            requested_period_end=requested_period_end,
+            period_fallback=period_fallback,
         )
 
     @app.get("/api/reports/{report_id}/analytical-report.{extension}")
@@ -4915,6 +4942,9 @@ def _analytical_report_payload(
     scope: str,
     period_start: date,
     period_end: date,
+    requested_period_start: date,
+    requested_period_end: date,
+    period_fallback: bool,
 ) -> dict[str, Any]:
     return {
         "reportId": report_id,
@@ -4923,6 +4953,11 @@ def _analytical_report_payload(
         "scope": scope,
         "periodStart": period_start.isoformat(),
         "periodEnd": period_end.isoformat(),
+        "requestedPeriodStart": requested_period_start.isoformat(),
+        "requestedPeriodEnd": requested_period_end.isoformat(),
+        "actualPeriodStart": period_start.isoformat(),
+        "actualPeriodEnd": period_end.isoformat(),
+        "periodFallback": period_fallback,
         "period": f"{period_start:%d.%m.%Y} - {period_end:%d.%m.%Y}",
         "sourceSha256": getattr(artifacts, "source_sha256", ""),
         "files": {

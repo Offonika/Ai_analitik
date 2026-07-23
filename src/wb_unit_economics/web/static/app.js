@@ -25,6 +25,9 @@ const state = {
   accountingWizardGeneratedReportId: "",
   accountingWizardCurrentReport: null,
   accountingWizardCurrentRequest: 0,
+  reportWizardPublishing: false,
+  reportWizardPublishedReportId: "",
+  defaultFullPeriod: null,
   clientLoadToken: 0,
   rowsRequestKey: "",
   drilldownRequestKey: "",
@@ -326,6 +329,19 @@ const els = {
   ),
   reportWizardDocxDownload: document.querySelector("#report-wizard-docx-download"),
   reportWizardPdfDownload: document.querySelector("#report-wizard-pdf-download"),
+  reportWizardPublication: document.querySelector(
+    "#report-wizard-publication",
+  ),
+  reportWizardPublicationReason: document.querySelector(
+    "#report-wizard-publication-reason",
+  ),
+  reportWizardPublicationConfirm: document.querySelector(
+    "#report-wizard-publication-confirm",
+  ),
+  reportWizardPublish: document.querySelector("#report-wizard-publish"),
+  reportWizardPublicationStatus: document.querySelector(
+    "#report-wizard-publication-status",
+  ),
   reportDownloadButton: document.querySelector("#report-download-button"),
   reportWizardSubmit: document.querySelector("#report-wizard-submit"),
   reportWizardCheck: document.querySelector("#report-wizard-check"),
@@ -956,6 +972,18 @@ function init() {
       generateClientAnalyticalReport({
         reportId: reportWizardGeneratedReportId(),
       }),
+  );
+  els.reportWizardPublicationReason.addEventListener(
+    "input",
+    syncReportWizardPublicationControls,
+  );
+  els.reportWizardPublicationConfirm.addEventListener(
+    "change",
+    syncReportWizardPublicationControls,
+  );
+  els.reportWizardPublish.addEventListener(
+    "click",
+    publishReportWizardDraft,
   );
   els.nextActionButton.addEventListener("click", onNextAction);
   els.nextActionUploadFile.addEventListener("change", () =>
@@ -2220,12 +2248,29 @@ function syncClientReportControls() {
 function renderClientReportReadyState(payload) {
   const pdfReady = payload?.files?.pdf?.status === "ok";
   const period = payload?.period ? ` за ${payload.period}` : "";
-  els.draftStatus.textContent = pdfReady
-    ? `Отчёт клиенту${period} готов. Выберите DOCX или PDF.`
-    : `DOCX отчёта клиенту${period} готов. PDF на сервере недоступен — скачайте DOCX.`;
+  const requestedPeriod = [
+    formatCompactDate(payload?.requestedPeriodStart),
+    formatCompactDate(payload?.requestedPeriodEnd),
+  ]
+    .filter(Boolean)
+    .join("–");
+  const actualPeriod = [
+    formatCompactDate(payload?.actualPeriodStart || payload?.periodStart),
+    formatCompactDate(payload?.actualPeriodEnd || payload?.periodEnd),
+  ]
+    .filter(Boolean)
+    .join("–");
+  const fallbackCopy = payload?.periodFallback
+    ? ` Запрошена неделя ${requestedPeriod}, но строк в ней нет; использована предыдущая неделя ${actualPeriod}.`
+    : "";
+  els.draftStatus.textContent = (
+    pdfReady
+      ? `Отчёт клиенту${period} готов. Выберите DOCX или PDF.`
+      : `DOCX отчёта клиенту${period} готов. PDF на сервере недоступен — скачайте DOCX.`
+  ) + fallbackCopy;
   els.reportWizardResultCopy.textContent = pdfReady
-    ? "Excel и отчёт клиенту готовы. Выберите нужный формат."
-    : "Excel и DOCX отчёта клиенту готовы. PDF на сервере недоступен.";
+    ? `Excel и отчёт клиенту готовы. Выберите нужный формат.${fallbackCopy}`
+    : `Excel и DOCX отчёта клиенту готовы. PDF на сервере недоступен.${fallbackCopy}`;
   syncClientReportControls();
 }
 
@@ -2645,27 +2690,18 @@ function closeReportWizard(options = {}) {
   closeWidgetOverlay(els.reportWizardOverlay, options);
 }
 
-function fillReportWizardPeriodFromTopbar() {
-  if (!els.reportWizardPeriodStart.value && els.topbarPeriodStart.value) {
-    els.reportWizardPeriodStart.value = els.topbarPeriodStart.value;
-  }
-  if (!els.reportWizardPeriodEnd.value && els.topbarPeriodEnd.value) {
-    els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value;
-  }
-}
-
 function initializeReportWizardSettings() {
   const selectedCabinet = selectedMarketplaceCabinet();
   els.reportWizardMode.value =
     selectedCabinet && isOzonMarketplaceCabinet(selectedCabinet)
       ? "ozon-only"
       : "full";
-  const hasSelectedPeriod = Boolean(
-    els.topbarPeriodStart.value || els.topbarPeriodEnd.value,
-  );
-  els.reportWizardPeriodMode.value = hasSelectedPeriod ? "custom" : "default";
-  els.reportWizardPeriodStart.value = els.topbarPeriodStart.value || "";
-  els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value || "";
+  els.reportWizardPeriodMode.value = "default";
+  els.reportWizardPeriodStart.value = "";
+  els.reportWizardPeriodEnd.value = "";
+  els.reportWizardPublicationReason.value = "";
+  els.reportWizardPublicationConfirm.checked = false;
+  els.reportWizardPublicationStatus.textContent = "";
 }
 
 function reportWizardPublishedReport() {
@@ -2679,23 +2715,63 @@ function reportWizardGeneratedReportId() {
   return String(state.reportWizardRefresh?.newReportRunId || "");
 }
 
+function reportWizardGeneratedReportIsPublished() {
+  const reportId = reportWizardGeneratedReportId();
+  if (!reportId) {
+    return false;
+  }
+  if (state.reportWizardPublishedReportId === reportId) {
+    return true;
+  }
+  const report = state.reports.find((item) => item.id === reportId);
+  return Boolean(
+    report &&
+      report.isCurrent &&
+      normalize(report.publicationStatus) === "published",
+  );
+}
+
 function reportWizardRequestFromSettings({ dryRun = false } = {}) {
-  const customPeriod = els.reportWizardPeriodMode.value === "custom";
+  const periodMode = els.reportWizardPeriodMode.value || "default";
+  const defaultPeriod = state.defaultFullPeriod || {};
+  const currentPeriod = {
+    periodStart: els.topbarPeriodStart.value || "",
+    periodEnd: els.topbarPeriodEnd.value || "",
+  };
+  const customPeriod = {
+    periodStart: els.reportWizardPeriodStart.value || "",
+    periodEnd: els.reportWizardPeriodEnd.value || "",
+  };
+  const selectedPeriod =
+    periodMode === "current"
+      ? currentPeriod
+      : periodMode === "custom"
+        ? customPeriod
+        : defaultPeriod;
   return {
     dryRun: Boolean(dryRun),
     mode: els.reportWizardMode.value || "full",
-    periodStart: customPeriod ? els.reportWizardPeriodStart.value : "",
-    periodEnd: customPeriod ? els.reportWizardPeriodEnd.value : "",
+    periodMode,
+    periodStart: selectedPeriod.periodStart || "",
+    periodEnd: selectedPeriod.periodEnd || "",
   };
 }
 
 function reportWizardPeriodLabel(request = state.reportWizardRequest) {
   if (!request?.periodStart && !request?.periodEnd) {
-    return "по настройкам клиента";
+    return "";
   }
   return [formatCompactDate(request.periodStart), formatCompactDate(request.periodEnd)]
     .filter(Boolean)
     .join("–");
+}
+
+function reportWizardHasCompletePeriod(request = reportWizardRequestFromSettings()) {
+  return Boolean(request.periodStart && request.periodEnd);
+}
+
+function reportWizardPeriodOption(value) {
+  return els.reportWizardPeriodMode.querySelector(`option[value="${value}"]`);
 }
 
 function reportWizardHasExternalActiveRefresh() {
@@ -2736,9 +2812,32 @@ function onReportWizardSettingsChange() {
 
 function renderReportWizardSettings() {
   const mode = els.reportWizardMode.value || "full";
-  const customPeriod = els.reportWizardPeriodMode.value === "custom";
-  if (customPeriod) {
-    fillReportWizardPeriodFromTopbar();
+  const periodMode = els.reportWizardPeriodMode.value || "default";
+  const customPeriod = periodMode === "custom";
+  const defaultPeriodLabel = reportWizardPeriodLabel(state.defaultFullPeriod);
+  const currentPeriod = {
+    periodStart: els.topbarPeriodStart.value || "",
+    periodEnd: els.topbarPeriodEnd.value || "",
+  };
+  const currentPeriodLabel = reportWizardPeriodLabel(currentPeriod);
+  const defaultOption = reportWizardPeriodOption("default");
+  const currentOption = reportWizardPeriodOption("current");
+  if (defaultOption) {
+    defaultOption.textContent = defaultPeriodLabel
+      ? `До вчера · ${defaultPeriodLabel}`
+      : "До вчера · диапазон загружается";
+  }
+  if (currentOption) {
+    currentOption.textContent = currentPeriodLabel
+      ? `Текущий фильтр · ${currentPeriodLabel}`
+      : "Текущий фильтр · даты не выбраны";
+    currentOption.disabled = !(
+      currentPeriod.periodStart && currentPeriod.periodEnd
+    );
+    if (currentOption.disabled && periodMode === "current") {
+      els.reportWizardPeriodMode.value = "default";
+      return renderReportWizardSettings();
+    }
   }
   const cabinets = activeMarketplaceCabinets().filter((cabinet) =>
     mode === "ozon-only"
@@ -2753,9 +2852,19 @@ function renderReportWizardSettings() {
   els.reportWizardModeHint.textContent =
     mode === "ozon-only"
       ? "Загрузится служебная витрина Ozon + 1С. Клиентский отчёт и Excel не публикуются."
-      : "Система прочитает активные WB и 1С подключения, проверит данные и безопасно опубликует новый отчёт.";
+      : "Система прочитает WB и 1С и создаст внутренний staff draft. Текущий отчёт изменится только после финансовой приёмки.";
   els.reportWizardPeriodFields.hidden = !customPeriod;
   els.reportWizardPeriodHint.hidden = customPeriod;
+  if (!customPeriod) {
+    els.reportWizardPeriodHint.textContent =
+      els.reportWizardPeriodMode.value === "current"
+        ? currentPeriodLabel
+          ? `Будет использован явно выбранный верхний фильтр: ${currentPeriodLabel}.`
+          : "В верхнем фильтре должны быть выбраны обе даты."
+        : defaultPeriodLabel
+          ? `Серверный диапазон до вчера: ${defaultPeriodLabel}.`
+          : "Загружаем фактически разрешённый сервером диапазон.";
+  }
   els.reportWizardPeriodStart.required = customPeriod;
   els.reportWizardPeriodEnd.required = customPeriod;
   const generatedReportId = reportWizardGeneratedReportId();
@@ -2775,18 +2884,22 @@ function renderReportWizardSettings() {
   });
   const request = reportWizardRequestFromSettings();
   const periodLabel = reportWizardPeriodLabel(request);
+  const completePeriod = reportWizardHasCompletePeriod(request);
   els.reportWizardSubmit.textContent = mode === "ozon-only"
-    ? request.periodStart || request.periodEnd
+    ? completePeriod
       ? `Запустить диагностику Ozon за ${periodLabel}`
-      : "Запустить диагностику Ozon"
-    : request.periodStart || request.periodEnd
-      ? `Создать Excel за ${periodLabel}`
-      : "Создать Excel по настройкам клиента";
+      : "Период диагностики загружается…"
+    : completePeriod
+      ? `Создать staff draft Excel за ${periodLabel}`
+      : "Период отчёта загружается…";
+  els.reportWizardCheck.textContent = completePeriod
+    ? `Проверить источники за ${periodLabel}`
+    : "Период проверки загружается…";
   els.reportWizardSubmit.hidden = Boolean(generatedReportId);
   els.reportWizardCheck.hidden = Boolean(generatedReportId);
   els.reportWizardReset.hidden = !generatedReportId;
-  els.reportWizardSubmit.disabled = locked || externalActive;
-  els.reportWizardCheck.disabled = locked || externalActive;
+  els.reportWizardSubmit.disabled = locked || externalActive || !completePeriod;
+  els.reportWizardCheck.disabled = locked || externalActive || !completePeriod;
   renderReportWizardCurrent();
 }
 
@@ -2801,6 +2914,7 @@ function renderReportWizardResult() {
     els.reportWizardClientReportGenerate.hidden = true;
     els.reportWizardDocxDownload.hidden = true;
     els.reportWizardPdfDownload.hidden = true;
+    els.reportWizardPublication.hidden = true;
     return;
   }
   const request = {
@@ -2813,27 +2927,119 @@ function renderReportWizardResult() {
   const periodLabel = reportWizardPeriodLabel(request);
   const needsReview = normalize(refresh?.status) === "needs_review";
   const isOzonOnly = normalize(request?.mode) === "ozon-only";
-  els.reportWizardResult.classList.toggle("is-warning", needsReview);
-  els.reportWizardResultTitle.textContent = isOzonOnly
-    ? needsReview
-      ? `Диагностика Ozon за ${periodLabel} создана с замечаниями`
-      : `Диагностика Ozon за ${periodLabel} готова`
-    : needsReview
-      ? `Excel за ${periodLabel} создан с замечаниями и пока не опубликован как текущий`
-      : `Excel за ${periodLabel} готов`;
-  els.reportWizardResultCopy.textContent = needsReview
-    ? "Проверьте замечания перед отправкой клиенту."
+  const published = reportWizardGeneratedReportIsPublished();
+  els.reportWizardResult.classList.toggle(
+    "is-warning",
+    needsReview && !published,
+  );
+  els.reportWizardResultTitle.textContent = published
+    ? `Опубликованный отчёт за ${periodLabel}`
     : isOzonOnly
-      ? "Служебная диагностика готова для скачивания."
-      : "Сформирован новый Excel именно по параметрам этого запуска.";
+      ? needsReview
+        ? `Диагностика Ozon за ${periodLabel} создана с замечаниями`
+        : `Диагностика Ozon за ${periodLabel} готова`
+      : needsReview
+        ? `Staff draft Excel за ${periodLabel} создан с замечаниями`
+        : `Staff draft Excel за ${periodLabel} готов`;
+  els.reportWizardResultCopy.textContent = published
+    ? "Финансовая приёмка зафиксирована. Этот отчёт теперь текущий для клиента."
+    : needsReview
+      ? "Проверьте замечания и период. Опубликованный отчёт пока не изменён."
+      : isOzonOnly
+        ? "Служебная диагностика готова для скачивания."
+        : "Черновик готов для проверки. Опубликованный отчёт пока не изменён.";
   els.reportWizardExcelDownload.hidden = false;
   els.reportWizardExcelDownload.href =
     `/api/reports/${encodeURIComponent(generatedReportId)}/export.xlsx`;
   els.reportWizardClientReportGenerate.hidden = isOzonOnly;
+  els.reportWizardPublication.hidden = isOzonOnly || published;
+  syncReportWizardPublicationControls();
   syncClientReportControls();
   if (els.reportWizardResult.dataset.focusedReportId !== generatedReportId) {
     els.reportWizardResult.dataset.focusedReportId = generatedReportId;
     window.setTimeout(() => els.reportWizardResult.focus(), 0);
+  }
+}
+
+function syncReportWizardPublicationControls() {
+  const reason = String(els.reportWizardPublicationReason.value || "").trim();
+  const confirmed = els.reportWizardPublicationConfirm.checked;
+  const canPublish = Boolean(
+    reportWizardGeneratedReportId() &&
+      !reportWizardGeneratedReportIsPublished() &&
+      normalize(state.reportWizardRequest?.mode) !== "ozon-only",
+  );
+  els.reportWizardPublication.hidden = !canPublish;
+  els.reportWizardPublicationReason.disabled = state.reportWizardPublishing;
+  els.reportWizardPublicationConfirm.disabled = state.reportWizardPublishing;
+  els.reportWizardPublish.disabled = Boolean(
+    !canPublish ||
+      state.reportWizardPublishing ||
+      !reason ||
+      !confirmed,
+  );
+  els.reportWizardPublish.textContent = state.reportWizardPublishing
+    ? "Публикуем…"
+    : "Принять финансово и опубликовать";
+}
+
+async function publishReportWizardDraft() {
+  const reportId = reportWizardGeneratedReportId();
+  const reason = String(els.reportWizardPublicationReason.value || "").trim();
+  if (
+    !reportId ||
+    state.reportWizardPublishing ||
+    !reason ||
+    !els.reportWizardPublicationConfirm.checked
+  ) {
+    syncReportWizardPublicationControls();
+    return;
+  }
+  state.reportWizardPublishing = true;
+  let postPublishWarning = "";
+  els.reportWizardPublicationStatus.textContent =
+    "Фиксируем финансовую приёмку и переключаем текущий отчёт…";
+  syncReportWizardPublicationControls();
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/publish-with-tasks`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          reason,
+          confirm_blocking_tasks: true,
+        }),
+      },
+    );
+    if (
+      normalize(payload.publicationStatus) !== "published" ||
+      !payload.isCurrent
+    ) {
+      throw new Error("Сервер не подтвердил публикацию отчёта.");
+    }
+    state.reportWizardPublishedReportId = reportId;
+    els.reportWizardPublicationStatus.textContent =
+      "Финансовая приёмка записана. Отчёт опубликован как текущий.";
+    try {
+      const context = currentClientLoadContext();
+      await loadReports(context);
+      if (state.reportId !== reportId) {
+        await loadReport(reportId, context);
+      }
+      updateReportContextLocation({ replace: true });
+    } catch (error) {
+      postPublishWarning =
+        "Отчёт опубликован, но экран не обновился. Перезагрузите страницу.";
+    }
+  } catch (error) {
+    els.reportWizardPublicationStatus.textContent =
+      "Публикация не выполнена. Проверьте финансовые замечания и повторите.";
+  } finally {
+    state.reportWizardPublishing = false;
+    renderReportWizardStatus();
+    if (postPublishWarning) {
+      els.reportWizardResultCopy.textContent = postPublishWarning;
+    }
   }
 }
 
@@ -2923,13 +3129,13 @@ async function startReportWizard(dryRun) {
     return;
   }
   const request = reportWizardRequestFromSettings({ dryRun });
-  if (
-    els.reportWizardPeriodMode.value === "custom" &&
-    (!request.periodStart || !request.periodEnd)
-  ) {
+  if (!reportWizardHasCompletePeriod(request)) {
     els.reportWizardStatus.hidden = false;
     els.reportWizardStatus.className = "report-wizard-status is-warning";
-    els.reportWizardStatus.textContent = "Укажите дату начала и дату конца периода.";
+    els.reportWizardStatus.textContent =
+      els.reportWizardPeriodMode.value === "custom"
+        ? "Укажите дату начала и дату конца периода."
+        : "Серверный диапазон ещё не загружен. Обновите статус данных.";
     return;
   }
   if (
@@ -2968,6 +3174,8 @@ function resetReportWizardSession() {
   state.reportWizardRefresh = null;
   state.reportWizardRequest = null;
   state.reportWizardBusy = false;
+  state.reportWizardPublishing = false;
+  state.reportWizardPublishedReportId = "";
   els.reportWizardResult.dataset.focusedReportId = "";
   initializeReportWizardSettings();
   renderReportWizardSettings();
@@ -4270,6 +4478,8 @@ function clearReportSelection() {
   state.accountingWizardGeneratedReportId = "";
   state.accountingWizardCurrentReport = null;
   state.accountingWizardCurrentRequest += 1;
+  state.reportWizardPublishing = false;
+  state.reportWizardPublishedReportId = "";
   state.summary = null;
   state.scenario = null;
   state.freshness = null;
@@ -7338,6 +7548,7 @@ async function loadSourceRefreshStatus(context = {}) {
     state.activeSourceRefresh = payload.activeRun || null;
     state.latestSourceRefreshAttempt = payload.latestAttempt || null;
     state.latestSourceRefresh = state.activeSourceRefresh || payload.latest || null;
+    state.defaultFullPeriod = payload.defaultFullPeriod || null;
     if (els.sourceRefreshIncrementalRun) {
       els.sourceRefreshIncrementalRun.hidden = !payload.incrementalEnabled;
     }
@@ -7347,6 +7558,7 @@ async function loadSourceRefreshStatus(context = {}) {
     );
     syncReportWizardRefresh(state.latestSourceRefreshAttempt);
     syncReportWizardRefresh(payload.latestCompleted);
+    renderReportWizardStatus();
     const completedRefresh =
       state.latestSourceRefresh?.id === state.sourceRefreshAutoOpenRunId
         ? state.latestSourceRefresh
@@ -7371,6 +7583,7 @@ async function loadSourceRefreshStatus(context = {}) {
     state.latestSourceRefresh = null;
     state.latestSourceRefreshAttempt = null;
     state.activeSourceRefresh = null;
+    state.defaultFullPeriod = null;
     state.latestOzonDiagnostics = null;
     updateReportBuildButton(null);
     renderReportWizardStatus();
@@ -8254,7 +8467,11 @@ function renderSourceRefreshControl(refresh, latestAttempt = null) {
     sourceRefreshStatusLine("Период", sourcePeriodText(refresh)),
     sourceRefreshStatusLine("Прогресс", sourceRefreshProgressText(refresh.progress)),
     sourceRefreshStatusLine(
-      isOzonOnly ? "Диагностика" : createsReport ? "Отчёт" : "Обновление данных",
+      isOzonOnly
+        ? "Диагностика"
+        : createsReport
+          ? "Staff draft"
+          : "Загрузка источников",
       refresh.newReportRunId ||
         (isOzonOnly
           ? active
@@ -8269,6 +8486,29 @@ function renderSourceRefreshControl(refresh, latestAttempt = null) {
             : "не создан"),
     ),
   );
+  const publishedReport = reportWizardPublishedReport();
+  if (publishedReport) {
+    const publishedPeriod = [
+      formatCompactDate(publishedReport.periodStart),
+      formatCompactDate(publishedReport.periodEnd),
+    ]
+      .filter(Boolean)
+      .join("–");
+    els.sourceRefreshStatus.append(
+      sourceRefreshStatusLine(
+        "Текущий опубликованный отчёт",
+        publishedPeriod || publishedReport.id,
+      ),
+    );
+  }
+  if (normalize(refresh.mode) === "daily") {
+    els.sourceRefreshStatus.append(
+      sourceRefreshStatusLine(
+        "Что обновилось",
+        "Только источники; опубликованный отчёт не менялся",
+      ),
+    );
+  }
   if (excelNeedsReportRebuild(refresh)) {
     els.sourceRefreshStatus.append(
       sourceRefreshStatusLine(
@@ -9441,6 +9681,7 @@ function resetSourceRefreshPanel(options = {}) {
   state.latestSourceRefresh = null;
   state.latestSourceRefreshAttempt = null;
   state.activeSourceRefresh = null;
+  state.defaultFullPeriod = null;
   state.sourceRefreshAutoOpenRunId = "";
   state.latestOzonDiagnostics = null;
   updateReportBuildButton(null);
@@ -16271,7 +16512,7 @@ function sourcePeriodText(item) {
 function sourceRefreshModeText(mode) {
   const value = normalize(mode);
   return {
-    daily: "ежедневный",
+    daily: "hourly — только источники",
     incremental: "последние 28 дней",
     full: "полный",
     "onec-only": "только 1С",
@@ -16961,6 +17202,9 @@ function resetClientScopedState(options = {}) {
   state.accountingWizardGeneratedReportId = "";
   state.accountingWizardCurrentReport = null;
   state.accountingWizardCurrentRequest += 1;
+  state.reportWizardPublishing = false;
+  state.reportWizardPublishedReportId = "";
+  state.defaultFullPeriod = null;
   state.reportKinds = [];
   state.scenario = null;
   state.generationIdempotencyKey = "";

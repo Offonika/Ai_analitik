@@ -6,14 +6,16 @@ import argparse
 import os
 import signal
 import socket
+import stat
 import sys
 import threading
 import time
 import uuid
-from datetime import timedelta
+from contextlib import suppress
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,10 +30,108 @@ from wb_unit_economics.web.source_refresh import SourceRefreshService
 
 WORKER_ACTIVE_STATUSES = {"running", "source_loaded", "rebuilding"}
 DEFAULT_WORKER_NAME = "systemd-source-refresh-worker"
+WORKER_HEARTBEAT_MARKER = ".worker-heartbeat"
 
 
 class WorkerInterrupted(RuntimeError):
     pass
+
+
+def worker_heartbeat_marker_path(
+    refresh_run: SourceRefreshRun,
+    *,
+    source_refresh_root: Path,
+    create_parent: bool = False,
+) -> Path | None:
+    if not refresh_run.root_dir:
+        return None
+    allowed_root = Path(os.path.abspath(source_refresh_root))
+    run_root = Path(os.path.abspath(refresh_run.root_dir))
+    try:
+        relative = run_root.relative_to(allowed_root)
+    except ValueError:
+        return None
+    if not relative.parts or allowed_root.is_symlink():
+        return None
+    current = allowed_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return None
+    if create_parent:
+        try:
+            run_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+        current = allowed_root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return None
+    try:
+        resolved_root = allowed_root.resolve()
+        resolved_run_root = run_root.resolve()
+    except OSError:
+        return None
+    if not resolved_run_root.is_relative_to(resolved_root):
+        return None
+    if not run_root.is_dir():
+        return None
+    marker = run_root / WORKER_HEARTBEAT_MARKER
+    if marker.is_symlink():
+        return None
+    return marker
+
+
+def write_worker_heartbeat_marker(marker: Path | None) -> bool:
+    if marker is None or marker.is_symlink():
+        return False
+    temporary = marker.with_name(
+        f".{marker.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        os.write(descriptor, security.utcnow().isoformat().encode("ascii"))
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        if marker.is_symlink():
+            return False
+        os.replace(temporary, marker)
+        return True
+    except OSError:
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+
+
+def worker_heartbeat_marker_is_fresh(
+    refresh_run: SourceRefreshRun,
+    *,
+    source_refresh_root: Path,
+    cutoff: datetime,
+) -> bool:
+    marker = worker_heartbeat_marker_path(
+        refresh_run,
+        source_refresh_root=source_refresh_root,
+    )
+    if marker is None:
+        return False
+    try:
+        marker_stat = marker.stat(follow_symlinks=False)
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(
+        stat.S_ISREG(marker_stat.st_mode)
+        and marker_stat.st_mtime >= cutoff.timestamp()
+    )
 
 
 def claim_next_run(
@@ -98,6 +198,7 @@ def recover_stale_worker_runs(
     *,
     worker_name: str,
     stale_after_seconds: int,
+    source_refresh_root: Path | None = None,
 ) -> int:
     cutoff = security.utcnow() - timedelta(seconds=max(60, stale_after_seconds))
     stale_runs = list(
@@ -106,11 +207,23 @@ def recover_stale_worker_runs(
                 SourceRefreshRun.worker_id.like(f"{worker_name}:%"),
                 SourceRefreshRun.status.in_(WORKER_ACTIVE_STATUSES),
                 SourceRefreshRun.finished_at.is_(None),
-                SourceRefreshRun.heartbeat_at.is_not(None),
-                SourceRefreshRun.heartbeat_at < cutoff,
+                or_(
+                    SourceRefreshRun.heartbeat_at.is_(None),
+                    SourceRefreshRun.heartbeat_at < cutoff,
+                ),
             )
         )
     )
+    if source_refresh_root is not None:
+        stale_runs = [
+            refresh_run
+            for refresh_run in stale_runs
+            if not worker_heartbeat_marker_is_fresh(
+                refresh_run,
+                source_refresh_root=source_refresh_root,
+                cutoff=cutoff,
+            )
+        ]
     for refresh_run in stale_runs:
         repository.update_source_refresh_run(
             db,
@@ -173,10 +286,12 @@ def _heartbeat_loop(
     session_factory: sessionmaker[Session],
     *,
     refresh_run_id: str,
+    heartbeat_marker: Path | None,
     interval_seconds: int,
     stop_event: threading.Event,
 ) -> None:
-    while not stop_event.wait(max(5, interval_seconds)):
+    while not stop_event.is_set():
+        write_worker_heartbeat_marker(heartbeat_marker)
         try:
             with session_factory() as db:
                 refresh_run = db.get(SourceRefreshRun, refresh_run_id)
@@ -189,7 +304,47 @@ def _heartbeat_loop(
                 )
                 db.commit()
         except Exception:
-            continue
+            pass
+        if stop_event.wait(max(5, interval_seconds)):
+            return
+
+
+def _prepare_run_heartbeat_marker(
+    session_factory: sessionmaker[Session],
+    service: SourceRefreshService,
+    refresh_run_id: str,
+) -> Path | None:
+    settings = getattr(service, "settings", None)
+    source_refresh_root = getattr(settings, "source_refresh_root_path", None)
+    if source_refresh_root is None:
+        return None
+    with session_factory() as db:
+        refresh_run = db.get(SourceRefreshRun, refresh_run_id)
+        if refresh_run is None or refresh_run.finished_at is not None:
+            return None
+        if not refresh_run.root_dir:
+            run_root = Path(source_refresh_root) / refresh_run.snapshot_set_id
+            refresh_run.root_dir = str(run_root)
+            marker = worker_heartbeat_marker_path(
+                refresh_run,
+                source_refresh_root=Path(source_refresh_root),
+                create_parent=True,
+            )
+            if marker is None:
+                db.rollback()
+                return None
+            repository.update_source_refresh_run(
+                db,
+                refresh_run,
+                root_dir=str(marker.parent),
+            )
+            db.commit()
+            return marker
+        return worker_heartbeat_marker_path(
+            refresh_run,
+            source_refresh_root=Path(source_refresh_root),
+            create_parent=True,
+        )
 
 
 def process_run(
@@ -200,11 +355,17 @@ def process_run(
     heartbeat_seconds: int,
 ) -> None:
     stop_event = threading.Event()
+    heartbeat_marker = _prepare_run_heartbeat_marker(
+        session_factory,
+        service,
+        refresh_run_id,
+    )
     heartbeat = threading.Thread(
         target=_heartbeat_loop,
         kwargs={
             "session_factory": session_factory,
             "refresh_run_id": refresh_run_id,
+            "heartbeat_marker": heartbeat_marker,
             "interval_seconds": heartbeat_seconds,
             "stop_event": stop_event,
         },
@@ -276,6 +437,7 @@ def worker_loop(args: argparse.Namespace) -> int:
                 db,
                 worker_name=args.worker_name,
                 stale_after_seconds=args.stale_after_seconds,
+                source_refresh_root=settings.source_refresh_root_path,
             )
             refresh_run = claim_next_run(db, worker_id=worker_id)
         if refresh_run is None:

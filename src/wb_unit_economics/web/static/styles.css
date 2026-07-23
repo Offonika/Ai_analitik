@@ -3199,6 +3199,52 @@ button.action-insight-card {
   min-height: 42px;
 }
 
+.report-wizard-publication {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--brand-border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.report-wizard-publication > div:first-child,
+.report-wizard-publication > label:not(.report-wizard-publication-confirm) {
+  display: grid;
+  gap: 5px;
+}
+
+.report-wizard-publication p,
+.report-wizard-publication small {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.report-wizard-publication textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.report-wizard-publication-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.report-wizard-publication-confirm input {
+  margin-top: 3px;
+}
+
+.report-wizard-publication-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .report-wizard-actions {
   grid-column: 1 / -1;
   display: flex;
@@ -5196,6 +5242,11 @@ td {
     flex-direction: column;
   }
 
+  .report-wizard-publication-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .report-wizard-result,
   .report-wizard-current,
   .client-report-actions,
@@ -5206,6 +5257,7 @@ td {
 
   .report-wizard-actions .button-link,
   .report-wizard-actions button,
+  .report-wizard-publication-actions button,
   .report-wizard-current .button-link,
   .client-report-actions .button-link,
   .client-report-actions button,

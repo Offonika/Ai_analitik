@@ -63,7 +63,26 @@ from wb_unit_economics.web.source_refresh import (
     _persist_onec_rows,
     _read_ozon_rows,
     _safe_error,
+    default_period_for_mode,
 )
+
+
+def test_default_source_refresh_periods_are_explicit_and_mode_specific() -> None:
+    settings = WebSettings(
+        _env_file=None,
+        source_refresh_period_start="2026-03-01",
+        source_refresh_period_end="2026-07-22",
+        source_refresh_rolling_window_days=28,
+    )
+
+    assert default_period_for_mode(settings, "full") == (
+        date(2026, 3, 1),
+        date(2026, 7, 22),
+    )
+    assert default_period_for_mode(settings, "daily") == (
+        date(2026, 6, 25),
+        date(2026, 7, 22),
+    )
 
 
 def test_onec_commissioner_headers_without_financial_tables_are_partial(

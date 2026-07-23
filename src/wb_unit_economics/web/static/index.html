@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260722-accounting-wizard-tax-profile-v2"
+      content="20260723-source-freshness-period-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="data:," />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260722-accounting-wizard-tax-profile-v2"
+      href="/static/styles.css?v=20260723-source-freshness-period-v1"
     />
     <link
       rel="stylesheet"
@@ -814,8 +814,8 @@
               <p class="eyebrow">Контроль источников</p>
               <h2 id="source-refresh-title">Данные и расчёт</h2>
               <p class="muted">
-                Здесь видно загрузку WB и 1C, проверку сопоставления и подготовку
-                нового отчёта.
+                Hourly-запуск обновляет источники. Новый черновик и текущий
+                опубликованный отчёт показаны отдельно.
               </p>
             </div>
             <div
@@ -2298,7 +2298,9 @@
             <label>
               <span>Период отчёта клиенту</span>
               <select id="client-report-scope">
-                <option value="last_closed_week">Последняя закрытая неделя</option>
+                <option value="last_closed_week">
+                  Последняя закрытая неделя в текущем отчёте
+                </option>
                 <option value="full">Весь период отчёта</option>
                 <option value="custom">Указать даты</option>
               </select>
@@ -2387,7 +2389,7 @@
           <ol class="report-wizard-steps" aria-label="Шаги формирования отчета">
             <li class="active" aria-current="step"><b>1</b> Настройки</li>
             <li><b>2</b> Проверка данных</li>
-            <li><b>3</b> Готовый отчёт</li>
+            <li><b>3</b> Черновик готов</li>
           </ol>
           <form id="report-wizard-form" class="report-wizard-form">
             <div class="report-wizard-context">
@@ -2411,7 +2413,10 @@
                   Текущий опубликованный отчёт
                 </strong>
                 <span id="report-wizard-current-period"></span>
-                <small>Не относится к настройкам нового отчёта ниже.</small>
+                <small>
+                  Hourly-загрузка обновляет источники, но не меняет этот
+                  опубликованный отчёт.
+                </small>
               </div>
               <a
                 id="report-wizard-current-download"
@@ -2432,11 +2437,12 @@
             <label>
               <span>Период данных</span>
               <select id="report-wizard-period-mode">
-                <option value="default">По настройкам клиента</option>
+                <option value="default">До вчера</option>
+                <option value="current">Текущий фильтр</option>
                 <option value="custom">Указать даты</option>
               </select>
               <small id="report-wizard-period-hint" class="muted">
-                По умолчанию используется штатный период загрузки для клиента.
+                Загружаем фактически разрешённый сервером диапазон.
               </small>
             </label>
             <div id="report-wizard-period-fields" class="report-wizard-period-fields" hidden>
@@ -2451,7 +2457,7 @@
             </div>
             <div class="report-wizard-actions">
               <button id="report-wizard-submit" type="submit">
-                Создать Excel по настройкам клиента
+                Период загружается…
               </button>
               <button
                 id="report-wizard-check"
@@ -2485,8 +2491,8 @@
               <div>
                 <strong id="report-wizard-result-title">Отчёт готов — выберите файл</strong>
                 <span id="report-wizard-result-copy">
-                  Excel можно скачать сразу. DOCX отчёта клиенту формируется
-                  отдельно по этим же данным.
+                  Staff draft Excel можно скачать сразу. Публикация выполняется
+                  отдельно после финансовой приёмки.
                 </span>
               </div>
               <div class="report-wizard-downloads">
@@ -2521,6 +2527,48 @@
                 >
                   Скачать PDF
                 </a>
+              </div>
+            </section>
+            <section
+              id="report-wizard-publication"
+              class="report-wizard-publication"
+              aria-labelledby="report-wizard-publication-title"
+              hidden
+            >
+              <div>
+                <strong id="report-wizard-publication-title">
+                  Финансовая приёмка staff draft
+                </strong>
+                <p>
+                  Публикация заменит текущий клиентский отчёт. До подтверждения
+                  сформированный Excel остаётся внутренним черновиком.
+                </p>
+              </div>
+              <label>
+                <span>Комментарий к финансовой приёмке</span>
+                <textarea
+                  id="report-wizard-publication-reason"
+                  rows="2"
+                  maxlength="2000"
+                  placeholder="Что проверено: период, обязательные источники, coverage и финансовые замечания"
+                ></textarea>
+              </label>
+              <label class="report-wizard-publication-confirm">
+                <input id="report-wizard-publication-confirm" type="checkbox" />
+                <span>
+                  Подтверждаю период, источники и открытые задачи; отчёт можно
+                  сделать текущим.
+                </span>
+              </label>
+              <div class="report-wizard-publication-actions">
+                <button id="report-wizard-publish" type="button" disabled>
+                  Принять финансово и опубликовать
+                </button>
+                <small
+                  id="report-wizard-publication-status"
+                  role="status"
+                  aria-live="polite"
+                ></small>
               </div>
             </section>
           </form>
@@ -3022,9 +3070,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260722-accounting-wizard-tax-profile-v2" defer></script>
-    <script src="/static/month-close-report.js?v=20260722-accounting-wizard-tax-profile-v2" defer></script>
-    <script src="/static/tax-load-report.js?v=20260722-accounting-wizard-tax-profile-v2" defer></script>
-    <script src="/static/app.js?v=20260722-accounting-wizard-tax-profile-v2" defer></script>
+    <script src="/static/report-scenarios.js?v=20260723-source-freshness-period-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260723-source-freshness-period-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260723-source-freshness-period-v1" defer></script>
+    <script src="/static/app.js?v=20260723-source-freshness-period-v1" defer></script>
   </body>
 </html>

@@ -20,6 +20,10 @@ related_code:
   - src/wb_unit_economics/web/source_refresh.py
   - src/wb_unit_economics/web/providers.py
   - src/wb_unit_economics/web/static/app.js
+  - src/wb_unit_economics/web/static/index.html
+  - src/wb_unit_economics/web/static/styles.css
+  - scripts/check_source_refresh_worker.py
+  - scripts/run_source_refresh_worker.py
   - scripts/rebuild_report_from_sources.py
   - scripts/materialize_ozon_typed_facts.py
   - scripts/compare_ozon_legacy_typed.py
@@ -36,6 +40,7 @@ related_tests:
   - tests/test_web_database.py
   - tests/test_web_app.py
   - tests/test_source_refresh.py
+  - tests/test_source_refresh_worker.py
   - tests/test_provider_registry.py
   - tests/test_source_refresh_prune.py
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report]
@@ -56,7 +61,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-21"
+updated_at: "2026-07-23"
 ---
 
 # Implementation Status
@@ -118,9 +123,11 @@ CLI `run_source_refresh.py` завершает управляемые blocked st
 Для неожиданных исключений `error_message` хранит тип ошибки и короткое
 очищенное сообщение без длинных token/password/secret-подобных значений, чтобы
 следующий incident был диагностируемым без чтения raw payloads или `.env`.
-Новый report run сохраняется как draft и публикуется current только последним
-шагом после source loads, финального статуса refresh и audit-записи; если после
-сборки отчета случается ошибка, предыдущий published report остается текущим.
+Новый report run сохраняется как staff-only draft. Source refresh никогда не
+переключает `published/current` автоматически: после source loads, финального
+статуса refresh и artifact export сотрудник отдельно запускает финансовую
+приёмку и publication gate. Если после сборки отчета случается ошибка или
+приёмка не выполнена, предыдущий published report остается текущим.
 
 До внешних collectors для WB/Ozon `source_refresh` выполняет read-only
 `GET .../$metadata` для обязательной 1С OData интеграции. Успешным считается
@@ -347,8 +354,12 @@ WB finance также сохраняется постранично. После 
   `SourceRefreshService.run(dry_run=false)` внутри web запрещен;
 - run хранит `worker_id`, `heartbeat_at`, `failure_code` и `blocked_by_run_id`.
   Heartbeat обновляется не реже чем раз в 30 секунд; watchdog раз в минуту
-  завершает worker без heartbeat за 5 минут и только после остановки процесса
-  переводит run в `failed`, не удаляя snapshots и collections;
+  завершает worker без подтвержденной активности за 5 минут и только после
+  остановки процесса переводит run в `failed`, не удаляя snapshots и
+  collections. Worker до потенциально блокирующего DB heartbeat атомарно
+  обновляет локальный heartbeat marker внутри проверенного `root_dir`;
+  watchdog считает свежим любой из двух независимых сигналов — DB heartbeat
+  или marker — и никогда не следует symlink/пути вне `source_refresh_root`;
 - API сохраняет совместимое поле `latest` и отдельно возвращает `activeRun`,
   `latestAttempt` и `latestCompleted`. Заблокированная попытка остается в
   истории, но не подменяет прогресс реально активного run;
@@ -368,6 +379,15 @@ WB finance также сохраняется постранично. После 
 - staff может запустить явный `full` refresh через тот же endpoint с
   `mode=full`; запуск использует encrypted tenant integrations и создает новый
   report run только если mandatory sources прошли;
+- мастер формирования по умолчанию показывает фактически разрешённый сервером
+  диапазон `source_refresh` точными датами. Он не называет глобальные runtime-
+  настройки «настройками клиента», не наследует период верхнего фильтра без
+  явного выбора и предлагает отдельные варианты `до вчера`, `текущий фильтр`
+  и `указать даты`;
+- staff UI отдельно показывает период последней загрузки источников, период
+  открытого staff draft и период текущего опубликованного отчёта. Hourly
+  `daily` не называется обновлением отчёта и после завершения прямо предлагает
+  full/incremental пересборку, если источники свежее current report;
 - клиентская роль не видит эти controls и получает `403` на staff endpoints;
 - если refresh уже идет, source refresh guard возвращает safe статус
   `blocked_active_refresh`, а UI показывает это как штатную занятость.
@@ -583,6 +603,9 @@ mutual-settlement сохраняет документные строки, а buy
   fallback `cli:<pid>:<run_id>` разрешен только для SQLite/dev. Watchdog может
   завершить legacy CLI run лишь после подтверждения, что указанный PID больше
   не существует;
+- во время длительного `rebuilding` свежий heartbeat marker защищает живой
+  systemd worker от ложного `worker_heartbeat_stale`, даже если UPDATE поля
+  `heartbeat_at` временно блокируется основной DB-транзакцией;
 - активный WB manifest отражается в safe `progress` без account ids, имен
   кабинетов, путей и raw payloads.
 - UI главной страницы перед KPI содержит `Данные и расчёт` с fallback upload
@@ -623,12 +646,21 @@ mutual-settlement сохраняет документные строки, а buy
    `SOURCE_REFRESH_RAW_DB_MODE=files_only`; сначала перевести reader на
    file-authoritative контракт или явно вернуть `legacy` отдельным rollout-
    решением с оценкой диска и retention.
+7. После deploy выполнить один test/full canary длиннее пяти минут и доказать,
+   что DB heartbeat либо heartbeat marker остаётся свежим, watchdog не
+   останавливает worker, а результатом является новый staff draft.
+8. Production full запускать только после canary; перед явной публикацией
+   сверить period/coverage, обязательные источники, финансовые blockers и
+   закрытую неделю. При любой ошибке оставить прежний current.
 
 # Changelog
 
 - 2026-07-21: accounting evidence reader привязан к паре
   `refresh_run_id + collection_id`, чтобы использовать существующий индекс и
   не упираться в statement timeout на накопленной snapshot-таблице.
+- 2026-07-23: закреплены независимый DB/file heartbeat для длительного rebuild,
+  точный период мастера без неявного наследования верхнего фильтра, раздельная
+  свежесть sources/draft/published report и явная финансовая публикация.
 - 2026-07-20: accepted fail-closed Ozon typed rollout with a dedicated flag,
   post-collector atomic promotion, stable fallback grain, logical-row limits,
   full legacy/file parity qualification and verified multi-format restore.
