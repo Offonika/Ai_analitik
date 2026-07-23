@@ -17316,8 +17316,8 @@ async function api(url, options = {}) {
       };
   const response = await fetch(url, {
     credentials: "same-origin",
-    headers,
     ...options,
+    headers,
   });
   if (!response.ok) {
     const detail = await readApiErrorDetail(response);
