@@ -43,6 +43,8 @@ code_anchors:
     symbols: ["def fetch_r0_source_payload", "def run_r0_identity_probe"]
   - path: src/wb_unit_economics/web/settings.py
     symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool", "logistics_routes_enabled: bool", "logistics_routes_client_enabled: bool", "logistics_return_reasons_enabled: bool", "logistics_return_reasons_client_enabled: bool"]
+  - path: src/wb_unit_economics/web/static/app.js
+    symbols: ["function loadLogisticsReturnReasons", "function renderLogisticsReturnReasons", "function logisticsReturnReasonsAvailable"]
 test_anchors:
   - path: tests/test_return_reason_analysis.py
     symbols: ["def test_builds_exact_safe_return_reason_row", "def test_denied_claims_is_partial_not_blocking_and_keeps_reason_fact", "def test_multiple_return_segments_collapse_to_latest_finance_date"]
@@ -57,7 +59,7 @@ test_anchors:
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker"]
+    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -73,7 +75,7 @@ updated_at: "2026-07-23"
 rollout или завершение всех очередей. Первая очередь v5 и подпакеты факторов
 F-1…F-4 прошли отдельные staff-only test acceptance на immutable report runs.
 Production и клиентское включение факторов не выполнены. Для F-5 source-слои
-R-1/R-2 влиты, R-3 витрина/API реализована без environment rollout; R-4 UI,
+R-1/R-2 и R-3 витрина/API влиты, R-4 UI реализован без environment rollout;
 R-5 приёмка/rollout и третья очередь остаются незавершёнными.
 
 # Текущее состояние реализации
@@ -127,15 +129,19 @@ fail-soft контракту больше не закрывает R-2. Test-only
 выключенным source-refresh master; dry-run дал `needs_review` без нового report,
 фактический refresh и transient override не выполнялись.
 
-R-2 влит в `main` через PR №59. В текущем change set реализован R-3:
-одна безопасная mart-строка на canonical Finance return chain, последняя
-подтверждённая Finance return date при нескольких segments, additive
+R-2 влит в `main` через PR №59, R-3 — через PR №60. R-3 сохраняет одну
+безопасную mart-строку на canonical Finance return chain, последнюю
+подтверждённую Finance return date при нескольких segments, additive
 `report_logistics_return_reason_contexts/rows`, draft-only atomic persistence,
 readiness и read-only `/logistics/return-reasons` с SQL-фильтрами,
 сортировками, пагинацией и coverage полного среза. Empty/denied/unmatched
 claims остаются `partial/data_unavailable` и не блокируют основную логистику
-или публикацию. Оба новых feature flags по умолчанию `false`; R-4 UI и любой
-test/production/client rollout не выполнялись.
+или публикацию. В текущем change set реализован R-4: coverage-first UI
+показывает три состояния покрытия, безопасные source rows и только
+подтверждённые рекомендации, скрывается и не делает request при выключенном
+флаге, превращает таблицу в mobile-карточки. Synthetic browser QA 1440×900 и
+390×844 пройден. Оба новых feature flags по умолчанию `false`;
+test/production/client rollout не выполнялся.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -838,8 +844,8 @@ AI не может:
 5. `WP-4 Приемка и rollout`: повторяемость, tenant tests, staff-only проверка,
    затем отдельное включение клиентским ролям.
 6. `WP-5 Факторы`: F-1…F-4 приняты на staff-only test; для F-5 source R-1/R-2
-   влиты, R-3 mart/API реализован за выключенным флагом, следующие этапы —
-   R-4 UI и R-5 отдельная приёмка/rollout.
+   и R-3 mart/API влиты, R-4 UI реализован за выключенным флагом; следующий
+   этап — R-5 отдельная staff-only приёмка/rollout.
 
 `WP-4` начат после исторического прохождения gate v4 на read-only test-снимке.
 Вложенная information architecture и frontend-реализация v5 находятся в
@@ -1115,6 +1121,16 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-23 — реализован F-5/R-4 без environment rollout: coverage-first
+  блок причин возвратов встроен после факторов и до рейтинга товаров,
+  поддерживает feature-flag/no-request boundary, все API states,
+  SQL-сортировку/пагинацию, desktop-таблицу и mobile-карточки. Empty/denied
+  claims показаны как неполное покрытие, а не blocker; UI не раскрывает raw
+  comments, IDs, media, hashes или raw `srid` и рендерит рекомендации только по
+  `evidenceType=fact`. Synthetic browser QA 1440×900 и 390×844 прошёл без
+  console/network errors и overflow; test/production/client flags и reports не
+  менялись. Следующий пакет — R-5 staff-only acceptance/rollout.
 
 - 2026-07-23 — пользователь принял fail-soft R-2: `confirmed_empty` и
   `access_denied` показываются как честные per-cabinet статусы и не блокируют

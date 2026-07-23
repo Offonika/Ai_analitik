@@ -37,9 +37,13 @@ mismatch, но claims keys в доступном окне по-прежнему 
 empty/denied теперь
 явные per-cabinet source states, а exact matched rows активируются
 автоматически при появлении доступа. Production rollout этим не выполнялся.
-R-2 затем влит в `main` через PR №59. R-3 mart/API реализован в текущем
-change set за выключенными по умолчанию флагами, без test/production refresh,
-runtime promotion или client enable; следующий пакет — R-4 UI.
+R-2 затем влит в `main` через PR №59, R-3 mart/API — через PR №60. R-4
+coverage-first UI реализован в текущем change set за выключенными по умолчанию
+флагами: section/no-request boundary, все состояния, desktop-таблица,
+mobile-карточки и рекомендации только по подтверждённым причинам. Synthetic
+browser QA 1440×900 и 390×844 пройден; test/production refresh, runtime
+promotion, report publication или client enable не выполнялись. Следующий
+пакет — R-5 staff-only acceptance/rollout.
 Test-only full refresh не выполнялся: exact-main preflight остановлен
 выключенным master-флагом, а dry-run завершён `needs_review` без нового report.
 
@@ -66,11 +70,14 @@ live R-0I из merge `0deacf4` подтвердил active/archive schema, provi
 reconciliation и `paginationMismatchPresent=false`, но доступный claims scope
 пуст, а другой scope закрыт по доступу. `claimsIdentityGate=false` описывает
 текущее покрытие, но не блокирует расчёт или публикацию. R-2 влит через PR №59.
-R-3 mart/API реализован без environment rollout: одна строка на canonical
+R-3 mart/API влит через PR №60 без environment rollout: одна строка на canonical
 Finance return chain, empty/denied как `partial/data_unavailable`, exact match
 для безопасных claims booleans, atomic draft-only persistence и read-only
-`/logistics/return-reasons`. Следующий этап — R-4 UI; production и test не
-менять без отдельного разрешения. Test-only full refresh остаётся невыполненным:
+`/logistics/return-reasons`. R-4 UI реализован локально: coverage-first
+disclosure после факторов и до рейтинга, безопасные source states, feature
+flag скрывает section и предотвращает request, desktop/mobile browser QA
+пройден. Следующий этап — R-5 staff-only acceptance/rollout; production и test
+не менять без отдельного разрешения. Test-only full refresh остаётся невыполненным:
 master-флаг source refresh на test выключен, dry-run дал `needs_review` без
 нового report.
 ```
@@ -107,10 +114,14 @@ master-флаг source refresh на test выключен, dry-run дал `needs
 - R-1 source/selector/internal exact link влит в `main` через PR №56; test или
   production refresh из этой ревизии не выполнялся.
 - R-2 fail-soft claims source влит в `main` через PR №59. R-3 context/mart,
-  source-refresh build, readiness, safe API и role/flag matrix реализованы в
-  текущем change set со schema
-  `2026_07_23_logistics_return_reasons_context_v1`. R-4 UI и R-5 rollout не
-  выполнялись.
+  source-refresh build, readiness, safe API и role/flag matrix влиты через
+  PR №60 со schema `2026_07_23_logistics_return_reasons_context_v1`.
+- R-4 UI реализован в текущем change set без environment rollout: выбран
+  coverage-first target, блок расположен после факторов и до рейтинга,
+  empty/denied claims не выглядят blocker, выключенный flag скрывает section и
+  предотвращает request. Synthetic browser QA 1440×900 и 390×844 прошёл без
+  console/network errors и overflow; `design-qa.md` завершён
+  `final result: passed`. R-5 rollout не выполнялся.
 - Временные acceptance users деактивированы, пароли повторно сброшены, sessions,
   credential-файлы, screenshots и browser script удалены.
 - Production symlink остается на
@@ -745,19 +756,13 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-Обновление 2026-07-22: F-1 «Габариты», F-2 «Тарифы», F-3 «Склады и
-направления» и F-4 «Замеры и удержания» приняты на staff-only test. Для F-5
-«Причины возвратов» принят отдельный spec-first контракт. Новый разрешённый
-immutable draft и повторный R-0I подтвердили verified lineage и exact
-`goods-return.srid → Finance.srid`; goods-return identity gate открыт. Claims
-keys в текущем окне отсутствуют, поэтому claims/complete gates и общий
-`implementationGate` закрыты. Source-specific контракт R-1 отдельно принят и
-реализован в `main` через PR №56: registered immutable goods-return source,
-DB/file selector, normalization и internal exact link/coverage без mart/API/UI.
-Environment rollout не выполнен. По решению 23 июля R-2 начинается fail-soft
-без положительного live claims identity evidence; R-3…R-5 автоматически не
-начинаются.
-Factor-spec остаётся `accepted`, потому что F-5, объединённая staff-приёмка и
+Обновление 2026-07-23: F-1…F-4 приняты на staff-only test. Для F-5 R-1/R-2 и
+R-3 влиты в `main`; R-4 coverage-first UI реализован локально и прошёл
+synthetic browser QA без environment rollout. Claims keys в последнем live
+окне отсутствовали, но это ограничивает только текущее покрытие: empty/denied
+не блокируют расчёт, публикацию или R-5. Следующий пакет — R-5 staff-only
+acceptance/rollout после merge R-4 и отдельного разрешения на test.
+Factor-spec остаётся `accepted`, потому что объединённая staff-приёмка и
 client/production решения не завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
 `monthly_reconciliation_unresolved` остаётся advisory (PR №22).
@@ -765,20 +770,20 @@ client/production решения не завершены. Общий опера�
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. R-1 review/CI и merge завершены PR №56. Test-only full preflight из
-   `main@0deacf4` остановлен выключенным source-refresh master; dry-run дал
-   `needs_review` без нового report. Фактический refresh не запускать через
-   transient override: сначала отдельно принять включение master на test, затем
-   проверить зарегистрированную `wb_goods_return` collection и DB/file selector
-   без публикации report и client flags. R-3 mart/API/UI автоматически не
-   начинать.
-3. Claims pagination hardening влит PR №57; repeat live R-0I подтвердил полную
+2. Завершить R-4 review/CI/merge. До отдельного разрешения не выполнять
+   test/production refresh, runtime promotion, report publication или
+   client enable.
+3. Для R-5 отдельно согласовать staff-only test acceptance: exact merge
+   revision, immutable runtime, master return-reasons flag только для staff,
+   выключенный client flag, новый draft без публикации и повторный browser
+   smoke desktop/mobile. Production остаётся отдельным решением.
+4. Claims pagination hardening влит PR №57; repeat live R-0I подтвердил полную
    pagination и `paginationMismatchPresent=false`, но не получил claims source
    keys. Непустое окно и положительный exact claims identity match теперь
    нужны для автоматической активации конкретных rows, а не для старта R-2.
    Join до product/date/одиночного identifier не ослаблять; production rollout
    без отдельного разрешения не выполнять.
-4. Для повторной клиентской приемки использовать текущую ссылку вида
+5. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного
    контекста. Для финансовых KPI выбирать границы полных недель внутри периода

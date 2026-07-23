@@ -5938,10 +5938,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260721-logistics-f4-measurements-v2"
+        "20260723-logistics-r4-return-reasons-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260721-logistics-f4-measurements-v2"
+        "20260723-logistics-r4-return-reasons-v1"
     )
 
     page = client.get("/")
@@ -6092,11 +6092,11 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
     assert (
-            "styles.css?v=20260721-logistics-f4-measurements-v2"
+            "styles.css?v=20260723-logistics-r4-return-reasons-v1"
         in cabinet.text
     )
     assert (
-            "app.js?v=20260721-logistics-f4-measurements-v2"
+            "app.js?v=20260723-logistics-r4-return-reasons-v1"
         in cabinet.text
     )
     assert "Очередь аналитика" in cabinet.text
@@ -6430,8 +6430,22 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
         'id="logistics-products-title"'
     )
-    assert "20260721-logistics-f4-measurements-v2" in cabinet.text
+    assert "/logistics/return-reasons" in app_js.text
+    assert "logisticsReturnReasonsAvailable" in app_js.text
+    assert "if (logisticsReturnReasonsAvailable())" in app_js.text
+    assert "resetLogisticsReturnReasons({ hide: true })" in app_js.text
+    assert 'id="logistics-return-reasons"' in cabinet.text
+    assert "Причины возвратов" in cabinet.text
+    assert "Покрытие неизвестно" in app_js.text
+    assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
+        'id="logistics-return-reasons"'
+    )
+    assert cabinet.text.index(
+        'id="logistics-return-reasons"'
+    ) < cabinet.text.index('id="logistics-products-title"')
+    assert "20260723-logistics-r4-return-reasons-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
+    assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
         ".logistics-table.logistics-measurements-table th,", 1
     )[1].split("}", 1)[0]
