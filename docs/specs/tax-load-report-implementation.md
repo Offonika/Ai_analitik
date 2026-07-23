@@ -813,6 +813,28 @@ current других видов не меняется.
 
 ## Test Rollout Evidence
 
+- 2026-07-23: отдельное test read-only подключение 1С сохранено в
+  зашифрованном виде и подтверждено live GET-проверкой OData metadata со
+  статусом `200`. Июньский canary для пилотного клиента завершился с
+  `tax-load-report-v7`, профилем `УСН Доходы минус расходы` и режимом
+  `income_expenses`: доход, расход, ставка, база, обычный и минимальный налог
+  заполнены, формулы и категории расходов сходятся. Excel содержит 11
+  обязательных листов, не содержит формул и видимых UUID. Подтверждённый факт
+  уплаты УСН в источнике отсутствует, поэтому зависимые поля оставлены
+  неопределёнными, без подстановки нуля.
+- 2026-07-23: operator smoke выявил два test-only дефекта после canary:
+  generation POST с `Idempotency-Key` терял `Content-Type` из-за порядка
+  слияния frontend-заголовков, а root-проверка Excel оставила каталог
+  недоступным для web-service. Frontend исправлен в commit
+  `1d6ecf0b8681807a4c97101c84e60e300a885c6f`, cache-busting build повышен до
+  `20260723-usn-income-expenses-v2`, права test-каталога восстановлены.
+  Локально прошли Ruff, JS syntax, документационные/secret validators и полный
+  набор `982 passed`. Immutable release
+  `runtime-1d6ecf0-accounting-wizard-header-fix-test-20260723` promoted только
+  в `test`; local/public health подтвердили `status=ok`, `environment=test` и
+  совпадающие backend/static build. Авторизованный smoke подтвердил
+  generation `202`, completed v7 и Excel download `200` с валидным XLSX.
+  Production сохранил прежний release и build.
 - 2026-07-23: реализация `УСН Доходы минус расходы` из commit
   `15073f584aeac72f82e44b7e4597662236201c2a` прошла Ruff, документационные
   валидаторы, secret check и полный локальный набор `982 passed`. GitHub run
