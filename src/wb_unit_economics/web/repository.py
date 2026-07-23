@@ -5664,6 +5664,7 @@ def source_refresh_collection_payload(
     *,
     include_sensitive: bool = True,
 ) -> dict[str, Any]:
+    source_state, source_message = _safe_collection_source_state(item)
     return {
         "id": item.id,
         "clientId": item.client_id,
@@ -5678,8 +5679,38 @@ def source_refresh_collection_payload(
         "rawPath": item.raw_path if include_sensitive else "",
         "errorMessage": item.error_message if include_sensitive else "",
         "payload": item.payload or {} if include_sensitive else {},
+        "sourceState": source_state,
+        "sourceMessage": source_message,
         "loadedAt": item.loaded_at.isoformat(),
     }
+
+
+def _safe_collection_source_state(
+    item: SourceRefreshCollection,
+) -> tuple[str, str]:
+    if item.source_type != "wb_return_claims":
+        return "", ""
+    results = (item.payload or {}).get("results")
+    if not isinstance(results, list):
+        return "unavailable", "Данные заявок временно недоступны"
+    states = {
+        str(row.get("status") or "unavailable").strip()
+        for row in results
+        if isinstance(row, Mapping)
+    }
+    if len(states) == 1:
+        state = next(iter(states))
+    elif states:
+        state = "partial"
+    else:
+        state = "unavailable"
+    if state == "confirmed_empty":
+        return state, "Заявок за доступное окно нет"
+    if state in {"access_denied", "paid_scope_required"}:
+        return state, "Источник заявок недоступен"
+    if state == "confirmed_nonempty":
+        return state, "Заявки за доступное окно получены"
+    return state, "Данные заявок временно недоступны"
 
 
 def latest_source_refresh_payload(

@@ -7,8 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
-related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, sql/postgres_schema.sql]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -25,8 +25,12 @@ ai_sections:
 code_anchors:
   - path: src/wb_unit_economics/wb_goods_return.py
     symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links", "def export_wb_goods_return"]
+  - path: src/wb_unit_economics/wb_return_claims.py
+    symbols: ["def export_wb_return_claims", "def normalize_claim_source_row", "def build_return_claim_links", "def claims_source_state_message"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _persist_wb_goods_return_rows", "def _iter_file_authoritative_goods_return_rows"]
+    symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _record_wb_return_claims", "def _select_return_claims_snapshot", "def _persist_wb_return_claim_rows", "def _iter_file_authoritative_return_claim_rows"]
+  - path: src/wb_unit_economics/web/repository.py
+    symbols: ["def _safe_collection_source_state"]
   - path: src/wb_unit_economics/logistics_analysis.py
     symbols: ["def source_row_from_payload", "def _source_hash_record"]
   - path: scripts/probe_wb_logistics_factors.py
@@ -34,13 +38,17 @@ code_anchors:
 test_anchors:
   - path: tests/test_wb_goods_return.py
     symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity", "def test_goods_return_link_marks_invalid_identity_and_source_conflict"]
+  - path: tests/test_wb_return_claims.py
+    symbols: ["def test_export_marks_confirmed_empty_without_blocking", "def test_export_marks_access_denied_without_creating_snapshot_files", "def test_exact_match_activates_claim_flags_and_empty_rows_do_not", "def test_unmatched_cross_scope_and_ambiguous_finance_never_become_fact"]
   - path: tests/test_source_refresh.py
-    symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking"]
+    symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_claims_record_and_selector_keep_only_safe_flat_fields", "def test_return_claims_access_denied_is_review_state_not_blocker"]
+  - path: tests/test_web_app.py
+    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker"]
   - path: tests/test_probe_wb_logistics_factors.py
-    symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed"]
+    symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 ---
 
 # Статус документа
@@ -64,15 +72,23 @@ updated_at: "2026-07-22"
 ambiguity, а read-only R-0L не нашёл пригодного прежнего lineage. После
 отдельно разрешённого нового immutable draft повторный R-0I подтвердил exact
 goods-return crosswalk `srid → Finance.srid` и однозначную canonical return
-chain. Claims source keys в текущем окне отсутствуют, поэтому общий identity и
-implementation gate остаются закрыты. Пользователь отдельно принял source-
-specific контракт R-1: exact `goods-return.srid → Finance.srid` в обязательном
+chain. Claims source keys в текущем окне отсутствуют. Пользователь отдельно
+принял source-specific контракт R-1: exact
+`goods-return.srid → Finance.srid` в обязательном
 tenant/client/cabinet/nm scope с разрешением ровно в одну canonical return
-chain. Это открывает только R-1 (`goodsReturnImplementationGate=true`);
-после merge claims pagination hardening repeat live R-0I подтвердил полную
-active/archive pagination без mismatch, но source keys по-прежнему отсутствуют.
-R-2 требует собственного положительного identity evidence. Решение не
-подтверждает реализацию, client enable или rollout.
+chain. После merge claims pagination hardening repeat live R-0I подтвердил
+полную active/archive pagination без mismatch, но source keys по-прежнему
+отсутствуют.
+
+23 июля 2026 года пользователь принял fail-soft контракт R-2: отсутствие
+claims rows или доступа к claims scope не является implementation gate.
+Коннектор, безопасный flat snapshot и exact linker реализуются заранее и
+активируются автоматически по каждому кабинету, когда источник вернёт
+совместимые keys. `confirmed_empty` показывается как «Заявок за доступное окно
+нет», `access_denied` — как «Источник заявок недоступен». Только конкретный
+`claimAvailable=true` по-прежнему требует exact
+`(tenant, client, cabinet, nm_id, claims.srid → Finance.srid)` и одной
+canonical return chain. Решение не подтверждает client enable или rollout.
 
 # Текущее состояние реализации
 
@@ -87,8 +103,16 @@ result manifest,
 cabinet/coverage metadata, raw integrity, DB/file-authoritative persistence и
 selector, строгая `report` envelope, deterministic normalization и internal
 exact link/coverage model. Finance `srid` и `orderId` включены в logistics input
-hash. Report mart/context/API/UI намеренно не создаются до R-3. `claims`
-connector отсутствует.
+hash. Report mart/context/API/UI намеренно не создаются до R-3.
+
+В текущем change set реализован R-2 source subset: GET-only active/archive
+connector с полной provider-total pagination и pacing, protected raw snapshot,
+flat projection только из `srid`, `nm_id`, `is_archive`,
+`has_user_comment`, registered optional `wb_return_claims` collection,
+DB/file-authoritative selector, per-cabinet source states и exact
+`claims.srid → Finance.srid` internal linker. Существующая staff-панель
+обновления источников получает безопасную пометку empty/denied без raw payload.
+Report-level context/mart/API блока причин и client UI остаются границей R-3/R-4.
 
 Первичный R-0 выполнен 22 июля 2026 года после принятия спека. Source schema
 gate пройден, но direct Finance/source join не подтвердился даже на
@@ -137,7 +161,15 @@ schema, provider-total reconciliation и `paginationMismatchPresent=false`.
 получены. Поэтому `completeSourceGate=true`, но `claimsIdentityGate=false`,
 `completeIdentityGate=false`, `claimsImplementationGate=false` и общий
 `implementationGate=false`. Production runtime, reports и flags не менялись;
-health остался `ok`.
+health остался `ok`. Это историческое evidence старого gate, а не запрет
+реализации после принятого 23 июля fail-soft решения.
+
+По принятому fail-soft контракту `claimsImplementationGate=true`: R-2 можно
+реализовать при пустом или закрытом live scope. `claimsIdentityGate` сохраняет
+диагностический смысл «в текущем evidence был хотя бы один exact match», но не
+управляет запуском коннектора, основной логистикой или публикацией отчёта.
+`completeIdentityGate` и общий исторический F-5 gate больше не используются как
+предусловие R-2.
 
 # Цель
 
@@ -166,9 +198,14 @@ health остался `ok`.
   `(tenant_id, client_id, wb_cabinet_id, nm_id, goods-return.srid)` к
   одноимённому `Finance.srid`. Ключ обязан разрешаться ровно в одну canonical
   Finance chain с подтверждённым return fact.
-- `Claims join key` — пока не принятый для реализации exact
+- `Claims join key` — принятый для автоматической активации exact
   `(tenant_id, client_id, wb_cabinet_id, nm_id, claims.srid)` к
-  `Finance.srid`; он остаётся закрытым до отдельного положительного R-0I.
+  `Finance.srid`; конкретная заявка становится подтверждённым фактом только
+  при разрешении ключа ровно в одну canonical return chain.
+- `Claims source state` — отдельный безопасный статус кабинета:
+  `confirmed_empty`, `confirmed_nonempty`, `access_denied`,
+  `paid_scope_required`, `unavailable`, `schema_mismatch` или
+  `pagination_mismatch`. Он не подменяет row-level match status.
 - `srid` или `nm_id` отдельно, совпадение в другом кабинете, cross-field
   `srid → orderUid`, product/date и order-only fallback не являются связью.
 - `Персональные/чувствительные данные` — `user_comment`, `origin_id_info`, фото,
@@ -284,11 +321,13 @@ Probe-чеклист:
    только `has_user_comment`.
 
 Результат — boolean-only матрица доступности без provider labels, counts,
-периодов клиентской активности, идентификаторов, причин и комментариев. Она
-определяет, какие подпакеты можно начать. R-1…R-5 разблокируются только после
-хотя бы одного доказанного exact match на согласованном source/report window;
-одна лишь доступность schema недостаточна. Недоступный или частичный источник
-не заполняется гипотезой и не блокирует основную логистику.
+периодов клиентской активности, идентификаторов, причин и комментариев. Для
+goods-return она сохраняет evidence gate принятого R-1. Для claims матрица
+задаёт per-cabinet source state, но не блокирует R-2: connector/selector/linker
+работают при empty/denied и автоматически используют строки после появления
+доступа. Одна лишь доступность schema не разрешает показывать конкретную заявку
+как факт. Недоступный или частичный источник не заполняется гипотезой и не
+блокирует основную логистику или публикацию отчёта.
 
 ## R-0 live evidence — 22 июля 2026 года
 
@@ -351,10 +390,11 @@ goods-return и claims. Fail-closed диагностика отдельно ра
 schema compatibility, selector contract, payload/hash/identity/revision/scope
 и DB/file storage failures, но публикует их только как booleans. Она не печатает
 names, counts, периоды, identifiers, hashes, причины, комментарии, media, суммы
-или raw rows. Даже положительный candidate не меняет production join
-автоматически: R-0I обновляет accepted решение отдельно, после чего разрешается
-только соответствующий R-1 или R-2. Для goods-return такое отдельное решение
-принято; claims остаётся без принятого implementation join.
+или raw rows. Для goods-return изменение production join по-прежнему требует
+accepted решения. Для claims принят fail-soft exact join: R-0I не нужен для
+старта R-2, а будущий совместимый exact match активирует только соответствующую
+строку автоматически. Unmatched/ambiguous/partial source не создаёт
+подтверждённый `claimAvailable`.
 
 Claims active/archive в R-0/R-0I читаются полной bounded pagination с
 `limit=200`, последовательными `offset` и точной сверкой неизменного provider
@@ -394,7 +434,9 @@ keys отсутствуют, поэтому `claimsIdentityGate=false` и
 accepted join автоматически: evidence зафиксировало
 `contractChangeRequired=true`, общий `implementationGate=false`. Последующим
 отдельным решением goods-return контракт принят; R-2 по-прежнему требует
-положительного claims gate.
+положительного claims gate. Это историческое состояние evidence 22 июля;
+принятый 23 июля fail-soft контракт заменяет implementation gate на
+автоматическую row-level активацию.
 
 Новый draft не опубликован и не стал current. Production/client flags не
 менялись; evidence осталось boolean-only без labels, counts, клиентских окон,
@@ -450,8 +492,11 @@ report: такие операции требуют отдельного rollout/
   `(tenant, client, cabinet, nm_id, goods-return.srid → Finance.srid)`.
   Неполный ключ, совпадение в другом кабинете или несколько canonical chain
   дают явный `unmatched`/`conflicting`, а не fallback или случайный выбор.
-- Claims join не наследует goods-return gate и остаётся закрытым до отдельного
-  positive R-0I/accepted-решения.
+- Claims join не наследует goods-return gate и выполняется автоматически при
+  появлении source rows. Он использует только exact same-name
+  `(tenant, client, cabinet, nm_id, claims.srid → Finance.srid)`; пустой,
+  недоступный, unmatched или ambiguous источник остаётся явным безопасным
+  состоянием и не создаёт факт заявки.
 - Непустой `goods-return.reason` становится `evidenceType=fact` только после
   exact join. Отсутствие источника/окна/join — `data_unavailable`.
 - `claims.user_comment` не переносится как текст и не подменяет reason. Exact
@@ -553,6 +598,12 @@ factors и return-reasons master; client дополнительно требуе
   проверки и никогда как установленная причина.
 - Дословный комментарий, device data, фото и видео не показываются ни staff, ни
   client через этот интерфейс; доступен только факт наличия заявки/комментария.
+- Claims source state показывается без клиентских counts и identifiers:
+  `confirmed_empty` — «Заявок за доступное окно нет»,
+  `access_denied`/`paid_scope_required` — «Источник заявок недоступен»,
+  `unavailable`/schema/pagination failure — «Данные заявок временно
+  недоступны». После появления exact match строка автоматически получает
+  `claimAvailable=true` и безопасный `hasUserComment`.
 - При отсутствии источника сохраняется формулировка канона `Причина недоступна
   в Finance` / `Причина недоступна`.
 - Показываются coverage, товар, дата финансового возврата, подтверждённая
@@ -593,6 +644,10 @@ factors и return-reasons master; client дополнительно требуе
   трактуется как глубокая история.
 - `claims` без `is_archive` → ошибка запроса обрабатывается, не блокирует расчёт
   логистики.
+- Пустой claims window → `confirmed_empty`; закрытый token scope →
+  `access_denied`; оба состояния сохраняются отдельно по кабинету, не
+  блокируют отчёт и не превращаются в `claimAvailable=false` как доказательство
+  отсутствия исторической заявки вне 14-дневного окна.
 - Разные rate limits → backoff на 429, частичный сбор помечается `partial`.
 - Пустой `reason` → причина `data_unavailable`; пустой `user_comment` даёт
   `hasUserComment=false`, но не меняет goods-return reason.
@@ -619,16 +674,19 @@ factors и return-reasons master; client дополнительно требуе
 2. `R-0I Identity crosswalk` — после нового unambiguous draft подтверждён
    goods-return `srid → Finance.srid`; отдельное accepted-решение для R-1
    принято. Claims evidence runner выполняет полную provider-total pagination,
-   но live claims keys всё ещё не подтверждены; claims и complete gates закрыты.
+   но live claims keys всё ещё не подтверждены. Это диагностический status, не
+   implementation blocker R-2.
 3. `R-0L Existing lineage discovery` — read-only поиск уже существующего
    verified unambiguous return lineage до нового report; выполнен с
    `newReportRequired=true`, сам ничего не создавал.
 4. `R-1 goods-return` — реализован в текущем change set: registered raw
    snapshot, DB/file selector, нормализация `reason`, exact internal join и
    статусы покрытия без report mart/API/UI. Environment rollout не выполнен.
-5. `R-2 claims` — коннектор active/archive, безопасная обработка PII, признак
-   наличия комментария без переноса текста из raw; до положительного claims
-   identity evidence не начинается.
+5. `R-2 claims` — реализован в текущем change set: коннектор active/archive,
+   безопасная обработка PII, признак наличия комментария без переноса текста из
+   raw, per-cabinet source states и exact linker с автоматической активацией
+   при появлении совместимых keys. Empty/denied не блокируют реализацию,
+   основную логистику или публикацию.
 6. `R-3 Витрина и API` — `report_logistics_return_reason_rows`, покрытие в ответе
    «Возвраты».
 7. `R-4 UI и рекомендации` — статусы причины, доли покрытия, усиление
@@ -642,13 +700,17 @@ factors и return-reasons master; client дополнительно требуе
 
 Design-часть принята 22 июля 2026 года. Реализация готова, когда:
 
-Первый критерий подтверждён для goods-return на новом draft, но не для claims.
-R-1 source/selector/link subset покрывает критерии 2, 3, 5–8 и 10 в своей
-границе; report-level критерии 4, 9, 11, 12 относятся к R-3…R-5 и ещё не
-выполнены.
+Первый критерий подтверждён для goods-return на новом draft. Для claims
+положительный live match не является acceptance prerequisite: exact linker
+доказывается обезличенными unit/integration fixtures и включается на live rows
+автоматически. R-1/R-2 source/selector/link subset покрывает критерии 2, 3,
+5–8 и 10 в своей границе; report-level критерии 4, 9, 11, 12 относятся к
+R-3…R-5 и ещё не выполнены.
 
-1. probe зафиксировал schema и хотя бы один однозначный same-name
-   Finance/source crosswalk в обезличенной boolean-only матрице;
+1. probe зафиксировал schema/source state; goods-return имеет однозначный
+   same-name Finance/source crosswalk, а claims exact linker проходит
+   обезличенные matched/unmatched/ambiguous tests и не требует непустого live
+   окна;
 2. факт и сумма возврата остаются из Finance и не меняются наличием причины;
 3. `reason` хранится как отдельный source fact; raw `user_comment` не попадает в
    mart/API/AI, сохраняется только `has_user_comment`;
@@ -712,8 +774,9 @@ R-1 source/selector/link subset покрывает критерии 2, 3, 5–8 
 2. R-0I и R-0L выполнены; после отрицательного R-0L отдельно разрешённый новый
    immutable draft создан без ручного выбора или удаления DB/file копии.
 3. Изменение goods-return контракта по подтверждённому
-   `srid → Finance.srid` принято; реализовать и проверить R-1 отдельно. Claims
-   не включать до собственного положительного identity gate.
+   `srid → Finance.srid` принято; R-1 реализован отдельно. Claims включать
+   fail-soft: empty/denied показывать как source state, а конкретную заявку —
+   только после автоматического exact match.
 4. Включить причину consultant/admin за отдельным feature flag без клиентской
    публикации.
 5. После приёмки — отдельное решение о клиентском включении с проверкой
@@ -737,7 +800,8 @@ Rollback отключает новые маршруты и блок причин
 7. Goods-return join только по exact
    `(tenant, client, cabinet, nm_id, goods-return.srid → Finance.srid)` с одной
    canonical return chain; одиночные поля, cross-field и order fallback
-   запрещены. Claims gate независим и остаётся закрытым.
+   запрещены. Для claims принят такой же exact same-name ключ с автоматической
+   row-level активацией; отсутствие данных/доступа не является gate.
 8. `claims.is_archive` — boolean; обе выборки ограничены документированными
    текущими 14 днями, глубокая история не предполагается.
 
@@ -746,15 +810,31 @@ Rollback отключает новые маршруты и блок причин
 - Полное per-cabinet покрытие подтверждённого exact join Finance/goods-return;
   положительный goods-return gate доказывает совместимый crosswalk, но не
   обещает полное покрытие каждой строки.
-- Claims identity: полная active/archive pagination live подтверждена без
-  mismatch, но в доступном окне source keys отсутствуют; применимый exact
-  crosswalk и возможность R-2 ещё не доказаны.
+- Claims live coverage: active/archive pagination подтверждена без mismatch,
+  но доступное окно пусто, а другой scope закрыт. Это ограничивает только
+  текущий coverage и не блокирует R-2; live exact match будет подтверждён
+  автоматически при появлении совместимых rows.
 - Фактическая history depth goods-return за пределами одного 31-дневного
   request window; официальный контракт её не гарантирует.
 - Нормализованный справочник категорий `reason` (версионировать ли, как
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-23 — по прямому решению пользователя принят fail-soft R-2:
+  `confirmed_empty` означает «Заявок за доступное окно нет»,
+  `access_denied` — «Источник заявок недоступен»; оба состояния не блокируют
+  основную логистику, публикацию или реализацию claims connector/selector.
+  Exact `(tenant, client, cabinet, nm_id, claims.srid → Finance.srid)` остаётся
+  обязательным только для конкретного `claimAvailable=true`; после появления
+  доступа и совместимых keys строки активируются автоматически. Raw comments,
+  IDs и media остаются только в защищённом raw snapshot. В текущем change set
+  реализованы GET-only connector, safe flat, registered optional collection,
+  DB/file selector, exact linker и безопасная пометка состояния в staff
+  source-refresh UI. R-0I runner больше не обнуляет R-2:
+  `claimsImplementationGate=true` фиксирует принятое решение независимо от
+  текущего `claimsIdentityGate`, а общий implementation gate зависит от
+  принятого exact goods-return join. Report mart/API блока причин остаются R-3.
 
 - 2026-07-22 — после merge PR №57 repeat live R-0I из `main@0deacf4`
   подтвердил claims schema, полную provider-total pagination и

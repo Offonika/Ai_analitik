@@ -7,8 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
-related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_content.py, tests/test_wb_measurements.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_content.py, tests/test_wb_measurements.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -29,21 +29,25 @@ code_anchors:
     symbols: ["def flatten_measurement_penalties", "def flatten_warehouse_measurements", "def export_wb_measurement_penalties", "def export_wb_warehouse_measurements"]
   - path: src/wb_unit_economics/wb_goods_return.py
     symbols: ["def normalize_goods_return_source_row", "def build_goods_return_links", "def export_wb_goods_return"]
+  - path: src/wb_unit_economics/wb_return_claims.py
+    symbols: ["def export_wb_return_claims", "def normalize_claim_source_row", "def build_return_claim_links"]
   - path: scripts/probe_wb_logistics_factors.py
     symbols: ["def fetch_r0_source_payload", "def run_r0_identity_probe"]
   - path: src/wb_unit_economics/web/source_refresh.py
-    symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_measurements", "def _select_measurement_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
+    symbols: ["def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _record_wb_return_claims", "def _select_return_claims_snapshot", "def _build_and_persist_logistics_dimensions", "def _select_dimension_snapshot", "def _build_and_persist_logistics_measurements", "def _select_measurement_snapshot", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/web/repository.py
     symbols: ["def replace_report_logistics_dimension_analysis", "def report_logistics_dimensions_payload", "def replace_report_logistics_measurement_analysis", "def report_logistics_measurements_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload"]
 test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_build_dimension_rows_links_by_nm_and_marks_unavailable"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_measurements_api_states_filters_and_full_slice_coverage", "def test_logistics_measurements_role_and_flag_matrix", "def test_required_measurement_context_controls_publication_readiness", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness"]
+    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_measurements_api_states_filters_and_full_slice_coverage", "def test_logistics_measurements_role_and_flag_matrix", "def test_required_measurement_context_controls_publication_readiness", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker"]
   - path: tests/test_source_refresh.py
     symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_db_and_file_authoritative_are_equivalent", "def test_measurement_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_precedence_partial_and_context_build", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_goods_return.py
     symbols: ["def test_goods_return_link_uses_finance_srid_and_one_canonical_return_chain", "def test_goods_return_link_rejects_cross_field_scope_and_chain_ambiguity"]
+  - path: tests/test_wb_return_claims.py
+    symbols: ["def test_export_marks_confirmed_empty_without_blocking", "def test_export_marks_access_denied_without_creating_snapshot_files", "def test_exact_match_activates_claim_flags_and_empty_rows_do_not"]
   - path: tests/test_wb_tariffs.py
     symbols: ["def test_build_tariff_snapshot_dates_uses_calendar_weeks", "def test_flatten_box_tariffs_keeps_period_and_none_for_missing"]
   - path: tests/test_logistics_factor_marts.py
@@ -51,10 +55,10 @@ test_anchors:
   - path: tests/test_wb_measurements.py
     symbols: ["def test_measurement_penalties_pagination_reconciles_provider_total", "def test_flat_measurement_rows_omit_photos_and_subject_values", "def test_incomplete_measurement_page_fails_closed"]
   - path: tests/test_probe_wb_logistics_factors.py
-    symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts", "def test_claims_fetch_fails_closed_on_pagination_mismatch", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed"]
+    symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts", "def test_claims_fetch_fails_closed_on_pagination_mismatch", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 ---
 
 # Статус документа
@@ -141,9 +145,11 @@ F-5 «Причины возвратов» принят как отдельный
 R-1 влит в `main` через PR №56 как registered
 snapshot/selector/normalization/internal join без mart/API/UI и rollout.
 Repeat live R-0I после merge PR №57 подтвердил полную provider-total pagination
-без mismatch, но claims source keys в доступном окне отсутствуют. R-2 остаётся
-закрыт до положительного identity evidence;
-context/mart/API/UI и rollout автоматически не начинаются.
+без mismatch, но claims source keys в доступном окне отсутствуют. 23 июля
+пользователь принял fail-soft R-2: empty/denied — это явные per-cabinet source
+states, а не implementation blocker. Exact claim становится фактом только
+после автоматического same-name match к одной Finance return chain;
+context/mart/API/UI и rollout остаются отдельными этапами.
 
 # Цель
 
@@ -1140,10 +1146,19 @@ staff-only test; production/client enable не выполнялся. Для F-5 
 обнаружены. Repeat R-0I после pagination hardening подтвердил
 `paginationMismatchPresent=false`, но claims/complete gates и общий
 implementation gate остались закрыты.
-Source-specific accepted-решение для R-1 принято; R-2 остаётся закрыт до
-собственного положительного identity evidence.
+Source-specific accepted-решение для R-1 принято. Для R-2 принят fail-soft
+контракт: live identity gate остаётся диагностикой текущего покрытия и не
+останавливает connector/selector/linker.
 
 # Changelog
+
+- 2026-07-23 — отсутствие claims rows или доступа переведено из
+  implementation gate в безопасный per-cabinet source state. R-2 реализуется
+  fail-soft; row-level `claimAvailable=true` требует exact
+  `claims.srid → Finance.srid` в полном tenant/client/cabinet/nm scope. В
+  текущем change set добавлены connector/snapshot/selector/linker и staff
+  source-state marker без report-level R-3 mart/API. R-0I больше не обнуляет
+  R-2: `claimsImplementationGate=true` отделён от live identity coverage.
 
 - 2026-07-22 — repeat live R-0I из `main@0deacf4` подтвердил полную claims
   active/archive pagination без mismatch. Доступный scope пуст, другой закрыт

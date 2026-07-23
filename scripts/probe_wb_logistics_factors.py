@@ -68,6 +68,8 @@ MOSCOW = timezone(timedelta(hours=3))
 CLAIMS_PAGE_LIMIT = 200
 CLAIMS_MAX_PAGES = 100
 CLAIMS_REQUEST_INTERVAL_SECONDS = 3.1
+# Accepted 2026-07-23: empty/denied claims is a source state, not an R-2 gate.
+CLAIMS_FAIL_SOFT_IMPLEMENTATION_ACCEPTED = True
 
 F4_REQUIRED_FIELDS = {
     "measurement_penalties": {
@@ -684,8 +686,7 @@ def fetch_r0_source_payload(
         ):
             return "schema_mismatch", None
         if any(
-            not isinstance(row, dict)
-            or not R0_REQUIRED_FIELDS[name].issubset(row)
+            not isinstance(row, dict) or not R0_REQUIRED_FIELDS[name].issubset(row)
             for row in page_claims
         ):
             return "schema_mismatch", None
@@ -1647,15 +1648,12 @@ def evaluate_r0_identity(
         "claimsIdentityGate": claims_gate,
         "completeIdentityGate": goods_gate and claims_gate,
         "goodsReturnImplementationGate": goods_implementation_gate,
-        "claimsImplementationGate": False,
+        "claimsImplementationGate": CLAIMS_FAIL_SOFT_IMPLEMENTATION_ACCEPTED,
         "sameNameEvidencePresent": goods_gate or claims_gate,
         "baselineDirectMatchPresent": baseline_gate,
         "contractChangeRequired": (
-            claims_gate
-            or (
-                candidates["goodsReturnOrderIdToFinanceOrderId"]["candidateGate"]
-                and not goods_implementation_gate
-            )
+            candidates["goodsReturnOrderIdToFinanceOrderId"]["candidateGate"]
+            and not goods_implementation_gate
         ),
     }
 
@@ -1881,8 +1879,12 @@ def run_r0_identity_probe(
         report["goodsReturnGate"]
         and report["identity"]["goodsReturnImplementationGate"]
     )
-    report["claimsImplementationGate"] = False
-    report["implementationGate"] = False
+    report["claimsImplementationGate"] = bool(
+        report["identity"]["claimsImplementationGate"]
+    )
+    report["implementationGate"] = bool(
+        report["goodsReturnImplementationGate"] and report["claimsImplementationGate"]
+    )
     return report
 
 
@@ -1976,7 +1978,10 @@ def main(argv: list[str] | None = None) -> None:
         )
         if not accounts:
             report["completeSourceGate"] = False
-        report["implementationGate"] = False
+        report["implementationGate"] = bool(
+            report.get("goodsReturnImplementationGate")
+            and report.get("claimsImplementationGate")
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     if args.mode == "r0-lineage":

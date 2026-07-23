@@ -12,6 +12,7 @@ class _FakeService:
         self.calls: dict[str, tuple] = {}
         self.tariffs_recorded = False
         self.goods_return_recorded = False
+        self.return_claims_recorded = False
         self.supplier_sales_recorded = False
         self.measurements_recorded: set[str] = set()
 
@@ -57,6 +58,29 @@ class _FakeService:
     ):
         self.goods_return_recorded = True
         return SimpleNamespace(id=4)
+
+    def _wb_return_claims_exporter(
+        self, accounts, output_dir, *, period_start, period_end
+    ):
+        self.calls["return_claims"] = (
+            tuple(accounts),
+            output_dir,
+            period_start,
+            period_end,
+        )
+        return []
+
+    def _record_wb_return_claims(
+        self,
+        db,
+        refresh_run,
+        output_dir,
+        results,
+        *,
+        wb_cabinet_ids,
+    ):
+        self.return_claims_recorded = True
+        return SimpleNamespace(id=5)
 
     def _wb_supplier_sales_exporter(
         self, accounts, output_dir, *, period_start, period_end
@@ -156,18 +180,21 @@ def test_factor_collectors_call_exporter_and_return_output_dir(
 
     tariffs = sr._collect_wb_tariffs(service, context)
     goods_return = sr._collect_wb_goods_return(service, context)
+    return_claims = sr._collect_wb_return_claims(service, context)
     supplier_sales = sr._collect_wb_supplier_sales(service, context)
     measurement_penalties = sr._collect_wb_measurement_penalties(service, context)
     warehouse_measurements = sr._collect_wb_warehouse_measurements(service, context)
 
     assert tariffs.output_dir == tmp_path / "wb_tariffs"
     assert goods_return.output_dir == tmp_path / "wb_goods_return"
+    assert return_claims.output_dir == tmp_path / "wb_return_claims"
     assert supplier_sales.output_dir == tmp_path / "wb_supplier_sales"
     assert measurement_penalties.output_dir == tmp_path / "wb_measurement_penalties"
     assert warehouse_measurements.output_dir == tmp_path / "wb_warehouse_measurements"
     assert set(service.calls) == {
         "tariffs",
         "goods_return",
+        "return_claims",
         "supplier_sales",
         "measurement_penalties",
         "warehouse_measurements",
@@ -175,6 +202,7 @@ def test_factor_collectors_call_exporter_and_return_output_dir(
     assert service.calls["tariffs"][0]  # accounts passed through
     assert service.tariffs_recorded is True
     assert service.goods_return_recorded is True
+    assert service.return_claims_recorded is True
     assert service.supplier_sales_recorded is True
     assert service.measurements_recorded == {
         "wb_measurement_penalties",
@@ -201,6 +229,7 @@ def test_factor_collectors_registered_as_optional() -> None:
     for source_type in (
         "wb_tariffs",
         "wb_goods_return",
+        "wb_return_claims",
         "wb_supplier_sales",
         "wb_measurement_penalties",
         "wb_warehouse_measurements",

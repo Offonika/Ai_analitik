@@ -67,9 +67,7 @@ def test_path_routes_report_draft_retention() -> None:
         limit=3,
     )
 
-    assert [record.truth_scope for _score, record in matches] == [
-        "source-retention"
-    ]
+    assert [record.truth_scope for _score, record in matches] == ["source-retention"]
 
 
 def test_shared_path_lists_scopes_without_expanding_routes(capsys) -> None:
@@ -152,9 +150,9 @@ def test_generated_jsonl_has_one_safe_record_per_manifest_entry() -> None:
         {
             "path": "docs/runbooks/wb-logistics-v4-continuation.md",
             "summary": (
-                "Operational state WB-логистики: F-1…F-4 test acceptance, R-1 и "
-                "claims hardening в main; repeat R-0I подтвердил pagination без "
-                "mismatch, но claims keys и R-2 закрыты."
+                "Operational state WB-логистики: F-1…F-4 test acceptance; "
+                "claims window пуст, но 23 июля принят fail-soft R-2 без "
+                "production rollout."
             ),
         }
     ]
@@ -226,6 +224,5 @@ def test_anchor_validator_rejects_unregistered_path_and_missing_symbol(
     assert failures == [
         "docs/specs/example.md: code_anchors[0].path must also be listed in "
         "related_code: module.py",
-        "docs/specs/example.md: code_anchors[0] symbol does not exist: "
-        "'def absent'",
+        "docs/specs/example.md: code_anchors[0] symbol does not exist: 'def absent'",
     ]

@@ -6,7 +6,7 @@ audience: ["engineering", "agent", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-logistics-cost-analysis-implementation.md"
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 ---
 
 # Назначение
@@ -32,7 +32,11 @@ login выключены. Новый F-4 draft из verified read-only snapshots
 source refresh создал новый неопубликованный draft; current report, runtime и
 client flags не изменены, health остался `ok`. После merge PR №57 отдельно
 разрешённый repeat R-0I из `main` подтвердил полную claims pagination без
-mismatch, но claims keys в доступном окне по-прежнему отсутствуют; R-2 закрыт.
+mismatch, но claims keys в доступном окне по-прежнему отсутствуют. На момент
+прогона R-2 был закрыт. 23 июля пользователь снял этот implementation blocker:
+empty/denied теперь
+явные per-cabinet source states, а exact matched rows активируются
+автоматически при появлении доступа. Production rollout этим не выполнялся.
 Test-only full refresh не выполнялся: exact-main preflight остановлен
 выключенным master-флагом, а dry-run завершён `needs_review` без нового report.
 
@@ -57,9 +61,11 @@ R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys
 Claims pagination hardening влит в `main` через PR №57. Отдельно разрешённый
 live R-0I из merge `0deacf4` подтвердил active/archive schema, provider-total
 reconciliation и `paginationMismatchPresent=false`, но доступный claims scope
-пуст, а другой scope закрыт по доступу. `claimsIdentityGate=false`; R-2 не
-начинать без окна с source keys, положительного claims gate и отдельного
-accepted-решения. Test-only full refresh остаётся невыполненным: master-флаг
+пуст, а другой scope закрыт по доступу. `claimsIdentityGate=false` описывает
+текущее покрытие, но больше не блокирует R-2: реализуй fail-soft
+connector/selector, показывай empty/denied как source state и разрешай
+`claimAvailable=true` только после exact same-name match. Test-only full refresh
+остаётся невыполненным: master-флаг
 source refresh на test выключен, dry-run дал `needs_review` без нового report.
 ```
 
@@ -415,8 +421,9 @@ provider-total pagination подтверждены, `paginationMismatchPresent=f
 `completeIdentityGate=false`, `claimsImplementationGate=false` и общий
 `implementationGate=false`.
 
-R-2 не открыт. Production runtime, service, БД, published/current report и
-feature flags не менялись; финальный health — `ok`. Первая попытка оператора
+На момент evidence R-2 не был открыт; решение 23 июля перевело этот gate в
+неблокирующий source state. Production runtime, service, БД, published/current
+report и feature flags не менялись; финальный health — `ok`. Первая попытка оператора
 fail closed до evidence из-за импорта старого runtime-кода; повтор выполнен
 после явной проверки exact-main imports. В Git/Markdown не перенесены provider
 labels, counts, клиентские окна, identifiers, причины, комментарии, media,
@@ -736,8 +743,9 @@ keys в текущем окне отсутствуют, поэтому claims/co
 `implementationGate` закрыты. Source-specific контракт R-1 отдельно принят и
 реализован в `main` через PR №56: registered immutable goods-return source,
 DB/file selector, normalization и internal exact link/coverage без mart/API/UI.
-Environment rollout не выполнен. R-2 начинается только после собственного
-положительного claims identity evidence; R-3…R-5 автоматически не начинаются.
+Environment rollout не выполнен. По решению 23 июля R-2 начинается fail-soft
+без положительного live claims identity evidence; R-3…R-5 автоматически не
+начинаются.
 Factor-spec остаётся `accepted`, потому что F-5, объединённая staff-приёмка и
 client/production решения не завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
@@ -755,9 +763,10 @@ client/production решения не завершены. Общий опера�
    начинать.
 3. Claims pagination hardening влит PR №57; repeat live R-0I подтвердил полную
    pagination и `paginationMismatchPresent=false`, но не получил claims source
-   keys. Следующий data-gate — окно и scope с непустыми claims keys и
-   положительный identity gate; не ослаблять join до product/date/одиночного
-   identifier и не начинать R-2 по одной schema-доступности.
+   keys. Непустое окно и положительный exact claims identity match теперь
+   нужны для автоматической активации конкретных rows, а не для старта R-2.
+   Join до product/date/одиночного identifier не ослаблять; production rollout
+   без отдельного разрешения не выполнять.
 4. Для повторной клиентской приемки использовать текущую ссылку вида
    `/cabinet?client_id=<authorized_client>&report_id=<current_report>#tables/logistics`;
    конкретные идентификаторы брать из локального разрешенного операционного

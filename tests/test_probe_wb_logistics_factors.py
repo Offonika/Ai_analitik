@@ -699,7 +699,7 @@ def test_r0_identity_same_name_match_opens_only_source_specific_gate() -> None:
     assert report["claimsIdentityGate"] is False
     assert report["completeIdentityGate"] is False
     assert report["goodsReturnImplementationGate"] is True
-    assert report["claimsImplementationGate"] is False
+    assert report["claimsImplementationGate"] is True
     assert report["sameNameEvidencePresent"] is True
     assert report["baselineDirectMatchPresent"] is False
     assert report["contractChangeRequired"] is False
@@ -1095,8 +1095,8 @@ def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
     assert report["identity"]["goodsReturnIdentityGate"] is True
     assert report["identity"]["completeIdentityGate"] is False
     assert report["goodsReturnImplementationGate"] is True
-    assert report["claimsImplementationGate"] is False
-    assert report["implementationGate"] is False
+    assert report["claimsImplementationGate"] is True
+    assert report["implementationGate"] is True
     rendered = str(report)
     for forbidden in (
         "RAW_REASON",
@@ -1113,7 +1113,7 @@ def test_run_r0_identity_probe_is_boolean_only_and_never_implements(
         assert forbidden not in rendered
 
 
-def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed(
+def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     account = probe.R0ProbeAccount(
@@ -1197,8 +1197,8 @@ def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_closed(
     assert report["identity"]["claimsIdentityGate"] is True
     assert report["identity"]["goodsReturnIdentityGate"] is False
     assert report["identity"]["completeIdentityGate"] is False
-    assert report["identity"]["claimsImplementationGate"] is False
-    assert report["claimsImplementationGate"] is False
+    assert report["identity"]["claimsImplementationGate"] is True
+    assert report["claimsImplementationGate"] is True
     assert report["implementationGate"] is False
     rendered = str(report)
     for forbidden in (

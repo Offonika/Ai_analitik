@@ -8995,6 +8995,80 @@ def test_source_refresh_latest_prefers_active_full_over_blocked_daily_attempt(
     assert payload["latestAttempt"]["blockedByRunId"] == active.id
 
 
+@pytest.mark.parametrize(
+    ("source_state", "message"),
+    [
+        ("confirmed_empty", "Заявок за доступное окно нет"),
+        ("access_denied", "Источник заявок недоступен"),
+    ],
+)
+def test_source_refresh_latest_exposes_safe_return_claims_marker(
+    tmp_path: Path,
+    source_state: str,
+    message: str,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    with client.app.state.session_factory() as db:
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id=f"claims-{source_state}",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 23),
+            reason="claims marker test",
+        )
+        repository.add_source_refresh_collection(
+            db,
+            refresh_run,
+            source_type="wb_return_claims",
+            source_label="WB buyer return claims",
+            required=False,
+            status=("loaded" if source_state == "confirmed_empty" else "needs_review"),
+            row_count=0,
+            raw_path="/protected/raw/path",
+            error_message="must stay hidden",
+            payload={
+                "results": [
+                    {
+                        "status": source_state,
+                        "user_comment": "must stay hidden",
+                        "id": "must-stay-hidden",
+                    }
+                ]
+            },
+        )
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            status="completed",
+            finished_at=repository.security.utcnow(),
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/clients/shumeyko/source-refresh/latest",
+        params={"mode": "full"},
+    )
+
+    assert response.status_code == 200
+    collection = next(
+        item
+        for item in response.json()["latest"]["collections"]
+        if item["sourceType"] == "wb_return_claims"
+    )
+    assert collection["sourceState"] == source_state
+    assert collection["sourceMessage"] == message
+    assert collection["payload"] == {}
+    assert collection["rawPath"] == ""
+    assert collection["errorMessage"] == ""
+    assert "must stay hidden" not in response.text
+
+
 def test_tax_profile_review_is_not_counted_as_missing_cost(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     with client.app.state.session_factory() as db:
