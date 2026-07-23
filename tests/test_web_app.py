@@ -10920,6 +10920,10 @@ def test_multi_client_report_access_requires_explicit_client(
     assert {item["clientId"] for item in own_clients.json()["items"]} == {"shumeyko"}
     assert client.get("/api/clients/other/reports").status_code == 404
     assert (
+        client.get("/api/reports", params={"client_id": "other"}).status_code
+        == 404
+    )
+    assert (
         client.get("/api/reports/report-1/document-reconciliation").status_code == 200
     )
     assert (

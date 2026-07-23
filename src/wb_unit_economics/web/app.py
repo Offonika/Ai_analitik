@@ -2454,7 +2454,12 @@ def create_app(
         if report_kind not in runtime_settings.enabled_report_kind_set:
             raise HTTPException(status_code=404, detail="report kind not found")
         if client_id:
-            client = repository.require_client_access(db, current, client_id)
+            try:
+                client = repository.require_client_access(db, current, client_id)
+            except PermissionError as exc:
+                raise HTTPException(
+                    status_code=404, detail="client not found"
+                ) from exc
             _require_enabled_report_kind_or_404(
                 current,
                 tenant_id=client.tenant_id,
