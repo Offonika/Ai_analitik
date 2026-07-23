@@ -16,36 +16,36 @@ accepted-спецификацию. При расхождении следова�
 `docs/manifest.yml` и
 `docs/specs/wb-logistics-cost-analysis-implementation.md`.
 
-Последнее записанное operational evidence датировано **22 июля 2026 года**.
+Последнее записанное operational evidence датировано **23 июля 2026 года**.
 Перед любым утверждением о текущих feature flags, runtime, gate или rollout
 обязательно повторно проверить соответствующую среду; приведенное ниже
 состояние не является доказательством на более позднюю дату. Code defaults
 не подтверждают фактическое состояние test или production.
 
 На test развернут чистый immutable release
-`runtime-main-fe0f229-logistics-f4-v2-20260721`. Master-флаги факторов и F-4
-включены только для staff; factor- и measurement-client flags, а также client
-login выключены. Новый F-4 draft из verified read-only snapshots сохранен, но
-не опубликован. Production остается на
+`runtime-main-a9ec18c-logistics-r5-20260723` из `main@a9ec18c` с
+`sourceDirty=false`. Tracked R-5 drop-in включает F-1…F-5 только для staff и
+явно оставляет все factor client flags `false`. Schema
+`2026_07_23_logistics_return_reasons_context_v1` применена. Новый test-only
+full refresh из writable workdir создал неопубликованный immutable draft:
+refresh завершён `needs_review`, return-reasons context имеет `partial`,
+blocking reasons отсутствуют, Finance chains и mart/context reconciliation
+подтверждены. Empty/denied claims и частичное goods-return покрытие остаются
+явными неблокирующими source states.
+
+Staff API/UI и browser smoke 1440×900/390×844 приняты; client API возвращает
+404, секция скрыта и request не выполняется. Обычный mobile viewport screenshot
+подтвердил отсутствие перекрытия sticky-навигацией; первый обрезанный кадр был
+артефактом element screenshot. Временные acceptance users деактивированы,
+пароли сброшены, sessions и локальные artifacts удалены, transient web unit
+остановлен. Test health после cleanup — `ok`, latest refresh не активен.
+
+Production остается на
 `runtime-fcfc52b-tax-profile-configured-20260721`; production и клиентское
-включение F-4 не выполнялись. На production 22 июля отдельно разрешённый full
-source refresh создал новый неопубликованный draft; current report, runtime и
-client flags не изменены, health остался `ok`. После merge PR №57 отдельно
-разрешённый repeat R-0I из `main` подтвердил полную claims pagination без
-mismatch, но claims keys в доступном окне по-прежнему отсутствуют. На момент
-прогона R-2 был закрыт. 23 июля пользователь снял этот implementation blocker:
-empty/denied теперь
-явные per-cabinet source states, а exact matched rows активируются
-автоматически при появлении доступа. Production rollout этим не выполнялся.
-R-2 затем влит в `main` через PR №59, R-3 mart/API — через PR №60. R-4
-coverage-first UI реализован в текущем change set за выключенными по умолчанию
-флагами: section/no-request boundary, все состояния, desktop-таблица,
-mobile-карточки и рекомендации только по подтверждённым причинам. Synthetic
-browser QA 1440×900 и 390×844 пройден; test/production refresh, runtime
-promotion, report publication или client enable не выполнялись. Следующий
-пакет — R-5 staff-only acceptance/rollout.
-Test-only full refresh не выполнялся: exact-main preflight остановлен
-выключенным master-флагом, а dry-run завершён `needs_review` без нового report.
+включение факторов не выполнялись. Production runtime, service, feature flags,
+published current report и внешние интеграции R-5 не менял. Следующее решение —
+отдельный client или production rollout; F-5 implementation-spec переведён в
+`implemented`, а канонический общий factor-spec остаётся `accepted`.
 
 # Текст для нового чата
 
@@ -53,49 +53,38 @@ Test-only full refresh не выполнялся: exact-main preflight оста�
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v5.
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
 операционное состояние в этом runbook. На test развернут immutable release
-runtime-main-fe0f229-logistics-f4-v2-20260721 из main merge fe0f229. Factor и
-F-4 master включены для staff, оба client-флага и client login выключены.
-Неопубликованный immutable draft имеет partial measurement context без
-blocking reasons; справочные суммы F-4 исключены из финансовых KPI до сверки.
-Staff API/UI, desktop 1440x900 и mobile 390x844 приняты; client-role получает
-HTTP 404, блок скрыт и запрос не выполняется. Временные пользователи, пароли,
-сессии, browser script и screenshots удалены. Production не менять без
-отдельного разрешения; production runtime и client flags не менялись. Для F-5
-новый production draft имеет verified unambiguous Finance lineage. Повторный
-R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys в текущем
-окне отсутствуют. На 22 июля отдельное
-решение принято, а R-1 влит в `main` через PR №56 без environment rollout.
-Claims pagination hardening влит в `main` через PR №57. Отдельно разрешённый
-live R-0I из merge `0deacf4` подтвердил active/archive schema, provider-total
-reconciliation и `paginationMismatchPresent=false`, но доступный claims scope
-пуст, а другой scope закрыт по доступу. `claimsIdentityGate=false` описывает
-текущее покрытие, но не блокирует расчёт или публикацию. R-2 влит через PR №59.
-R-3 mart/API влит через PR №60 без environment rollout: одна строка на canonical
-Finance return chain, empty/denied как `partial/data_unavailable`, exact match
-для безопасных claims booleans, atomic draft-only persistence и read-only
-`/logistics/return-reasons`. R-4 UI реализован локально: coverage-first
-disclosure после факторов и до рейтинга, безопасные source states, feature
-flag скрывает section и предотвращает request, desktop/mobile browser QA
-пройден. Следующий этап — R-5 staff-only acceptance/rollout; production и test
-не менять без отдельного разрешения. Test-only full refresh остаётся невыполненным:
-master-флаг source refresh на test выключен, dry-run дал `needs_review` без
-нового report.
+runtime-main-a9ec18c-logistics-r5-20260723 из main merge a9ec18c,
+sourceDirty=false, schema 2026_07_23_logistics_return_reasons_context_v1.
+Tracked drop-in включает F-1…F-5 только для staff и явно оставляет все
+client-флаги false. R-5 staff-only acceptance завершён: новый full refresh
+создал неопубликованный needs_review draft, return-reasons context partial без
+blocking reasons, Finance chains и mart/context reconciliation подтверждены.
+Staff API/UI, SQL sorting/pagination, desktop 1440x900 и mobile 390x844
+приняты; client-role получает HTTP 404, секция скрыта и request не выполняется.
+Claims/goods-return partial coverage не является blocker и автоматически
+улучшится при появлении exact compatible rows. Временные users деактивированы,
+пароли сброшены, sessions и acceptance artifacts удалены. Production runtime,
+service, published current report и client flags не менялись. Следующее
+действие требует отдельного решения: client enable на test или production
+rollout; без него production не менять.
 ```
 
 # Текущее состояние
 
 - Базовая методика логистики — `wb-logistics-v5`, методика F-4 —
-  `wb-logistics-measurements-v1`; поддерживается только WB.
+  `wb-logistics-measurements-v1`, методика F-5 —
+  `wb-logistics-return-reasons-v1`; поддерживается только WB.
 - F-4 реализован в `main` через PR №49; визуальное исправление desktop-таблицы
   влито через PR №50. Test runtime собран из точного merge-коммита PR №50 с
   `sourceDirty=false`.
+- Test runtime переключён на
+  `runtime-main-a9ec18c-logistics-r5-20260723`; release manifest подтверждает
+  exact `main@a9ec18c` и `sourceDirty=false`.
 - Test health подтверждает `runtimeEnvironment=test`, совпадающие backend/static
-  build `20260721-logistics-f4-measurements-v2`, schema
-  `2026_07_21_logistics_measurements_context_v1` и `status=ok`.
-- На test включены `SHUMEYKO_LOGISTICS_FACTORS_ENABLED=true` и
-  `SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=true`. Оба соответствующих
-  client-флага и `SHUMEYKO_CLIENT_LOGIN_ENABLED` выключены; code defaults не
-  считаются environment evidence.
+  build `20260723-logistics-r4-return-reasons-v1`, schema
+  `2026_07_23_logistics_return_reasons_context_v1` и `status=ok`.
+- На test включены F-1…F-5 master flags только для staff; все factor client
+  flags явно `false`. Code defaults не считаются environment evidence.
 - Новый immutable draft создан из сохраненных verified snapshots без повторного
   внешнего чтения после локальной runtime-ошибки. Measurement context имеет
   `partial`, source и mart reconciliation пройдены, blocking reasons пусты.
@@ -104,8 +93,7 @@ master-флаг source refresh на test выключен, dry-run дал `needs
   блок скрыт, а factor request не выполняется. Ошибок браузера и overflow на
   desktop/mobile не выявлено после CSS-hotfix.
 - F-4 draft не публиковался. Общие publication blockers не скрыты и не
-  переопределены. Factor-spec остается `accepted`: вся вторая очередь не
-  завершена.
+  переопределены.
 - Для F-5 на production создан отдельный неопубликованный immutable draft с
   verified file-authoritative Finance без DB/file ambiguity. Goods-return
   identity gate открыт, а claims identity gate отражает только фактическое
@@ -116,14 +104,17 @@ master-флаг source refresh на test выключен, dry-run дал `needs
 - R-2 fail-soft claims source влит в `main` через PR №59. R-3 context/mart,
   source-refresh build, readiness, safe API и role/flag matrix влиты через
   PR №60 со schema `2026_07_23_logistics_return_reasons_context_v1`.
-- R-4 UI реализован в текущем change set без environment rollout: выбран
-  coverage-first target, блок расположен после факторов и до рейтинга,
-  empty/denied claims не выглядят blocker, выключенный flag скрывает section и
-  предотвращает request. Synthetic browser QA 1440×900 и 390×844 прошёл без
-  console/network errors и overflow; `design-qa.md` завершён
-  `final result: passed`. R-5 rollout не выполнялся.
+- R-4 UI влит через PR №61. R-5 staff-only acceptance завершён на test:
+  неопубликованный full-refresh draft имеет `needs_review`, return-reasons
+  context `partial`, пустые blocking reasons и согласованное число mart rows.
+  Staff API/UI, SQL-сортировка/пагинация и browser QA 1440×900/390×844 прошли;
+  client API возвращает 404, секция скрыта и request не выполняется.
 - Временные acceptance users деактивированы, пароли повторно сброшены, sessions,
-  credential-файлы, screenshots и browser script удалены.
+  credential-файлы, screenshots и browser scripts удалены; transient unit
+  остановлен.
+- F-5 implementation-spec имеет статус `implemented`. Канонический factor-spec
+  остаётся `accepted`, потому что client/production rollout и третья очередь
+  не завершены.
 - Production symlink остается на
   `runtime-fcfc52b-tax-profile-configured-20260721`; production service,
   production/client factor flags и внешние интеграции этой работой не
@@ -451,6 +442,50 @@ fail closed до evidence из-за импорта старого runtime-код
 labels, counts, клиентские окна, identifiers, причины, комментарии, media,
 суммы, paths, hashes или raw rows.
 
+# Operational evidence F-5 R-5 на test — 23 июля 2026 года
+
+R-5 выполнен после отдельного разрешения пользователя только на test. Release
+manifest для `runtime-main-a9ec18c-logistics-r5-20260723` подтверждает
+`sourceCommit=a9ec18c` и `sourceDirty=false`. Test symlink атомарно переключён
+на этот release, additive schema
+`2026_07_23_logistics_return_reasons_context_v1` применена. Tracked systemd
+drop-in включает основную логистику и F-1…F-5 для staff, при этом явно
+устанавливает все соответствующие client-флаги в `false`.
+
+Первая попытка full refresh fail closed с `Permission denied`: относительный
+`data` указывал внутрь read-only immutable runtime. Published report и
+существующие snapshots при этом не менялись. Повтор выполнен штатным runtime
+worker из writable test workdir с `resume_mode=auto` и read-only внешними
+интеграциями. Он завершился `needs_review` и создал новый неопубликованный
+immutable draft (`publicationStatus=draft`, `isCurrent=false`).
+Return-reasons context имеет `partial`, пустой список blocking reasons,
+методику `wb-logistics-return-reasons-v1`, непустые Finance chains и
+совпадающее число context/mart rows. Partial goods-return и claims coverage
+осталось явным source state и не стало publication blocker. Published current
+report не изменён.
+
+Acceptance на точном runtime подтвердил:
+
+- public health — `status=ok`, `runtimeEnvironment=test`, совпадающие
+  backend/static build и schema; latest refresh завершён и не активен;
+- anonymous API — 401; staff `/api/me` разрешает F-5, а
+  `/logistics/return-reasons` возвращает 200, `partial`, правильную методику,
+  source coverage, строки, SQL-сортировку и пагинацию;
+- raw IDs, hashes, комментарии и media в API отсутствуют;
+- client API возвращает 404, client flags выключены, секция скрыта и request
+  не выполняется;
+- desktop 1440×900 и mobile 390×844 проходят collapse/reopen, data states,
+  отсутствие page/section overflow и нулевые console/page/network errors;
+- обычный mobile viewport после scroll-offset имеет nav bottom 66 px и section
+  top 72 px, поэтому перекрытия нет; обрезанный element screenshot признан
+  артефактом Playwright auto-scroll, а не UI-дефектом.
+
+После приёмки четыре временных пользователя деактивированы, их пароли сброшены,
+sessions удалены. Transient acceptance unit остановлен, credential-файлы,
+scripts и screenshots удалены. Verified snapshots и source-refresh lineage
+сохранены. Production runtime, service, БД, published current report, client
+flags и внешние интеграции не менялись.
+
 # Последнее UX-решение
 
 Пользователь подтвердил, что текущая структура интерфейса непонятна: она
@@ -756,27 +791,25 @@ deployment и без write-операций во внешние системы:
 
 # Следующий этап
 
-Обновление 2026-07-23: F-1…F-4 приняты на staff-only test. Для F-5 R-1/R-2 и
-R-3 влиты в `main`; R-4 coverage-first UI реализован локально и прошёл
-synthetic browser QA без environment rollout. Claims keys в последнем live
-окне отсутствовали, но это ограничивает только текущее покрытие: empty/denied
-не блокируют расчёт, публикацию или R-5. Следующий пакет — R-5 staff-only
-acceptance/rollout после merge R-4 и отдельного разрешения на test.
-Factor-spec остаётся `accepted`, потому что объединённая staff-приёмка и
-client/production решения не завершены. Общий операционный чеклист —
+Обновление 2026-07-23: F-1…F-5 приняты на staff-only test. Для F-5 R-1…R-4
+влиты в `main`, а R-5 завершён на immutable test runtime и новом
+неопубликованном draft. Claims keys в последнем live окне отсутствовали, но
+это ограничивает только текущее покрытие: empty/denied не блокируют расчёт или
+публикацию. Следующее изменение среды требует отдельного решения о client
+enable на test или production rollout. Канонический factor-spec остаётся
+`accepted`, потому что client/production решения и третья очередь не
+завершены. Общий операционный чеклист —
 `docs/runbooks/wb-logistics-factors-probe.md`. Задача
 `monthly_reconciliation_unresolved` остаётся advisory (PR №22).
 
 1. Разобрать сохраненную контрольную задачу
    `monthly_reconciliation_unresolved`; не скрывать ее из readiness и не
    пересобирать текущий immutable report на месте.
-2. Завершить R-4 review/CI/merge. До отдельного разрешения не выполнять
-   test/production refresh, runtime promotion, report publication или
-   client enable.
-3. Для R-5 отдельно согласовать staff-only test acceptance: exact merge
-   revision, immutable runtime, master return-reasons flag только для staff,
-   выключенный client flag, новый draft без публикации и повторный browser
-   smoke desktop/mobile. Production остаётся отдельным решением.
+2. До отдельного разрешения не публиковать R-5 draft, не включать factor
+   client flags и не менять production runtime/service.
+3. Если принято клиентское включение на test, повторить role/tenant/PII
+   acceptance на exact immutable draft до изменения client flags. Production
+   rollout выполнять отдельным пакетом с backup, rollback и dated evidence.
 4. Claims pagination hardening влит PR №57; repeat live R-0I подтвердил полную
    pagination и `paginationMismatchPresent=false`, но не получил claims source
    keys. Непустое окно и положительный exact claims identity match теперь

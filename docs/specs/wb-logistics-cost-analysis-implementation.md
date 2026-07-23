@@ -9,8 +9,8 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: logistics-cost-analysis
 truth_priority: 100
-related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py]
-related_tests: [tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_probe_wb_logistics_factors.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py]
+related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf]
+related_tests: [tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_probe_wb_logistics_factors.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -60,6 +60,8 @@ test_anchors:
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_web_app.py
     symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering"]
+  - path: tests/test_runtime_contour_scripts.py
+    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -73,10 +75,10 @@ updated_at: "2026-07-23"
 
 `Accepted` означает утвержденную цель реализации, но не подтверждает production
 rollout или завершение всех очередей. Первая очередь v5 и подпакеты факторов
-F-1…F-4 прошли отдельные staff-only test acceptance на immutable report runs.
-Production и клиентское включение факторов не выполнены. Для F-5 source-слои
-R-1/R-2 и R-3 витрина/API влиты, R-4 UI реализован без environment rollout;
-R-5 приёмка/rollout и третья очередь остаются незавершёнными.
+F-1…F-5 прошли отдельные staff-only test acceptance на immutable report runs.
+Production и клиентское включение факторов не выполнены. Подчинённый F-5 spec
+переведён в `implemented`; третья очередь и объединённое client/production
+решение остаются незавершёнными.
 
 # Текущее состояние реализации
 
@@ -129,19 +131,28 @@ fail-soft контракту больше не закрывает R-2. Test-only
 выключенным source-refresh master; dry-run дал `needs_review` без нового report,
 фактический refresh и transient override не выполнялись.
 
-R-2 влит в `main` через PR №59, R-3 — через PR №60. R-3 сохраняет одну
+R-2 влит в `main` через PR №59, R-3 — через PR №60, R-4 — через PR №61. R-3
+сохраняет одну
 безопасную mart-строку на canonical Finance return chain, последнюю
 подтверждённую Finance return date при нескольких segments, additive
 `report_logistics_return_reason_contexts/rows`, draft-only atomic persistence,
 readiness и read-only `/logistics/return-reasons` с SQL-фильтрами,
 сортировками, пагинацией и coverage полного среза. Empty/denied/unmatched
 claims остаются `partial/data_unavailable` и не блокируют основную логистику
-или публикацию. В текущем change set реализован R-4: coverage-first UI
+или публикацию. R-4 добавил coverage-first UI, который
 показывает три состояния покрытия, безопасные source rows и только
 подтверждённые рекомендации, скрывается и не делает request при выключенном
-флаге, превращает таблицу в mobile-карточки. Synthetic browser QA 1440×900 и
-390×844 пройден. Оба новых feature flags по умолчанию `false`;
-test/production/client rollout не выполнялся.
+флаге, превращает таблицу в mobile-карточки.
+
+R-5 staff-only test acceptance завершён на immutable
+`main@a9ec18c`, `sourceDirty=false`. Additive schema применена, tracked
+test drop-in включает F-1…F-5 только для staff и явно оставляет все
+client-флаги `false`. Новый full refresh создал неопубликованный
+`needs_review` draft: return-reasons context имеет `partial`, blocking reasons
+пусты, Finance chains и mart/context reconciliation присутствуют. Staff API,
+SQL-сортировка/пагинация и browser QA 1440×900/390×844 пройдены; client API
+возвращает 404, секция скрыта и request не выполняется. Production runtime,
+published current report и client flags не менялись.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -843,15 +854,14 @@ AI не может:
    выключенным флагом.
 5. `WP-4 Приемка и rollout`: повторяемость, tenant tests, staff-only проверка,
    затем отдельное включение клиентским ролям.
-6. `WP-5 Факторы`: F-1…F-4 приняты на staff-only test; для F-5 source R-1/R-2
-   и R-3 mart/API влиты, R-4 UI реализован за выключенным флагом; следующий
-   этап — R-5 отдельная staff-only приёмка/rollout.
+6. `WP-5 Факторы`: F-1…F-5 приняты на staff-only test; для F-5 R-1…R-4
+   реализованы и влиты, R-5 test acceptance завершён. Клиентское и production-
+   включение остаются отдельными решениями.
 
 `WP-4` начат после исторического прохождения gate v4 на read-only test-снимке.
-Вложенная information architecture и frontend-реализация v5 находятся в
-текущем change set; следующий шаг — полная автоматическая проверка, новый
-immutable v5 draft, staff-only test-rollout и ручная browser-приемка. Клиентский
-и production rollout остаются отдельными решениями.
+Вложенная information architecture и frontend-реализация v5 приняты на test.
+Следующий шаг определяется отдельным решением о клиентском или production
+rollout; калькуляторы остаются третьей очередью.
 
 ## Этап 1. Фактический MVP
 
@@ -1121,6 +1131,15 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-23 — завершён F-5/R-5 staff-only test acceptance на immutable
+  `main@a9ec18c` с `sourceDirty=false`. Test-only full refresh создал
+  неопубликованный `needs_review` draft с `partial` return-reasons context без
+  blockers; Finance chains, mart/context reconciliation, safe staff API,
+  SQL-сортировка/пагинация и browser QA 1440×900/390×844 подтверждены.
+  Client API возвращает 404, блок скрыт и request не выполняется; все factor
+  client flags явно `false`. Временный acceptance-контур очищен. Production,
+  published current report и client flags не менялись.
 
 - 2026-07-23 — реализован F-5/R-4 без environment rollout: coverage-first
   блок причин возвратов встроен после факторов и до рейтинга товаров,

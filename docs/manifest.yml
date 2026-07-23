@@ -179,7 +179,7 @@ documents:
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
     operational_docs: ["docs/runbooks/wb-logistics-v4-continuation.md"]
-    summary: "Accepted WB-логистика v5: F-1…F-4 приняты на staff-only test; для F-5 принят fail-soft R-2 — пустой/закрытый claims scope не блокирует реализацию, exact rows активируются автоматически."
+    summary: "Accepted WB-логистика v5: F-1…F-5 приняты на staff-only test; F-5 создаёт partial draft без blockers при empty/denied claims, client/production rollout не выполнен."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
     search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
   - path: "docs/specs/wb-logistics-cost-factors-implementation.md"
@@ -188,16 +188,16 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted WP-5: F-1…F-4 приняты на staff-only test; F-5 claims переведён на fail-soft per-cabinet states без ослабления exact row-level join."
+    summary: "Accepted WP-5: F-1…F-5 приняты на staff-only test; F-5 реализован fail-soft без ослабления exact row-level join, client/production rollout не выполнен."
     read_when: "Проектируется вторая очередь логистики WB: габариты, Analytics замеры/удержания, тарифы, склады, маршруты, витрины dimensions/measurements/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/wb-logistics-return-reasons-implementation.md"
     title: "WB: причины возвратов (goods-return и claims)"
     doc_type: "spec"
-    status: "accepted"
+    status: "implemented"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted F-5: R-2 fail-soft — empty/denied claims не блокируют логистику, а exact claims→Finance rows включаются автоматически без raw comments/IDs в flat/API/UI."
+    summary: "Implemented F-5: R-1…R-5 приняты на staff-only test; empty/denied claims остаются partial без blockers, exact rows активируются автоматически, client/production rollout не выполнен."
     read_when: "Проектируется причина возврата WB: источники goods-return/claims, связывание по srid, покрытие причин, unmatched или обработка персональных данных покупателя."
     search_terms: ["причина возврата", "goods-return", "claims", "user_comment", "srid", "возвраты покупателей"]
   - path: "docs/specs/wb-logistics-calculators-implementation.md"
@@ -461,7 +461,7 @@ documents:
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Operational state WB-логистики: F-1…F-4 test acceptance; claims window пуст, но 23 июля принят fail-soft R-2 без production rollout."
+    summary: "Operational state WB-логистики: F-1…F-5 приняты на staff-only test; R-5 partial draft без blockers, client/production rollout не выполнен."
   - path: "docs/runbooks/wb-logistics-factors-probe.md"
     title: "Probe доступности источников логистики (F-0 / R-0/R-0I/R-0L / C-0)"
     doc_type: "runbook"
