@@ -7,8 +7,8 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
-related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_content.py, tests/test_wb_measurements.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_content.py, tests/test_wb_measurements.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -56,6 +56,8 @@ test_anchors:
     symbols: ["def test_measurement_penalties_pagination_reconciles_provider_total", "def test_flat_measurement_rows_omit_photos_and_subject_values", "def test_incomplete_measurement_page_fails_closed"]
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts", "def test_claims_fetch_fails_closed_on_pagination_mismatch", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
+  - path: tests/test_runtime_contour_scripts.py
+    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -111,9 +113,9 @@ snapshot карточек, атомарно сохраняет dimension context
 state matrix, фильтры, SQL-pagination и coverage полного среза, а factor-блок
 встроен в `#tables/logistics`. Operational evidence находится в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Статус всего factor-spec остаётся `accepted`: F-5 причины возвратов,
-объединённая staff-приёмка всех factors, factor AI digest и
-клиентский/production rollout остаются следующими подпакетами.
+Статус всего factor-spec остаётся `accepted`: factor AI digest,
+клиентский/production rollout и третья очередь остаются следующими
+подпакетами.
 
 F-2 «Тарифы» реализован сквозным пакетом и принят на staff-only test 21 июля
 2026 года: verified box/pallet snapshot, tariff context/mart, read-only
@@ -147,9 +149,11 @@ snapshot/selector/normalization/internal join без mart/API/UI и rollout.
 Repeat live R-0I после merge PR №57 подтвердил полную provider-total pagination
 без mismatch, но claims source keys в доступном окне отсутствуют. 23 июля
 пользователь принял fail-soft R-2: empty/denied — это явные per-cabinet source
-states, а не implementation blocker. Exact claim становится фактом только
-после автоматического same-name match к одной Finance return chain;
-context/mart/API/UI и rollout остаются отдельными этапами.
+states, а не implementation blocker. R-2/R-3/R-4 влиты через PR №59/№60/№61.
+R-5 staff-only test acceptance завершён на immutable `main@a9ec18c`: новый
+неопубликованный draft имеет `partial` context без blockers, staff API/UI
+приняты, а client API/section закрыты. Exact claim становится фактом только
+после автоматического same-name match к одной Finance return chain.
 
 # Цель
 
@@ -946,8 +950,9 @@ F-4 не передаёт AI `photoUrls`, raw identifiers или суммы ка
 5. `F-4 Замеры и удержания` — отдельный source gate двух Analytics GET,
    verified snapshots, `wb-logistics-measurements-v1` context/mart,
    `/measurements` и staff-only UI без повторного финансового учёта.
-6. `F-5 Приёмка и rollout` — staff-only проверка за флагом, затем отдельное
-   решение о клиентском включении.
+6. `F-5 Причины возвратов и rollout` — R-1…R-4 реализованы, staff-only R-5
+   принят на test за флагом; клиентское/production включение требует отдельных
+   решений.
 
 Каждый подпакет реализуется за выключенным флагом и additive-миграцией схемы;
 последовательность после F-0 уточняется матрицей доступности.
@@ -1139,18 +1144,24 @@ blocker с report run, который обязан был пройти gate, н�
 - Отдельный retention для tariff snapshot не вводится: действует retention
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
-Закрытые probe и staff-приёмка (2026-07-19…21): F-1, F-2, F-3 и F-4 приняты на
+Закрытые probe и staff-приёмка (2026-07-19…23): F-1…F-5 приняты на
 staff-only test; production/client enable не выполнялся. Для F-5 новый
 неопубликованный draft устранил Finance DB/file ambiguity, и повторный R-0I
 открыл goods-return identity gate. Claims source keys в текущем окне не
 обнаружены. Repeat R-0I после pagination hardening подтвердил
-`paginationMismatchPresent=false`, но claims/complete gates и общий
-implementation gate остались закрыты.
-Source-specific accepted-решение для R-1 принято. Для R-2 принят fail-soft
-контракт: live identity gate остаётся диагностикой текущего покрытия и не
-останавливает connector/selector/linker.
+`paginationMismatchPresent=false`. Source-specific accepted-решение для R-1 и
+fail-soft контракт R-2 реализованы; live claims identity gate остаётся
+диагностикой текущего покрытия и не останавливает connector/selector/linker,
+витрину, API или публикацию.
 
 # Changelog
+
+- 2026-07-23 — F-5/R-5 принят на staff-only test. Immutable
+  `main@a9ec18c`, additive schema и tracked drop-in подтверждены; новый
+  неопубликованный draft имеет `partial` return-reasons context без blockers.
+  Staff API/UI и browser QA 1440×900/390×844 прошли, client API возвращает
+  404, секция скрыта и request не выполняется. Cleanup временного контура
+  завершён; production и client flags не менялись.
 
 - 2026-07-23 — отсутствие claims rows или доступа переведено из
   implementation gate в безопасный per-cabinet source state. R-2 реализуется

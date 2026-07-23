@@ -29,6 +29,23 @@ from wb_unit_economics.web.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_r5_test_drop_in_keeps_return_reasons_staff_only() -> None:
+    drop_in = (
+        ROOT
+        / "deploy/systemd/shumeiko-web-test.service.d/"
+        "zz-logistics-r5-return-reasons.conf"
+    ).read_text(encoding="utf-8")
+
+    assert "SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=true" in drop_in
+    assert "SHUMEYKO_LOGISTICS_ANALYSIS_CLIENT_ENABLED=false" in drop_in
+    assert "SHUMEYKO_LOGISTICS_RETURN_REASONS_ENABLED=true" in drop_in
+    assert "SHUMEYKO_LOGISTICS_RETURN_REASONS_CLIENT_ENABLED=false" in drop_in
+    assert "SHUMEYKO_LOGISTICS_FACTORS_CLIENT_ENABLED=false" in drop_in
+    assert "SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED=false" in drop_in
+    assert "SHUMEYKO_LOGISTICS_ROUTES_CLIENT_ENABLED=false" in drop_in
+    assert "SHUMEYKO_LOGISTICS_MEASUREMENTS_CLIENT_ENABLED=false" in drop_in
+
+
 def test_nginx_templates_proxy_accounting_workflow_route() -> None:
     test_config = (ROOT / "deploy/nginx/shumeiko.offonika.ru.conf").read_text(
         encoding="utf-8"

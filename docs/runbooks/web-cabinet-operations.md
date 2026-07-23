@@ -862,6 +862,35 @@ SHUMEYKO_LOGISTICS_RETURN_REASONS_CLIENT_ENABLED=false
    production и client enable выполнять только в R-4/R-5 по отдельному
    разрешению.
 
+Для R-5 staff-only acceptance после merge R-4:
+
+1. Собрать immutable release из точного merge-коммита `main`; manifest обязан
+   подтверждать `sourceDirty=false`. Не откатывать test на более старый runtime,
+   если после R-4 в `main` уже влиты другие совместимые изменения.
+2. Повторно идемпотентно применить additive migration
+   `2026_07_23_logistics_return_reasons_context_v1`, атомарно переключить только
+   test symlink и перезапустить только `shumeiko-web-test.service`.
+3. Установить tracked test drop-in
+   `deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf`.
+   Он включает F-1…F-5 только для staff и явно оставляет все client-флаги
+   `false`, даже если более ранний drop-in включал client-доступ.
+4. Выполнить новый test-only `full` source refresh с read-only интеграциями и
+   отдельным immutable draft. Для test использовать foreground/background
+   worker текущего test runtime; production worker unit с production
+   EnvironmentFile не запускать. Empty/denied claims дают
+   `partial/data_unavailable`, но не publication blocker.
+5. Проверить staff `/api/me`, HTTP 200
+   `/logistics/return-reasons`, methodology
+   `wb-logistics-return-reasons-v1`, coverage полного SQL-среза,
+   сортировку/пагинацию и отсутствие raw IDs, hashes, комментариев и media.
+   Под client API обязан вернуть HTTP 404, секция должна отсутствовать и request
+   не должен выполняться.
+6. Выполнить browser-smoke 1440×900 и 390×844 по прямой ссылке на разрешённый
+   draft: без page overflow, console/page/network errors и stale/zero fallback.
+   Draft не публиковать; production runtime, service и flags не менять.
+7. После приёмки удалить временные sessions, credential-файлы, browser script и
+   screenshots; временных пользователей деактивировать и сбросить им пароли.
+
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
 маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
@@ -880,7 +909,7 @@ order-id и source hashes не должны появляться в API, UI, AI-
 Частичный rollback F-4 —
 `SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=false`; F-1/F-2/F-3 и первая очередь
 остаются доступными, а required blocker уже созданного draft не снимается.
-Частичный rollback R-3 —
+Частичный rollback F-5/R-5 —
 `SHUMEYKO_LOGISTICS_RETURN_REASONS_ENABLED=false`; основная логистика и F-1…F-4
 остаются доступными, additive mart не удаляется, required blocker уже
 созданного draft не снимается.

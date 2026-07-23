@@ -3,12 +3,12 @@ spec_id: "workspace-shumeyko-partners-wb-logistics-return-reasons-implementation
 title: "WB: причины возвратов (goods-return и claims)"
 doc_type: spec
 domain: "marketplace-analytics"
-status: accepted
+status: implemented
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql]
-related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf]
+related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -54,6 +54,8 @@ test_anchors:
     symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_logistics_return_reason_analysis_is_atomic_and_published_immutable", "def test_required_return_reason_context_controls_publication_readiness", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering"]
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
+  - path: tests/test_runtime_contour_scripts.py
+    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -61,7 +63,12 @@ updated_at: "2026-07-23"
 
 # Статус документа
 
-Статус — `accepted`. Это подчинённый implementation-spec внутри truth_scope
+Статус — `implemented`. R-1…R-4 реализованы и влиты, R-5 staff-only
+test acceptance завершён 23 июля 2026 года на immutable runtime и новом
+неопубликованном draft. Клиентское и production-включение не выполнялись и
+остаются отдельными решениями.
+
+Это подчинённый implementation-spec внутри truth_scope
 `logistics-cost-analysis`. Канонический документ scope — accepted
 [`docs/specs/wb-logistics-cost-analysis-implementation.md`](wb-logistics-cost-analysis-implementation.md)
 (`truth_priority: 100`); при любом расхождении действует он. Спек не является
@@ -121,7 +128,7 @@ DB/file-authoritative selector, per-cabinet source states и exact
 `claims.srid → Finance.srid` internal linker. Существующая staff-панель
 обновления источников получает безопасную пометку empty/denied без raw payload.
 
-В текущем change set реализованы R-3 и R-4 без environment rollout:
+R-3 и R-4 реализованы и влиты через PR №60/№61:
 детерминированная витрина на canonical Finance return-chain grain, additive
 context/rows schema, атомарное сохранение нового draft, publication readiness,
 read-only `/logistics/return-reasons`, SQL-фильтры/сортировки/пагинация,
@@ -131,8 +138,10 @@ coverage полного среза и role/flag matrix. Empty/denied claims со
 Coverage-first UI встроен после фактор-блоков и до рейтинга товаров, скрывается
 и не делает request при выключенном флаге, поддерживает desktop-таблицу,
 mobile-карточки, локальные states и рекомендации только по подтверждённым
-причинам. Browser QA на synthetic fixture пройден для 1440×900 и 390×844.
-R-5 staff-only acceptance/rollout остаётся следующим этапом.
+причинам. R-5 staff-only test acceptance завершён на immutable
+`main@a9ec18c`: новый неопубликованный draft, live safe API, desktop/mobile
+browser QA и client no-request boundary приняты. Production и client enable не
+выполнялись.
 
 Первичный R-0 выполнен 22 июля 2026 года после принятия спека. Source schema
 gate пройден, но direct Finance/source join не подтвердился даже на
@@ -711,17 +720,17 @@ factors и return-reasons master; client дополнительно требуе
    raw, per-cabinet source states и exact linker с автоматической активацией
    при появлении совместимых keys. Empty/denied не блокируют реализацию,
    основную логистику или публикацию.
-6. `R-3 Витрина и API` — реализован в текущем change set:
+6. `R-3 Витрина и API` — реализован и влит через PR №60:
    `report_logistics_return_reason_contexts`,
    `report_logistics_return_reason_rows`, атомарная draft-only persistence,
-   readiness и read-only `/logistics/return-reasons`. Environment rollout не
-   выполнен.
-7. `R-4 UI и рекомендации` — реализован в текущем change set: coverage-first
+   readiness и read-only `/logistics/return-reasons`.
+7. `R-4 UI и рекомендации` — реализован и влит через PR №61: coverage-first
    disclosure, source states, безопасные строки и рекомендации,
-   feature-flag/no-request boundary, desktop/mobile browser QA. Environment
-   rollout не выполнен.
-8. `R-5 Приёмка и rollout` — staff-only за флагом, затем отдельное решение о
-   клиентском включении.
+   feature-flag/no-request boundary и desktop/mobile layout.
+8. `R-5 Приёмка и rollout` — завершён на test: staff-only drop-in, новый
+   неопубликованный immutable draft, API/browser acceptance и cleanup
+   временного контура. Клиентское и production-включение требуют отдельных
+   решений.
 
 Каждый подпакет — за выключенным флагом и additive-миграцией схемы.
 
@@ -734,8 +743,9 @@ Design-часть принята 22 июля 2026 года. Реализация
 доказывается обезличенными unit/integration fixtures и включается на live rows
 автоматически. R-1/R-2 source/selector/link subset покрывает критерии 2, 3,
 5–8 и 10 в своей границе; R-3 покрывает report-level критерии 4, 9, 11 и 12,
-R-4 — UI-критерий 13. Environment acceptance и rollout относятся к R-5 и не
-выполнены.
+R-4 — UI-критерий 13. R-5 подтвердил все критерии на staff-only test runtime и
+реальном неопубликованном draft; client/production enable в acceptance не
+входили и не выполнялись.
 
 1. probe зафиксировал schema/source state; goods-return имеет однозначный
    same-name Finance/source crosswalk, а claims exact linker проходит
@@ -810,8 +820,8 @@ R-4 — UI-критерий 13. Environment acceptance и rollout относят
    `srid → Finance.srid` принято; R-1 реализован отдельно. Claims включать
    fail-soft: empty/denied показывать как source state, а конкретную заявку —
    только после автоматического exact match.
-4. Включить причину consultant/admin за отдельным feature flag без клиентской
-   публикации.
+4. Причины включены на test для consultant/admin отдельным feature flag без
+   клиентской публикации; staff-only acceptance завершён.
 5. После приёмки — отдельное решение о клиентском включении с проверкой
    обработки персональных данных.
 
@@ -853,6 +863,20 @@ Rollback отключает новые маршруты и блок причин
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-23 — завершён R-5 staff-only test acceptance. Test переключён на
+  immutable release из `main@a9ec18c` с `sourceDirty=false`, применена additive
+  schema `2026_07_23_logistics_return_reasons_context_v1`, а tracked drop-in
+  включил F-1…F-5 только для staff и явно оставил все client-флаги `false`.
+  Повторный full refresh из writable test workdir создал неопубликованный
+  `needs_review` draft с `partial` return-reasons context без blocking reasons;
+  mart/context reconciliation и наличие Finance chains подтверждены.
+  Staff API/UI, SQL-сортировка/пагинация, desktop 1440×900 и mobile 390×844
+  прошли без overflow и browser errors; client API вернул 404, секция скрыта и
+  request не выполнялся. Claims/goods-return partial coverage остался
+  неблокирующим. Временные users деактивированы, пароли сброшены, sessions и
+  acceptance artifacts удалены. Production, published current report и
+  client flags не менялись.
 
 - 2026-07-23 — реализован R-4 без environment rollout: выбран coverage-first
   visual target, блок встроен после факторов и до рейтинга товаров, добавлены
