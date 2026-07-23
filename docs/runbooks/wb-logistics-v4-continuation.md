@@ -37,6 +37,9 @@ mismatch, но claims keys в доступном окне по-прежнему 
 empty/denied теперь
 явные per-cabinet source states, а exact matched rows активируются
 автоматически при появлении доступа. Production rollout этим не выполнялся.
+R-2 затем влит в `main` через PR №59. R-3 mart/API реализован в текущем
+change set за выключенными по умолчанию флагами, без test/production refresh,
+runtime promotion или client enable; следующий пакет — R-4 UI.
 Test-only full refresh не выполнялся: exact-main preflight остановлен
 выключенным master-флагом, а dry-run завершён `needs_review` без нового report.
 
@@ -56,17 +59,20 @@ HTTP 404, блок скрыт и запрос не выполняется. Вр�
 отдельного разрешения; production runtime и client flags не менялись. Для F-5
 новый production draft имеет verified unambiguous Finance lineage. Повторный
 R-0I подтвердил goods-return `srid → Finance.srid`, но claims keys в текущем
-окне отсутствуют; общий implementation gate закрыт. На 22 июля отдельное
+окне отсутствуют. На 22 июля отдельное
 решение принято, а R-1 влит в `main` через PR №56 без environment rollout.
 Claims pagination hardening влит в `main` через PR №57. Отдельно разрешённый
 live R-0I из merge `0deacf4` подтвердил active/archive schema, provider-total
 reconciliation и `paginationMismatchPresent=false`, но доступный claims scope
 пуст, а другой scope закрыт по доступу. `claimsIdentityGate=false` описывает
-текущее покрытие, но больше не блокирует R-2: реализуй fail-soft
-connector/selector, показывай empty/denied как source state и разрешай
-`claimAvailable=true` только после exact same-name match. Test-only full refresh
-остаётся невыполненным: master-флаг
-source refresh на test выключен, dry-run дал `needs_review` без нового report.
+текущее покрытие, но не блокирует расчёт или публикацию. R-2 влит через PR №59.
+R-3 mart/API реализован без environment rollout: одна строка на canonical
+Finance return chain, empty/denied как `partial/data_unavailable`, exact match
+для безопасных claims booleans, atomic draft-only persistence и read-only
+`/logistics/return-reasons`. Следующий этап — R-4 UI; production и test не
+менять без отдельного разрешения. Test-only full refresh остаётся невыполненным:
+master-флаг source refresh на test выключен, dry-run дал `needs_review` без
+нового report.
 ```
 
 # Текущее состояние
@@ -95,11 +101,16 @@ source refresh на test выключен, dry-run дал `needs_review` без 
   завершена.
 - Для F-5 на production создан отдельный неопубликованный immutable draft с
   verified file-authoritative Finance без DB/file ambiguity. Goods-return
-  identity gate открыт, claims/complete gates и implementation gate закрыты;
-  published current report и client flags не менялись.
+  identity gate открыт, а claims identity gate отражает только фактическое
+  покрытие и не является implementation/publication blocker; published current
+  report и client flags не менялись.
 - R-1 source/selector/internal exact link влит в `main` через PR №56; test или
-  production refresh из этой ревизии, publication, client flags и R-3
-  mart/API/UI не выполнялись.
+  production refresh из этой ревизии не выполнялся.
+- R-2 fail-soft claims source влит в `main` через PR №59. R-3 context/mart,
+  source-refresh build, readiness, safe API и role/flag matrix реализованы в
+  текущем change set со schema
+  `2026_07_23_logistics_return_reasons_context_v1`. R-4 UI и R-5 rollout не
+  выполнялись.
 - Временные acceptance users деактивированы, пароли повторно сброшены, sessions,
   credential-файлы, screenshots и browser script удалены.
 - Production symlink остается на

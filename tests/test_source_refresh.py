@@ -855,6 +855,161 @@ def test_logistics_analysis_is_built_from_persisted_read_only_snapshot(
     assert sku_rows[0].logistics_total == Decimal("50")
 
 
+def test_return_reason_context_builds_from_lineage_and_denied_claims_is_partial(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    service = SourceRefreshService(settings)
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        report.publication_status = "draft"
+        report.is_current = False
+        unit_row = db.query(repository.ReportUnitRow).one()
+        cabinet_id = unit_row.wb_cabinet_id
+        finance_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="return-reason-finance",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            user=user,
+            source_report=report,
+            reason="return reason finance test",
+            enforce_active_check=False,
+        )
+        finance_collection = repository.add_source_refresh_collection(
+            db,
+            finance_run,
+            source_type="wb_finance_detail",
+            source_label="WB finance",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        finance_payload = {
+            "rrdId": "return-finance-1",
+            "rrDate": "2026-04-06",
+            "orderDt": "2026-04-05",
+            "orderUid": "return-order-internal",
+            "srid": "return-srid-1",
+            "nmId": "1001",
+            "sku": "BAR-1",
+            "vendorCode": "WB-1",
+            "title": "Товар",
+            "deliveryMethod": "FBO",
+            "docTypeName": "Возврат",
+            "sellerOperName": "Возврат",
+            "quantity": "-1",
+            "retailAmount": "-1000",
+            "deliveryService": "50",
+            "deliveryAmount": "0",
+            "returnAmount": "0",
+        }
+        repository.add_source_snapshot_row(
+            db,
+            finance_collection,
+            row_number=1,
+            raw_payload_hash=source_refresh._hash_payload(finance_payload),
+            source_row_id="return-finance-1",
+            wb_cabinet_id=cabinet_id,
+            row_payload=finance_payload,
+        )
+        goods_run, _, _ = _add_goods_return_snapshot(
+            db,
+            report,
+            settings=settings,
+            snapshot_set_id="return-reason-goods",
+            cabinet_id=cabinet_id,
+            rows=[_goods_return_source_row(srid="return-srid-1")],
+            file_authoritative=False,
+        )
+        claims_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="return-reason-claims-denied",
+            period_start=report.period_start,
+            period_end=report.period_end,
+            reason="return reason claims denied test",
+            enforce_active_check=False,
+        )
+        claims_root = settings.source_refresh_root_path / claims_run.snapshot_set_id
+        claims_dir = claims_root / "wb_return_claims"
+        claims_dir.mkdir(parents=True)
+        claims_run.root_dir = str(claims_root)
+        denied = WbReturnClaimsExportResult(
+            ok=False,
+            source_state="access_denied",
+            active_state="access_denied",
+            archive_state="access_denied",
+            seller_account_id="WB_ACCOUNT_SAFE",
+            account_name="Кабинет",
+            coverage_start=report.period_end - timedelta(days=13),
+            coverage_end=report.period_end,
+            status_code=403,
+            error="HTTPStatusError",
+        )
+        (claims_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "coverageStart": denied.coverage_start.isoformat(),
+                    "coverageEnd": denied.coverage_end.isoformat(),
+                    "results": [
+                        source_refresh._wb_return_claims_result_payload(denied)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        service._record_wb_return_claims(
+            db,
+            claims_run,
+            claims_dir,
+            [denied],
+            wb_cabinet_ids={"WB_ACCOUNT_SAFE": cabinet_id},
+        )
+
+        logistics_result = source_refresh._build_and_persist_logistics_analysis(
+            db,
+            report,
+            primary_refresh_run=finance_run,
+        )
+        source_refresh._build_and_persist_logistics_return_reasons(
+            db,
+            report,
+            logistics_result=logistics_result,
+            primary_refresh_run=finance_run,
+            contributing_runs=[goods_run, claims_run],
+        )
+        db.flush()
+        context = db.get(
+            repository.ReportLogisticsReturnReasonContext,
+            report.id,
+        )
+        rows = db.query(repository.ReportLogisticsReturnReasonRow).all()
+
+    assert context is not None
+    assert report.logistics_return_reasons_required is True
+    assert context.data_status == "partial", context.blocking_reasons
+    assert context.claims_source_status == "access_denied"
+    assert context.blocking_reasons == []
+    assert context.return_reason_row_count == 1
+    assert len(rows) == 1
+    assert rows[0].reason_category == "Не подошёл размер"
+    assert rows[0].evidence_type == "fact"
+    assert rows[0].claim_available is None
+    assert rows[0].has_user_comment is None
+
+
 @pytest.mark.parametrize(
     ("tamper_after_verify", "add_database_row", "expected_blocker"),
     [

@@ -73,6 +73,8 @@ from wb_unit_economics.ozon_mart import (
     combine_ozon_monthly_marts,
     empty_ozon_mart_payload,
 )
+from wb_unit_economics.return_reason_analysis import ReturnReasonAnalysisResult
+from wb_unit_economics.wb_goods_return import RETURN_REASON_METHODOLOGY_VERSION
 from wb_unit_economics.web import providers, security
 from wb_unit_economics.web.models import (
     AiClientDraft,
@@ -106,6 +108,8 @@ from wb_unit_economics.web.models import (
     ReportLogisticsMeasurementContext,
     ReportLogisticsMeasurementRow,
     ReportLogisticsOrderRow,
+    ReportLogisticsReturnReasonContext,
+    ReportLogisticsReturnReasonRow,
     ReportLogisticsRouteContext,
     ReportLogisticsRouteRow,
     ReportLogisticsSkuRow,
@@ -204,6 +208,15 @@ LOGISTICS_ORDER_SORT_KEYS = frozenset(
 )
 LOGISTICS_DIMENSION_SORT_KEYS = frozenset(
     {"product", "volumeL", "weightBruttoKg", "coverageStatus"}
+)
+LOGISTICS_RETURN_REASON_SORT_KEYS = frozenset(
+    {
+        "eventDate",
+        "product",
+        "reasonCategory",
+        "evidenceType",
+        "matchStatus",
+    }
 )
 REPORT_ROW_SORT_KEYS = frozenset(
     {
@@ -13573,6 +13586,134 @@ def replace_report_logistics_route_analysis(
     return persisted
 
 
+def replace_report_logistics_return_reason_analysis(
+    db: Session,
+    report: ReportRun,
+    result: ReturnReasonAnalysisResult,
+    *,
+    goods_return_source_loaded_at: datetime | None = None,
+    claims_source_loaded_at: datetime | None = None,
+) -> ReportLogisticsReturnReasonContext:
+    """Atomically persist the safe F-5 context and mart for a draft report."""
+
+    if report.publication_status != "draft" or report.is_current:
+        raise ValueError("published logistics return-reason mart is immutable")
+    context = result.context
+    if context.data_status not in {"ready", "partial", "blocked"}:
+        raise ValueError("unsupported return-reason context status")
+    if context.data_status == "blocked" and result.rows:
+        raise ValueError("blocked return-reason context cannot persist mart rows")
+    if context.return_reason_row_count != len(result.rows):
+        raise ValueError("return-reason context row count does not match mart")
+
+    row_payloads = [
+        {
+            "tenant_id": row.tenant_id,
+            "client_id": row.client_id,
+            "wb_cabinet_id": row.wb_cabinet_id,
+            "client_company_id": row.client_company_id,
+        }
+        for row in result.rows
+    ]
+    _validate_logistics_return_reason_rows_scope(db, report, row_payloads)
+    db.execute(
+        delete(ReportLogisticsReturnReasonRow).where(
+            ReportLogisticsReturnReasonRow.report_run_id == report.id
+        )
+    )
+    db.execute(
+        delete(ReportLogisticsReturnReasonContext).where(
+            ReportLogisticsReturnReasonContext.report_run_id == report.id
+        )
+    )
+    for row in result.rows:
+        db.add(
+            ReportLogisticsReturnReasonRow(
+                report_run_id=report.id,
+                tenant_id=row.tenant_id,
+                client_id=row.client_id,
+                row_uid=row.row_uid,
+                wb_cabinet_id=row.wb_cabinet_id,
+                client_company_id=row.client_company_id,
+                scheme=row.scheme,
+                chain_key=row.chain_key,
+                event_date=row.event_date,
+                product_ref=row.product_ref,
+                product=row.product,
+                vendor_code=row.vendor_code,
+                reason_category=row.reason_category,
+                reason_source=row.reason_source,
+                evidence_type=row.evidence_type,
+                match_status=row.match_status,
+                claim_available=row.claim_available,
+                has_user_comment=row.has_user_comment,
+                goods_return_source_hash_digest=(
+                    row.goods_return_source_hash_digest
+                ),
+                claims_source_hash_digest=row.claims_source_hash_digest,
+                row_hash=row.row_hash,
+            )
+        )
+    persisted = ReportLogisticsReturnReasonContext(
+        report_run_id=report.id,
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        methodology_version=context.methodology_version,
+        data_status=context.data_status,
+        input_hash=context.input_hash,
+        goods_return_source_status=context.goods_return_source_status,
+        claims_source_status=context.claims_source_status,
+        goods_return_snapshot_hash=context.goods_return_snapshot_hash,
+        claims_snapshot_hash=context.claims_snapshot_hash,
+        goods_return_source_loaded_at=goods_return_source_loaded_at,
+        claims_source_loaded_at=claims_source_loaded_at,
+        goods_return_coverage_start=context.goods_return_coverage_start,
+        goods_return_coverage_end=context.goods_return_coverage_end,
+        claims_coverage_start=context.claims_coverage_start,
+        claims_coverage_end=context.claims_coverage_end,
+        finance_return_chain_count=context.finance_return_chain_count,
+        return_reason_row_count=context.return_reason_row_count,
+        goods_return_source_row_count=context.goods_return_source_row_count,
+        goods_return_matched_chain_count=(
+            context.goods_return_matched_chain_count
+        ),
+        goods_return_reason_available_count=(
+            context.goods_return_reason_available_count
+        ),
+        goods_return_source_unmatched_count=(
+            context.goods_return_source_unmatched_count
+        ),
+        goods_return_finance_unmatched_count=(
+            context.goods_return_finance_unmatched_count
+        ),
+        claims_source_row_count=context.claims_source_row_count,
+        claims_matched_chain_count=context.claims_matched_chain_count,
+        claims_source_unmatched_count=context.claims_source_unmatched_count,
+        claims_finance_unmatched_count=context.claims_finance_unmatched_count,
+        blocking_reasons=list(context.blocking_reasons),
+        review_reasons=list(context.review_reasons),
+        created_at=datetime.now(UTC),
+    )
+    db.add(persisted)
+    report.logistics_return_reasons_required = True
+    audit(
+        db,
+        action="report_logistics_return_reasons_saved",
+        tenant_id=report.tenant_id,
+        entity_type="report_run",
+        entity_id=report.id,
+        payload={
+            "dataStatus": context.data_status,
+            "methodologyVersion": context.methodology_version,
+            "returnReasonRows": context.return_reason_row_count,
+            "goodsReturnSourceStatus": context.goods_return_source_status,
+            "claimsSourceStatus": context.claims_source_status,
+        },
+    )
+    db.flush()
+    return persisted
+
+
 def replace_report_logistics_measurement_rows(
     db: Session,
     report: ReportRun,
@@ -13799,6 +13940,49 @@ def _validate_logistics_measurement_rows_scope(
             )
         ):
             raise ValueError("measurement row cabinet/company scope mismatch")
+
+
+def _validate_logistics_return_reason_rows_scope(
+    db: Session,
+    report: ReportRun,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    cabinet_ids: set[str] = set()
+    company_ids: set[str] = set()
+    for row in rows:
+        if str(row.get("tenant_id") or "") != report.tenant_id:
+            raise ValueError("return-reason row tenant does not match report")
+        if str(row.get("client_id") or "") != report.client_id:
+            raise ValueError("return-reason row client does not match report")
+        cabinet_ids.add(str(row.get("wb_cabinet_id") or ""))
+        company_ids.add(str(row.get("client_company_id") or ""))
+    if "" in cabinet_ids or "" in company_ids:
+        raise ValueError("return-reason row cabinet/company is missing")
+    cabinets = {
+        item.id: item
+        for item in db.scalars(select(WbCabinet).where(WbCabinet.id.in_(cabinet_ids)))
+    }
+    companies = {
+        item.id: item
+        for item in db.scalars(
+            select(ClientCompany).where(ClientCompany.id.in_(company_ids))
+        )
+    }
+    for row in rows:
+        cabinet_id = str(row.get("wb_cabinet_id") or "")
+        company_id = str(row.get("client_company_id") or "")
+        cabinet = cabinets.get(cabinet_id)
+        company = companies.get(company_id)
+        if (
+            cabinet is None
+            or company is None
+            or cabinet.tenant_id != report.tenant_id
+            or cabinet.client_id != report.client_id
+            or cabinet.client_company_id != company_id
+            or company.tenant_id != report.tenant_id
+            or company.client_id != report.client_id
+        ):
+            raise ValueError("return-reason row cabinet/company scope mismatch")
 
 
 def report_logistics_dimensions_payload(
@@ -14180,6 +14364,471 @@ def _validate_logistics_dimension_rows_scope(
             raise ValueError(
                 "dimension row cabinet/company scope does not match report"
             )
+
+
+def report_logistics_return_reasons_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+    reason_source: str = "",
+    evidence_type: str = "",
+    match_status: str = "",
+    sort_by: str = "eventDate",
+    sort_order: str = "desc",
+    offset: int = 0,
+    limit: int = 250,
+) -> dict[str, Any]:
+    logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
+    context = db.get(ReportLogisticsReturnReasonContext, report.id)
+    state = _logistics_return_reason_context_state(report, context)
+    base_state = _logistics_context_state(report, logistics_context)
+    filter_context = {
+        "periodStart": period_start.isoformat() if period_start else None,
+        "periodEnd": period_end.isoformat() if period_end else None,
+        "wbCabinetId": wb_cabinet_id or None,
+        "clientCompanyId": client_company_id or None,
+        "scheme": scheme.casefold() or None,
+        "product": product_query.strip() or None,
+        "reasonSource": reason_source or None,
+        "evidenceType": evidence_type or None,
+        "matchStatus": match_status or None,
+        "dateGrain": "calendar_day",
+    }
+    source_coverage = _return_reason_source_coverage(context)
+    meta = {
+        "reportId": report.id,
+        "dataStatus": "needs_rebuild",
+        "sliceStatus": "needs_rebuild",
+        "methodologyVersion": (
+            context.methodology_version
+            if context is not None
+            else RETURN_REASON_METHODOLOGY_VERSION
+        ),
+        "factorMethodologyVersion": (
+            logistics_context.methodology_version
+            if logistics_context is not None
+            else LOGISTICS_METHODOLOGY_VERSION
+        ),
+        "generatedAt": (
+            context.created_at.isoformat()
+            if context is not None
+            else report.generated_at.isoformat()
+        ),
+        "sourceCoverage": source_coverage,
+        "filterContext": filter_context,
+    }
+    empty_payload = {
+        **meta,
+        "coverage": _empty_logistics_return_reason_coverage(),
+        "rows": [],
+        "total": 0,
+        "offset": offset,
+        "limit": limit,
+        "recommendations": [],
+    }
+    if base_state == "blocked" or state in {"blocked", "scope_mismatch"}:
+        return _logistics_json_safe(
+            {**empty_payload, "dataStatus": "blocked", "sliceStatus": "blocked"}
+        )
+    if base_state not in {"ready", "partial"} or state not in {"ready", "partial"}:
+        return _logistics_json_safe(empty_payload)
+    persisted_integrity = db.execute(
+        select(
+            func.count(),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            or_(
+                                ReportLogisticsReturnReasonRow.tenant_id
+                                != report.tenant_id,
+                                ReportLogisticsReturnReasonRow.client_id
+                                != report.client_id,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).where(ReportLogisticsReturnReasonRow.report_run_id == report.id)
+    ).one()
+    if (
+        int(persisted_integrity[0] or 0) != context.return_reason_row_count
+        or int(persisted_integrity[1] or 0)
+    ):
+        return _logistics_json_safe(
+            {**empty_payload, "dataStatus": "blocked", "sliceStatus": "blocked"}
+        )
+
+    conditions: list[Any] = [
+        ReportLogisticsReturnReasonRow.report_run_id == report.id
+    ]
+    if period_start is not None:
+        conditions.append(ReportLogisticsReturnReasonRow.event_date >= period_start)
+    if period_end is not None:
+        conditions.append(ReportLogisticsReturnReasonRow.event_date <= period_end)
+    if wb_cabinet_id:
+        conditions.append(
+            ReportLogisticsReturnReasonRow.wb_cabinet_id == wb_cabinet_id
+        )
+    if client_company_id:
+        conditions.append(
+            ReportLogisticsReturnReasonRow.client_company_id == client_company_id
+        )
+    if scheme:
+        conditions.append(
+            ReportLogisticsReturnReasonRow.scheme == scheme.strip().casefold()
+        )
+    if product_query.strip():
+        pattern = f"%{_escape_like(product_query.strip())}%"
+        conditions.append(
+            or_(
+                ReportLogisticsReturnReasonRow.product.ilike(pattern, escape="\\"),
+                ReportLogisticsReturnReasonRow.vendor_code.ilike(
+                    pattern, escape="\\"
+                ),
+                ReportLogisticsReturnReasonRow.product_ref.ilike(
+                    pattern, escape="\\"
+                ),
+            )
+        )
+    if reason_source:
+        conditions.append(
+            ReportLogisticsReturnReasonRow.reason_source == reason_source
+        )
+    if evidence_type:
+        conditions.append(
+            ReportLogisticsReturnReasonRow.evidence_type == evidence_type
+        )
+    if match_status:
+        conditions.append(
+            ReportLogisticsReturnReasonRow.match_status == match_status
+        )
+
+    stats = db.execute(
+        select(
+            func.count(),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsReturnReasonRow.evidence_type == "fact",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsReturnReasonRow.evidence_type
+                            == "data_unavailable",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsReturnReasonRow.claim_available.is_(True),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsReturnReasonRow.has_user_comment.is_(True),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            ReportLogisticsReturnReasonRow.claim_available.is_(None),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).where(*conditions)
+    ).one()
+    total = int(stats[0] or 0)
+    reason_available = int(stats[1] or 0)
+    reason_unavailable = int(stats[2] or 0)
+    claim_available = int(stats[3] or 0)
+    has_user_comment = int(stats[4] or 0)
+    claim_unknown = int(stats[5] or 0)
+    coverage = {
+        "totalReturnChains": total,
+        "reasonAvailable": reason_available,
+        "reasonUnavailable": reason_unavailable,
+        "claimAvailable": claim_available,
+        "hasUserComment": has_user_comment,
+        "claimCoverageUnknown": claim_unknown,
+        "reasonCoveragePct": (
+            Decimal(reason_available) * Decimal("100") / Decimal(total)
+            if total
+            else None
+        ),
+        "claimCoveragePct": (
+            Decimal(total - claim_unknown) * Decimal("100") / Decimal(total)
+            if total
+            else None
+        ),
+    }
+    if total == 0:
+        return _logistics_json_safe(
+            {
+                **empty_payload,
+                "dataStatus": context.data_status,
+                "sliceStatus": "empty",
+                "coverage": coverage,
+            }
+        )
+
+    sort_fields = {
+        "eventDate": ReportLogisticsReturnReasonRow.event_date,
+        "product": ReportLogisticsReturnReasonRow.product,
+        "reasonCategory": ReportLogisticsReturnReasonRow.reason_category,
+        "evidenceType": ReportLogisticsReturnReasonRow.evidence_type,
+        "matchStatus": ReportLogisticsReturnReasonRow.match_status,
+    }
+    sort_column = sort_fields[sort_by]
+    direction = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    rows = list(
+        db.scalars(
+            select(ReportLogisticsReturnReasonRow)
+            .where(*conditions)
+            .order_by(
+                case((sort_column.is_(None), 1), else_=0),
+                direction,
+                ReportLogisticsReturnReasonRow.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    recommendations = _logistics_return_reason_recommendations(
+        db,
+        conditions=conditions,
+        reason_unavailable=reason_unavailable,
+        total=total,
+    )
+    slice_status = (
+        "partial"
+        if context.data_status == "partial" or reason_unavailable or claim_unknown
+        else "ready"
+    )
+    return _logistics_json_safe(
+        {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "rows": [_logistics_return_reason_row_payload(row) for row in rows],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "recommendations": recommendations,
+        }
+    )
+
+
+def _logistics_return_reason_context_state(
+    report: ReportRun,
+    context: ReportLogisticsReturnReasonContext | None,
+) -> str:
+    if context is None:
+        return "missing"
+    if context.methodology_version != RETURN_REASON_METHODOLOGY_VERSION:
+        return "outdated_methodology"
+    if context.tenant_id != report.tenant_id or context.client_id != report.client_id:
+        return "scope_mismatch"
+    if context.data_status not in {"ready", "partial", "blocked"}:
+        return "invalid_status"
+    return context.data_status
+
+
+def _return_reason_source_coverage(
+    context: ReportLogisticsReturnReasonContext | None,
+) -> dict[str, Any]:
+    if context is None:
+        return {
+            "goodsReturn": {
+                "status": "unavailable",
+                "coverageStart": None,
+                "coverageEnd": None,
+            },
+            "claims": {
+                "status": "unavailable",
+                "message": "Данные заявок временно недоступны",
+                "coverageStart": None,
+                "coverageEnd": None,
+            },
+        }
+    claims_messages = {
+        "confirmed_empty": "Заявок за доступное окно нет",
+        "confirmed_nonempty": "Заявки за доступное окно получены",
+        "access_denied": "Источник заявок недоступен",
+        "paid_scope_required": "Источник заявок недоступен",
+    }
+    return {
+        "goodsReturn": {
+            "status": context.goods_return_source_status,
+            "coverageStart": (
+                context.goods_return_coverage_start.isoformat()
+                if context.goods_return_coverage_start
+                else None
+            ),
+            "coverageEnd": (
+                context.goods_return_coverage_end.isoformat()
+                if context.goods_return_coverage_end
+                else None
+            ),
+        },
+        "claims": {
+            "status": context.claims_source_status,
+            "message": claims_messages.get(
+                context.claims_source_status,
+                "Данные заявок временно недоступны",
+            ),
+            "coverageStart": (
+                context.claims_coverage_start.isoformat()
+                if context.claims_coverage_start
+                else None
+            ),
+            "coverageEnd": (
+                context.claims_coverage_end.isoformat()
+                if context.claims_coverage_end
+                else None
+            ),
+        },
+    }
+
+
+def _empty_logistics_return_reason_coverage() -> dict[str, Any]:
+    return {
+        "totalReturnChains": 0,
+        "reasonAvailable": 0,
+        "reasonUnavailable": 0,
+        "claimAvailable": 0,
+        "hasUserComment": 0,
+        "claimCoverageUnknown": 0,
+        "reasonCoveragePct": None,
+        "claimCoveragePct": None,
+    }
+
+
+def _logistics_return_reason_row_payload(
+    row: ReportLogisticsReturnReasonRow,
+) -> dict[str, Any]:
+    return {
+        "chainRef": row.chain_key[:12],
+        "eventDate": row.event_date.isoformat(),
+        "productRef": row.product_ref,
+        "product": row.product,
+        "vendorCode": row.vendor_code,
+        "scheme": row.scheme,
+        "reasonCategory": row.reason_category,
+        "reasonSource": row.reason_source,
+        "evidenceType": row.evidence_type,
+        "matchStatus": row.match_status,
+        "claimAvailable": row.claim_available,
+        "hasUserComment": row.has_user_comment,
+        "valueType": "fact" if row.evidence_type == "fact" else "data_unavailable",
+    }
+
+
+def _logistics_return_reason_recommendations(
+    db: Session,
+    *,
+    conditions: Sequence[Any],
+    reason_unavailable: int,
+    total: int,
+) -> list[dict[str, Any]]:
+    recommendations: list[dict[str, Any]] = []
+    leader = db.execute(
+        select(
+            ReportLogisticsReturnReasonRow.reason_category,
+            func.count().label("return_count"),
+        )
+        .where(
+            *conditions,
+            ReportLogisticsReturnReasonRow.evidence_type == "fact",
+            ReportLogisticsReturnReasonRow.reason_category.is_not(None),
+        )
+        .group_by(ReportLogisticsReturnReasonRow.reason_category)
+        .order_by(
+            func.count().desc(),
+            ReportLogisticsReturnReasonRow.reason_category.asc(),
+        )
+        .limit(1)
+    ).first()
+    if leader is not None:
+        recommendations.append(
+            {
+                "code": "confirmed_return_reason",
+                "priority": 30,
+                "title": "Проверить подтверждённую причину возвратов",
+                "message": (
+                    f"Чаще всего в выбранном срезе подтверждена причина "
+                    f"«{leader[0]}»."
+                ),
+                "impactAmount": None,
+                "evidenceType": "fact",
+                "actionTarget": "#logistics-return-reasons",
+                "actionLabel": "Посмотреть возвраты",
+                "evidence": {"returnCount": int(leader[1] or 0)},
+            }
+        )
+    if reason_unavailable:
+        recommendations.append(
+            {
+                "code": "return_reason_data_unavailable",
+                "priority": 40,
+                "title": "Восстановить покрытие причин возвратов",
+                "message": (
+                    "Для части возвратов подтверждённая причина недоступна; "
+                    "не используйте гипотезу как установленный факт."
+                ),
+                "impactAmount": None,
+                "evidenceType": "data_unavailable",
+                "actionTarget": "#logistics-return-reasons",
+                "actionLabel": "Проверить источник",
+                "evidence": {
+                    "returnCount": reason_unavailable,
+                    "totalReturnChains": total,
+                },
+            }
+        )
+    return recommendations
 
 
 LOGISTICS_MEASUREMENT_SORT_KEYS = {
@@ -18613,6 +19262,84 @@ def report_readiness_payload(
                     _readiness_reason(
                         "logistics_measurements_partial",
                         "Часть источников или событий замеров требует проверки.",
+                    )
+                )
+                score -= 5
+
+    return_reason_context = db.get(
+        ReportLogisticsReturnReasonContext,
+        report.id,
+    )
+    if report.logistics_return_reasons_required:
+        return_reason_state = _logistics_return_reason_context_state(
+            report,
+            return_reason_context,
+        )
+        return_reason_blockers = {
+            "missing": (
+                "logistics_return_reasons_missing",
+                (
+                    "Обязательный контекст причин возвратов отсутствует; "
+                    "нужен новый report run."
+                ),
+            ),
+            "outdated_methodology": (
+                "logistics_return_reasons_outdated",
+                "Контекст причин возвратов построен по устаревшей методике.",
+            ),
+            "scope_mismatch": (
+                "logistics_return_reasons_scope_mismatch",
+                "Контекст причин возвратов принадлежит другому tenant или клиенту.",
+            ),
+            "invalid_status": (
+                "logistics_return_reasons_invalid_status",
+                "Контекст причин возвратов имеет неизвестный статус.",
+            ),
+            "blocked": (
+                "logistics_return_reasons_blocked",
+                "Проверка целостности snapshot причин возвратов не пройдена.",
+            ),
+        }
+        if return_reason_state in return_reason_blockers:
+            code, message = return_reason_blockers[return_reason_state]
+            blocking_reasons.append(
+                _readiness_reason(code, message, nonOverridable=True)
+            )
+            score = min(score, 40)
+        elif return_reason_context is not None:
+            actual_return_reason_rows = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReportLogisticsReturnReasonRow)
+                    .where(
+                        ReportLogisticsReturnReasonRow.report_run_id == report.id
+                    )
+                )
+                or 0
+            )
+            if (
+                actual_return_reason_rows
+                != return_reason_context.return_reason_row_count
+            ):
+                blocking_reasons.append(
+                    _readiness_reason(
+                        "logistics_return_reasons_row_count_mismatch",
+                        (
+                            "Количество строк витрины причин возвратов "
+                            "не совпадает с context."
+                        ),
+                        nonOverridable=True,
+                    )
+                )
+                score = min(score, 40)
+            elif return_reason_state == "partial":
+                review_reasons.append(
+                    _readiness_reason(
+                        "logistics_return_reasons_partial",
+                        (
+                            "Часть причин или заявок недоступна; "
+                            "основная логистика остаётся пригодной к публикации."
+                        ),
                     )
                 )
                 score -= 5

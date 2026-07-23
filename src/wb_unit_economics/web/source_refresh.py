@@ -87,6 +87,7 @@ from wb_unit_economics.ozon_mart import (
     _realization_expenses,
     _realization_quantity,
 )
+from wb_unit_economics.return_reason_analysis import build_return_reason_analysis
 from wb_unit_economics.source_integrity import (
     RawIntegrityError,
     iter_json_array,
@@ -4811,6 +4812,15 @@ class SourceRefreshService:
                         base_refresh_run=base_refresh_run,
                         contributing_runs=contributing_runs,
                     )
+                if self.settings.logistics_return_reasons_enabled:
+                    _build_and_persist_logistics_return_reasons(
+                        db,
+                        report,
+                        logistics_result=logistics_result,
+                        primary_refresh_run=refresh_run,
+                        base_refresh_run=base_refresh_run,
+                        contributing_runs=contributing_runs,
+                    )
         _validate_marts(build["payload"])
         db.commit()
         artifact_payload = repository.report_full_payload(db, report)
@@ -8374,6 +8384,79 @@ def _return_claims_cabinet_scope_errors(
         ):
             return ["return_claims_source_scope_mismatch"]
     return []
+
+
+def _build_and_persist_logistics_return_reasons(
+    db: Session,
+    report: ReportRun,
+    *,
+    logistics_result: LogisticsAnalysisResult,
+    primary_refresh_run: SourceRefreshRun | None = None,
+    base_refresh_run: SourceRefreshRun | None = None,
+    contributing_runs: Iterable[SourceRefreshRun] = (),
+) -> None:
+    """Build R-3 from immutable Finance, goods-return and claims snapshots."""
+
+    role_list: list[tuple[int, SourceRefreshRun]] = []
+    role_map: dict[str, tuple[SourceRefreshRun, str]] = {}
+
+    def add_role(
+        priority: int,
+        run: SourceRefreshRun | None,
+        role: str,
+    ) -> None:
+        if run is None or run.id in role_map:
+            return
+        role_list.append((priority, run))
+        role_map[run.id] = (run, role)
+
+    add_role(0, primary_refresh_run, "current")
+    add_role(1, base_refresh_run, "base")
+    for run in contributing_runs:
+        add_role(2, run, "contributor")
+
+    goods_return = _select_goods_return_snapshot(db, report, roles=role_list)
+    claims = _select_return_claims_snapshot(db, report, roles=role_list)
+    finance_rows, finance_diagnostics = _select_logistics_source_rows(
+        db,
+        report,
+        roles=role_map,
+        primary_refresh_run=primary_refresh_run,
+        base_refresh_run=base_refresh_run,
+    )
+    result = build_return_reason_analysis(
+        finance_rows,
+        logistics_result.order_rows,
+        goods_return.source_rows,
+        claims.source_rows,
+        goods_return_snapshot_hash=goods_return.source_snapshot_hash,
+        claims_snapshot_hash=claims.source_snapshot_hash,
+        goods_return_coverage_start=goods_return.source_coverage_start,
+        goods_return_coverage_end=goods_return.source_coverage_end,
+        claims_coverage_start=claims.source_coverage_start,
+        claims_coverage_end=claims.source_coverage_end,
+        claims_source_status=claims.source_state,
+        blocking_reasons=tuple(
+            dict.fromkeys(
+                (
+                    *logistics_result.context.blocking_reasons,
+                    *finance_diagnostics.blocking_reasons,
+                )
+            )
+        ),
+        review_reasons=logistics_result.context.review_reasons,
+        goods_return_blocking_reasons=goods_return.blocking_reasons,
+        goods_return_review_reasons=goods_return.review_reasons,
+        claims_blocking_reasons=claims.blocking_reasons,
+        claims_review_reasons=claims.review_reasons,
+    )
+    repository.replace_report_logistics_return_reason_analysis(
+        db,
+        report,
+        result,
+        goods_return_source_loaded_at=goods_return.source_loaded_at,
+        claims_source_loaded_at=claims.source_loaded_at,
+    )
 
 
 @dataclass(frozen=True)

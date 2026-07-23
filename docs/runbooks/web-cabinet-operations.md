@@ -744,6 +744,8 @@ SHUMEYKO_LOGISTICS_TARIFFS_ENABLED=false
 SHUMEYKO_LOGISTICS_TARIFFS_CLIENT_ENABLED=false
 SHUMEYKO_LOGISTICS_ROUTES_ENABLED=false
 SHUMEYKO_LOGISTICS_ROUTES_CLIENT_ENABLED=false
+SHUMEYKO_LOGISTICS_RETURN_REASONS_ENABLED=false
+SHUMEYKO_LOGISTICS_RETURN_REASONS_CLIENT_ENABLED=false
 ```
 
 Фактическое состояние test/production перед rollout проверяется по
@@ -840,6 +842,26 @@ SHUMEYKO_LOGISTICS_ROUTES_CLIENT_ENABLED=false
 5. Выполнить browser-приёмку 1440×900 и 390×844 без overflow и
    console/page/network errors. Production и client enable не выполнять.
 
+Для R-3 F-5 «Причины возвратов» после merge кода, но до R-4 UI:
+
+1. Применить additive migration
+   `2026_07_23_logistics_return_reasons_context_v1` через штатный `init_db`.
+2. Оставить logistics/factors master включёнными и включить на test только
+   `SHUMEYKO_LOGISTICS_RETURN_REASONS_ENABLED=true`;
+   `SHUMEYKO_LOGISTICS_RETURN_REASONS_CLIENT_ENABLED=false`.
+3. Выполнить новый full source refresh из verified Finance, goods-return и
+   claims snapshots. Empty/denied claims должны дать явный
+   `partial/data_unavailable`, но не publication blocker; integrity/scope/
+   reconciliation failure должен дать `blocked` context без mart rows.
+4. На новом immutable draft проверить
+   `methodologyVersion=wb-logistics-return-reasons-v1`,
+   `/logistics/return-reasons`, SQL-фильтры/сортировки/пагинацию, coverage
+   полного среза и отсутствие raw `srid`, source hashes, claim IDs,
+   комментариев и media. Client API обязан вернуть HTTP 404.
+5. R-3 не содержит UI. Browser-приёмку секции, test staff acceptance,
+   production и client enable выполнять только в R-4/R-5 по отдельному
+   разрешению.
+
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает
 маршруты и раздел, не меняет существующие отчеты и не удаляет добавочные
@@ -858,6 +880,10 @@ order-id и source hashes не должны появляться в API, UI, AI-
 Частичный rollback F-4 —
 `SHUMEYKO_LOGISTICS_MEASUREMENTS_ENABLED=false`; F-1/F-2/F-3 и первая очередь
 остаются доступными, а required blocker уже созданного draft не снимается.
+Частичный rollback R-3 —
+`SHUMEYKO_LOGISTICS_RETURN_REASONS_ENABLED=false`; основная логистика и F-1…F-4
+остаются доступными, additive mart не удаляется, required blocker уже
+созданного draft не снимается.
 
 # Backup
 
