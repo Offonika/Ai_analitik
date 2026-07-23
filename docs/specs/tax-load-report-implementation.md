@@ -813,6 +813,25 @@ current других видов не меняется.
 
 ## Test Rollout Evidence
 
+- 2026-07-23: реализация `УСН Доходы минус расходы` из commit
+  `15073f584aeac72f82e44b7e4597662236201c2a` прошла Ruff, документационные
+  валидаторы, secret check и полный локальный набор `982 passed`. GitHub run
+  `29984321098` завершил обязательные `quality` и `tests` со статусом
+  `success`. Из точного commit собран immutable release
+  `runtime-15073f5-usn-income-expenses-test-20260723` с
+  `sourceDirty=false`; атомарно переключён и перезапущен только test.
+  Штатный health-service, local и public health подтвердили `status=ok`,
+  `environment=test`, совпадающие backend/static build
+  `20260723-usn-income-expenses-v1`, действующую schema и отсутствие активного
+  source refresh. Shell и новый asset доступны, закрытые API без авторизации
+  возвращают `401`. Production сохранил прежний release и build.
+- Canary для клиента Сабура и июня 2026 поставлен в очередь на test штатным
+  путём, но завершился fail-closed до чтения 1С с
+  `onec_readonly_not_ready`: отдельное test read-only подключение не настроено.
+  Новый report run не создан; production credentials, production DB и
+  production runtime не использовались. До настройки test read-only доступа
+  методика v7 подтверждена воспроизводимыми synthetic contract/Excel-тестами,
+  но не объявляется live data canary.
 - 2026-07-22: пошаговый accounting-report wizard из commit
   `5b859bc77e4e2b2e9d63211814211589dca36d4e` собран в immutable release
   `runtime-5b859bc-accounting-wizard-20260722` и promoted только в `test`.
