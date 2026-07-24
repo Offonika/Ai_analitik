@@ -20,6 +20,9 @@ from wb_unit_economics.onec_odata import extract_odata_rows, raw_payload_hash
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 PROVISIONAL_COST_METHOD = "provisional_fixed_receipt_sum_needs_review"
+STOCK_REGISTER_FALLBACK_COST_METHOD = (
+    "stock_register_fixed_receipt_fallback_needs_review"
+)
 RECEIPT_RECORD_TYPES = {"receipt", "приход"}
 SALES_REGISTER_COST_METHODS = {
     "Себестоимость": "sales_register_weighted_average_allocated_extra_costs",
@@ -88,6 +91,61 @@ def load_sales_register_rows(sample_dir: Path) -> list[dict[str, Any]]:
     return [
         item for item in extract_odata_rows(sales_payload) if isinstance(item, dict)
     ]
+
+
+def merge_sales_and_stock_cost_snapshots(
+    sales_costs: Iterable[OnecUnfCostSnapshot],
+    stock_costs: Iterable[OnecUnfCostSnapshot],
+) -> list[OnecUnfCostSnapshot]:
+    """Use stock receipt cost only for an item absent from usable sales costs."""
+
+    sales = list(sales_costs)
+    stock = list(stock_costs)
+    usable_sales_keys = {
+        _cost_item_key(item)
+        for item in sales
+        if item.cost_with_extra_costs != 0
+    }
+    usable_stock_keys = {
+        _cost_item_key(item)
+        for item in stock
+        if item.cost_with_extra_costs != 0
+    }
+    fallback_keys = usable_stock_keys - usable_sales_keys
+    if not fallback_keys:
+        return sales
+
+    merged = [
+        item for item in sales if _cost_item_key(item) not in fallback_keys
+    ]
+    for item in stock:
+        if (
+            _cost_item_key(item) not in fallback_keys
+            or item.cost_with_extra_costs == 0
+        ):
+            continue
+        fallback_reason = (
+            "AccumulationRegister_Запасы fallback because "
+            "AccumulationRegister_Продажи has no non-zero item cost"
+        )
+        source_document = (
+            f"{item.source_document}; {fallback_reason}"
+            if item.source_document
+            else fallback_reason
+        )
+        merged.append(
+            item.model_copy(
+                update={
+                    "cost_method": STOCK_REGISTER_FALLBACK_COST_METHOD,
+                    "source_document": source_document,
+                }
+            )
+        )
+    return merged
+
+
+def _cost_item_key(item: OnecUnfCostSnapshot) -> tuple[str, str, str]:
+    return item.client_id, item.organization_id, item.onec_item_id
 
 
 def load_marketplace_settlement_totals(

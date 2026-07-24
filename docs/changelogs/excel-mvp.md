@@ -6,7 +6,7 @@ audience: ["engineering", "consultant"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-07-21"
+updated_at: "2026-07-24"
 ---
 
 # Excel MVP changelog
@@ -17,6 +17,11 @@ updated_at: "2026-07-21"
 
 ## Accepted-spec revisions since July 2026
 
+- 2026-07-24 — made `AccumulationRegister_Запасы` a per-item fallback when an
+  organization and 1C item have no non-zero cost anywhere in the loaded
+  `AccumulationRegister_Продажи`; sales-register cost remains primary, while
+  fixed-receipt `Сумма / Количество` fallback is explicitly marked
+  `stock_register_fixed_receipt_fallback_needs_review`.
 - 2026-07-21 — made periodic UNF registers
   `СистемыНалогообложенияОрганизаций` and `НастройкиУчетаНДС` the primary
   read-only tax-profile settings source per organization and effective date;

@@ -15,6 +15,7 @@ from wb_unit_economics.contracts import (
 )
 from wb_unit_economics.onec_cost import (
     PROVISIONAL_COST_METHOD,
+    STOCK_REGISTER_FALLBACK_COST_METHOD,
     attach_document_metadata_to_documents,
     attach_settlement_totals_to_documents,
     extract_gross_profit_document_rows,
@@ -23,9 +24,47 @@ from wb_unit_economics.onec_cost import (
     extract_provisional_cost_snapshots,
     extract_sales_register_cost_snapshots,
     flatten_stock_record_sets,
+    merge_sales_and_stock_cost_snapshots,
 )
 
 TZ = ZoneInfo("Europe/Moscow")
+
+
+def _cost_snapshot(
+    *,
+    item_id: str,
+    cost: str,
+    source: str,
+    organization_id: str = "1C_ORG_1",
+    characteristic: str = "",
+) -> OnecUnfCostSnapshot:
+    is_sales = source == "sales"
+    return OnecUnfCostSnapshot(
+        client_id=CLIENT_ID,
+        organization_id=organization_id,
+        loaded_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+        onec_item_id=item_id,
+        article=f"ARTICLE-{item_id}",
+        barcode="",
+        name=f"Product {item_id}",
+        characteristic=characteristic,
+        cost_value=Decimal(cost),
+        extra_costs_value=Decimal("0"),
+        cost_method=(
+            "sales_register_weighted_average_allocated_extra_costs"
+            if is_sales
+            else PROVISIONAL_COST_METHOD
+        ),
+        effective_from=date(2026, 4, 6),
+        effective_to=date(2026, 4, 12) if is_sales else None,
+        source_document_kind="commissioner_report" if is_sales else "",
+        source_document=(
+            "AccumulationRegister_Продажи"
+            if is_sales
+            else "AccumulationRegister_Запасы"
+        ),
+        raw_payload_hash=f"{source}-{organization_id}-{item_id}-{characteristic}",
+    )
 
 
 def stock_rows():
@@ -156,6 +195,119 @@ def test_extract_provisional_fixed_receipt_cost_candidates() -> None:
     assert costs[0].cost_value == Decimal("150")
     assert costs[0].cost_method == PROVISIONAL_COST_METHOD
     assert costs[0].effective_from == date(2026, 4, 5)
+
+
+def test_stock_cost_fills_item_missing_from_sales_register() -> None:
+    sales = [_cost_snapshot(item_id="ITEM-1", cost="120", source="sales")]
+    stock = [
+        _cost_snapshot(item_id="ITEM-1", cost="90", source="stock"),
+        _cost_snapshot(item_id="ITEM-2", cost="80", source="stock"),
+    ]
+
+    merged = merge_sales_and_stock_cost_snapshots(sales, stock)
+
+    assert [(item.onec_item_id, item.cost_value) for item in merged] == [
+        ("ITEM-1", Decimal("120")),
+        ("ITEM-2", Decimal("80")),
+    ]
+    assert merged[0].cost_method == (
+        "sales_register_weighted_average_allocated_extra_costs"
+    )
+    assert merged[1].cost_method == STOCK_REGISTER_FALLBACK_COST_METHOD
+    assert "AccumulationRegister_Запасы fallback" in merged[1].source_document
+
+
+def test_stock_cost_replaces_zero_only_sales_item() -> None:
+    sales = [_cost_snapshot(item_id="ITEM-1", cost="0", source="sales")]
+    stock = [_cost_snapshot(item_id="ITEM-1", cost="90", source="stock")]
+
+    merged = merge_sales_and_stock_cost_snapshots(sales, stock)
+
+    assert len(merged) == 1
+    assert merged[0].cost_value == Decimal("90")
+    assert merged[0].cost_method == STOCK_REGISTER_FALLBACK_COST_METHOD
+
+
+def test_nonzero_sales_cost_blocks_stock_fallback_for_same_item_and_org() -> None:
+    sales = [
+        _cost_snapshot(
+            item_id="ITEM-1",
+            cost="120",
+            source="sales",
+            characteristic="CHAR-1",
+        )
+    ]
+    stock = [
+        _cost_snapshot(
+            item_id="ITEM-1",
+            cost="90",
+            source="stock",
+            characteristic="CHAR-2",
+        )
+    ]
+
+    merged = merge_sales_and_stock_cost_snapshots(sales, stock)
+
+    assert merged == sales
+
+
+def test_sales_cost_priority_is_scoped_by_organization() -> None:
+    sales = [
+        _cost_snapshot(
+            item_id="ITEM-1",
+            organization_id="ORG-1",
+            cost="120",
+            source="sales",
+        )
+    ]
+    stock = [
+        _cost_snapshot(
+            item_id="ITEM-1",
+            organization_id="ORG-2",
+            cost="90",
+            source="stock",
+        )
+    ]
+
+    merged = merge_sales_and_stock_cost_snapshots(sales, stock)
+
+    assert [item.organization_id for item in merged] == ["ORG-1", "ORG-2"]
+    assert merged[1].cost_method == STOCK_REGISTER_FALLBACK_COST_METHOD
+
+
+def test_merged_stock_fallback_is_used_and_marked_for_review() -> None:
+    mapping = SkuMapping(
+        client_id=CLIENT_ID,
+        seller_account_id="WB_ACCOUNT_1",
+        organization_id="1C_ORG_1",
+        nm_id=101,
+        vendor_code="A-1",
+        barcode="",
+        onec_item_id="ONEC-1",
+        onec_article="A-1",
+        match_method="article",
+        confidence="1",
+        status=MappingStatus.MATCHED,
+        updated_by="fixture",
+        updated_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+    costs = merge_sales_and_stock_cost_snapshots(
+        [_cost_snapshot(item_id="OTHER-ITEM", cost="120", source="sales")],
+        [_cost_snapshot(item_id="ONEC-1", cost="100", source="stock")],
+    )
+
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=costs,
+        sku_mappings=[mapping],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 17, 12, 0, tzinfo=TZ),
+    )
+
+    assert report.rows[0].data_quality_status is DataQualityStatus.NEEDS_REVIEW
+    assert report.rows[0].cogs_from_1c_with_extra_costs == Decimal("200.00")
+    assert report.rows[0].cost_method == STOCK_REGISTER_FALLBACK_COST_METHOD
 
 
 def test_extract_sales_register_cost_candidates_weighted_average() -> None:

@@ -1376,6 +1376,56 @@ def test_excel_report_explains_nearest_available_cost(tmp_path) -> None:
     )
 
 
+def test_excel_report_explains_stock_register_fallback_cost(tmp_path) -> None:
+    stock_cost = OnecUnfCostSnapshot(
+        client_id=CLIENT_ID,
+        organization_id="1C_ORG_1",
+        loaded_at=datetime(2026, 6, 16, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        onec_item_id="ONEC-1",
+        article="A-1",
+        barcode="111",
+        name="Product 1",
+        cost_value="100",
+        extra_costs_value="0",
+        cost_method="stock_register_fixed_receipt_fallback_needs_review",
+        effective_from=date(2026, 4, 6),
+        source_document="AccumulationRegister_Запасы",
+        raw_payload_hash="stock-register-fallback-cost-hash",
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[wb_snapshots()[0]],
+        cost_snapshots=[stock_cost],
+        sku_mappings=[sku_mappings()[0]],
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+    output = build_excel_report(
+        report,
+        tmp_path / "stock-fallback-cost-report.xlsx",
+        cost_snapshots=[stock_cost],
+        sku_mappings=[sku_mappings()[0]],
+    )
+
+    workbook = load_workbook(output, data_only=True)
+    unit_economics = workbook["Юнит экономика"]
+    headers = [cell.value for cell in unit_economics[1]]
+    idx = {header: index for index, header in enumerate(headers)}
+
+    assert unit_economics.cell(2, idx["Себестоимость 1С"] + 1).value == 200
+    assert (
+        unit_economics.cell(2, idx["Статус данных"] + 1).value
+        == "Себестоимость 1С требует сверки"
+    )
+    assert (
+        unit_economics.cell(2, idx["Причина статуса"] + 1).value
+        == "В регистре Продажи нет ненулевой себестоимости; использована "
+        "фиксированная приходная стоимость из регистра Запасы. Нужна сверка "
+        "после закрытия месяца"
+    )
+
+
 def test_excel_dashboard_shows_source_warnings(tmp_path) -> None:
     report = build_unit_economics_report(
         client_id=CLIENT_ID,
