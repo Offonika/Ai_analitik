@@ -8326,9 +8326,11 @@ def _onec_incoming_invoice_expense_payload(
     counterparty_set = {str(item) for item in counterparty_ids if str(item or "")}
     service_amount = Decimal("0")
     return_amount = Decimal("0")
+    unclassified_amount = Decimal("0")
     row_count = 0
     operation_counts: dict[str, int] = defaultdict(int)
     operation_amounts: dict[str, Decimal] = defaultdict(Decimal)
+    operation_classifications: dict[str, set[str]] = defaultdict(set)
     document_rows: list[dict[str, Any]] = []
     for row in rows:
         payload = row.row_payload or {}
@@ -8362,13 +8364,20 @@ def _onec_incoming_invoice_expense_payload(
         operation = _safe_payload_text(payload, "ВидОперации", "Операция")
         operation_label = operation or "unknown"
         document_number = _safe_payload_text(payload, "Number", "Номер")
-        included = "возврат" not in operation.casefold()
+        classification = _onec_incoming_invoice_expense_classification(
+            payload,
+            operation=operation,
+        )
+        included = classification == "service_expense"
         operation_counts[operation_label] += 1
         operation_amounts[operation_label] += abs(amount)
-        if not included:
+        operation_classifications[operation_label].add(classification)
+        if classification == "buyout_return":
             return_amount += abs(amount)
-        else:
+        elif included:
             service_amount += abs(amount)
+        else:
+            unclassified_amount += abs(amount)
         document_label_parts = [
             operation_label if operation_label != "unknown" else "1C документ"
         ]
@@ -8384,15 +8393,27 @@ def _onec_incoming_invoice_expense_payload(
                 "operation": operation_label,
                 "amount": _json_number(abs(amount)),
                 "includedInControl": included,
+                "classification": classification,
                 "note": (
                     "Входит в 1C контроль расходов."
                     if included
-                    else "Показано отдельно, не прибавляется к расходам V1."
+                    else (
+                        "Выкуп/возврат от комиссионера показан отдельно и не "
+                        "прибавляется к расходам Ozon."
+                    )
+                    if classification == "buyout_return"
+                    else (
+                        "Операция 1C не классифицирована; документ не "
+                        "прибавляется к расходам до проверки."
+                    )
                 ),
             }
         )
         row_count += 1
-    total_amount = service_amount + return_amount
+    total_amount = service_amount + return_amount + unclassified_amount
+    classification_status = (
+        "needs_review" if unclassified_amount > 0 else "complete"
+    )
     return {
         "status": "loaded" if row_count else "missing",
         "sourceType": OZON_ONEC_INCOMING_INVOICE_SOURCE,
@@ -8401,7 +8422,9 @@ def _onec_incoming_invoice_expense_payload(
         "amount": _json_number(service_amount),
         "serviceAmount": _json_number(service_amount),
         "returnAmount": _json_number(return_amount),
+        "unclassifiedAmount": _json_number(unclassified_amount),
         "totalAmount": _json_number(total_amount),
+        "classificationStatus": classification_status,
         "operations": dict(sorted(operation_counts.items())),
         "documentRows": sorted(
             document_rows,
@@ -8416,21 +8439,69 @@ def _onec_incoming_invoice_expense_payload(
                 "operation": operation,
                 "amount": _json_number(amount),
                 "rowCount": operation_counts.get(operation, 0),
-                "includedInControl": "возврат" not in operation.casefold(),
+                "includedInControl": operation_classifications[operation]
+                == {"service_expense"},
                 "note": (
                     "Входит в 1C контроль расходов."
-                    if "возврат" not in operation.casefold()
-                    else "Показано отдельно, не прибавляется к расходам V1."
+                    if operation_classifications[operation] == {"service_expense"}
+                    else (
+                        "Показано отдельно, не прибавляется к расходам V1."
+                        if operation_classifications[operation]
+                        == {"buyout_return"}
+                        else (
+                            "Операция 1C не классифицирована; документ не "
+                            "прибавляется к расходам до проверки."
+                        )
+                    )
                 ),
             }
             for operation, amount in sorted(operation_amounts.items())
         ],
         "message": (
-            "1C приходные накладные Ozon найдены для контроля расходов."
+            "1C приходные накладные Ozon требуют классификации операции."
+            if unclassified_amount > 0
+            else "1C приходные накладные Ozon найдены для контроля расходов."
             if row_count
             else "1C приходные накладные Ozon не загружены для контроля расходов."
         ),
     }
+
+
+def _onec_incoming_invoice_expense_classification(
+    payload: Mapping[str, Any],
+    *,
+    operation: str,
+) -> str:
+    operation_text = operation.casefold()
+    context = " ".join(
+        filter(
+            None,
+            (
+                operation,
+                _safe_payload_text(payload, "Комментарий", "Comment", "comment"),
+                _safe_payload_text(
+                    payload,
+                    "ОснованиеПечати",
+                    "Основание",
+                    "printBasis",
+                    "basis",
+                ),
+            ),
+        )
+    ).casefold()
+    if "возврат" in operation_text or "выкуп" in context:
+        return "buyout_return"
+    normalized_operation = re.sub(r"[^a-zа-я0-9]+", "", operation_text)
+    if normalized_operation.startswith("поступление") or any(
+        marker in context
+        for marker in (
+            "акт выполненных работ",
+            "перевыставлен",
+            "оказанн",
+        )
+    ):
+        return "service_expense"
+    return "unclassified"
 
 
 def _date_in_period(

@@ -22,6 +22,8 @@ related_code:
   - scripts/promote_runtime_release.py
   - deploy/systemd/shumeiko-runtime-release-prune.service
   - deploy/systemd/shumeiko-runtime-release-prune.timer
+  - deploy/systemd/shumeiko-test-source-snapshot-archive.service
+  - deploy/systemd/shumeiko-test-source-snapshot-archive.timer
   - src/wb_unit_economics/maintenance_safety.py
   - src/wb_unit_economics/snapshot_archive.py
   - src/wb_unit_economics/runtime_release_lock.py
@@ -34,6 +36,7 @@ related_tests:
   - tests/test_maintenance_safety.py
   - tests/test_source_refresh_retention_maintenance.py
   - tests/test_restore_marketplace_raw_rows.py
+  - tests/test_runtime_contour_scripts.py
 ai_sections:
   status: "Implementation Status"
   goal: "Цель"
@@ -60,7 +63,7 @@ depends_on:
   - docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Implementation Status
@@ -291,6 +294,11 @@ special file, отключенное versioning, неполный readback ил�
 объектов. Restore скачивает их во временный каталог, проверяет размер и SHA-256
 каждого файла и только затем атомарно возвращает исходное имя snapshot.
 
+Тестовый контур использует ту же fail-closed процедуру с тестовой БД, но
+отдельные source root, S3 prefix, verify directory и receipt directory. Он
+запускается после production archive, сохраняет те же три `daily` и два `full`
+snapshot и не может архивировать каталог при незавершённом тестовом refresh.
+
 Filesystem backup остается ручным fallback: при запуске без `--s3-config`
 обертка проверяет минимум 8 GiB свободного места и сохраняет последний локальный
 maintenance bundle.
@@ -339,6 +347,10 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
 - Проверки спецификаций, manifest и релевантные pytest проходят.
 
 ## Changelog
+
+- 2026-07-21: versioned S3 archive распространён на отдельный тестовый контур;
+  тестовые snapshots используют изолированные prefix/receipts и проверку
+  активности именно тестовой БД.
 
 - 2026-07-20: добавлены versioned S3 archive/readback/restore receipts и
   ежедневный fail-closed eviction одного snapshot старше 48 часов.

@@ -85,6 +85,12 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
     archive_service = (
         systemd_root / "shumeiko-source-snapshot-archive.service"
     ).read_text(encoding="utf-8")
+    test_archive_timer = (
+        systemd_root / "shumeiko-test-source-snapshot-archive.timer"
+    ).read_text(encoding="utf-8")
+    test_archive_service = (
+        systemd_root / "shumeiko-test-source-snapshot-archive.service"
+    ).read_text(encoding="utf-8")
 
     assert "OnCalendar=*-*-* *:45:00" in prune_timer
     assert "--daily-keep 3 --full-keep 2 --apply" in prune_service
@@ -96,6 +102,17 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
     assert "archive-eligible --apply --evict" in archive_service
     assert "--min-age-hours 48" in archive_service
     assert "RequiresMountsFor=/data/shumeyko/source_refresh" in archive_service
+    assert "OnCalendar=*-*-* 07:00:00" in test_archive_timer
+    assert "EnvironmentFile=/etc/shumeiko-web-test.env" in test_archive_service
+    assert "WorkingDirectory=/opt/shumeyko-runtime/prod/current" in test_archive_service
+    assert "--source-root /data/shumeyko/test/source_refresh" in test_archive_service
+    assert "--prefix test-source-refresh-snapshots" in test_archive_service
+    assert "--min-age-hours 48" in test_archive_service
+    assert "--keep-daily 3 --keep-full 2" in test_archive_service
+    assert (
+        "RequiresMountsFor=/data/shumeyko/test/source_refresh"
+        in test_archive_service
+    )
 
     required_mounts = {
         "shumeiko-web-prod.service": "/data/shumeyko/source_refresh",

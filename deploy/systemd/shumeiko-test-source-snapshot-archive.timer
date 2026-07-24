@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily verified S3 archival of old Shumeyko test source snapshots
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+RandomizedDelaySec=10m
+Persistent=true
+Unit=shumeiko-test-source-snapshot-archive.service
+
+[Install]
+WantedBy=timers.target

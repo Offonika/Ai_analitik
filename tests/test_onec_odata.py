@@ -13,6 +13,7 @@ from wb_unit_economics.onec_odata import (
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
     INPUT_VAT_SAMPLE_COLLECTIONS,
+    SERVICE_SAMPLE_COLLECTIONS,
     TAX_PROFILE_SAMPLE_COLLECTIONS,
     OnecODataClient,
     OnecODataSettings,
@@ -743,6 +744,18 @@ def test_input_vat_collections_are_read_only_and_selectable() -> None:
     assert "Разделы" in by_id["import_expenses"].select_fields
     assert by_id["vat_presented"].period_field == ""
     assert _select_collections(["import_expenses"])[0] == by_id["import_expenses"]
+
+
+def test_incoming_invoice_collection_loads_operation_for_expense_classification(
+) -> None:
+    collection = next(
+        item
+        for item in SERVICE_SAMPLE_COLLECTIONS
+        if item.sample_id == "incoming_invoices"
+    )
+
+    assert collection.collection_name == "Document_ПриходнаяНакладная"
+    assert "ВидОперации" in collection.select_fields
 
 
 def test_accounting_recordtype_fallback_aggregates_by_organization(
