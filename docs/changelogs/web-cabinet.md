@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-23"
+updated_at: "2026-07-24"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,11 @@ updated_at: "2026-07-23"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-07-24: v2.59 разделил в web-диагностике отсутствующую себестоимость и
+  временную себестоимость, требующую сверки: совместимый
+  `quality.missingCostRows` остается общим счетчиком workflow, а
+  `costAbsentRows` и `costRequiresReviewRows` отображаются отдельными
+  подписанными карточками.
 - 2026-07-23: v2.58 разделил hourly-свежесть источников, staff draft и
   опубликованный current; мастер показывает точный штатный диапазон до вчера,
   не наследует верхний фильтр без явного выбора и не использует формулировку

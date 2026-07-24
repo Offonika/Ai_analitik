@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-23"
+updated_at: "2026-07-24"
 ---
 
 # Implementation Status
@@ -475,9 +475,14 @@ UI readiness behavior:
   as a horizontal row above the task kanban; the kanban columns for consultant
   work are `Исправить сейчас`, `В работе у аналитика` and
   `Готово к отправке`; diagnostics keep an `OK` progress summary and compact
-  metrics for rows `ОК`, missing 1C cost, mapping issues, incomplete sources
-  and partial period; every open task card includes a short explanation and a
-  direct action to the relevant row filter, period controls, integrations
+  metrics for rows `ОК`, missing 1C cost, provisional 1C cost requiring
+  reconciliation, mapping issues, incomplete sources and partial period.
+  `summary.quality` keeps compatible aggregate `missingCostRows` for the shared
+  cost-review workflow and exposes its non-overlapping components
+  `costAbsentRows` and `costRequiresReviewRows`; diagnostics label and render
+  the components separately instead of presenting the aggregate as entirely
+  missing cost. Every open task card includes a short explanation and a direct
+  action to the relevant row filter, period controls, integrations
   widget, client-output widget or WB ↔ 1С reconciliation tab; document
   reconciliation issues add a dedicated `onec_reconciliation_review` task;
   consultant/admin may also mark a task card as `Проверено` in the browser UI,

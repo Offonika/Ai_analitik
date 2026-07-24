@@ -5938,10 +5938,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260724-runtime-contours-cleanup-v1"
+        "20260724-cost-quality-split-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260724-runtime-contours-cleanup-v1"
+        "20260724-cost-quality-split-v1"
     )
 
     page = client.get("/")
@@ -6094,8 +6094,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260724-runtime-contours-cleanup-v1" in cabinet.text
-    assert "app.js?v=20260724-runtime-contours-cleanup-v1" in cabinet.text
+    assert "styles.css?v=20260724-cost-quality-split-v1" in cabinet.text
+    assert "app.js?v=20260724-cost-quality-split-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6476,7 +6476,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260724-runtime-contours-cleanup-v1" in cabinet.text
+    assert "20260724-cost-quality-split-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
@@ -10042,6 +10042,8 @@ def test_login_report_filters_and_export(tmp_path: Path) -> None:
     assert "md6BeforeTax" in summary["liquidityRows"][0]
     assert summary["quality"]["okRows"] == 1
     assert summary["quality"]["missingCostRows"] == 1
+    assert summary["quality"]["costAbsentRows"] == 1
+    assert summary["quality"]["costRequiresReviewRows"] == 0
     assert summary["quality"]["documentReconciliationRows"] == 1
     assert summary["quality"]["documentReconciliationIssues"] == 0
     assert summary["readiness"]["status"] == "partial_period"
@@ -10743,6 +10745,7 @@ def test_missing_cost_drilldown_separates_review_and_absent_cost(
             preset="missingCost",
             limit=50,
         )
+        summary = repository.report_summary_payload(db, report)
 
     assert result["total"] == 2
     assert {item["status"] for item in result["items"]} == {
@@ -10770,6 +10773,29 @@ def test_missing_cost_drilldown_separates_review_and_absent_cost(
             },
         ],
     }
+    assert summary["quality"]["missingCostRows"] == 2
+    assert summary["quality"]["costAbsentRows"] == 1
+    assert summary["quality"]["costRequiresReviewRows"] == 1
+
+
+def test_quality_diagnostics_separate_absent_and_review_cost_rows(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    app_js = client.get("/static/app.js")
+    styles = client.get("/static/styles.css")
+
+    assert app_js.status_code == 200
+    assert styles.status_code == 200
+    assert "quality.costAbsentRows ?? missingCost" in app_js.text
+    assert "quality.costRequiresReviewRows ?? 0" in app_js.text
+    assert '["Без себестоимости", costAbsent, "Стоимость не найдена"]' in app_js.text
+    assert (
+        '["Требует сверки", costReview, "Стоимость рассчитана предварительно"]'
+        in app_js.text
+    )
+    assert "repeat(auto-fit, minmax(140px, 1fr))" in styles.text
 
 
 def test_large_report_summary_and_freshness_bound_unit_row_selects(

@@ -11682,7 +11682,7 @@ function nextAction({ readiness, quality, sourceLoads, refresh }) {
   if (missingCost) {
     return {
       title: "Закрыть себестоимость 1С",
-      copy: "Есть строки без себестоимости. Их нужно разобрать до отправки клиенту.",
+      copy: "Есть строки без подтверждённой себестоимости. Их нужно разобрать до отправки клиенту.",
       button: "Показать строки",
       action: "missingCost",
       meta: `${number(quality.missingCostRows || 0)} строк требуют проверки.`,
@@ -11827,7 +11827,7 @@ function renderCommandChecklist({ readiness, quality, sourceLoads, refresh }) {
     },
     {
       label: "Себестоимость 1С",
-      value: missingCost ? "Есть строки без себестоимости" : "Проверка пройдена",
+      value: missingCost ? "Есть строки без подтверждённой себестоимости" : "Проверка пройдена",
       state: missingCost ? "warn" : "ok",
     },
     {
@@ -11996,6 +11996,8 @@ function renderQuality(quality, sourceLoads, readiness) {
   const total = Number(quality.rowCount || 0);
   const okRows = Number(quality.okRows || 0);
   const missingCost = Number(quality.missingCostRows || 0);
+  const costAbsent = Number(quality.costAbsentRows ?? missingCost);
+  const costReview = Number(quality.costRequiresReviewRows ?? 0);
   const mapping = Number(quality.mappingRows || 0);
   const onecIssues = Number(quality.documentReconciliationIssues || 0);
   const incompleteSources = asArray(sourceLoads).filter(
@@ -12012,8 +12014,11 @@ function renderQuality(quality, sourceLoads, readiness) {
   const okPercent = Math.round(okRatio * 100);
   const okShare = `${okPercent}%`;
   const summaryIssues = [];
-  if (missingCost) {
-    summaryIssues.push(`${number(missingCost)} без себестоимости`);
+  if (costAbsent) {
+    summaryIssues.push(`${number(costAbsent)} без себестоимости`);
+  }
+  if (costReview) {
+    summaryIssues.push(`${number(costReview)} требуют сверки`);
   }
   if (mapping) {
     summaryIssues.push(`${number(mapping)} по сопоставлению`);
@@ -12038,7 +12043,8 @@ function renderQuality(quality, sourceLoads, readiness) {
     : "Строки качества еще не загружены.";
   renderMetrics(els.qualityGrid, [
     ["Строк ОК", `${okRows} из ${total}`],
-    ["Без себестоимости", missingCost],
+    ["Без себестоимости", costAbsent, "Стоимость не найдена"],
+    ["Требует сверки", costReview, "Стоимость рассчитана предварительно"],
     ["Сопоставление", mapping],
     ["Сверка WB ↔ 1С", onecIssues],
     ["Неполный период", partialPeriod],
@@ -12215,7 +12221,7 @@ function renderAiContext(summary = {}) {
   renderMetrics(els.aiContextMetrics, [
     ["Выручка", money(revenue)],
     ["Прибыль до налогов", profitValue === null ? "Нет данных" : signedMoney(profitValue), "", profitValue !== null && profitValue < 0 ? "blocked" : "ready"],
-    ["Без себестоимости", number(missingCost), "строк", missingCost ? "review" : "ready"],
+    ["Проверка себестоимости", number(missingCost), "строк", missingCost ? "review" : "ready"],
   ]);
   const total = Number(quality.rowCount || 0);
   const okRows = Number(quality.okRows || 0);

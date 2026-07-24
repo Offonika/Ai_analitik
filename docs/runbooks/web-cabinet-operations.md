@@ -1209,9 +1209,29 @@ fallback из `Запасов` всегда сохраняет `needs_review`, �
 - из fallback-строк `206` имеют нулевое итоговое количество, и все они
   сохраняют задачу сверки.
 
-Финальный report имеет `publication_status=draft`, `is_current=false`;
-опубликованный клиентский current report не переключался. Технический rollback
-runtime — возврат production symlink на
+После явного разрешения пользователя и записи финансового подтверждения в
+audit report `shumeyko_source_refresh_20260724_114209` опубликован:
+`publication_status=published`, `is_current=true`. Предыдущий current report
+`shumeyko_source_refresh_20260713_135304` переведен в `superseded`.
+
+Для опубликованного report повторно сформированы клиентские DOCX/PDF и
+зарегистрирован проверенный Excel
+`source_refresh/source_refresh_ded28bb464d5403abed6cb7997d23596/shumeyko_wb_excel_mvp.xlsx`
+с SHA-256
+`259a094ffa32d6a3520bf021cff309579de4e7fe328e1b944ee7697344456fa0`.
+PDF имеет сигнатуру `%PDF-`; оба пути разрешаются через
+`repository.report_artifact_path()` внутри production export-root
+`/data/shumeyko/prod/reports`.
+
+Проверка из production runtime командой
+`scripts/check_db_first_publication.py` с ожидаемыми `12 227` строками,
+`163` строками упущенных продаж и `11` ready artifacts завершилась
+`Health: ok`. Найдены все обязательные типы: CSV, DOCX, Excel, HTML и PDF.
+Локальный и публичный `/api/health` возвращают `status=ok` и показывают новый
+report как `latestPublishedReportId`.
+
+Технический rollback runtime — возврат production symlink на
 `runtime-main-d6ff3d5-cost-review-zero-net-20260724` и restart только
-`shumeiko-web-prod.service`; при таком откате новые draft нельзя публиковать до
-повторной финансовой проверки статусов.
+`shumeiko-web-prod.service`. Публикационный rollback выполняется отдельным
+возвратом предыдущего проверенного report в `published/current`; уже созданные
+immutable artifacts при rollback не удаляются.
