@@ -1157,7 +1157,11 @@ function guideEntryVisibleForRole(source, role) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-  return !allowedRoles.length || allowedRoles.includes(role);
+  const roleAllowed = !allowedRoles.length || allowedRoles.includes(role);
+  const reportKindAllowed = !(
+    isAccountingReportKind() && source.classList.contains("marketplace-report-control")
+  );
+  return roleAllowed && reportKindAllowed;
 }
 
 function guideEntryTitle(source) {
@@ -1199,6 +1203,82 @@ function renderGuideGroup(group, list, role) {
   list.replaceChildren(...cards);
 }
 
+function renderGuideCards(list, items) {
+  const cards = items.map(([heading, copy]) => {
+    const item = document.createElement("li");
+    item.className = "guide-card";
+    const title = document.createElement("h3");
+    title.textContent = heading;
+    const description = document.createElement("p");
+    description.textContent = copy;
+    item.append(title, description);
+    return item;
+  });
+  list.replaceChildren(...cards);
+}
+
+function setGuideCopy({ title, intro, checksTitle, checksIntro, safetyTitle, safetyCopy }) {
+  document.querySelector("#user-guide-title").textContent = title;
+  document.querySelector("#user-guide-title + .muted").textContent = intro;
+  document.querySelector("#guide-checks-title").textContent = checksTitle;
+  document.querySelector("#guide-checks-title + .muted").textContent = checksIntro;
+  document.querySelector("#guide-safety-title").textContent = safetyTitle;
+  document.querySelector("#guide-safety-title + p").textContent = safetyCopy;
+}
+
+function renderAccountingGuide() {
+  setGuideCopy({
+    title: "Как проверить налоговую нагрузку",
+    intro:
+      "Выберите организацию и месяц, изучите предварительный результат, разберите замечания и только после подтверждения источников используйте Excel для ручной отправки.",
+    checksTitle: "Как работать с проверками налоговой нагрузки",
+    checksIntro:
+      "Черновая сумма не равна начислению или оплате. Последовательно подтвердите источник, сумму, срок и назначение каждого налогового платежа.",
+    safetyTitle: "Перед ручной отправкой клиенту",
+    safetyCopy:
+      "Проверьте организацию и месяц, подтвердите фактически уплаченные собственные налоги и официальный доходный знаменатель. Предварительный отчёт с незакрытыми замечаниями нельзя выдавать за подтверждённый коэффициент ФНС.",
+  });
+  renderGuideCards(els.guideStartList, [
+    ["Выберите клиента", "Убедитесь, что открыт нужный клиентский контур."],
+    ["Выберите вид отчёта", "Установите «Налоговая нагрузка». Остальные разделы и подсказки переключатся вместе с видом отчёта."],
+    ["Выберите организацию 1С", "Сверьте полное название организации. Налоговые факты разных организаций не объединяются."],
+    ["Выберите календарный месяц", "Отчёт покажет выбранный месяц и накопительный период с начала года."],
+  ]);
+  renderGuideCards(els.guideSectionsList, [
+    ["Обзор", "Показывает режим, статус, подтверждённые суммы и причину, по которой коэффициент ФНС ещё не рассчитан."],
+    ["Проверки", "Содержит все открытые дозапросы и покрытие read-only источников 1С."],
+    ["Таблицы", "Разделяет налоговые строки, информационный график, НДС и ЕНС без подмены отсутствующих значений нулями."],
+    ["Инструкция", "Возвращает этот порядок работы и правила безопасной ручной отправки."],
+  ]);
+  renderGuideCards(els.guideActionsList, [
+    ["Сформировать новую ревизию", "Создаёт новый предварительный отчёт для выбранных организации и месяца; сохранённые источники не изменяются."],
+    ["Скачать Excel", "Скачивает Excel именно выбранной ревизии и периода для внутренней проверки."],
+    ["Открыть AI-аналитика", "Помощник объясняет уже рассчитанные факты, но не подтверждает налоги и ничего не меняет в 1С."],
+  ]);
+  renderGuideCards(els.guideChecksList, [
+    ["Прочитайте причину пустого коэффициента", "На «Обзоре» проверьте, каких подтверждённых фактов не хватает для числителя и знаменателя ФНС."],
+    ["Проверьте покрытие источников", "На вкладке «Проверки» разберите каждый неполный или отсутствующий источник и зафиксируйте, допустим ли пробел."],
+    ["Сверьте черновые суммы и сроки", "В «Таблицах» сопоставьте информационный график с первичными документами. Отсутствующий срок оставьте явным вопросом."],
+    ["Подтвердите факты расчёта", "Отдельно подтвердите уплату собственных налогов и официальный доходный знаменатель; агентские платежи и взносы не включайте в основной коэффициент."],
+  ]);
+  els.userGuideStatus.textContent =
+    "Инструкция относится к выбранному виду отчёта «Налоговая нагрузка».";
+}
+
+function restoreMarketplaceGuideCopy() {
+  setGuideCopy({
+    title: "Как пользоваться сервисом",
+    intro:
+      "Выберите контекст отчёта, изучите результат на «Обзоре», разберите замечания в «Проверках» и только потом готовьте отчёт для клиента или Excel.",
+    checksTitle: "Как работать с вкладкой «Проверки»",
+    checksIntro:
+      "Идите по шагам по порядку. Пропускайте сопоставление, Ozon-only и полную пересборку, если для них нет отдельной причины.",
+    safetyTitle: "Перед отправкой клиенту",
+    safetyCopy:
+      "Проверьте период и кабинет, откройте «Проверки» и убедитесь, что замечания по источникам, себестоимости и сопоставлению разобраны. Предварительный расчёт с замечаниями можно изучать, но не следует выдавать за подтверждённый итог.",
+  });
+}
+
 function renderUserGuide() {
   if (
     !els.guideStartList ||
@@ -1208,6 +1288,11 @@ function renderUserGuide() {
   ) {
     return;
   }
+  if (isAccountingReportKind()) {
+    renderAccountingGuide();
+    return;
+  }
+  restoreMarketplaceGuideCopy();
   const role = currentGuideRole();
   renderGuideGroup("start", els.guideStartList, role);
   renderGuideGroup("sections", els.guideSectionsList, role);
@@ -1237,6 +1322,38 @@ function renderWorkspaceHeader() {
       "Инструкция по работе",
       "Подсказки собраны из текущих разделов и доступных вам действий кабинета.",
       "is-info",
+    );
+    return;
+  }
+  if (isAccountingReportKind()) {
+    const reportTitle = state.reportKinds.find((item) => item.kind === state.reportKind)?.title
+      || "Бухгалтерский отчёт";
+    const issueCount = accountingIssueCount(state.scenario || {});
+    const status = accountingStatusLabel(
+      state.scenario?.businessRecommendation || state.scenario?.businessStatus || "preliminary",
+    );
+    if (state.workspace === "checks") {
+      setTopbarNotice(
+        `${reportTitle}: проверки`,
+        issueCount
+          ? `${number(issueCount)} пунктов требуют внимания ответственного специалиста.`
+          : "Открытых проверок нет.",
+        issueCount ? "is-warning" : "is-ok",
+      );
+      return;
+    }
+    if (state.workspace === "tables") {
+      setTopbarNotice(
+        `${reportTitle}: таблицы`,
+        "Черновые значения отделены от подтверждённых фактов и не заменяют их.",
+        "is-info",
+      );
+      return;
+    }
+    setTopbarNotice(
+      reportTitle,
+      `Предварительный staff-only отчёт · ${state.periodMonth} · ${status}.`,
+      issueCount ? "is-warning" : "is-info",
     );
     return;
   }
@@ -1282,6 +1399,21 @@ function renderWorkspaceHeader() {
 function openReadinessReasonCount(readiness = {}) {
   return [...asArray(readiness.blockingReasons), ...asArray(readiness.reviewReasons)]
     .filter((reason) => !isTaskReviewed(reason)).length;
+}
+
+function accountingIssueCount(payload = {}) {
+  return asArray(payload.issues).filter((issue) => issue && typeof issue === "object").length;
+}
+
+function accountingStatusLabel(status) {
+  return window.MultiReportScenarios?.helpers?.localizeStatus(status)
+    || String(status || "Предварительный");
+}
+
+function renderAccountingChecksNavigation(payload = {}) {
+  const count = accountingIssueCount(payload);
+  els.checksNavCount.textContent = number(count);
+  els.checksNavCount.hidden = count === 0;
 }
 
 function alignOzonDiagnosticsWithReportFlow() {
@@ -3105,7 +3237,9 @@ async function loadClients() {
     ? state.clients.find((client) => (client.clientId || client.id) === savedClientId)
     : null;
   if (savedClient) {
-    await selectClient(savedClient.clientId || savedClient.id);
+    await selectClient(savedClient.clientId || savedClient.id, {
+      updateLocation: !requestedClientId,
+    });
     return;
   }
   if (state.clients.length === 1) {
@@ -3218,6 +3352,11 @@ function syncReportKindSurface() {
     if (item) item.hidden = !accounting;
   });
   els.clientOutputButton.hidden = accounting;
+  if (accounting) {
+    renderAccountingChecksNavigation(state.scenario || {});
+  } else {
+    renderChecksNavigation((state.summary || {}).readiness || {});
+  }
   if (!accounting && window.MultiReportScenarios) {
     window.MultiReportScenarios.clear({
       overview: els.accountingScenarioOverview,
@@ -3512,18 +3651,30 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
 
 function renderAccountingScenario(payload) {
   syncReportKindSurface();
+  const selectedOrganization = accountingOrganizations().find(
+    (item) => item.onecOrganizationId === state.organizationId,
+  );
+  const organizationLabel = selectedOrganization?.label
+    || els.reportOrganizationSelect.selectedOptions[0]?.textContent
+    || "Название организации не найдено";
+  els.reportOrganizationSelect.title = organizationLabel;
   window.MultiReportScenarios?.render(state.reportKind, payload, {
     overview: els.accountingScenarioOverview,
     checks: els.accountingScenarioChecks,
     tables: els.accountingScenarioTables,
+  }, {
+    organizationLabel,
   });
   const title = state.reportKinds.find((item) => item.kind === state.reportKind)?.title
     || "Бухгалтерский отчёт";
   const status = payload.businessRecommendation || payload.businessStatus || "preliminary";
+  const issueCount = accountingIssueCount(payload);
+  renderAccountingChecksNavigation(payload);
   setTopbarNotice(
     title,
-    `Предварительный staff-only отчёт · ${state.periodMonth} · статус ${status}`,
-    status === "cannot_confirm" ? "is-warning" : "is-info",
+    `Предварительный staff-only отчёт · ${state.periodMonth} · ${accountingStatusLabel(status)} · ` +
+      `${number(issueCount)} ${issueCount === 1 ? "проверка" : "проверок"}.`,
+    issueCount || status === "cannot_confirm" ? "is-warning" : "is-info",
   );
   updateReportBuildButton();
   updateReportDownloadControl();

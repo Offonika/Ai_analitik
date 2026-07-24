@@ -303,17 +303,31 @@ def build_tax_load_payload(
                 "nextAction": "Подтвердить уплаченные налоги и доходный знаменатель.",
             }
         )
-    payment_schedule = [
-        {
-            "taxCode": row.get("taxCode"),
-            "taxName": row.get("taxName"),
-            "dueDate": row.get("dueDate"),
-            "amount": row.get("balance"),
-            "confirmationStatus": "informational",
-        }
-        for row in tax_rows
-        if row.get("dueDate")
-    ]
+    payment_schedule = _safe_rows(
+        evidence.get("paymentSchedule"),
+        (
+            "taxCode",
+            "taxName",
+            "dueDate",
+            "amount",
+            "confirmationStatus",
+            "evidenceStatus",
+            "sourceKind",
+            "issueCode",
+        ),
+    )
+    if not payment_schedule:
+        payment_schedule = [
+            {
+                "taxCode": row.get("taxCode"),
+                "taxName": row.get("taxName"),
+                "dueDate": row.get("dueDate"),
+                "amount": row.get("balance"),
+                "confirmationStatus": "informational",
+            }
+            for row in tax_rows
+            if row.get("dueDate")
+        ]
     payload = {
         "contractVersion": TAX_LOAD_CONTRACT_VERSION,
         "reportKind": "tax_load",

@@ -2621,8 +2621,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == "20260716-report-export-period-fix-v1"
-    assert health.json()["staticBuildId"] == "20260716-report-export-period-fix-v1"
+    assert health.json()["backendBuildId"] == "20260717-tax-load-ux-v2"
+    assert health.json()["staticBuildId"] == "20260717-tax-load-ux-v2"
 
     page = client.get("/")
     assert page.status_code == 200
@@ -2762,8 +2762,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260716-report-export-period-fix-v1" in cabinet.text
-    assert "app.js?v=20260716-report-export-period-fix-v1" in cabinet.text
+    assert "styles.css?v=20260717-tax-load-ux-v2" in cabinet.text
+    assert "app.js?v=20260717-tax-load-ux-v2" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -3636,6 +3636,89 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "reason-columns" not in css.text
     assert ".file-picker" in css.text
     assert "overflow-wrap: anywhere" in css.text
+
+
+def test_tax_load_source_gaps_remain_visible_in_accounting_workspace(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    tax_load_js = client.get("/static/tax-load-report.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert tax_load_js.status_code == 200
+    assert styles.status_code == 200
+    checks_panel = cabinet.text.split(
+        'id="accounting-scenario-checks"', 1
+    )[1].split(">", 1)[0]
+    assert 'data-workspace-panel="checks"' in checks_panel
+    assert 'data-check-panel="summary"' in checks_panel
+    assert "Почему отчёт пока не рассчитан" in tax_load_js.text
+    assert "Доступные черновые строки" in tax_load_js.text
+    assert ".scenario-gap-notice" in styles.text
+
+
+def test_tax_load_ui_localizes_accounting_data_and_keeps_mobile_fields_accessible(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+    scenarios_js = client.get("/static/report-scenarios.js")
+    tax_load_js = client.get("/static/tax-load-report.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert app_js.status_code == 200
+    assert scenarios_js.status_code == 200
+    assert tax_load_js.status_code == 200
+    assert styles.status_code == 200
+
+    assert 'rel="icon" href="/static/icons/chart-bar.svg"' in cabinet.text
+    assert "wrapper.tabIndex = 0" in scenarios_js.text
+    assert 'cell.scope = "col"' in scenarios_js.text
+    assert 'node("caption", "scenario-table-caption", label)' in scenarios_js.text
+    assert "scenario-mobile-cards" in scenarios_js.text
+    assert 'preliminary: "Предварительный"' in scenarios_js.text
+    assert 'partial_source: "Неполный источник"' in scenarios_js.text
+    assert 'empty_expected: "Нет данных — допустимо"' in scenarios_js.text
+
+    assert "context.organizationLabel || meta.organizationName" in tax_load_js.text
+    assert "[...new Set(" in tax_load_js.text
+    assert 'label: "Черновая сумма"' in tax_load_js.text
+    assert 'label: "Срок"' in tax_load_js.text
+    assert 'label: "Статус"' in tax_load_js.text
+    assert "Черновые суммы показаны для проверки" in tax_load_js.text
+    assert "Локальный черновик графика платежей" in tax_load_js.text
+
+    assert "function renderAccountingGuide()" in app_js.text
+    assert "function accountingIssueCount(payload = {})" in app_js.text
+    assert "renderAccountingChecksNavigation(payload)" in app_js.text
+    assert "Как проверить налоговую нагрузку" in app_js.text
+    assert "marketplace-report-control" in app_js.text
+    assert "organizationLabel," in app_js.text
+
+    assert ".scenario-table-wrap:focus-visible" in styles.text
+    assert ".scenario-table-wrap.has-mobile-cards .scenario-table" in styles.text
+    assert ".scenario-mobile-card dl" in styles.text
+    assert "body.accounting-report-mode .workspace-header .brand-lockup" in styles.text
+    assert (
+        "body.accounting-report-mode .workspace-header .ai-assistant-button"
+        in styles.text
+    )
+    assert "width: min(280px, calc(100vw - 24px));" in styles.text
+    assert "white-space: normal;" in styles.text
+
+
+def test_report_deep_link_preserves_context_while_restoring_client(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    app_js = client.get("/static/app.js")
+
+    assert app_js.status_code == 200
+    assert "updateLocation: !requestedClientId" in app_js.text
 
 
 def test_report_wizard_keeps_published_report_and_new_run_separate(
