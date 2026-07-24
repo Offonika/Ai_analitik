@@ -33,6 +33,7 @@ from wb_unit_economics.onec_cost import (
     load_provisional_cost_snapshots,
     load_sales_register_cost_snapshots,
     load_sales_register_rows,
+    merge_sales_and_stock_cost_snapshots,
 )
 from wb_unit_economics.onec_opiu import load_onec_opiu_summary
 from wb_unit_economics.onec_services import load_onec_marketplace_service_rows
@@ -206,18 +207,34 @@ def build_excel_mvp_from_args(args: argparse.Namespace) -> ExcelMvpBuildResult:
         )
     else:
         if sales_register_dir:
-            cost_snapshots = load_sales_register_cost_snapshots(
+            sales_cost_snapshots = load_sales_register_cost_snapshots(
                 sales_register_dir,
                 client_id=args.client_id,
                 reference_dir=onec_dir,
                 amount_field=args.sales_cost_amount_field,
                 marketplace_counterparties_only=True,
             )
+            stock_cost_snapshots = (
+                load_provisional_cost_snapshots(
+                    onec_dir,
+                    client_id=args.client_id,
+                    amount_field=args.cost_amount_field,
+                )
+                if (onec_dir / "stock_movements.raw.json").exists()
+                else []
+            )
+            cost_snapshots = merge_sales_and_stock_cost_snapshots(
+                sales_cost_snapshots,
+                stock_cost_snapshots,
+            )
             cost_note = (
                 "Себестоимость 1С: средневзвешенная по строкам "
                 "ОтчетКомиссионера и РасходнаяНакладная по выкупам "
                 "РВБ/WB в регистре Продажи "
                 f"({args.sales_cost_amount_field}, {sales_register_dir.name}); "
+                "для товаров без ненулевой стоимости в Продажи используется "
+                "помеченный needs_review fallback Сумма / Количество из "
+                "фиксированных приходных строк регистра Запасы; "
                 "распределенные допрасходы уже "
                 "включены и отдельно не прибавляются."
             )

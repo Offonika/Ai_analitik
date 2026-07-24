@@ -368,6 +368,12 @@ def _status_reason(
             if onec_item_id
             else ""
         )
+        if "stock_register_fixed_receipt_fallback" in method:
+            return (
+                "В регистре Продажи нет ненулевой себестоимости; использована "
+                "фиксированная приходная стоимость из регистра Запасы. Нужна "
+                "сверка после закрытия месяца"
+            )
         if "provisional" in method:
             return (
                 "Себестоимость взята предварительно из приходов 1С; нужна сверка "

@@ -46,6 +46,7 @@ from wb_unit_economics.onec_cost import (
     load_provisional_cost_snapshots,
     load_sales_register_cost_snapshots,
     load_sales_register_rows,
+    merge_sales_and_stock_cost_snapshots,
 )
 from wb_unit_economics.onec_opiu import load_onec_opiu_summary
 from wb_unit_economics.postgres_finance import (
@@ -373,7 +374,7 @@ def build_db_first_payload(
             args.sales_cost_amount_field,
             tax_profiles=tax_profiles,
         )
-        cost_snapshots = load_sales_register_cost_snapshots(
+        sales_cost_snapshots = load_sales_register_cost_snapshots(
             sales_register_dir,
             client_id=args.client_id,
             reference_dir=onec_dir,
@@ -381,6 +382,19 @@ def build_db_first_payload(
             marketplace_counterparties_only=True,
             input_vat_policies=input_vat_policies or [],
             confirmed_input_vat_org_ids=confirmed_input_vat_org_ids,
+        )
+        stock_cost_snapshots = (
+            load_provisional_cost_snapshots(
+                onec_dir,
+                client_id=args.client_id,
+                amount_field=args.cost_amount_field,
+            )
+            if (onec_dir / "stock_movements.raw.json").exists()
+            else []
+        )
+        cost_snapshots = merge_sales_and_stock_cost_snapshots(
+            sales_cost_snapshots,
+            stock_cost_snapshots,
         )
     else:
         cost_snapshots = load_provisional_cost_snapshots(
