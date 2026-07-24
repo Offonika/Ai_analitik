@@ -1513,6 +1513,30 @@ def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
     assert payload["usnDetail"]["status"] == "source_gap"
 
 
+def test_tax_load_keeps_explicit_unconfirmed_schedule_without_due_date() -> None:
+    evidence = _tax_evidence()
+    evidence["paymentSchedule"] = [
+        {
+            "taxCode": "draft_reference_1",
+            "taxName": "Черновая строка",
+            "dueDate": None,
+            "amount": "125",
+            "confirmationStatus": "draft_reference",
+            "evidenceStatus": "partial_source",
+            "sourceKind": "manual_tax_load_draft_reference",
+            "issueCode": "draft_reference_requires_accountant_review",
+        }
+    ]
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=evidence,
+    )
+
+    assert payload["paymentSchedule"] == evidence["paymentSchedule"]
+
+
 def test_scenario_excel_has_exact_sheets_and_traceable_overview(tmp_path: Path) -> None:
     cases = [
         (

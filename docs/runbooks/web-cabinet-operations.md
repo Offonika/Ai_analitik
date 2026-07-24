@@ -457,6 +457,29 @@ hash/parity и агрегированные количества exact/mismatch/
 относятся только к зафиксированному audit-pack; после изменения исходных
 проводок требуется новая штатная ОСВ и новый baseline, а не подгонка expected.
 
+Для временной staff-only проверки `tax_load` без полного источника платежей
+можно добавить информационный график из локального черновика. Команда работает
+только в runtime environment `test`, не печатает суммы или названия строк и по
+умолчанию выполняет dry-run:
+
+```bash
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-tax-load-draft-reference \
+  --property=WorkingDirectory=/opt/shumeyko-runtime/test/current \
+  --property=EnvironmentFile=/etc/shumeiko-web-test.env \
+  /opt/shumeyko-runtime/test/current/.venv/bin/python \
+  scripts/attach_tax_load_draft_reference.py \
+  --report-id '<tax_load report_id>' \
+  --workbook '<локальный reports/...xlsx>' \
+  --workbook-root '<разрешенный локальный reports>' \
+  --apply
+```
+
+Импортированные строки всегда получают `partial_source`, не участвуют в
+коэффициенте ФНС и не заменяют бухгалтерскую проверку. Повторный запуск
+идемпотентно заменяет только reference-строки этого типа; подтвержденные
+`tax_rows` скрипт менять отказывается.
+
 Или через авторизованный admin API:
 
 ```bash

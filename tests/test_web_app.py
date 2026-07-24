@@ -7164,6 +7164,89 @@ def test_client_logistics_deep_link_waits_for_reports_and_skips_staff_draft_api(
     )
 
 
+def test_tax_load_source_gaps_remain_visible_in_accounting_workspace(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    tax_load_js = client.get("/static/tax-load-report.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert tax_load_js.status_code == 200
+    assert styles.status_code == 200
+    checks_panel = cabinet.text.split(
+        'id="accounting-scenario-checks"', 1
+    )[1].split(">", 1)[0]
+    assert 'data-workspace-panel="checks"' in checks_panel
+    assert 'data-check-panel="summary"' in checks_panel
+    assert "Почему отчёт пока не рассчитан" in tax_load_js.text
+    assert "Доступные черновые строки" in tax_load_js.text
+    assert ".scenario-gap-notice" in styles.text
+
+
+def test_tax_load_ui_localizes_accounting_data_and_keeps_mobile_fields_accessible(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+    scenarios_js = client.get("/static/report-scenarios.js")
+    tax_load_js = client.get("/static/tax-load-report.js")
+    styles = client.get("/static/styles.css")
+
+    assert cabinet.status_code == 200
+    assert app_js.status_code == 200
+    assert scenarios_js.status_code == 200
+    assert tax_load_js.status_code == 200
+    assert styles.status_code == 200
+
+    assert 'rel="icon" href="/static/icons/chart-bar.svg"' in cabinet.text
+    assert "wrapper.tabIndex = 0" in scenarios_js.text
+    assert 'header.scope = "col"' in scenarios_js.text
+    assert 'node("caption", "scenario-table-caption", label)' in scenarios_js.text
+    assert "scenario-mobile-cards" in scenarios_js.text
+    assert 'preliminary: "Предварительный"' in scenarios_js.text
+    assert 'partial_source: "Неполный источник"' in scenarios_js.text
+    assert 'empty_expected: "Нет данных — допустимо"' in scenarios_js.text
+
+    assert "context.organizationLabel || meta.organizationName" in tax_load_js.text
+    assert "[...new Set(" in tax_load_js.text
+    assert 'label: "Черновая сумма"' in tax_load_js.text
+    assert 'label: "Срок"' in tax_load_js.text
+    assert 'label: "Статус"' in tax_load_js.text
+    assert "Черновые суммы показаны для проверки" in tax_load_js.text
+    assert "Локальный черновик графика платежей" in tax_load_js.text
+
+    assert "function renderAccountingGuide()" in app_js.text
+    assert "function accountingIssueCount(payload = {})" in app_js.text
+    assert "renderAccountingChecksNavigation(payload)" in app_js.text
+    assert "Как проверить налоговую нагрузку" in app_js.text
+    assert "marketplace-report-control" in app_js.text
+    assert "organizationLabel," in app_js.text
+
+    assert ".scenario-table-wrap:focus-visible" in styles.text
+    assert ".scenario-table-wrap.has-mobile-cards .scenario-table" in styles.text
+    assert ".scenario-mobile-card dl" in styles.text
+    assert "body.accounting-report-mode .workspace-header .brand-lockup" in styles.text
+    assert (
+        "body.accounting-report-mode .workspace-header .ai-assistant-button"
+        in styles.text
+    )
+    assert "width: min(280px, calc(100vw - 24px));" in styles.text
+    assert "white-space: normal;" in styles.text
+
+
+def test_report_deep_link_preserves_context_while_restoring_client(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    app_js = client.get("/static/app.js")
+
+    assert app_js.status_code == 200
+    assert "updateLocation: !requestedClientId" in app_js.text
+
+
 def test_report_wizard_keeps_published_report_and_new_run_separate(
     tmp_path: Path,
 ) -> None:
@@ -10422,7 +10505,7 @@ def test_osno_legacy_draft_pnl_fallback_uses_tax_method_without_vat(
     assert summary["monthly"][0]["profit"] == 400
 
 
-def test_report_export_uses_current_published_report_for_stale_link(
+def test_report_export_uses_exact_requested_report_for_draft_link(
     tmp_path: Path,
 ) -> None:
     client = make_client(tmp_path)
@@ -10451,8 +10534,22 @@ def test_report_export_uses_current_published_report_for_stale_link(
     export = client.get("/api/reports/report-1/export.xlsx")
 
     assert export.status_code == 200
-    assert export.content == b"current-xlsx"
+    assert export.content == b"xlsx"
+    assert export.content != b"current-xlsx"
     assert export.headers["cache-control"] == "no-store"
+    assert (
+        "shumeyko_wb_excel_20260301_20260617.xlsx"
+        in export.headers["content-disposition"]
+    )
+    with client.app.state.session_factory() as db:
+        audit = db.scalar(
+            select(repository.AuditEvent)
+            .where(repository.AuditEvent.action == "report_exported")
+            .order_by(repository.AuditEvent.id.desc())
+        )
+        assert audit is not None
+        assert audit.entity_id == "report-1"
+        assert audit.payload == {}
 
 
 def test_report_export_returns_requested_staff_draft_artifact(

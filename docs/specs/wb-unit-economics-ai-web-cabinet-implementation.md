@@ -372,6 +372,12 @@ UI readiness behavior:
   строкам и сверке WB ↔ 1С. Названия кнопок в инструкции берутся из живых
   controls, а contract regression блокирует новое действие блока
   `source-refresh-actions` без `data-guide-*` пояснения;
+- начиная с v2.53 бухгалтерский режим формирует отдельную контекстную
+  `Инструкцию`: он не наследует marketplace-only фильтры и действия. Основной
+  заголовок бухгалтерского scenario не дублируется общей шапкой отчета; действие
+  AI остается доступным. Счетчик `Проверки` и верхнее состояние берутся из
+  `issues[]` текущего scenario. Пользовательские статусы и таблицы локализованы,
+  технические идентификаторы не подменяют названия сущностей;
 - the authenticated cabinet uses one analyst workspace shell with a persistent
   navigation rail and four page entries: `Обзор`, `Проверки`,
   `Аналитика и таблицы` and `Инструкция`; a separate top-level `Логистика`
@@ -426,6 +432,10 @@ UI readiness behavior:
   and date controls remain synchronized for backward-compatible requests;
 - topbar does not expose an `Отчет` selector; selecting a client loads the
   current available report slice automatically;
+- прямой URL отчёта с `client_id`, `report_kind`, `organization_id` и
+  `period_month` сохраняет весь контекст во время первичного восстановления
+  клиента; кабинет не должен стирать параметры и подменять бухгалтерский отчёт
+  основной витриной до загрузки доступных видов отчёта;
 - report meta, source freshness and client hierarchy are not repeated as a
   separate middle-screen block; the topbar and readiness strip are the canonical
   context, and mapping service entry appears only in the main next-action area;
@@ -1343,6 +1353,13 @@ Large-report loading:
 - На ширине 390 px все значения глобального среза остаются доступными, вложенная
   навигация не создает page-level overflow, а после перехода фокус установлен на
   заголовке выбранного сценария.
+- Бухгалтерский report kind показывает контекстную инструкцию без
+  marketplace-only шагов, не дублирует заголовок общей шапкой, сохраняет
+  доступное действие AI и синхронизирует badge/текст `Проверки` с `issues[]`.
+- Первичное представление бухгалтерских сценариев не показывает raw contract
+  keys, UUID организации и машинные статусы вместо русских подписей; на узком
+  экране существенные поля сценария доступны без обязательной горизонтальной
+  прокрутки, а полные таблицы доступны клавиатуре.
 - Для `consultant/admin` инструкция по `Проверкам` различает обычное обновление
   последних данных, Ozon-only витрину и редкую полную пересборку, объясняет
   значения сводки/этапов/карточек источников и заканчивается разбором
@@ -1413,6 +1430,8 @@ Large-report loading:
 - UI shell tests for public login shell, protected API data loading, static
   assets, readiness API usage, products filters, horizontal table scroll, safe
   text rendering and responsive CSS.
+- UI shell/deep-link test сохраняет `report_kind`, организацию и месяц при
+  первичном выборе клиента из URL.
 - Large-report tests keep the public summary free of `unitRows`, preserve KPI,
   tax and VAT-reconciliation parity, and cap `report_unit_rows` selects at
   eight for summary and three for freshness. UI tests cover summary failure,

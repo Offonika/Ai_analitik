@@ -739,17 +739,31 @@ def build_tax_load_payload(
                 ),
             }
         )
-    payment_schedule = [
-        {
-            "taxCode": row.get("taxCode"),
-            "taxName": row.get("taxName"),
-            "dueDate": row.get("dueDate"),
-            "amount": row.get("balance"),
-            "confirmationStatus": "informational",
-        }
-        for row in tax_rows
-        if row.get("dueDate")
-    ]
+    payment_schedule = _safe_rows(
+        evidence.get("paymentSchedule"),
+        (
+            "taxCode",
+            "taxName",
+            "dueDate",
+            "amount",
+            "confirmationStatus",
+            "evidenceStatus",
+            "sourceKind",
+            "issueCode",
+        ),
+    )
+    if not payment_schedule:
+        payment_schedule = [
+            {
+                "taxCode": row.get("taxCode"),
+                "taxName": row.get("taxName"),
+                "dueDate": row.get("dueDate"),
+                "amount": row.get("balance"),
+                "confirmationStatus": "informational",
+            }
+            for row in tax_rows
+            if row.get("dueDate")
+        ]
     if not is_usn:
         usn_detail_status = "not_applicable"
     elif usn_calculated_tax is None or usn_paid_tax is None:

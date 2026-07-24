@@ -8,7 +8,7 @@ import zipfile
 from calendar import monthrange
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from uuid import UUID
@@ -176,6 +176,38 @@ def _month_end(value: date) -> date:
 
 def _display_week_start(week_start: date, report_period_start: date) -> date:
     return max(week_start, report_period_start)
+
+
+def _write_excel_date(
+    sheet: xlsxwriter.worksheet.Worksheet,
+    row: int,
+    column: int,
+    value: object,
+    date_format: object,
+) -> None:
+    parsed: date | None
+    if isinstance(value, datetime):
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        try:
+            parsed = date.fromisoformat(text[:10]) if text else None
+        except ValueError:
+            parsed = None
+        if parsed is None and text:
+            sheet.write(row, column, text)
+            return
+    if parsed is None:
+        sheet.write(row, column, "")
+        return
+    sheet.write_datetime(
+        row,
+        column,
+        datetime.combine(parsed, time.min),
+        date_format,
+    )
 
 
 def _row_month_start(row: object, report_period_start: date) -> date:
@@ -663,7 +695,7 @@ def _formats(workbook: xlsxwriter.Workbook) -> dict[str, object]:
         ),
         "money": workbook.add_format({"num_format": "#,##0.00"}),
         "percent": workbook.add_format({"num_format": "0.00%"}),
-        "date": workbook.add_format({"num_format": "yyyy-mm-dd"}),
+        "date": workbook.add_format({"num_format": "dd.mm.yyyy"}),
         "bold": workbook.add_format({"bold": True}),
         "title": workbook.add_format({"bold": True, "font_size": 16}),
         "section": workbook.add_format({"bold": True, "font_size": 12}),
@@ -1519,14 +1551,16 @@ def _write_unit_economics(
     cost_methods = _cost_method_lookup(cost_snapshots)
     report_rows = _client_unit_rows(source_rows, cost_names)
     for idx, row in enumerate(report_rows, start=1):
-        sheet.write(
+        _write_excel_date(
+            sheet,
             idx,
             0,
-            str(_display_week_start(row.week_start, report.report_period_start)),
+            _display_week_start(row.week_start, report.report_period_start),
+            formats["date"],
         )
         sheet.write(idx, 1, row.document_report)
         sheet.write(idx, 2, row.wb_report_id)
-        sheet.write(idx, 3, row.wb_report_date)
+        _write_excel_date(sheet, idx, 3, row.wb_report_date, formats["date"])
         sheet.write(
             idx, 4, _organization_label(row.organization_id, organization_labels)
         )
@@ -1604,12 +1638,12 @@ def _write_unit_economics(
         sheet.write_number(idx, 49, float(row.vat_input_from_1c), formats["money"])
         sheet.write_number(idx, 50, float(row.vat_input_difference), formats["money"])
         sheet.write(idx, 51, row.vat_input_completeness)
-        sheet.write(
+        _write_excel_date(
+            sheet,
             idx,
             52,
-            row.accounting_period_date.isoformat()
-            if row.accounting_period_date
-            else "",
+            row.accounting_period_date,
+            formats["date"],
         )
         sheet.write(idx, 53, row.accounting_period_source)
     row_count = len(report_rows)

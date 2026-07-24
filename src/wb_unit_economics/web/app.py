@@ -3842,48 +3842,27 @@ def create_app(
                 filename=f"ozon_unit_economics_{report.period_start:%Y%m%d}_"
                 f"{report.period_end:%Y%m%d}.xlsx",
             )
-        export_report = report
-        path = _report_excel_export_path(db, export_report, runtime_settings)
+        path = _report_excel_export_path(db, report, runtime_settings)
         if report.publication_status != "published":
             _require_staff_or_403(current, report.tenant_id)
-        if (
-            report.publication_status in {"published", "superseded"}
-            and not report.is_current
-        ):
-            latest_report = repository.latest_report_for_client(
-                db,
-                current,
-                report.client_id,
-            )
-            if latest_report is not None and latest_report.id != report.id:
-                latest_path = _report_excel_export_path(
-                    db,
-                    latest_report,
-                    runtime_settings,
-                )
-                if latest_path is not None and latest_path.exists():
-                    export_report = latest_report
-                    path = latest_path
         if path is None or not path.exists():
             raise HTTPException(status_code=404, detail="export not found")
         repository.audit(
             db,
             action="report_exported",
             user=current,
-            tenant_id=export_report.tenant_id,
+            tenant_id=report.tenant_id,
             entity_type="report_run",
-            entity_id=export_report.id,
-            payload=(
-                {"requestedReportId": report.id}
-                if export_report.id != report.id
-                else None
-            ),
+            entity_id=report.id,
         )
         db.commit()
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=export_report.source_workbook or "shumeyko_wb_excel_mvp.xlsx",
+            filename=(
+                f"shumeyko_wb_excel_{report.period_start:%Y%m%d}_"
+                f"{report.period_end:%Y%m%d}.xlsx"
+            ),
             headers={"Cache-Control": "no-store"},
         )
 
