@@ -59,6 +59,10 @@ Linux capabilities и постоянно показывает заметную �
 Production report root находится в `/data/shumeyko/prod/reports`, test — в
 `/data/shumeyko/test/reports`; writable runtime artifacts не размещаются внутри
 Git checkout.
+Обязательные non-secret границы (`runtime_environment`, cookie name, client
+login, external integrations и writable roots) повторяются в versioned
+systemd unit и имеют приоритет над EnvironmentFile. Секреты и database URL
+остаются только в EnvironmentFile.
 Если PostgreSQL использует отдельную test-роль, ее полный database URL
 передается генератору environment-файлов только через одноразовую переменную
 `SHUMEYKO_TEST_DATABASE_URL`. Генератор обязан проверить имя test БД и не

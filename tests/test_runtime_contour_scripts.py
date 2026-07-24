@@ -136,6 +136,19 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
         assert "SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20" in unit
         assert "/data/shumeyko/prod/reports" in unit
 
+    production_unit = (systemd_root / "shumeiko-web-prod.service").read_text(
+        encoding="utf-8"
+    )
+    test_unit = (systemd_root / "shumeiko-web-test.service").read_text(
+        encoding="utf-8"
+    )
+    assert "SHUMEYKO_RUNTIME_ENVIRONMENT=production" in production_unit
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in production_unit
+    assert "SHUMEYKO_RUNTIME_ENVIRONMENT=test" in test_unit
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=false" in test_unit
+    assert "SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false" in test_unit
+    assert "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports" in test_unit
+
     health_helper = (ROOT / "scripts/check_web_cabinet_health.py").read_text(
         encoding="utf-8"
     )

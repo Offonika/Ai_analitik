@@ -14,6 +14,13 @@ WorkingDirectory=/opt/shumeyko-runtime/test/current
 EnvironmentFile=/etc/shumeiko-web-test.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPATH=/opt/shumeyko-runtime/test/current/src
+Environment=SHUMEYKO_RUNTIME_ENVIRONMENT=test
+Environment=SHUMEYKO_SESSION_COOKIE_NAME=shumeyko_test_session
+Environment=SHUMEYKO_CLIENT_LOGIN_ENABLED=false
+Environment=SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false
+Environment=SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports
+Environment=SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/test/reports/none.xlsx
+Environment=SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/test/source_refresh
 ExecStart=/opt/shumeyko-runtime/test/current/.venv/bin/python -m uvicorn wb_unit_economics.web.app:app --host 127.0.0.1 --port 8098 --workers 1
 Restart=on-failure
 RestartSec=5
