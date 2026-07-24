@@ -884,6 +884,47 @@ def test_zero_net_sale_and_return_keep_applied_cost_review_status() -> None:
     assert row.data_quality_status is DataQualityStatus.NEEDS_REVIEW
 
 
+def test_zero_net_sale_and_return_ignore_unused_non_stock_cost_review() -> None:
+    sale = wb_snapshots()[0]
+    returned = sale.model_copy(
+        update={
+            "wb_document_id": "doc-return",
+            "operation_type": "return",
+            "quantity": Decimal("-2"),
+            "net_revenue": Decimal("-1000"),
+            "wb_commission": Decimal("-100"),
+            "logistics": Decimal("-50"),
+            "storage": Decimal("-20"),
+            "acceptance": Decimal("-10"),
+            "penalties_and_holdbacks": Decimal("-5"),
+            "acquiring": Decimal("-15"),
+            "raw_payload_hash": "wb-return-hash",
+        }
+    )
+    nearest_sales_cost = cost_snapshots()[0].model_copy(
+        update={
+            "cost_method": (
+                "sales_register_weighted_average_allocated_extra_costs_needs_review"
+            ),
+            "source_document": "nearest available sales-register cost",
+        }
+    )
+    report = build_unit_economics_report(
+        client_id=CLIENT_ID,
+        wb_snapshots=[sale, returned],
+        cost_snapshots=[nearest_sales_cost],
+        sku_mappings=sku_mappings(),
+        account_org_mapping=account_org_mapping(),
+        generated_at=datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        as_of_date=date(2026, 6, 16),
+    )
+
+    row = report.rows[0]
+    assert row.quantity == Decimal("0")
+    assert row.cogs_from_1c_with_extra_costs == Decimal("0.00")
+    assert row.data_quality_status is DataQualityStatus.RELIABLE
+
+
 def test_unconfirmed_or_unsupported_tax_profile_does_not_calculate_taxes() -> None:
     profiles = [
         TaxProfile(
