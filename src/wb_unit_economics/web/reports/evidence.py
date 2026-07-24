@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -9,10 +10,21 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from wb_unit_economics.onec_services import classify_marketplace_service
 from wb_unit_economics.web.report_kinds import MONTH_CLOSE_CONTROL, TAX_LOAD
 
 MONTH_CLOSE_EVIDENCE_VERSION = "month-close-evidence-v2"
-TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v2"
+TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v6"
+
+COMPLETE_SOURCE_STATUSES = frozenset(
+    {"loaded", "ready", "complete", "confirmed", "empty_expected"}
+)
+
+USN_MARKETPLACE_CATEGORIES = (
+    ("ozon", "Ozon (Интернет Решения)"),
+    ("wildberries", "Wildberries (РВБ)"),
+    ("other", "Другие покупатели"),
+)
 
 
 @dataclass(frozen=True)
@@ -156,8 +168,10 @@ def _month_close_evidence(
                 "code": "osv_source_gap",
                 "severity": "warning",
                 "section": "ОСВ",
-                "message": "Ни штатная ОСВ, ни RecordType fallback не дали строк.",
-                "nextAction": "Проверить публикацию 1С и повторить read-only загрузку.",
+                "message": "Ни штатная ОСВ, ни резервный источник не дали строк.",
+                "nextAction": (
+                    "Проверить публикацию 1С и повторить загрузку только для чтения."
+                ),
             }
         )
     controls = [
@@ -250,11 +264,12 @@ def _tax_load_evidence(
     period_end: date,
     sources: Mapping[str, AccountingEvidenceSource],
 ) -> dict[str, Any]:
+    ytd_start = period_start.replace(month=1, day=1)
     tax_lookup = _description_lookup(sources.get("onec_tax_kinds"))
     raw_tax_rows = _organization_period_rows(
         sources.get("onec_accounting_taxes"),
         organization_id,
-        period_start,
+        ytd_start,
         period_end,
         date_fields=("Period",),
     )
@@ -262,9 +277,20 @@ def _tax_load_evidence(
     raw_payment_rows = _organization_period_rows(
         payment_source,
         organization_id,
-        period_start,
+        ytd_start,
         period_end,
         date_fields=("Period", "Date", "СрокУплаты"),
+    )
+    bank_payment_source = sources.get("onec_accounting_bank_out")
+    raw_bank_payment_rows = _organization_period_rows(
+        bank_payment_source,
+        organization_id,
+        ytd_start,
+        period_end,
+        date_fields=("Period", "Date", "Дата"),
+    )
+    bank_paid_by_kind, bank_payments_classified = _bank_tax_payments(
+        raw_bank_payment_rows
     )
     paid_by_tax: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
     for row in raw_payment_rows:
@@ -308,8 +334,29 @@ def _tax_load_evidence(
         item["accrued"] += _first_decimal(row, ("Сумма", "Amount")) or Decimal("0")
     tax_rows: list[dict[str, Any]] = []
     tax_code_counts: dict[str, int] = defaultdict(int)
+    tax_kind_counts: dict[str, int] = defaultdict(int)
     for tax_code, _due_date in grouped:
         tax_code_counts[tax_code] += 1
+    for item in grouped.values():
+        tax_kind = _tax_payment_match_kind(str(item["taxName"]))
+        if tax_kind:
+            tax_kind_counts[tax_kind] += 1
+    included_tax_kinds = {
+        _tax_payment_match_kind(str(item["taxName"]))
+        for item in grouped.values()
+        if _tax_classification(str(item["taxName"]))[1]
+    }
+    bank_payment_fallback_ready = (
+        not raw_payment_rows
+        and bank_payments_classified
+        and None not in included_tax_kinds
+        and all(
+            tax_kind_counts[tax_kind] == 1 and tax_kind in bank_paid_by_kind
+            for tax_kind in included_tax_kinds
+        )
+        and all(tax_kind_counts[tax_kind] == 1 for tax_kind in bank_paid_by_kind)
+    )
+    bank_payment_fallback_used = False
     for item in grouped.values():
         payment_kind, included, exclusion_reason = _tax_classification(
             str(item["taxName"])
@@ -318,18 +365,27 @@ def _tax_load_evidence(
         paid = paid_by_tax.get((tax_code, str(item["dueDate"] or "")))
         if paid is None and tax_code_counts[tax_code] == 1:
             paid = paid_by_tax.get((tax_code, ""))
+        paid_source = payment_source
+        if paid is None and bank_payment_fallback_ready:
+            tax_kind = _tax_payment_match_kind(str(item["taxName"]))
+            paid = bank_paid_by_kind.get(tax_kind or "")
+            if paid is not None:
+                paid_source = bank_payment_source
+                bank_payment_fallback_used = True
         item["accrued"] = _decimal_text(item["accrued"])
         item["paid"] = _decimal_text(paid) if paid is not None else None
         item["valueStatus"] = "loaded" if paid is not None else "partial"
         item["evidenceStatus"] = (
             "loaded"
             if paid is not None
-            and payment_source is not None
-            and payment_source.status in {"loaded", "ready", "complete"}
+            and paid_source is not None
+            and paid_source.status in {"loaded", "ready", "complete"}
             else "partial_source"
         )
         item["sourceKind"] = (
-            "onec_accounting_taxes_on_ens" if paid is not None else "onec_tax_register"
+            paid_source.source_type
+            if paid is not None and paid_source is not None
+            else "onec_tax_register"
         )
         item["issueCode"] = None if paid is not None else "paid_tax_fact_unconfirmed"
         item["paymentKind"] = payment_kind
@@ -338,17 +394,33 @@ def _tax_load_evidence(
         tax_rows.append(item)
     tax_rows.sort(key=lambda item: (str(item["taxName"]), str(item["dueDate"] or "")))
 
+    vat_sales_source = sources.get("onec_vat_sales_book")
+    vat_purchase_source = sources.get("onec_vat_purchase_book")
     vat_sales = _organization_period_rows(
-        sources.get("onec_vat_sales_book"),
+        vat_sales_source,
         organization_id,
         period_start,
         period_end,
         date_fields=("Period",),
     )
     vat_purchase = _organization_period_rows(
-        sources.get("onec_vat_purchase_book"),
+        vat_purchase_source,
         organization_id,
         period_start,
+        period_end,
+        date_fields=("Period",),
+    )
+    vat_sales_ytd = _organization_period_rows(
+        vat_sales_source,
+        organization_id,
+        ytd_start,
+        period_end,
+        date_fields=("Period",),
+    )
+    vat_purchase_ytd = _organization_period_rows(
+        vat_purchase_source,
+        organization_id,
+        ytd_start,
         period_end,
         date_fields=("Period",),
     )
@@ -371,32 +443,235 @@ def _tax_load_evidence(
         "sourceKind": "onec_official_financial_results",
         "snapshotId": income_source.snapshot_id if income_source else "",
     }
-    # Доход-база по УСН без НДС из КУДиР (AccumulationRegister
-    # КнигаУчетаДоходовИРасходов, ресурс ДоходБаза) — управленческий знаменатель
-    # для ИП на УСН, у которого нет отчета о финансовых результатах (spec: Tax
-    # Methodology Boundary, решение от 21.07.2026).
-    usn_income_source = sources.get("onec_kudir")
-    usn_income_rows = _organization_period_rows(
-        usn_income_source,
+    bank_income_source = sources.get("onec_accounting_bank_in")
+    bank_income_rows = _organization_period_rows(
+        bank_income_source,
         organization_id,
-        period_start.replace(month=1, day=1),
+        ytd_start,
         period_end,
-        date_fields=("Period", "Date", "Дата"),
+        date_fields=("Date", "Period", "Дата"),
+    )
+    counterparty_source = sources.get("onec_accounting_counterparties")
+    counterparty_names = _description_lookup(counterparty_source)
+    vat_sales_rows = _vat_book_rows(
+        vat_sales_ytd,
+        book_kind="sales",
+        counterparty_names=counterparty_names,
+    )
+    vat_purchase_rows = _vat_book_rows(
+        vat_purchase_ytd,
+        book_kind="purchase",
+        counterparty_names=counterparty_names,
+    )
+    vat_sales_month_totals = _vat_book_totals(vat_sales, vat_sales_source)
+    vat_purchase_month_totals = _vat_book_totals(vat_purchase, vat_purchase_source)
+    vat_sales_totals = _vat_book_totals(vat_sales_ytd, vat_sales_source)
+    vat_purchase_totals = _vat_book_totals(vat_purchase_ytd, vat_purchase_source)
+    vat_difference = _decimal_difference(
+        vat_sales_totals.get("vatAmount"),
+        vat_purchase_totals.get("vatAmount"),
+    )
+    rwb_vat_reconciliation = _rwb_vat_reconciliation(
+        sources=sources,
+        organization_id=organization_id,
+        period_start=ytd_start,
+        period_end=period_end,
+        counterparty_names=counterparty_names,
+        purchase_book_rows=vat_purchase_rows,
+        purchase_book_source=vat_purchase_source,
+    )
+    counterparty_categories = _usn_marketplace_counterparty_categories(
+        counterparty_source
+    )
+    bank_income_groups = _classify_usn_bank_income_rows(
+        bank_income_rows,
+        counterparty_categories=counterparty_categories,
+    )
+    confirmed_bank_income = bank_income_groups["confirmed"]
+    unclassified_bank_income = bank_income_groups["unclassified"]
+    excluded_bank_income = bank_income_groups["excluded"]
+    loan_bank_income = bank_income_groups["loans"]
+    bank_income_status = _source_status(bank_income_source)
+    bank_income_available = bank_income_status in {
+        "loaded",
+        "ready",
+        "complete",
+        "confirmed",
+        "empty_expected",
+    }
+    bank_income_amounts_complete = all(
+        row.get("incomeNetAmount") not in (None, "")
+        for rows in bank_income_groups.values()
+        for row in rows
+    )
+    marketplace_breakdown_available = (
+        bank_income_available
+        and bank_income_amounts_complete
+        and _source_status(counterparty_source)
+        in {"loaded", "ready", "complete", "confirmed"}
     )
     usn_income_evidence = {
+        "value": (
+            _complete_sum_rows(confirmed_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "status": bank_income_status,
+        "classificationStatus": (
+            "source_gap"
+            if not bank_income_available or not bank_income_amounts_complete
+            else ("review_required" if unclassified_bank_income else "ready")
+        ),
+        "sourceKind": "onec_accounting_bank_in",
+        "snapshotId": bank_income_source.snapshot_id if bank_income_source else "",
+        "monthlyValues": _monthly_values(
+            confirmed_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "unclassifiedValue": (
+            _complete_sum_rows(unclassified_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "monthlyUnclassifiedValues": _monthly_values(
+            unclassified_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "excludedValue": (
+            _complete_sum_rows(excluded_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "monthlyExcludedValues": _monthly_values(
+            excluded_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "loanReceiptsValue": (
+            _complete_sum_rows(loan_bank_income, ("incomeNetAmount",))
+            if bank_income_available
+            else None
+        ),
+        "monthlyLoanReceiptValues": _monthly_values(
+            loan_bank_income,
+            date_fields=("Date",),
+            amount_fields=("incomeNetAmount",),
+            source_status=bank_income_status,
+        ),
+        "confirmedRowCount": len(confirmed_bank_income),
+        "unclassifiedRowCount": len(unclassified_bank_income),
+        "excludedRowCount": len(excluded_bank_income),
+        "loanReceiptRowCount": len(loan_bank_income),
+        "marketplaceBreakdownStatus": (
+            "ready" if marketplace_breakdown_available else "source_gap"
+        ),
+        "marketplaceBreakdown": (
+            _usn_marketplace_breakdown(
+                confirmed_bank_income,
+                period_start=ytd_start,
+                period_end=period_end,
+                source_status=bank_income_status,
+            )
+            if marketplace_breakdown_available
+            else []
+        ),
+    }
+    # КУДиР остается контрольной YTD-сверкой. В текущей 1С Period регистра
+    # может быть квартальной датой и не является календарным месяцем поступления.
+    usn_income_source = sources.get("onec_kudir")
+    usn_income_rows = [
+        row
+        for row in _organization_period_rows(
+            usn_income_source,
+            organization_id,
+            ytd_start,
+            period_end,
+            date_fields=("Period", "Date", "Дата"),
+        )
+        if _is_kudir_income_row(row)
+    ]
+    kudir_income_evidence = {
         "value": _sum_rows(usn_income_rows, ("ДоходБаза", "ДоходВсего")),
         "status": _source_status(usn_income_source),
         "sourceKind": "onec_kudir",
         "snapshotId": usn_income_source.snapshot_id if usn_income_source else "",
+        "monthlyValues": _monthly_values(
+            usn_income_rows,
+            date_fields=("Period", "Date", "Дата"),
+            amount_fields=("ДоходБаза", "ДоходВсего"),
+            source_status=_source_status(usn_income_source),
+        ),
     }
-    issues = _source_gap_issues(
-        sources,
-        {
-            "onec_accounting_taxes": "Налоги",
-            "onec_accounting_taxes_on_ens": "Платежи",
-            "onec_official_financial_results": "Доходный знаменатель",
-        },
+    usn_bank_payment_rows = [
+        row
+        for row in raw_bank_payment_rows
+        if row.get("Posted") is True
+        and row.get("DeletionMark") is not True
+        and str(row.get("ВидОперации") or "").strip().casefold() == "налоги"
+        and _tax_payment_match_kind(
+            " ".join(
+                str(row.get(key) or "")
+                for key in ("НазначениеПлатежа", "Комментарий")
+            )
+        )
+        == "usn"
+    ]
+    usn_tax_payment_evidence = {
+        "status": (
+            _source_status(bank_payment_source)
+            if bank_payments_classified
+            else "partial_source"
+        ),
+        "sourceKind": "onec_accounting_bank_out",
+        "snapshotId": (
+            bank_payment_source.snapshot_id if bank_payment_source else ""
+        ),
+        "monthlyValues": (
+            _monthly_values(
+                usn_bank_payment_rows,
+                date_fields=("Period", "Date", "Дата"),
+                amount_fields=("СуммаДокумента", "Сумма", "Amount"),
+                source_status=_source_status(bank_payment_source),
+            )
+            if bank_payments_classified
+            else []
+        ),
+    }
+    usn_payroll_payment_evidence = _usn_payroll_payment_evidence(
+        raw_bank_payment_rows,
+        source=bank_payment_source,
     )
+    required_sources = {
+        "onec_accounting_taxes": "Налоги",
+        "onec_official_financial_results": "Доходный знаменатель",
+    }
+    if not bank_payment_fallback_used:
+        required_sources["onec_accounting_taxes_on_ens"] = "Платежи"
+    issues = _source_gap_issues(sources, required_sources)
+    if any(
+        row.get("counterpartyName") == "Не определён"
+        for row in (*vat_sales_rows, *vat_purchase_rows)
+    ):
+        issues.append(
+            {
+                "code": "vat_book_counterparty_unresolved",
+                "severity": "warning",
+                "section": "НДС",
+                "message": (
+                    "В части строк книги продаж или покупок не определено "
+                    "название контрагента."
+                ),
+                "nextAction": (
+                    "Проверить полноту справочника контрагентов 1С, доступного "
+                    "только для чтения."
+                ),
+            }
+        )
     if any(row.get("paid") is None for row in tax_rows):
         issues.append(
             {
@@ -412,23 +687,111 @@ def _tax_load_evidence(
                 ),
             }
         )
+    if unclassified_bank_income:
+        issues.append(
+            {
+                "code": "usn_bank_income_classification_required",
+                "severity": "warning",
+                "section": "Доход УСН",
+                "message": (
+                    "Часть банковских поступлений имеет вид операции «Прочее» "
+                    "и не включена в подтвержденный доход автоматически."
+                ),
+                "nextAction": (
+                    "Классифицировать прочие поступления до подтверждения "
+                    "налоговой базы."
+                ),
+            }
+        )
+    if not bank_income_amounts_complete:
+        issues.append(
+            {
+                "code": "usn_bank_income_amount_unconfirmed",
+                "severity": "warning",
+                "section": "Доход УСН",
+                "message": (
+                    "Не для всех банковских поступлений подтверждена сумма "
+                    "без НДС по расшифровке платежа."
+                ),
+                "nextAction": (
+                    "Проверить сумму платежа и НДС в расшифровке документов 1С."
+                ),
+            }
+        )
+    if (
+        usn_payroll_payment_evidence["classificationStatus"]
+        == "review_required"
+    ):
+        issues.append(
+            {
+                "code": "usn_payroll_classification_required",
+                "severity": "warning",
+                "section": "Денежные потоки УСН",
+                "message": (
+                    "Не во всех банковских списаниях заполнен вид операции; "
+                    "сумма заработной платы требует проверки."
+                ),
+                "nextAction": (
+                    "Проверить вид операции в проведенных банковских "
+                    "документах 1С."
+                ),
+            }
+        )
+    elif usn_payroll_payment_evidence["classificationStatus"] == "source_gap":
+        issues.append(
+            {
+                "code": "usn_payroll_source_gap",
+                "severity": "warning",
+                "section": "Денежные потоки УСН",
+                "message": (
+                    "Выплаты заработной платы по банковским списаниям "
+                    "не подтверждены полностью."
+                ),
+                "nextAction": (
+                    "Проверить полноту банковских списаний и суммы документов "
+                    "1С за период."
+                ),
+            }
+        )
     return {
-        "sourceCoverage": _coverage(
-            sources, period_start.replace(month=1, day=1), period_end
-        ),
+        "sourceCoverage": _coverage(sources, ytd_start, period_end),
         "taxRows": tax_rows,
         "incomeEvidence": income_evidence,
         "usnIncomeEvidence": usn_income_evidence,
+        "kudirIncomeEvidence": kudir_income_evidence,
+        "usnTaxPaymentEvidence": usn_tax_payment_evidence,
+        "usnPayrollPaymentEvidence": usn_payroll_payment_evidence,
         "vatSummary": {
             "status": _combined_status(
-                sources.get("onec_vat_sales_book"),
-                sources.get("onec_vat_purchase_book"),
+                vat_sales_source,
+                vat_purchase_source,
             ),
-            "outputVat": _sum_rows(vat_sales, ("НДС", "VAT")),
-            "inputVat": _sum_rows(vat_purchase, ("НДС", "VAT")),
+            "periodStart": period_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "salesBookStatus": _source_status(vat_sales_source),
+            "purchaseBookStatus": _source_status(vat_purchase_source),
+            "outputVat": vat_sales_month_totals.get("vatAmount"),
+            "inputVat": vat_purchase_month_totals.get("vatAmount"),
             "payableVat": None,
+            "salesBookRows": len(vat_sales_rows),
+            "purchaseBookRows": len(vat_purchase_rows),
+            "ytdOutputVat": vat_sales_totals.get("vatAmount"),
+            "ytdInputVat": vat_purchase_totals.get("vatAmount"),
+            "vatDifference": vat_difference,
             "sourceKind": "onec_vat_books",
         },
+        "vatBooks": {
+            "periodStart": ytd_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "salesStatus": _source_status(vat_sales_source),
+            "purchaseStatus": _source_status(vat_purchase_source),
+            "salesRows": vat_sales_rows,
+            "purchaseRows": vat_purchase_rows,
+            "salesTotals": vat_sales_totals,
+            "purchaseTotals": vat_purchase_totals,
+            "vatDifference": vat_difference,
+        },
+        "rwbVatReconciliation": rwb_vat_reconciliation,
         "ensSummary": {
             "status": _source_status(sources.get("onec_accounting_ens")),
             "balance": _sum_rows(ens_rows, ("Сумма", "Amount")),
@@ -488,10 +851,10 @@ def _source_gap_issues(
                 "code": f"{source_type}_gap",
                 "severity": "warning",
                 "section": section,
-                "message": (
-                    f"Источник {source_type} не подтвержден за выбранный период."
+                "message": f"Источник «{section}» не подтверждён за выбранный период.",
+                "nextAction": (
+                    "Проверить публикацию 1С и повторить загрузку только для чтения."
                 ),
-                "nextAction": "Проверить публикацию 1С и повторить read-only загрузку.",
             }
         )
     return result
@@ -705,12 +1068,858 @@ def _tax_classification(name: str) -> tuple[str, bool, str | None]:
     return "own_tax", True, None
 
 
+def _tax_payment_match_kind(value: str) -> str | None:
+    normalized = value.casefold()
+    markers = {
+        "insurance": ("страх", "взнос"),
+        "ndfl": ("ндфл",),
+        "dividend_tax": ("дивиденд",),
+        "vat": ("ндс",),
+        "usn": ("усн", "упрощ"),
+        "profit_tax": ("прибыл",),
+        "property_tax": ("имуще",),
+        "transport_tax": ("транспорт",),
+        "land_tax": ("земел",),
+    }
+    matches = {
+        tax_kind
+        for tax_kind, values in markers.items()
+        if any(marker in normalized for marker in values)
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _bank_tax_payments(
+    rows: list[Mapping[str, Any]],
+) -> tuple[dict[str, Decimal], bool]:
+    tax_rows = [
+        row
+        for row in rows
+        if row.get("Posted") is True
+        and row.get("DeletionMark") is not True
+        and str(row.get("ВидОперации") or "").strip().casefold() == "налоги"
+    ]
+    if not tax_rows:
+        return {}, False
+    paid_by_kind: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    for row in tax_rows:
+        tax_kind = _tax_payment_match_kind(
+            " ".join(
+                str(row.get(key) or "")
+                for key in ("НазначениеПлатежа", "Комментарий")
+            )
+        )
+        paid = _first_decimal(row, ("СуммаДокумента", "Сумма", "Amount"))
+        if tax_kind is None or paid is None:
+            return {}, False
+        paid_by_kind[tax_kind] += paid
+    return dict(paid_by_kind), True
+
+
 def _sum_rows(rows: list[Mapping[str, Any]], keys: tuple[str, ...]) -> str | None:
     values = [_first_decimal(row, keys) for row in rows]
     present = [value for value in values if value is not None]
     if not present:
         return None
     return _decimal_text(sum(present, Decimal("0")))
+
+
+def _vat_rate_label(value: Any) -> str:
+    normalized = "".join(str(value or "").strip().casefold().split())
+    if not normalized:
+        return "Не указано"
+    if "безндс" in normalized or "необлага" in normalized:
+        return "Без НДС"
+    numbers = re.findall(r"\d+", normalized)
+    if len(numbers) >= 2:
+        return f"{numbers[0]}/{numbers[1]}"
+    if numbers:
+        return f"{numbers[0]} %"
+    return "Не определено"
+
+
+def _vat_book_rows(
+    rows: list[Mapping[str, Any]],
+    *,
+    book_kind: str,
+    counterparty_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    if book_kind not in {"sales", "purchase"}:
+        raise ValueError("unsupported VAT book kind")
+    counterparty_key = "Покупатель_Key" if book_kind == "sales" else "Поставщик_Key"
+    invoice_number_keys = (
+        ("НомерСчетаФактурыНаАванс", "НомерДокументаОплаты")
+        if book_kind == "sales"
+        else ("НомерСчетаФактуры", "НомерДокументаОплаты")
+    )
+    invoice_date_keys = (
+        ("ДатаСчетаФактурыНаАванс", "ДатаДокументаОплаты")
+        if book_kind == "sales"
+        else ("ДатаСчетаФактуры", "ДатаДокументаОплаты")
+    )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("Active") is False:
+            continue
+        amount_excluding_vat = _first_decimal(row, ("СуммаБезНДС",))
+        vat_amount = _first_decimal(row, ("НДС", "VAT"))
+        amount_including_vat = (
+            amount_excluding_vat + vat_amount
+            if amount_excluding_vat is not None and vat_amount is not None
+            else None
+        )
+        counterparty_id = str(row.get(counterparty_key) or "").strip()
+        is_additional = row.get("ЗаписьДополнительногоЛиста")
+        is_correction = row.get("Исправление")
+        result.append(
+            {
+                "entryDate": _date_text(row.get("Period") or row.get("ДатаСобытия")),
+                "counterpartyName": (
+                    counterparty_names.get(counterparty_id) or "Не определён"
+                ),
+                "invoiceNumber": _first_text(row, invoice_number_keys) or "Не указан",
+                "invoiceDate": next(
+                    (
+                        parsed
+                        for key in invoice_date_keys
+                        if (parsed := _date_text(row.get(key))) is not None
+                    ),
+                    None,
+                ),
+                "vatRate": _vat_rate_label(row.get("СтавкаНДС")),
+                "amountExcludingVat": (
+                    _decimal_text(amount_excluding_vat)
+                    if amount_excluding_vat is not None
+                    else None
+                ),
+                "vatAmount": (
+                    _decimal_text(vat_amount) if vat_amount is not None else None
+                ),
+                "amountIncludingVat": (
+                    _decimal_text(amount_including_vat)
+                    if amount_including_vat is not None
+                    else None
+                ),
+                "entryKind": (
+                    "Дополнительный лист"
+                    if is_additional is True
+                    else ("Основная запись" if is_additional is False else "Не указано")
+                ),
+                "correctionStatus": (
+                    "Исправление"
+                    if is_correction is True
+                    else ("Без исправления" if is_correction is False else "Не указано")
+                ),
+            }
+        )
+    return sorted(
+        result,
+        key=lambda item: (
+            str(item.get("entryDate") or ""),
+            str(item.get("counterpartyName") or ""),
+            str(item.get("invoiceNumber") or ""),
+        ),
+    )
+
+
+def _vat_book_totals(
+    rows: list[Mapping[str, Any]],
+    source: AccountingEvidenceSource | None,
+) -> dict[str, Any]:
+    active_rows = [row for row in rows if row.get("Active") is not False]
+    status = _source_status(source)
+    if status not in COMPLETE_SOURCE_STATUSES:
+        return {
+            "rowCount": len(active_rows),
+            "amountExcludingVat": None,
+            "vatAmount": None,
+            "amountIncludingVat": None,
+        }
+    amount_excluding_vat = _complete_sum_rows(active_rows, ("СуммаБезНДС",))
+    vat_amount = _complete_sum_rows(active_rows, ("НДС", "VAT"))
+    including_vat = (
+        _decimal_text(Decimal(amount_excluding_vat) + Decimal(vat_amount))
+        if amount_excluding_vat is not None and vat_amount is not None
+        else None
+    )
+    return {
+        "rowCount": len(active_rows),
+        "amountExcludingVat": amount_excluding_vat,
+        "vatAmount": vat_amount,
+        "amountIncludingVat": including_vat,
+    }
+
+
+def _rwb_vat_reconciliation(
+    *,
+    sources: Mapping[str, AccountingEvidenceSource],
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+    counterparty_names: Mapping[str, str],
+    purchase_book_rows: list[dict[str, Any]],
+    purchase_book_source: AccountingEvidenceSource | None,
+) -> dict[str, Any]:
+    rwb_counterparty_ids = {
+        counterparty_id
+        for counterparty_id, name in counterparty_names.items()
+        if _is_rwb_counterparty_name(name)
+    }
+    counterparty_source = sources.get("onec_accounting_counterparties")
+    nomenclature_source = sources.get("onec_nomenclature")
+    nomenclature_names = _description_lookup(nomenclature_source)
+    supplier_receipts_source = sources.get("onec_supplier_receipts")
+    supplier_expenses_source = sources.get("onec_supplier_receipt_expenses")
+    incoming_invoices_source = sources.get("onec_incoming_invoices")
+
+    supplier_receipts = _rwb_receipt_headers(
+        supplier_receipts_source,
+        organization_id=organization_id,
+        period_start=period_start,
+        period_end=period_end,
+        rwb_counterparty_ids=rwb_counterparty_ids,
+    )
+    supplier_rows = _rwb_supplier_service_rows(
+        supplier_receipts,
+        supplier_expenses_source,
+        nomenclature_names=nomenclature_names,
+    )
+    incoming_receipts = _rwb_receipt_headers(
+        incoming_invoices_source,
+        organization_id=organization_id,
+        period_start=period_start,
+        period_end=period_end,
+        rwb_counterparty_ids=rwb_counterparty_ids,
+    )
+    incoming_rows = _rwb_incoming_invoice_service_rows(
+        incoming_receipts,
+        nomenclature_names=nomenclature_names,
+    )
+
+    supplier_status = _combined_status(
+        counterparty_source,
+        nomenclature_source,
+        supplier_receipts_source,
+        supplier_expenses_source,
+    )
+    incoming_status = _combined_status(
+        counterparty_source,
+        nomenclature_source,
+        incoming_invoices_source,
+    )
+    if supplier_rows:
+        service_rows = supplier_rows
+        service_status = supplier_status
+    elif incoming_rows:
+        service_rows = incoming_rows
+        service_status = (
+            incoming_status
+            if incoming_status in COMPLETE_SOURCE_STATUSES
+            else "partial_source"
+        )
+    else:
+        service_rows = []
+        incomplete_headers = (
+            bool(supplier_receipts)
+            and supplier_status not in COMPLETE_SOURCE_STATUSES
+        ) or (
+            bool(incoming_receipts)
+            and incoming_status not in COMPLETE_SOURCE_STATUSES
+        )
+        if incomplete_headers:
+            service_status = "partial_source"
+        elif (
+            supplier_status in COMPLETE_SOURCE_STATUSES
+            or incoming_status in COMPLETE_SOURCE_STATUSES
+        ):
+            service_status = "empty_expected"
+        elif supplier_status == "missing" and incoming_status == "missing":
+            service_status = "missing"
+        else:
+            service_status = "partial_source"
+
+    rwb_purchase_rows = [
+        row
+        for row in purchase_book_rows
+        if _is_rwb_counterparty_name(str(row.get("counterpartyName") or ""))
+    ]
+    purchase_status = _source_status(purchase_book_source)
+    for row in service_rows:
+        included, invoice_number = _rwb_purchase_book_match(
+            row,
+            rwb_purchase_rows,
+            purchase_status=purchase_status,
+        )
+        row["purchaseBookIncluded"] = included
+        row["purchaseBookInvoiceNumber"] = invoice_number
+
+    service_totals = _rwb_service_totals(service_rows, service_status)
+    purchase_totals = _rwb_service_totals(rwb_purchase_rows, purchase_status)
+    vat_difference = _decimal_difference(
+        purchase_totals.get("vatAmount"),
+        service_totals.get("vatAmount"),
+    )
+    if (
+        service_status not in COMPLETE_SOURCE_STATUSES
+        or purchase_status not in COMPLETE_SOURCE_STATUSES
+        or vat_difference is None
+    ):
+        status = (
+            "missing"
+            if service_status == "missing" and purchase_status == "missing"
+            else "partial_source"
+        )
+    elif not service_rows and not rwb_purchase_rows:
+        status = "empty_expected"
+    elif Decimal(vat_difference) == Decimal("0"):
+        status = "matched"
+    else:
+        status = "mismatch"
+
+    return {
+        "status": status,
+        "sourceStatus": service_status,
+        "purchaseBookStatus": purchase_status,
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "serviceTotals": service_totals,
+        "purchaseBookTotals": purchase_totals,
+        "vatDifference": vat_difference,
+        "rows": sorted(
+            service_rows,
+            key=lambda item: (
+                str(item.get("documentDate") or ""),
+                str(item.get("documentNumber") or ""),
+                str(item.get("serviceCategory") or ""),
+                str(item.get("serviceName") or ""),
+            ),
+        ),
+    }
+
+
+def _rwb_receipt_headers(
+    source: AccountingEvidenceSource | None,
+    *,
+    organization_id: str,
+    period_start: date,
+    period_end: date,
+    rwb_counterparty_ids: set[str],
+) -> list[Mapping[str, Any]]:
+    return [
+        row
+        for row in _organization_period_rows(
+            source,
+            organization_id,
+            period_start,
+            period_end,
+            date_fields=("Date", "Дата"),
+        )
+        if row.get("Posted") is True
+        and row.get("DeletionMark") is not True
+        and _first_text(row, ("Контрагент_Key", "Counterparty_Key"))
+        in rwb_counterparty_ids
+    ]
+
+
+def _rwb_supplier_service_rows(
+    receipts: list[Mapping[str, Any]],
+    expense_source: AccountingEvidenceSource | None,
+    *,
+    nomenclature_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    receipts_by_id = {
+        _first_text(row, ("Ref_Key",)): row
+        for row in receipts
+        if _first_text(row, ("Ref_Key",))
+    }
+    if expense_source is None or not receipts_by_id:
+        return []
+    result: list[dict[str, Any]] = []
+    for expense in expense_source.rows:
+        receipt_id = _first_text(expense, ("Ref_Key", "Recorder", "Документ_Key"))
+        receipt = receipts_by_id.get(receipt_id)
+        if receipt is None:
+            continue
+        result.append(
+            _rwb_service_row(
+                receipt,
+                expense,
+                nomenclature_names=nomenclature_names,
+                source_kind="onec_supplier_receipt_expenses",
+            )
+        )
+    return result
+
+
+def _rwb_incoming_invoice_service_rows(
+    receipts: list[Mapping[str, Any]],
+    *,
+    nomenclature_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for receipt in receipts:
+        expense_rows = receipt.get("Расходы") or receipt.get("Услуги")
+        if not isinstance(expense_rows, list):
+            continue
+        for expense in expense_rows:
+            if not isinstance(expense, Mapping):
+                continue
+            result.append(
+                _rwb_service_row(
+                    receipt,
+                    expense,
+                    nomenclature_names=nomenclature_names,
+                    source_kind="onec_incoming_invoices",
+                )
+            )
+    return result
+
+
+def _rwb_service_row(
+    receipt: Mapping[str, Any],
+    expense: Mapping[str, Any],
+    *,
+    nomenclature_names: Mapping[str, str],
+    source_kind: str,
+) -> dict[str, Any]:
+    service_name = _first_text(
+        expense,
+        ("Содержание", "Наименование", "Description"),
+    )
+    if not service_name:
+        service_name = nomenclature_names.get(
+            _first_text(expense, ("Номенклатура_Key",)),
+            "",
+        )
+    if not service_name:
+        service_name = "Не определено"
+    amount_excluding_vat, vat_amount, amount_including_vat = _rwb_service_amounts(
+        receipt,
+        expense,
+    )
+    return {
+        "rowKind": "detail",
+        "documentDate": _date_text(receipt.get("Date") or receipt.get("Дата")),
+        "documentNumber": _first_text(receipt, ("Number", "Номер"))
+        or "Не указан",
+        "inputNumber": _first_text(
+            receipt,
+            ("НомерВходящегоДокумента", "InputDocumentNumber"),
+        )
+        or "Не указан",
+        "inputDate": _date_text(
+            receipt.get("ДатаВходящегоДокумента")
+            or receipt.get("InputDocumentDate")
+        ),
+        "serviceCategory": (
+            classify_marketplace_service(service_name)
+            if service_name != "Не определено"
+            else "Не определено"
+        ),
+        "serviceName": service_name,
+        "amountExcludingVat": amount_excluding_vat,
+        "vatAmount": vat_amount,
+        "amountIncludingVat": amount_including_vat,
+        "purchaseBookIncluded": "unknown",
+        "purchaseBookInvoiceNumber": "",
+        "sourceKind": source_kind,
+    }
+
+
+def _rwb_service_amounts(
+    receipt: Mapping[str, Any],
+    expense: Mapping[str, Any],
+) -> tuple[str | None, str | None, str | None]:
+    amount = _first_decimal(expense, ("СуммаБезНДС", "Сумма", "Amount"))
+    vat = _first_decimal(expense, ("СуммаНДС", "НДС", "VAT"))
+    total = _first_decimal(expense, ("Всего", "СуммаСНДС", "Total"))
+    includes_vat = receipt.get("СуммаВключаетНДС") is True
+    if amount is None and total is not None and vat is not None:
+        amount = total - vat
+    elif amount is not None and vat is not None:
+        if includes_vat or (total is not None and total == amount):
+            total = total if total is not None else amount
+            amount = amount - vat
+        elif total is None:
+            total = amount + vat
+    return (
+        _decimal_text(amount) if amount is not None else None,
+        _decimal_text(vat) if vat is not None else None,
+        _decimal_text(total) if total is not None else None,
+    )
+
+
+def _rwb_purchase_book_match(
+    service_row: Mapping[str, Any],
+    purchase_rows: list[dict[str, Any]],
+    *,
+    purchase_status: str,
+) -> tuple[str, str]:
+    if purchase_status not in COMPLETE_SOURCE_STATUSES:
+        return "unknown", ""
+    input_number = _document_number_key(service_row.get("inputNumber"))
+    input_date = str(service_row.get("inputDate") or "")
+    if not input_number or not input_date:
+        return "unknown", ""
+    number_match_without_date = False
+    for purchase_row in purchase_rows:
+        invoice_number = _document_number_key(purchase_row.get("invoiceNumber"))
+        if not invoice_number or invoice_number != input_number:
+            continue
+        invoice_date = str(purchase_row.get("invoiceDate") or "")
+        if not invoice_date:
+            number_match_without_date = True
+            continue
+        if input_date != invoice_date:
+            continue
+        return "yes", str(purchase_row.get("invoiceNumber") or "")
+    if number_match_without_date:
+        return "unknown", ""
+    return "no", ""
+
+
+def _rwb_service_totals(
+    rows: list[Mapping[str, Any]],
+    source_status: str,
+) -> dict[str, Any]:
+    if source_status not in COMPLETE_SOURCE_STATUSES:
+        return {
+            "rowCount": len(rows),
+            "amountExcludingVat": None,
+            "vatAmount": None,
+            "amountIncludingVat": None,
+        }
+    return {
+        "rowCount": len(rows),
+        "amountExcludingVat": _complete_sum_rows(rows, ("amountExcludingVat",)),
+        "vatAmount": _complete_sum_rows(rows, ("vatAmount",)),
+        "amountIncludingVat": _complete_sum_rows(rows, ("amountIncludingVat",)),
+    }
+
+
+def _is_rwb_counterparty_name(value: str) -> bool:
+    normalized = "".join(
+        character for character in value.casefold() if character.isalnum()
+    )
+    return any(
+        marker in normalized for marker in ("рвб", "wildberries", "вайлдберриз")
+    )
+
+
+def _document_number_key(value: Any) -> str:
+    normalized = "".join(
+        character for character in str(value or "").casefold() if character.isalnum()
+    )
+    return "" if normalized in {"", "неуказан"} else normalized
+
+
+def _decimal_difference(left: Any, right: Any) -> str | None:
+    try:
+        if left is None or right is None:
+            return None
+        return _decimal_text(Decimal(str(left)) - Decimal(str(right)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _complete_sum_rows(
+    rows: list[Mapping[str, Any]], keys: tuple[str, ...]
+) -> str | None:
+    values = [_first_decimal(row, keys) for row in rows]
+    if any(value is None for value in values):
+        return None
+    return _decimal_text(
+        sum((value for value in values if value is not None), Decimal("0"))
+    )
+
+
+def _bank_income_category(row: Mapping[str, Any]) -> str:
+    normalized = _normalized_bank_operation(row)
+    if normalized in {"отпокупателя", "оплатаотпокупателя"}:
+        return "confirmed"
+    if "личн" in normalized and "предприним" in normalized:
+        return "excluded"
+    if _is_loan_operation(normalized):
+        return "loans"
+    return "unclassified"
+
+
+def _normalized_bank_operation(row: Mapping[str, Any]) -> str:
+    return "".join(
+        character
+        for character in str(row.get("ВидОперации") or "").casefold()
+        if character.isalnum()
+    )
+
+
+def _is_loan_operation(normalized_operation: str) -> bool:
+    return "кредит" in normalized_operation or "займ" in normalized_operation
+
+
+def _is_payroll_operation(normalized_operation: str) -> bool:
+    return (
+        "зарплат" in normalized_operation
+        or "оплататруда" in normalized_operation
+        or (
+            "заработн" in normalized_operation
+            and "плат" in normalized_operation
+        )
+    )
+
+
+def _is_kudir_income_row(row: Mapping[str, Any]) -> bool:
+    if row.get("Active") is False:
+        return False
+    record_kind = str(row.get("ВидЗаписи") or "").strip().casefold()
+    return not record_kind or "доход" in record_kind or "приход" in record_kind
+
+
+def _bank_income_net_amount(row: Mapping[str, Any]) -> Decimal | None:
+    document_total = _first_decimal(
+        row, ("СуммаДокумента", "Сумма", "Amount")
+    )
+    raw_breakdown = row.get("РасшифровкаПлатежа")
+    if isinstance(raw_breakdown, list) and raw_breakdown:
+        payment_total = Decimal("0")
+        vat_total = Decimal("0")
+        for item in raw_breakdown:
+            if not isinstance(item, Mapping):
+                return None
+            payment = _first_decimal(
+                item, ("СуммаПлатежа", "PaymentAmount", "Amount")
+            )
+            vat = _first_decimal(item, ("СуммаНДС", "VAT"))
+            item_vat_mode = str(item.get("НалогообложениеНДС") or "").casefold()
+            if vat is None and "необлагается" in item_vat_mode:
+                vat = Decimal("0")
+            if payment is None or vat is None:
+                return None
+            payment_total += payment
+            vat_total += vat
+        if document_total is not None and payment_total != document_total:
+            return None
+        net_amount = payment_total - vat_total
+        return net_amount if net_amount >= 0 else None
+    vat_mode = str(row.get("НалогообложениеНДС") or "").casefold()
+    if document_total is not None and "необлагается" in vat_mode:
+        return document_total if document_total >= 0 else None
+    return None
+
+
+def _usn_marketplace_counterparty_categories(
+    source: AccountingEvidenceSource | None,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if source is None:
+        return result
+    for row in source.rows:
+        if row.get("DeletionMark") is True:
+            continue
+        counterparty_id = str(row.get("Ref_Key") or "").strip()
+        normalized_name = "".join(
+            character
+            for character in str(row.get("Description") or "").casefold()
+            if character.isalnum()
+        )
+        if not counterparty_id:
+            continue
+        if "интернетрешения" in normalized_name:
+            result[counterparty_id] = "ozon"
+        elif "рвб" in normalized_name:
+            result[counterparty_id] = "wildberries"
+    return result
+
+
+def _classify_usn_bank_income_rows(
+    rows: list[Mapping[str, Any]],
+    *,
+    counterparty_categories: Mapping[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {
+        "confirmed": [],
+        "unclassified": [],
+        "excluded": [],
+        "loans": [],
+    }
+    for row in rows:
+        if row.get("Posted") is not True or row.get("DeletionMark") is True:
+            continue
+        net_amount = _bank_income_net_amount(row)
+        income_category = _bank_income_category(row)
+        normalized = {
+            "Date": row.get("Date") or row.get("Period") or row.get("Дата"),
+            "incomeNetAmount": (
+                _decimal_text(net_amount) if net_amount is not None else None
+            ),
+        }
+        if income_category == "confirmed":
+            counterparty_id = str(row.get("Контрагент_Key") or "").strip()
+            normalized["marketplaceCategory"] = (
+                (counterparty_categories or {}).get(counterparty_id) or "other"
+            )
+        result[income_category].append(normalized)
+    return result
+
+
+def _usn_payroll_payment_evidence(
+    rows: list[Mapping[str, Any]],
+    *,
+    source: AccountingEvidenceSource | None,
+) -> dict[str, Any]:
+    source_status = _source_status(source)
+    source_available = source_status in COMPLETE_SOURCE_STATUSES
+    posted_rows = [
+        row
+        for row in rows
+        if row.get("Posted") is True and row.get("DeletionMark") is not True
+    ]
+    operations_complete = all(
+        bool(_normalized_bank_operation(row)) for row in posted_rows
+    )
+    payroll_rows = [
+        row
+        for row in posted_rows
+        if _is_payroll_operation(_normalized_bank_operation(row))
+    ]
+    amounts_complete = all(
+        _first_decimal(row, ("СуммаДокумента", "Сумма", "Amount")) is not None
+        for row in payroll_rows
+    )
+    if not source_available or not amounts_complete:
+        classification_status = "source_gap"
+    elif not operations_complete:
+        classification_status = "review_required"
+    else:
+        classification_status = "ready"
+    value = (
+        _complete_sum_rows(
+            payroll_rows,
+            ("СуммаДокумента", "Сумма", "Amount"),
+        )
+        if source_available and operations_complete and amounts_complete
+        else None
+    )
+    return {
+        "value": value,
+        "status": source_status,
+        "classificationStatus": classification_status,
+        "sourceKind": "onec_accounting_bank_out",
+        "snapshotId": source.snapshot_id if source else "",
+        "monthlyValues": _monthly_values(
+            payroll_rows,
+            date_fields=("Period", "Date", "Дата"),
+            amount_fields=("СуммаДокумента", "Сумма", "Amount"),
+            source_status=source_status,
+        ),
+        "rowCount": len(payroll_rows),
+    }
+
+
+def _usn_marketplace_breakdown(
+    rows: list[Mapping[str, Any]],
+    *,
+    period_start: date,
+    period_end: date,
+    source_status: str,
+) -> list[dict[str, Any]]:
+    month_keys = _month_keys(period_start, period_end)
+    result: list[dict[str, Any]] = []
+    for category, label in USN_MARKETPLACE_CATEGORIES:
+        category_rows = [
+            row for row in rows if row.get("marketplaceCategory") == category
+        ]
+        monthly_by_key = {
+            str(item.get("month") or ""): item
+            for item in _monthly_values(
+                category_rows,
+                date_fields=("Date",),
+                amount_fields=("incomeNetAmount",),
+                source_status=source_status,
+            )
+        }
+        result.append(
+            {
+                "category": category,
+                "label": label,
+                "value": _complete_sum_rows(
+                    category_rows, ("incomeNetAmount",)
+                ),
+                "rowCount": len(category_rows),
+                "monthlyValues": [
+                    monthly_by_key.get(month)
+                    or {
+                        "month": month,
+                        "value": "0",
+                        "status": source_status,
+                        "rowCount": 0,
+                    }
+                    for month in month_keys
+                ],
+            }
+        )
+    return result
+
+
+def _month_keys(period_start: date, period_end: date) -> list[str]:
+    current = period_start.replace(day=1)
+    last = period_end.replace(day=1)
+    result: list[str] = []
+    while current <= last:
+        result.append(current.strftime("%Y-%m"))
+        current = (
+            date(current.year + 1, 1, 1)
+            if current.month == 12
+            else date(current.year, current.month + 1, 1)
+        )
+    return result
+
+
+def _monthly_values(
+    rows: list[Mapping[str, Any]],
+    *,
+    date_fields: tuple[str, ...],
+    amount_fields: tuple[str, ...],
+    source_status: str,
+) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        row_date = next(
+            (
+                parsed
+                for field in date_fields
+                if (parsed := _parse_date(row.get(field))) is not None
+            ),
+            None,
+        )
+        if row_date is None:
+            continue
+        month = row_date.strftime("%Y-%m")
+        bucket = buckets.setdefault(
+            month,
+            {
+                "month": month,
+                "total": Decimal("0"),
+                "rowCount": 0,
+                "missingAmount": False,
+            },
+        )
+        bucket["rowCount"] += 1
+        amount = _first_decimal(row, amount_fields)
+        if amount is None:
+            bucket["missingAmount"] = True
+        else:
+            bucket["total"] += amount
+    return [
+        {
+            "month": month,
+            "value": (
+                None if item["missingAmount"] else _decimal_text(item["total"])
+            ),
+            "status": "partial_source" if item["missingAmount"] else source_status,
+            "rowCount": item["rowCount"],
+        }
+        for month, item in sorted(buckets.items())
+    ]
 
 
 def _first_decimal(row: Mapping[str, Any], keys: tuple[str, ...]) -> Decimal | None:
@@ -743,15 +1952,17 @@ def _date_text(value: Any) -> str | None:
 
 def _parse_date(value: Any) -> date | None:
     if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if not value:
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    elif value:
+        try:
+            parsed = date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+    else:
         return None
-    try:
-        return date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return None
+    return parsed if parsed.year >= 1900 else None
 
 
 def _source_status(source: AccountingEvidenceSource | None) -> str:
@@ -760,7 +1971,7 @@ def _source_status(source: AccountingEvidenceSource | None) -> str:
 
 def _combined_status(*sources: AccountingEvidenceSource | None) -> str:
     statuses = {_source_status(source) for source in sources}
-    if statuses and statuses.issubset({"loaded", "ready", "complete"}):
+    if statuses and statuses.issubset(COMPLETE_SOURCE_STATUSES):
         return "loaded"
     if statuses == {"missing"}:
         return "missing"

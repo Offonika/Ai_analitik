@@ -5938,10 +5938,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260723-logistics-r4-return-reasons-v1"
+        "20260724-runtime-contours-cleanup-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260723-logistics-r4-return-reasons-v1"
+        "20260724-runtime-contours-cleanup-v1"
     )
 
     page = client.get("/")
@@ -6017,7 +6017,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="report-wizard-current-download"' in cabinet.text
     assert 'id="report-wizard-check"' in cabinet.text
     assert 'id="report-wizard-reset"' in cabinet.text
-    assert "Не относится к настройкам нового отчёта ниже" in cabinet.text
+    assert (
+        "Hourly-загрузка обновляет источники, но не меняет этот"
+        in cabinet.text
+    )
     assert "Проверить источники без создания" in cabinet.text
     assert "Сформировать другой период" in cabinet.text
     assert 'id="report-wizard-result"' in cabinet.text
@@ -6091,14 +6094,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert (
-            "styles.css?v=20260723-logistics-r4-return-reasons-v1"
-        in cabinet.text
-    )
-    assert (
-            "app.js?v=20260723-logistics-r4-return-reasons-v1"
-        in cabinet.text
-    )
+    assert "styles.css?v=20260724-runtime-contours-cleanup-v1" in cabinet.text
+    assert "app.js?v=20260724-runtime-contours-cleanup-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6364,7 +6361,7 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
     assert "word-break: break-word;" in styles.text
 
 
-def test_tax_load_v2_renderer_localizes_contract_and_keeps_tables_accessible(
+def test_tax_load_v3_renderer_localizes_contract_and_keeps_tables_accessible(
     tmp_path: Path,
 ) -> None:
     client = make_client(tmp_path)
@@ -6386,12 +6383,48 @@ def test_tax_load_v2_renderer_localizes_contract_and_keeps_tables_accessible(
     assert "В нагрузке ФНС" in tax_load.text
     assert "formatMoney" in tax_load.text
     assert "formatDate" in tax_load.text
+    assert "function userText" in tax_load.text
+    assert '{ key: "message", label: "Что найдено", format: userText }' in tax_load.text
+    assert (
+        '{ key: "nextAction", label: "Что сделать", format: userText }'
+        in tax_load.text
+    )
     assert "accountingScenarioStatusLabel" in app_js.text
     assert "Внутренний предварительный отчёт" in app_js.text
+    assert "Скачать текущий Excel" in app_js.text
+    assert "state.summary?.contractVersion" in app_js.text
     assert "status ${status}" not in app_js.text
     assert ".scenario-table-wrap:focus-visible" in styles.text
     assert ".scenario-table-hint" in styles.text
     assert ".scenario-heading .status-pill" in styles.text
+
+
+def test_accounting_report_wizard_separates_existing_and_new_revisions(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+
+    cabinet = client.get("/cabinet")
+    app_js = client.get("/static/app.js")
+
+    assert cabinet.status_code == 200
+    assert app_js.status_code == 200
+    assert 'id="accounting-report-wizard-overlay"' in cabinet.text
+    assert 'id="accounting-report-wizard-current-download"' in cabinet.text
+    assert 'id="accounting-report-wizard-organization"' in cabinet.text
+    assert 'id="accounting-report-wizard-month"' in cabinet.text
+    assert 'id="accounting-report-wizard-status"' in cabinet.text
+    assert 'id="accounting-report-wizard-result-download"' in cabinet.text
+    assert "Этот файл сохранится после формирования новой ревизии" in cabinet.text
+    assert "Скачивается именно файл, созданный этим запуском" in cabinet.text
+    assert "async function openAccountingReportWizard()" in app_js.text
+    assert "async function loadAccountingReportWizardCurrent()" in app_js.text
+    assert "async function waitForAccountingReportWizard" in app_js.text
+    assert "async function finishAccountingReportWizard" in app_js.text
+    assert "Открыть мастер отчёта" in app_js.text
+    assert "accounting-report-wizard-overlay" in app_js.text
+    assert "els.reportDownloadButton.hidden = !visible || accounting" in app_js.text
+    assert "await generateAccountingReport()" not in app_js.text
 
 
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
@@ -6443,7 +6476,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260723-logistics-r4-return-reasons-v1" in cabinet.text
+    assert "20260724-runtime-contours-cleanup-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
@@ -6488,10 +6521,15 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
         'const scope = els.clientReportScope.value || "last_closed_week"'
         in app_js.text
     )
-    assert "Последняя закрытая неделя" in cabinet.text
+    assert "Последняя закрытая неделя в текущем отчёте" in cabinet.text
     assert "Проверить источники без создания" in cabinet.text
-    assert "Создать Excel за ${periodLabel}" in app_js.text
+    assert "Создать staff draft Excel за ${periodLabel}" in app_js.text
     assert "els.reportWizardPeriodHint.hidden = customPeriod" in app_js.text
+    assert "По настройкам клиента" not in cabinet.text
+    assert "по настройкам клиента" not in app_js.text
+    assert "defaultFullPeriod" in app_js.text
+    assert "publish-with-tasks" in app_js.text
+    assert "Принять финансово и опубликовать" in cabinet.text
     assert "dry_run: Boolean(dryRun)" in app_js.text
     assert "Только проверить готовность" not in cabinet.text
     assert "Только проверить готовность" not in app_js.text
@@ -6515,7 +6553,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Данные в отчете" in app_js.text
     assert "Последнее обновление данных" in app_js.text
     assert "sourceRefreshModeText" in app_js.text
-    assert 'daily: "ежедневный"' in app_js.text
+    assert 'daily: "hourly — только источники"' in app_js.text
     assert 'incremental: "последние 28 дней"' in app_js.text
     assert "sourceRefreshAutoOpenRunId" in app_js.text
     assert 'mode: "incremental"' in app_js.text
@@ -7157,7 +7195,7 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
         in app_js.text
     )
     assert 'normalize(refresh?.status) === "needs_review"' in app_js.text
-    assert "и пока не опубликован как текущий" in app_js.text
+    assert "Опубликованный отчёт пока не изменён" in app_js.text
     assert "Служебная диагностика готова для скачивания" in app_js.text
     mobile_actions = styles.text.rsplit(".report-wizard-actions {", 1)[1].split(
         "}", 1
@@ -7233,9 +7271,9 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
     assert "font-size: clamp(22px, 1.55vw, 26px)" in primary_value_rule
     assert "min-width: 0" in primary_value_rule
     assert "max-width: 100%" in primary_value_rule
-    assert "white-space: nowrap" in primary_value_rule
-    assert "overflow-wrap: normal" in primary_value_rule
-    assert "word-break: keep-all" in primary_value_rule
+    assert "white-space: normal" in primary_value_rule
+    assert "overflow-wrap: anywhere" in primary_value_rule
+    assert "word-break: normal" in primary_value_rule
     assert "font-variant-numeric: tabular-nums" in primary_value_rule
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in tablet_rules
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in mobile_rules
@@ -7429,6 +7467,8 @@ def test_client_mapping_file_upload_and_source_refresh_controls(
             "source_refresh_incremental_enabled": True,
             "marketplace_daily_facts_enabled": True,
             "db_first_reports_enabled": True,
+            "source_refresh_period_start": "2026-03-01",
+            "source_refresh_period_end": "2026-07-22",
         },
     )
     client.app.state.source_refresh_service = fake_refresh
@@ -7473,6 +7513,10 @@ def test_client_mapping_file_upload_and_source_refresh_controls(
     assert incremental_latest.status_code == 200
     assert incremental_latest.json()["incrementalEnabled"] is True
     assert incremental_latest.json()["incrementalWindowDays"] == 28
+    assert incremental_latest.json()["defaultFullPeriod"] == {
+        "periodStart": "2026-03-01",
+        "periodEnd": "2026-07-22",
+    }
 
     ozon_only = client.post(
         "/api/clients/shumeyko/source-refresh",
@@ -10403,6 +10447,34 @@ def test_report_export_uses_current_published_report_for_stale_link(
 
     assert export.status_code == 200
     assert export.content == b"current-xlsx"
+    assert export.headers["cache-control"] == "no-store"
+
+
+def test_report_export_returns_requested_staff_draft_artifact(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    draft_export = tmp_path / "reports" / "draft.xlsx"
+    draft_export.write_bytes(b"draft-xlsx")
+    with client.app.state.session_factory() as db:
+        import_dashboard_payload(
+            db,
+            deepcopy(sample_payload()),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-draft",
+            source_workbook_path=str(draft_export),
+            publication_status="draft",
+            publish=False,
+        )
+        db.commit()
+
+    export = client.get("/api/reports/report-draft/export.xlsx")
+
+    assert export.status_code == 200
+    assert export.content == b"draft-xlsx"
+    assert export.headers["cache-control"] == "no-store"
 
 
 def test_report_rows_period_filter_uses_month_when_week_is_missing(
@@ -11129,8 +11201,8 @@ def test_staff_can_link_onec_organization_and_manage_tax_override(
         assert run is not None
         tax_collection = repository.sync_organization_tax_profiles(db, run)
         assert tax_collection.payload["message"] == (
-            "Справочник организаций загружен из 1С, но для части организаций "
-            "OData не опубликовала полный налоговый профиль."
+            "Для части организаций периодические настройки налогообложения "
+            "не найдены в публикации OData."
         )
         company_diagnostic = next(
             item
@@ -13009,6 +13081,11 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
         "wb_unit_economics.web.app.build_client_analytical_report",
         fake_build_client_analytical_report,
     )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.period_end = date(2026, 6, 21)
+        db.commit()
 
     generated = client.post(
         "/api/reports/report-1/analytical-report",
@@ -13026,6 +13103,11 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
     assert payload["scope"] == "last_closed_week"
     assert payload["periodStart"] == "2026-06-08"
     assert payload["periodEnd"] == "2026-06-14"
+    assert payload["requestedPeriodStart"] == "2026-06-15"
+    assert payload["requestedPeriodEnd"] == "2026-06-21"
+    assert payload["actualPeriodStart"] == "2026-06-08"
+    assert payload["actualPeriodEnd"] == "2026-06-14"
+    assert payload["periodFallback"] is True
     assert payload["files"]["pdf"]["status"] == "unavailable"
 
     invalid_custom = client.post(

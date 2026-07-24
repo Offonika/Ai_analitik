@@ -33,6 +33,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
 
 from wb_unit_economics.calculation import (
+    tax_profile_is_configured,
     tax_profile_is_confirmed,
     tax_profile_is_osno,
 )
@@ -1424,6 +1425,9 @@ def _tax_profile_from_model(client_id: str, item: Any) -> TaxProfile:
         client_id=client_id,
         organization_id=item.organization_id,
         tax_system=item.tax_system,
+        tax_object=getattr(item, "tax_object", "") or "",
+        tax_rate=getattr(item, "tax_rate", 0) or 0,
+        elevated_tax_rate=getattr(item, "elevated_tax_rate", 0) or 0,
         vat_rate=item.vat_rate,
         vat_mode=VatMode(item.vat_mode),
         vat_deduction_mode=VatDeductionMode(
@@ -2484,7 +2488,7 @@ def _client_companies_payload(db: Session, client: Client) -> list[dict[str, Any
             company=item,
             calculation_date=security.utcnow().date(),
         )
-        if profile is not None and not tax_profile_is_confirmed(profile):
+        if profile is not None and not tax_profile_is_configured(profile):
             profile_status = {
                 **profile_status,
                 "status": "unconfirmed",
@@ -2502,6 +2506,11 @@ def _client_companies_payload(db: Session, client: Client) -> list[dict[str, Any
                 "taxProfileStatus": profile_status.get("status") or "missing",
                 "taxProfileSource": profile_status.get("source") or "missing",
                 "taxSystem": profile.tax_system if profile else "",
+                "taxObject": profile.tax_object if profile else "",
+                "taxRate": float(profile.tax_rate) if profile else None,
+                "elevatedTaxRate": (
+                    float(profile.elevated_tax_rate) if profile else None
+                ),
                 "vatRate": float(profile.vat_rate) if profile else None,
                 "vatMode": profile.vat_mode.value if profile else "",
                 "vatDeductionMode": (
@@ -2521,6 +2530,9 @@ def _client_companies_payload(db: Session, client: Client) -> list[dict[str, Any
                     else None
                 ),
                 "taxProfileManualOverride": bool(profile_status.get("manualOverride")),
+                "taxCalculationSupported": (
+                    tax_profile_is_confirmed(profile) if profile else False
+                ),
             }
         )
     return result
@@ -3308,9 +3320,18 @@ def _tax_profile_payload_for_generation(
         .order_by(OrganizationTaxProfileOverride.valid_from.desc())
     )
     if override is not None:
+        override_contract = _tax_profile_from_model(company.client_id, override)
         return {
             "taxSystem": override.tax_system,
-            "profileStatus": "ready",
+            "taxObject": override.tax_object,
+            "taxRate": override.tax_rate,
+            "elevatedTaxRate": override.elevated_tax_rate,
+            "profileStatus": (
+                "ready"
+                if tax_profile_is_configured(override_contract)
+                else "unconfirmed"
+            ),
+            "calculationSupported": tax_profile_is_confirmed(override_contract),
             "vatRate": override.vat_rate,
             "vatMode": override.vat_mode,
             "vatDeductionMode": override.vat_deduction_mode,
@@ -3352,9 +3373,16 @@ def _tax_profile_payload_for_generation(
             "sourceSnapshotHash": "",
             "profileId": None,
         }
+    profile_contract = _tax_profile_from_model(company.client_id, profile)
     return {
         "taxSystem": profile.tax_system,
-        "profileStatus": "ready",
+        "taxObject": profile.tax_object,
+        "taxRate": profile.tax_rate,
+        "elevatedTaxRate": profile.elevated_tax_rate,
+        "profileStatus": (
+            "ready" if tax_profile_is_configured(profile_contract) else "unconfirmed"
+        ),
+        "calculationSupported": tax_profile_is_confirmed(profile_contract),
         "vatRate": profile.vat_rate,
         "vatMode": profile.vat_mode,
         "vatDeductionMode": profile.vat_deduction_mode,
@@ -3705,7 +3733,7 @@ def complete_accounting_report_generation(
         methodology_version=(
             "month-close-control-report-v2"
             if report_kind == MONTH_CLOSE_CONTROL
-            else "tax-load-report-v2"
+            else "tax-load-report-v6"
         ),
         marketplace_expense_context_version="",
         source_workbook="",
@@ -4443,6 +4471,22 @@ def sync_organization_tax_profiles(
             )
         )
     )
+    tax_system_setting_rows = list(
+        db.scalars(
+            select(SourceSnapshotRow).where(
+                SourceSnapshotRow.refresh_run_id == refresh_run.id,
+                SourceSnapshotRow.source_type == "onec_tax_system_settings",
+            )
+        )
+    )
+    vat_setting_rows = list(
+        db.scalars(
+            select(SourceSnapshotRow).where(
+                SourceSnapshotRow.refresh_run_id == refresh_run.id,
+                SourceSnapshotRow.source_type == "onec_vat_settings",
+            )
+        )
+    )
     tax_kind_rows = list(
         db.scalars(
             select(SourceSnapshotRow).where(
@@ -4641,6 +4685,10 @@ def sync_organization_tax_profiles(
         user=user,
     )
     notice_payloads = [row.row_payload or {} for row in notice_rows]
+    tax_system_setting_payloads = [
+        row.row_payload or {} for row in tax_system_setting_rows
+    ]
+    vat_setting_payloads = [row.row_payload or {} for row in vat_setting_rows]
     tax_kind_payloads = [row.row_payload or {} for row in tax_kind_rows]
     tax_accrual_payloads = [row.row_payload or {} for row in tax_accrual_rows]
     tax_accrual_line_payloads = [row.row_payload or {} for row in tax_accrual_line_rows]
@@ -4652,6 +4700,8 @@ def sync_organization_tax_profiles(
             *tax_accrual_rows,
             *tax_accrual_line_rows,
             *vat_sales_rows,
+            *tax_system_setting_rows,
+            *vat_setting_rows,
         )
     ]
     source_profile_count = 0
@@ -4669,6 +4719,8 @@ def sync_organization_tax_profiles(
             organization=(organization_row.row_payload or {})
             if organization_row is not None
             else None,
+            tax_system_setting_rows=tax_system_setting_payloads,
+            vat_setting_rows=vat_setting_payloads,
             special_tax_mode_rows=notice_payloads,
             tax_kind_rows=tax_kind_payloads,
             tax_accrual_rows=tax_accrual_payloads,
@@ -4696,22 +4748,57 @@ def sync_organization_tax_profiles(
             seller_account_name=company.display_name,
             organization_name=company.display_name,
         )
-        profiles = tax_profiles_from_account_org_mapping(
-            refresh_run.client_id,
-            [mapping],
-            onec_organization_rows=[organization_row.row_payload or {}],
-            special_tax_mode_rows=notice_payloads,
-            tax_kind_rows=tax_kind_payloads,
-            tax_accrual_rows=tax_accrual_payloads,
-            tax_accrual_line_rows=tax_accrual_line_payloads,
-            vat_sales_rows=vat_sales_payloads,
-            rate_anchors=[rate_anchor] if rate_anchor is not None else [],
-            calculation_date=refresh_run.period_end,
-            special_tax_source_complete=special_tax_source_complete,
+        profile_dates = {refresh_run.period_start, refresh_run.period_end}
+        for payload in (*tax_system_setting_payloads, *vat_setting_payloads):
+            if _safe_payload_text(payload, "Организация_Key") != organization_id:
+                continue
+            setting_date = _payload_date_or_none(
+                _safe_payload_text(payload, "Period")
+            )
+            if (
+                setting_date is not None
+                and refresh_run.period_start <= setting_date <= refresh_run.period_end
+            ):
+                profile_dates.add(setting_date)
+        profiles_by_signature: dict[tuple[Any, ...], TaxProfile] = {}
+        for profile_date in sorted(profile_dates):
+            resolved_profiles = tax_profiles_from_account_org_mapping(
+                refresh_run.client_id,
+                [mapping],
+                onec_organization_rows=[organization_row.row_payload or {}],
+                tax_system_setting_rows=tax_system_setting_payloads,
+                vat_setting_rows=vat_setting_payloads,
+                special_tax_mode_rows=notice_payloads,
+                tax_kind_rows=tax_kind_payloads,
+                tax_accrual_rows=tax_accrual_payloads,
+                tax_accrual_line_rows=tax_accrual_line_payloads,
+                vat_sales_rows=vat_sales_payloads,
+                rate_anchors=[rate_anchor] if rate_anchor is not None else [],
+                calculation_date=profile_date,
+                special_tax_source_complete=special_tax_source_complete,
+            )
+            if resolved_profiles:
+                resolved_profile = resolved_profiles[0]
+                profiles_by_signature.setdefault(
+                    _tax_profile_signature(resolved_profile),
+                    resolved_profile,
+                )
+        profiles = sorted(
+            profiles_by_signature.values(),
+            key=lambda item: (item.valid_from or date.min, item.source),
         )
+        for index, profile in enumerate(profiles[:-1]):
+            next_valid_from = profiles[index + 1].valid_from
+            if next_valid_from is not None and (
+                profile.valid_to is None or profile.valid_to >= next_valid_from
+            ) and (
+                profile.valid_from is None or next_valid_from > profile.valid_from
+            ):
+                profiles[index] = profile.model_copy(
+                    update={"valid_to": next_valid_from - timedelta(days=1)}
+                )
         if not profiles:
             continue
-        profile = profiles[0]
         source_hashes = [organization_row.raw_payload_hash]
         source_hashes.extend(shared_tax_evidence_hashes)
         if rate_anchor is not None:
@@ -4729,45 +4816,49 @@ def sync_organization_tax_profiles(
         source_snapshot_hash = hashlib.sha256(
             "|".join(sorted(source_hashes)).encode("utf-8")
         ).hexdigest()
-        profile_id = _stable_entity_id(
-            "tax_profile",
-            refresh_run.id,
-            organization_id,
-            profile.valid_from.isoformat() if profile.valid_from else "",
-            profile.source,
-        )
-        if db.get(OrganizationTaxProfile, profile_id) is None:
-            db.add(
-                OrganizationTaxProfile(
-                    id=profile_id,
-                    tenant_id=refresh_run.tenant_id,
-                    client_id=refresh_run.client_id,
-                    client_company_id=company.id,
-                    organization_id=organization_id,
-                    tax_system=profile.tax_system,
-                    vat_rate=profile.vat_rate,
-                    vat_mode=profile.vat_mode.value,
-                    vat_deduction_mode=profile.vat_deduction_mode.value,
-                    revenue_tax_rate=profile.revenue_tax_rate,
-                    income_tax_kind=profile.income_tax_kind,
-                    valid_from=profile.valid_from,
-                    valid_to=profile.valid_to,
-                    source=profile.source,
-                    rate_basis_kind=profile.rate_basis_kind,
-                    basis_document=profile.basis_document,
-                    confirmed_by=profile.confirmed_by,
-                    source_object_ids=json.dumps(
-                        profile.source_object_ids,
-                        ensure_ascii=False,
-                    ),
-                    source_refresh_run_id=refresh_run.id,
-                    source_snapshot_hash=source_snapshot_hash,
-                    methodology_version="marketplace-tax-profile-v3",
-                    status="active",
-                    created_at=security.utcnow(),
-                )
+        for profile in profiles:
+            profile_id = _stable_entity_id(
+                "tax_profile",
+                refresh_run.id,
+                organization_id,
+                profile.valid_from.isoformat() if profile.valid_from else "",
+                profile.source,
             )
-        source_profile_count += 1
+            if db.get(OrganizationTaxProfile, profile_id) is None:
+                db.add(
+                    OrganizationTaxProfile(
+                        id=profile_id,
+                        tenant_id=refresh_run.tenant_id,
+                        client_id=refresh_run.client_id,
+                        client_company_id=company.id,
+                        organization_id=organization_id,
+                        tax_system=profile.tax_system,
+                        tax_object=profile.tax_object,
+                        tax_rate=profile.tax_rate,
+                        elevated_tax_rate=profile.elevated_tax_rate,
+                        vat_rate=profile.vat_rate,
+                        vat_mode=profile.vat_mode.value,
+                        vat_deduction_mode=profile.vat_deduction_mode.value,
+                        revenue_tax_rate=profile.revenue_tax_rate,
+                        income_tax_kind=profile.income_tax_kind,
+                        valid_from=profile.valid_from,
+                        valid_to=profile.valid_to,
+                        source=profile.source,
+                        rate_basis_kind=profile.rate_basis_kind,
+                        basis_document=profile.basis_document,
+                        confirmed_by=profile.confirmed_by,
+                        source_object_ids=json.dumps(
+                            profile.source_object_ids,
+                            ensure_ascii=False,
+                        ),
+                        source_refresh_run_id=refresh_run.id,
+                        source_snapshot_hash=source_snapshot_hash,
+                        methodology_version="marketplace-tax-profile-v4",
+                        status="active",
+                        created_at=security.utcnow(),
+                    )
+                )
+            source_profile_count += 1
     db.flush()
     effective_profiles, resolution = _source_refresh_tax_profile_resolution(
         db,
@@ -4777,6 +4868,9 @@ def sync_organization_tax_profiles(
     profile_count = int(resolution["profileCount"])
     missing_count = int(resolution["missingProfileCount"])
     unconfirmed_count = int(resolution["unconfirmedProfileCount"])
+    configured_company_count = sum(
+        1 for item in company_diagnostics if item.get("derivedProfile") is not None
+    )
     status = (
         "loaded"
         if companies and not missing_count and not unconfirmed_count
@@ -4787,8 +4881,13 @@ def sync_organization_tax_profiles(
         if company_diagnostics
         and all(item["status"] == "ready" for item in company_diagnostics)
         else (
-            "Справочник организаций загружен из 1С, но для части организаций "
-            "OData не опубликовала полный налоговый профиль."
+            "Настройки налогообложения организаций получены из 1С, но для части "
+            "профилей расчёт по текущей методике не подтверждён."
+            if configured_company_count == len(companies) and companies
+            else (
+                "Для части организаций периодические настройки налогообложения "
+                "не найдены в публикации OData."
+            )
         )
     )
     profile_fingerprint = "\n".join(
@@ -4820,17 +4919,18 @@ def sync_organization_tax_profiles(
         snapshot_hash=digest,
         row_count=profile_count,
         payload={
-            "methodologyVersion": "marketplace-tax-profile-v3",
+            "methodologyVersion": "marketplace-tax-profile-v4",
             "companyCount": len(companies),
             "linkedCompanyCount": linked_count,
             "autoLinkedCompanyCount": auto_linked_count,
             "profileCount": profile_count,
             "sourceProfileCount": source_profile_count,
+            "configuredCompanyCount": configured_company_count,
             "manualOverrideCount": resolution["manualOverrideCount"],
             "missingProfileCount": missing_count,
             "unconfirmedProfileCount": unconfirmed_count,
             "fallbackPolicy": (
-                "explicit_or_accounting_1c_with_audited_rate_then_override_then_missing"
+                "periodic_1c_settings_then_explicit_or_accounting_then_override_then_missing"
             ),
             "specialTaxSourceComplete": special_tax_source_complete,
             "message": diagnostic_message,
@@ -6587,7 +6687,10 @@ def latest_ozon_diagnostics_payload(
             direct_1c_cost_control=direct_1c_cost_control,
             organization_scope_status=organization_scope_status,
         )
+        calculation_profile_status = monthly_mart["taxProfile"].get("status")
         monthly_mart["taxProfile"].update(tax_profile_status)
+        if calculation_profile_status == "unconfirmed":
+            monthly_mart["taxProfile"]["status"] = "unconfirmed"
         monthly_mart["periodExpenseSource"] = monthly_expenses
         monthly_marts.append(monthly_mart)
     ozon_mart = combine_ozon_monthly_marts(
@@ -21335,9 +21438,10 @@ def _company_tax_profiles_for_period(
         check["basisDocument"] = profile.basis_document
         check["confirmedBy"] = profile.confirmed_by
         check["sourceObjectIds"] = profile.source_object_ids
-        confirmed = tax_profile_is_confirmed(profile)
-        check["confirmed"] = confirmed
-        if not confirmed:
+        configured = tax_profile_is_configured(profile)
+        check["confirmed"] = configured
+        check["calculationSupported"] = tax_profile_is_confirmed(profile)
+        if not configured:
             check["status"] = "unconfirmed"
             ready = False
         profiles_by_signature.setdefault(_tax_profile_signature(profile), profile)
@@ -21421,6 +21525,9 @@ def _tax_profile_signature(profile: TaxProfile) -> tuple[Any, ...]:
     return (
         profile.organization_id,
         profile.tax_system,
+        profile.tax_object,
+        profile.tax_rate,
+        profile.elevated_tax_rate,
         profile.vat_rate,
         profile.vat_mode.value,
         profile.vat_deduction_mode.value,

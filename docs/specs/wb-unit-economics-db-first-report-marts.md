@@ -9,14 +9,14 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: report-publication
 truth_priority: 100
-related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
+related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
 related_tests: [tests/test_report_marts.py, tests/test_report_exports.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
 contracts: [unit_economics_report, report_marts, report_artifacts]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation]
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-19"
+updated_at: "2026-07-24"
 ---
 
 # Implementation Status
@@ -112,9 +112,11 @@ payload из БД.
 
 ## Web Publication
 
-Новый отчет создается как `draft`. После mart validation и успешного artifact
-export он одной операцией становится `published/current` для tenant. Старый
-`current` сохраняется до успешной публикации новой ревизии.
+Новый отчет создается как `draft`. Mart validation и успешный artifact export
+делают его кандидатом на публикацию, но scheduled/web source refresh не
+переключает `current` автоматически. После отдельной финансовой приёмки явный
+publication action одной транзакцией делает draft `published/current` для
+tenant. Старый `current` сохраняется до успешной публикации новой ревизии.
 
 ## Artifacts
 
@@ -182,6 +184,9 @@ Legacy recovery import:
   даже если отчет опубликован вручную без нового `source_refresh_run`.
 - Excel export `reports/shumeyko_wb_excel_mvp.xlsx` строится из сохраненного
   `report_id`.
+- Staff export для `draft` отдает Excel именно запрошенного `report_id`;
+  подмена на текущий отчет допустима только для устаревшей ссылки на прежний
+  опубликованный (`superseded`) report.
 - Excel export начинает лист `Юнит экономика` с наименования товара, артикулов
   WB/1С, баркода и `nmId`, переносит поля отчетов и документов в конец и
   показывает сходящийся до копейки последовательный мост от выручки для P&L
@@ -194,7 +199,9 @@ Legacy recovery import:
   локальные каталоги `latest` не читаются.
 - Artifact registry пишет path/hash/status без raw secrets.
 - `daily` source refresh не публикует клиентский report.
-- `weekly/full` source refresh публикуют только после validation/export.
+- `weekly/full` source refresh создают staff draft после validation/export;
+  публикация выполняется только отдельным audited action после финансовой
+  приёмки.
 - Ошибка новой ревизии не снимает старый `current`.
 
 # Test Plan
@@ -279,3 +286,5 @@ Parity-решение и источник старого ориентира `188
 - 2026-07-17: fixed the client Excel column order and added an auditable profit
   bridge with explicit VAT-for-services P&L adjustment; documented that
   `unitRows` covers period financial facts rather than the whole WB catalog.
+- 2026-07-24: fixed staff draft Excel download so a requested draft artifact is
+  never replaced with the current published workbook.

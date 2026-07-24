@@ -117,6 +117,8 @@ def report_summary_for_last_closed_week(
     report: ReportRun,
 ) -> tuple[date, date, dict[str, Any]]:
     period_start, period_end = last_closed_week_period(report)
+    requested_period_start = period_start
+    requested_period_end = period_end
     while period_start >= report.period_start:
         try:
             summary = report_summary_for_period(
@@ -129,6 +131,20 @@ def report_summary_for_last_closed_week(
             period_end = period_start - timedelta(days=1)
             period_start = period_end - timedelta(days=6)
             continue
+        summary = {
+            **summary,
+            "meta": {
+                **summary["meta"],
+                "requestedPeriodStart": requested_period_start.isoformat(),
+                "requestedPeriodEnd": requested_period_end.isoformat(),
+                "actualPeriodStart": period_start.isoformat(),
+                "actualPeriodEnd": period_end.isoformat(),
+                "periodFallback": (
+                    period_start != requested_period_start
+                    or period_end != requested_period_end
+                ),
+            },
+        }
         return period_start, period_end, summary
     raise NoReportRowsError(
         "В выбранном report_id нет строк за полную закрытую неделю."

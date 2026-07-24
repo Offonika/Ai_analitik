@@ -13,7 +13,7 @@ from wb_unit_economics.web.reports.contracts import (
 from wb_unit_economics.web.reports.month_close import normalize_month_close_osv
 
 MONTH_CLOSE_CONTRACT_VERSION = "month-close-control-report-v2"
-TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v2"
+TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v6"
 FNS_TAX_BURDEN_METHODOLOGY_VERSION = "fns-tax-burden-v1-2026-07-14"
 CONFIRMED_EVIDENCE_STATUSES = {"loaded", "confirmed"}
 OFFICIAL_INCOME_SOURCE_KINDS = {
@@ -56,6 +56,18 @@ def fns_tax_burden_ratio(paid_taxes: object, income: object) -> Decimal | None:
     return ((numerator / denominator) * Decimal("100")).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     )
+
+
+def _is_usn_income_tax_system(value: object) -> bool:
+    normalized = str(value or "").strip().casefold()
+    is_usn = (
+        "usn" in normalized
+        or "усн" in normalized
+        or "упрощ" in normalized
+    )
+    has_income = "income" in normalized or "доход" in normalized
+    has_expenses = "expense" in normalized or "расход" in normalized
+    return is_usn and has_income and not has_expenses
 
 
 def fns_paid_taxes_numerator(tax_rows: object) -> Decimal | None:
@@ -134,6 +146,97 @@ def _safe_summary(value: object, allowed: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     return {key: value.get(key) for key in allowed}
+
+
+def _safe_vat_books(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    row_fields = (
+        "entryDate",
+        "counterpartyName",
+        "invoiceNumber",
+        "invoiceDate",
+        "vatRate",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "entryKind",
+        "correctionStatus",
+    )
+    total_fields = (
+        "rowCount",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+    )
+    return {
+        "periodStart": value.get("periodStart"),
+        "periodEnd": value.get("periodEnd"),
+        "salesStatus": value.get("salesStatus"),
+        "purchaseStatus": value.get("purchaseStatus"),
+        "salesRows": _safe_rows(value.get("salesRows"), row_fields),
+        "purchaseRows": _safe_rows(value.get("purchaseRows"), row_fields),
+        "salesTotals": _safe_summary(value.get("salesTotals"), total_fields),
+        "purchaseTotals": _safe_summary(value.get("purchaseTotals"), total_fields),
+        "vatDifference": value.get("vatDifference"),
+    }
+
+
+def _safe_rwb_vat_reconciliation(
+    value: object,
+    *,
+    vat_deduction_mode: object,
+) -> dict[str, Any]:
+    applicability = str(vat_deduction_mode or "unknown").strip().lower()
+    if applicability not in {
+        "allowed",
+        "not_allowed",
+        "not_applicable",
+        "unknown",
+    }:
+        applicability = "unknown"
+    row_fields = (
+        "rowKind",
+        "documentDate",
+        "documentNumber",
+        "inputNumber",
+        "inputDate",
+        "serviceCategory",
+        "serviceName",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+        "purchaseBookIncluded",
+        "purchaseBookInvoiceNumber",
+        "sourceKind",
+    )
+    total_fields = (
+        "rowCount",
+        "amountExcludingVat",
+        "vatAmount",
+        "amountIncludingVat",
+    )
+    raw = value if isinstance(value, Mapping) else {}
+    source_status = str(raw.get("status") or "source_gap")
+    status = (
+        "not_applicable"
+        if applicability in {"not_allowed", "not_applicable"}
+        else source_status
+    )
+    return {
+        "applicability": applicability,
+        "status": status,
+        "sourceStatus": raw.get("sourceStatus") or "source_gap",
+        "purchaseBookStatus": raw.get("purchaseBookStatus") or "source_gap",
+        "periodStart": raw.get("periodStart"),
+        "periodEnd": raw.get("periodEnd"),
+        "serviceTotals": _safe_summary(raw.get("serviceTotals"), total_fields),
+        "purchaseBookTotals": _safe_summary(
+            raw.get("purchaseBookTotals"), total_fields
+        ),
+        "vatDifference": raw.get("vatDifference"),
+        "rows": _safe_rows(raw.get("rows"), row_fields),
+    }
 
 
 def build_month_close_control_payload(
@@ -269,8 +372,7 @@ def build_tax_load_payload(
     # НДС из поступлений (для ИП, у которого нет отчета о финансовых результатах;
     # spec: Tax Methodology Boundary, решение от 21.07.2026). Официальный
     # fns_tax_burden_ratio при этом не подменяется.
-    tax_system = str(profile.get("taxSystem") or "").strip().lower()
-    is_usn = tax_system.startswith("usn")
+    is_usn = _is_usn_income_tax_system(profile.get("taxSystem"))
     usn_income_value: str | None = None
     usn_income_ratio: Decimal | None = None
     usn_income_evidence = evidence.get("usnIncomeEvidence")
@@ -299,9 +401,177 @@ def build_tax_load_payload(
             "exclusionReason",
         ),
     )
+    usn_income_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_unclassified_income_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyUnclassifiedValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_excluded_income_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyExcludedValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_classification_status = (
+        str(usn_income_evidence.get("classificationStatus") or "ready")
+        if isinstance(usn_income_evidence, Mapping)
+        else "source_gap"
+    )
+    usn_unclassified_income = (
+        _decimal_text(usn_income_evidence.get("unclassifiedValue"))
+        if isinstance(usn_income_evidence, Mapping)
+        else None
+    )
+    usn_excluded_income = (
+        _decimal_text(usn_income_evidence.get("excludedValue"))
+        if isinstance(usn_income_evidence, Mapping)
+        else None
+    )
+    usn_loan_receipts = (
+        _decimal_text(usn_income_evidence.get("loanReceiptsValue"))
+        if isinstance(usn_income_evidence, Mapping)
+        else None
+    )
+    usn_loan_receipts_monthly = (
+        _safe_rows(
+            usn_income_evidence.get("monthlyLoanReceiptValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_income_evidence, Mapping)
+        else []
+    )
+    usn_marketplace_breakdown = []
+    if is_usn and isinstance(usn_income_evidence, Mapping):
+        for item in usn_income_evidence.get("marketplaceBreakdown") or []:
+            if not isinstance(item, Mapping):
+                continue
+            usn_marketplace_breakdown.append(
+                {
+                    "category": item.get("category"),
+                    "label": item.get("label"),
+                    "valueYtd": _decimal_text(item.get("value")),
+                    "rowCount": item.get("rowCount"),
+                    "monthlyValues": _safe_rows(
+                        item.get("monthlyValues"),
+                        ("month", "value", "status", "rowCount"),
+                    ),
+                }
+            )
+    (
+        usn_marketplace_income,
+        usn_marketplace_income_monthly,
+    ) = _marketplace_subtotal(usn_marketplace_breakdown)
+    kudir_income_evidence = evidence.get("kudirIncomeEvidence")
+    kudir_income_ytd = (
+        _decimal_text(kudir_income_evidence.get("value"))
+        if is_usn and isinstance(kudir_income_evidence, Mapping)
+        else None
+    )
+    kudir_income_monthly = (
+        _safe_rows(
+            kudir_income_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(kudir_income_evidence, Mapping)
+        else []
+    )
+    usn_payment_evidence = evidence.get("usnTaxPaymentEvidence")
+    usn_tax_payments_monthly = (
+        _safe_rows(
+            usn_payment_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_payment_evidence, Mapping)
+        else []
+    )
+    usn_payroll_evidence = evidence.get("usnPayrollPaymentEvidence")
+    usn_payroll_payments = (
+        _decimal_text(usn_payroll_evidence.get("value"))
+        if is_usn and isinstance(usn_payroll_evidence, Mapping)
+        else None
+    )
+    usn_payroll_payments_monthly = (
+        _safe_rows(
+            usn_payroll_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn and isinstance(usn_payroll_evidence, Mapping)
+        else []
+    )
+    usn_payroll_classification_status = (
+        str(usn_payroll_evidence.get("classificationStatus") or "source_gap")
+        if is_usn and isinstance(usn_payroll_evidence, Mapping)
+        else None
+    )
+    usn_tax_rows = [
+        row
+        for row in tax_rows
+        if any(
+            marker in str(row.get("taxName") or "").casefold()
+            for marker in ("усн", "упрощ")
+        )
+    ]
+    usn_paid_tax: Decimal | None = None
+    if usn_tax_rows and all(
+        str(row.get("evidenceStatus") or "").strip().lower()
+        in CONFIRMED_EVIDENCE_STATUSES
+        and _decimal(row.get("paid")) is not None
+        for row in usn_tax_rows
+    ):
+        usn_paid_tax = sum(
+            (_decimal(row.get("paid")) or Decimal("0") for row in usn_tax_rows),
+            Decimal("0"),
+        )
+    usn_due_dates = {
+        str(row.get("dueDate")) for row in usn_tax_rows if row.get("dueDate")
+    }
+    revenue_tax_rate = _decimal(profile.get("revenueTaxRate"))
+    usn_calculated_tax: Decimal | None = None
+    if (
+        is_usn
+        and revenue_tax_rate is not None
+        and Decimal("0") < revenue_tax_rate <= Decimal("1")
+        and (usn_income_decimal := _decimal(usn_income_value)) is not None
+    ):
+        usn_calculated_tax = (usn_income_decimal * revenue_tax_rate).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    usn_tax_payable = (
+        (usn_calculated_tax - usn_paid_tax).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if usn_calculated_tax is not None and usn_paid_tax is not None
+        else None
+    )
+    reconciliation_income = _decimal(usn_income_value)
+    reconciliation_kudir = _decimal(kudir_income_ytd)
+    usn_reconciliation_delta = (
+        (reconciliation_income - reconciliation_kudir).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if reconciliation_income is not None and reconciliation_kudir is not None
+        else None
+    )
     coverage = _safe_rows(
         evidence.get("sourceCoverage"),
         ("sourceKind", "periodStart", "periodEnd", "status", "snapshotId"),
+    )
+    rwb_vat_reconciliation = _safe_rwb_vat_reconciliation(
+        evidence.get("rwbVatReconciliation"),
+        vat_deduction_mode=profile.get("vatDeductionMode"),
     )
     issues = _safe_rows(
         evidence.get("issues"),
@@ -315,6 +585,24 @@ def build_tax_load_payload(
                 "section": "Налоговая нагрузка",
                 "message": "Недостаточно подтвержденных данных для коэффициента ФНС.",
                 "nextAction": "Подтвердить уплаченные налоги и доходный знаменатель.",
+            }
+        )
+    if (
+        rwb_vat_reconciliation["applicability"] == "allowed"
+        and rwb_vat_reconciliation["status"]
+        in {"mismatch", "partial_source", "missing", "source_gap"}
+    ):
+        issues.append(
+            {
+                "code": "rwb_vat_reconciliation_review_required",
+                "severity": "warning",
+                "section": "НДС РВБ",
+                "message": (
+                    "Входящий НДС по услугам РВБ не подтверждён книгой покупок."
+                ),
+                "nextAction": (
+                    "Сверить УПД услуг РВБ и записи книги покупок за период."
+                ),
             }
         )
     payment_schedule = [
@@ -352,12 +640,89 @@ def build_tax_load_payload(
         "taxRows": tax_rows,
         "vatSummary": _safe_summary(
             evidence.get("vatSummary"),
-            ("status", "outputVat", "inputVat", "payableVat", "sourceKind"),
+            (
+                "status",
+                "periodStart",
+                "periodEnd",
+                "salesBookStatus",
+                "purchaseBookStatus",
+                "outputVat",
+                "inputVat",
+                "payableVat",
+                "salesBookRows",
+                "purchaseBookRows",
+                "ytdOutputVat",
+                "ytdInputVat",
+                "vatDifference",
+                "sourceKind",
+            ),
         ),
+        "vatBooks": _safe_vat_books(evidence.get("vatBooks")),
+        "rwbVatReconciliation": rwb_vat_reconciliation,
         "ensSummary": _safe_summary(
             evidence.get("ensSummary"), ("status", "balance", "asOfDate")
         ),
         "paymentSchedule": payment_schedule,
+        "usnDetail": (
+            {
+                "status": (
+                    "source_gap"
+                    if usn_calculated_tax is None or usn_paid_tax is None
+                    else (
+                        "review_required"
+                        if usn_classification_status == "review_required"
+                        or usn_payroll_classification_status == "review_required"
+                        else (
+                            "ready"
+                            if usn_classification_status == "ready"
+                            and usn_payroll_classification_status == "ready"
+                            else "source_gap"
+                        )
+                    )
+                ),
+                "classificationStatus": usn_classification_status,
+                "payrollClassificationStatus": (
+                    usn_payroll_classification_status
+                ),
+                "sourceKind": (
+                    usn_income_evidence.get("sourceKind")
+                    if isinstance(usn_income_evidence, Mapping)
+                    else None
+                ),
+                "revenueTaxRate": _decimal_text(revenue_tax_rate),
+                "incomeYtd": usn_income_value,
+                "unclassifiedIncomeYtd": usn_unclassified_income,
+                "excludedIncomeYtd": usn_excluded_income,
+                "loanReceiptsYtd": usn_loan_receipts,
+                "payrollPaymentsYtd": usn_payroll_payments,
+                "kudirIncomeYtd": kudir_income_ytd,
+                "reconciliationDelta": _decimal_text(usn_reconciliation_delta),
+                "calculatedTaxYtd": _decimal_text(usn_calculated_tax),
+                "paidTaxYtd": _decimal_text(usn_paid_tax),
+                "taxPayable": _decimal_text(usn_tax_payable),
+                "dueDate": (
+                    next(iter(usn_due_dates)) if len(usn_due_dates) == 1 else None
+                ),
+                "monthlyIncome": usn_income_monthly,
+                "monthlyUnclassifiedIncome": usn_unclassified_income_monthly,
+                "monthlyExcludedIncome": usn_excluded_income_monthly,
+                "monthlyLoanReceipts": usn_loan_receipts_monthly,
+                "monthlyPayrollPayments": usn_payroll_payments_monthly,
+                "marketplaceBreakdownStatus": (
+                    usn_income_evidence.get("marketplaceBreakdownStatus")
+                    or "source_gap"
+                    if isinstance(usn_income_evidence, Mapping)
+                    else "source_gap"
+                ),
+                "marketplaceIncomeBreakdown": usn_marketplace_breakdown,
+                "marketplaceIncomeYtd": usn_marketplace_income,
+                "monthlyMarketplaceIncome": usn_marketplace_income_monthly,
+                "monthlyKudirIncome": kudir_income_monthly,
+                "monthlyTaxPayments": usn_tax_payments_monthly,
+            }
+            if is_usn
+            else {"status": "not_applicable"}
+        ),
         "taxLoadSummary": {
             "metricKind": "fns_tax_risk",
             "numeratorKind": (
@@ -395,3 +760,78 @@ def build_tax_load_payload(
         "accountantApproval": None,
     }
     return TaxLoadPayload.model_validate(payload).model_dump(mode="json")
+
+
+def _marketplace_subtotal(
+    breakdown: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    categories = {
+        str(item.get("category") or ""): item
+        for item in breakdown
+    }
+    components = [categories.get("ozon"), categories.get("wildberries")]
+    if not all(isinstance(item, Mapping) for item in components):
+        return None, []
+    ytd_values = [
+        _decimal(item.get("valueYtd"))
+        for item in components
+        if isinstance(item, Mapping)
+    ]
+    ytd_value = (
+        _decimal_text(
+            sum(
+                (value for value in ytd_values if value is not None),
+                Decimal("0"),
+            )
+        )
+        if len(ytd_values) == 2 and all(value is not None for value in ytd_values)
+        else None
+    )
+    component_months = [
+        {
+            str(row.get("month") or ""): row
+            for row in item.get("monthlyValues") or []
+            if isinstance(row, Mapping)
+        }
+        for item in components
+        if isinstance(item, Mapping)
+    ]
+    monthly_values = []
+    month_keys = sorted(
+        set().union(*(month_rows.keys() for month_rows in component_months))
+    )
+    for month in month_keys:
+        rows = [month_rows.get(month) for month_rows in component_months]
+        values = [
+            _decimal(row.get("value"))
+            for row in rows
+            if isinstance(row, Mapping)
+        ]
+        value = (
+            sum(
+                (item for item in values if item is not None),
+                Decimal("0"),
+            )
+            if len(values) == 2 and all(item is not None for item in values)
+            else None
+        )
+        monthly_values.append(
+            {
+                "month": month,
+                "value": _decimal_text(value),
+                "status": next(
+                    (
+                        row.get("status")
+                        for row in rows
+                        if isinstance(row, Mapping) and row.get("status")
+                    ),
+                    "source_gap",
+                ),
+                "rowCount": sum(
+                    int(row.get("rowCount") or 0)
+                    for row in rows
+                    if isinstance(row, Mapping)
+                ),
+            }
+        )
+    return ytd_value, monthly_values

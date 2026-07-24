@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-18"
+updated_at: "2026-07-23"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,12 @@ updated_at: "2026-07-18"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-07-23: v2.58 разделил hourly-свежесть источников, staff draft и
+  опубликованный current; мастер показывает точный штатный диапазон до вчера,
+  не наследует верхний фильтр без явного выбора и не использует формулировку
+  «по настройкам клиента». Длительный rebuild получает независимый локальный
+  heartbeat marker, а недельный документ показывает requested/actual период
+  при fallback.
 - 2026-07-18: v2.57 упростил веб-таблицу `Юнит-экономика`: оставил отдельные
   статьи доходов и расходов и итоговые показатели прибыли, убрал повторяющиеся
   промежуточные колонки `Остаток после ...`. Быстрый пресет больше не хранится

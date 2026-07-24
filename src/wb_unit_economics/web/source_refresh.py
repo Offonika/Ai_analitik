@@ -194,6 +194,26 @@ SOURCE_REFRESH_MODES = {
 }
 
 
+def default_period_for_mode(
+    settings: WebSettings,
+    mode: str,
+) -> tuple[date, date]:
+    if mode not in SOURCE_REFRESH_MODES:
+        raise SourceRefreshConfigError("unsupported source refresh mode")
+    configured_start = date.fromisoformat(settings.source_refresh_period_start)
+    configured_end = settings.source_refresh_period_end.strip()
+    if configured_end:
+        period_end = date.fromisoformat(configured_end)
+    else:
+        period_end = datetime.now(tz=MOSCOW_TZ).date() - timedelta(days=1)
+    if mode == "daily":
+        rolling_start = period_end - timedelta(
+            days=max(1, settings.source_refresh_rolling_window_days) - 1
+        )
+        return max(configured_start, rolling_start), period_end
+    return configured_start, period_end
+
+
 def _incremental_yesterday() -> date:
     return datetime.now(tz=MOSCOW_TZ).date() - timedelta(days=1)
 
@@ -1080,7 +1100,10 @@ class SourceRefreshService:
                 row.row_payload or {}
                 for row in db.scalars(
                     select(SourceSnapshotRow)
-                    .where(SourceSnapshotRow.collection_id == collection.id)
+                    .where(
+                        SourceSnapshotRow.refresh_run_id == generation.id,
+                        SourceSnapshotRow.collection_id == collection.id,
+                    )
                     .order_by(SourceSnapshotRow.row_number)
                 )
             ]
@@ -1237,7 +1260,7 @@ class SourceRefreshService:
                 # If it no longer exists, fetch a new full read-only snapshot.
                 mode = "full"
 
-        default_period_start, default_period_end = self._period_for_mode(mode)
+        default_period_start, default_period_end = self.default_period_for_mode(mode)
         period_start = period_start or default_period_start
         period_end = period_end or default_period_end
         source_window_start = source_window_start or period_start
@@ -5089,19 +5112,8 @@ class SourceRefreshService:
             return False
         return any(path.is_file() for path in onec_dir.glob("*/manifest.json"))
 
-    def _period_for_mode(self, mode: str) -> tuple[date, date]:
-        configured_start = date.fromisoformat(self.settings.source_refresh_period_start)
-        configured_end = self.settings.source_refresh_period_end.strip()
-        if configured_end:
-            period_end = date.fromisoformat(configured_end)
-        else:
-            period_end = datetime.now(tz=MOSCOW_TZ).date() - timedelta(days=1)
-        if mode == "daily":
-            rolling_start = period_end - timedelta(
-                days=max(1, self.settings.source_refresh_rolling_window_days) - 1
-            )
-            return max(configured_start, rolling_start), period_end
-        return configured_start, period_end
+    def default_period_for_mode(self, mode: str) -> tuple[date, date]:
+        return default_period_for_mode(self.settings, mode)
 
     def _snapshot_set_id(self, mode: str) -> str:
         stamp = datetime.now(tz=MOSCOW_TZ).strftime("%Y%m%d-%H%M%S")

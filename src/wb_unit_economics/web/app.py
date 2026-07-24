@@ -62,7 +62,12 @@ from wb_unit_economics.web.database import (
     make_session_factory,
     schema_version,
 )
-from wb_unit_economics.web.models import ReportRun, SourceRefreshRun, User
+from wb_unit_economics.web.models import (
+    ClientCompany,
+    ReportRun,
+    SourceRefreshRun,
+    User,
+)
 from wb_unit_economics.web.refresh import (
     AutoRefreshBusyError,
     AutoRefreshDisabledError,
@@ -86,6 +91,7 @@ from wb_unit_economics.web.source_refresh import (
     SourceRefreshConfigError,
     SourceRefreshDisabledError,
     SourceRefreshService,
+    default_period_for_mode,
     source_refresh_progress_payload,
 )
 from wb_unit_economics.web.source_refresh_worker import (
@@ -96,7 +102,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260723-logistics-r4-return-reasons-v1"
+WEB_BUILD_ID = "20260724-runtime-contours-cleanup-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -1317,6 +1323,13 @@ def create_app(
         payload["incrementalWindowDays"] = int(
             runtime_settings.source_refresh_incremental_window_days
         )
+        default_period_start, default_period_end = (
+            default_period_for_mode(runtime_settings, "full")
+        )
+        payload["defaultFullPeriod"] = {
+            "periodStart": default_period_start.isoformat(),
+            "periodEnd": default_period_end.isoformat(),
+        }
         return payload
 
     @app.get("/api/reports/{report_id}/ozon-diagnostics")
@@ -3397,6 +3410,9 @@ def create_app(
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _reject_client_report_recommendations(db, current, report)
+        requested_period_start: date
+        requested_period_end: date
+        period_fallback = False
         try:
             if payload.scope == "last_closed_week":
                 if payload.periodStart is not None or payload.periodEnd is not None:
@@ -3406,8 +3422,18 @@ def create_app(
                 period_start, period_end, summary = report_summary_for_last_closed_week(
                     db, report
                 )
+                summary_meta = summary.get("meta") or {}
+                requested_period_start = date.fromisoformat(
+                    str(summary_meta["requestedPeriodStart"])
+                )
+                requested_period_end = date.fromisoformat(
+                    str(summary_meta["requestedPeriodEnd"])
+                )
+                period_fallback = bool(summary_meta.get("periodFallback"))
             else:
                 period_start, period_end = _analytical_report_period(report, payload)
+                requested_period_start = period_start
+                requested_period_end = period_end
                 summary = report_summary_for_period(
                     db,
                     report,
@@ -3456,6 +3482,9 @@ def create_app(
                 "scope": payload.scope,
                 "periodStart": period_start.isoformat(),
                 "periodEnd": period_end.isoformat(),
+                "requestedPeriodStart": requested_period_start.isoformat(),
+                "requestedPeriodEnd": requested_period_end.isoformat(),
+                "periodFallback": period_fallback,
             },
         )
         db.commit()
@@ -3465,6 +3494,9 @@ def create_app(
             scope=payload.scope,
             period_start=period_start,
             period_end=period_end,
+            requested_period_start=requested_period_start,
+            requested_period_end=requested_period_end,
+            period_fallback=period_fallback,
         )
 
     @app.get("/api/reports/{report_id}/analytical-report.{extension}")
@@ -3703,6 +3735,9 @@ def create_app(
         if report.report_kind in ACCOUNTING_REPORT_KINDS:
             _require_staff_or_403(current, report.tenant_id)
             payload = repository.scenario_payload_for_report(db, report)
+            contract_revision = _contract_revision_token(
+                str(payload.get("contractVersion") or report.methodology_version)
+            )
             payload_sha256 = str(payload.pop("payloadSha256"))
             output_dir = (
                 runtime_settings.export_root_path
@@ -3715,7 +3750,25 @@ def create_app(
                     status_code=400, detail="export path is outside reports"
                 )
             path = output_dir / f"{_safe_path_segment(report.id)}.xlsx"
-            write_scenario_excel(payload, payload_sha256, path)
+            company = db.scalar(
+                select(ClientCompany)
+                .where(
+                    ClientCompany.tenant_id == report.tenant_id,
+                    ClientCompany.client_id == report.client_id,
+                    ClientCompany.onec_organization_id == report.organization_id,
+                )
+                .order_by(ClientCompany.status != "active", ClientCompany.id)
+                .limit(1)
+            )
+            write_scenario_excel(
+                payload,
+                payload_sha256,
+                path,
+                export_context={
+                    "clientName": report.client_name,
+                    "organizationName": company.display_name if company else "",
+                },
+            )
             repository.audit(
                 db,
                 action="report_exported",
@@ -3734,7 +3787,12 @@ def create_app(
                 media_type=(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 ),
-                filename=f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx",
+                filename=(
+                    f"Налоговая_нагрузка_{report.period_start:%Y_%m}"
+                    f"{f'_{contract_revision}' if contract_revision else ''}.xlsx"
+                    if report.report_kind == "tax_load"
+                    else f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx"
+                ),
             )
         if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
             _require_staff_or_403(current, report.tenant_id)
@@ -3781,7 +3839,12 @@ def create_app(
             )
         export_report = report
         path = _report_excel_export_path(db, export_report, runtime_settings)
-        if not report.is_current:
+        if report.publication_status != "published":
+            _require_staff_or_403(current, report.tenant_id)
+        if (
+            report.publication_status in {"published", "superseded"}
+            and not report.is_current
+        ):
             latest_report = repository.latest_report_for_client(
                 db,
                 current,
@@ -3816,6 +3879,7 @@ def create_app(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=export_report.source_workbook or "shumeyko_wb_excel_mvp.xlsx",
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.post("/api/admin/reports/import")
@@ -4622,6 +4686,11 @@ def _report_excel_export_path(
     ) or repository.report_file_path(report, settings.export_root_path)
 
 
+def _contract_revision_token(value: str) -> str:
+    match = re.search(r"(?:^|-)(v\d+)$", value.strip(), flags=re.IGNORECASE)
+    return match.group(1).lower() if match else ""
+
+
 def _require_report_or_404(db: Session, user: User, report_id: str):
     try:
         report = repository.require_report(db, user, report_id)
@@ -4987,6 +5056,9 @@ def _analytical_report_payload(
     scope: str,
     period_start: date,
     period_end: date,
+    requested_period_start: date,
+    requested_period_end: date,
+    period_fallback: bool,
 ) -> dict[str, Any]:
     return {
         "reportId": report_id,
@@ -4995,6 +5067,11 @@ def _analytical_report_payload(
         "scope": scope,
         "periodStart": period_start.isoformat(),
         "periodEnd": period_end.isoformat(),
+        "requestedPeriodStart": requested_period_start.isoformat(),
+        "requestedPeriodEnd": requested_period_end.isoformat(),
+        "actualPeriodStart": period_start.isoformat(),
+        "actualPeriodEnd": period_end.isoformat(),
+        "periodFallback": period_fallback,
         "period": f"{period_start:%d.%m.%Y} - {period_end:%d.%m.%Y}",
         "sourceSha256": getattr(artifacts, "source_sha256", ""),
         "files": {

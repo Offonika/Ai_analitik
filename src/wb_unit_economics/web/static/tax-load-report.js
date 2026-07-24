@@ -22,6 +22,8 @@
     onec_osv: "ОСВ 1С",
     onec_official_financial_results: "Отчёт о финансовых результатах 1С",
     onec_bank: "Банк в 1С",
+    onec_accounting_bank_in: "Банковские поступления 1С",
+    onec_accounting_counterparties: "Справочник контрагентов 1С",
     accountant_confirmation: "Подтверждение бухгалтера",
   };
 
@@ -83,6 +85,16 @@
     return SOURCE_LABELS[normalized] || value(rawValue, "Источник не указан");
   }
 
+  function userText(rawValue) {
+    let result = value(rawValue, "—");
+    Object.entries(SOURCE_LABELS).forEach(([sourceKind, label]) => {
+      result = result.split(sourceKind).join(label);
+    });
+    return result
+      .replace(/read-only/gi, "только для чтения")
+      .replace(/RecordType\s+fallback/gi, "резервный источник");
+  }
+
   function taxSystemLabel(rawValue) {
     const normalized = String(rawValue || "").trim().toLowerCase();
     return TAX_SYSTEM_LABELS[normalized] || value(rawValue, "Не подтверждён");
@@ -134,8 +146,10 @@
     const summary = payload.taxLoadSummary || {};
     const issues = Array.isArray(payload.issues) ? payload.issues : [];
     const ratioReady = isPresent(summary.fnsTaxBurdenRatio);
-    const nextAction = issues.find((item) => item?.nextAction)?.nextAction
-      || (ratioReady
+    const issueNextAction = issues.find((item) => item?.nextAction)?.nextAction;
+    const nextAction = isPresent(issueNextAction)
+      ? userText(issueNextAction)
+      : (ratioReady
         ? "Подтвердите налоговые факты и отдельно утвердите клиентский вывод."
         : "Подтвердите уплаченные налоги и официальный доходный знаменатель.");
 
@@ -192,8 +206,8 @@
         columns: [
           { key: "severity", label: "Важность", format: statusLabel },
           { key: "section", label: "Раздел" },
-          { key: "message", label: "Что найдено" },
-          { key: "nextAction", label: "Что сделать" },
+          { key: "message", label: "Что найдено", format: userText },
+          { key: "nextAction", label: "Что сделать", format: userText },
         ],
       })
       : emptyState(

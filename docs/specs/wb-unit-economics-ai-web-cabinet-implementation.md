@@ -9,7 +9,7 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: web-cabinet
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
+related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/styles.css, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
 related_tests: [tests/test_web_app.py]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-23"
 ---
 
 # Implementation Status
@@ -758,8 +758,11 @@ UI readiness behavior:
   WB API и 1С read-only подключений; ключи не относятся к профилю пользователя;
 - в шапке staff-интерфейса действие называется `Сформировать отчет` и открывает
   отдельный мастер, а не сразу скачивает Excel. Мастер явно показывает клиента,
-  контур `WB + 1С` или служебную диагностику `Ozon + 1С`, период по настройкам
-  клиента либо собственные даты и текущий статус запуска. Действия `Создать
+  контур `WB + 1С` или служебную диагностику `Ozon + 1С`, точный штатный период
+  `с настроенной даты начала по вчера`, явный текущий фильтр либо собственные
+  даты и текущий статус запуска. Он не называет глобальный runtime-период
+  «настройками клиента» и не переносит верхний фильтр в запрос без отдельного
+  выбора пользователя. Действия `Создать
   Excel за …` и `Проверить источники без создания` являются отдельными
   кнопками; readiness-only проверка передает `dry_run=true`, не создает Excel и
   не использует чекбокс режима;
@@ -768,6 +771,9 @@ UI readiness behavior:
   из списка отчетов только по одновременным признакам `isCurrent=true` и
   `publicationStatus=published`, явно помечен как не относящийся к настройкам
   нового отчета и никогда не считается результатом текущего запуска;
+- рядом с current report мастер показывает, что hourly `daily` обновляет
+  источники, но не переключает опубликованный отчёт. Для источников, staff
+  draft и published current используются отдельные даты/статусы;
 - состояние мастер-сессии содержит идентификатор source-refresh запуска,
   выбранные режим и период, статус и `newReportRunId`. Глобальный
   `latestSourceRefresh`, включая фоновый daily refresh, не переводит новую
@@ -1354,8 +1360,10 @@ Large-report loading:
   independent database heartbeat while external WB/1C requests are in progress.
   Source-file/manifest activity is also exposed as a safe aggregate timestamp,
   so the UI does not report a dead background process while 1C pages are still
-  being written. A stale warning is blocking only when neither heartbeat nor
-  recent snapshot activity confirms liveness.
+  being written. During `rebuilding` the worker maintains an atomic local
+  heartbeat marker under the validated source root before attempting the DB
+  heartbeat update. A stale warning is blocking only when neither DB heartbeat
+  nor recent validated marker/snapshot activity confirms liveness.
 - The cabinet distinguishes a rolling `daily` data refresh from report
   generation: while `daily` is active it says `Данные обновляются`, never
   `Отчёт формируется`; only report-producing modes show report-build wording.
@@ -1370,6 +1378,11 @@ Large-report loading:
   download, while a green or warning result card and its direct download appear
   only for that session's non-empty `newReportRunId`; background refreshes never
   advance the wizard.
+- The wizard defaults to the exact full refresh range through yesterday,
+  exposes the current topbar filter as a separate explicit choice, and never
+  silently turns that filter into custom report-generation dates. A generated
+  full report remains a staff draft until an explicit audited financial
+  publication action succeeds.
 - Public URLs for JSON/Excel return 404 or do not exist.
 - Existing Excel MVP tests and no-secrets checks still pass.
 

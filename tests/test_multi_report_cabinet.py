@@ -7,8 +7,9 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import select
 
 from wb_unit_economics.onec_odata import (
@@ -37,6 +38,9 @@ from wb_unit_economics.web.reports.builders import (
 )
 from wb_unit_economics.web.reports.evidence import (
     AccountingEvidenceSource,
+    _bank_tax_payments,
+    _date_text,
+    _source_gap_issues,
     materialize_accounting_evidence,
 )
 from wb_unit_economics.web.reports.excel import (
@@ -62,6 +66,53 @@ def _report(kind: str, organization_id: str = "ORG-1") -> SimpleNamespace:
         generated_at=repository.security.utcnow(),
         publication_status="draft",
     )
+
+
+def _bank_in_row(
+    row_date: str,
+    *,
+    amount: str,
+    vat: str,
+    operation: str = "ОтПокупателя",
+    organization_id: str = "ORG-1",
+    counterparty_id: str = "",
+    posted: bool = True,
+    deleted: bool = False,
+) -> dict:
+    return {
+        "Организация_Key": organization_id,
+        "Date": f"{row_date}T00:00:00",
+        "Posted": posted,
+        "DeletionMark": deleted,
+        "ВидОперации": operation,
+        "Контрагент_Key": counterparty_id,
+        "СуммаДокумента": amount,
+        "РасшифровкаПлатежа": [
+            {
+                "СуммаПлатежа": amount,
+                "СуммаНДС": vat,
+            }
+        ],
+    }
+
+
+def _bank_out_row(
+    row_date: str,
+    *,
+    amount: str,
+    operation: str,
+    organization_id: str = "ORG-1",
+    posted: bool = True,
+    deleted: bool = False,
+) -> dict:
+    return {
+        "Организация_Key": organization_id,
+        "Date": f"{row_date}T00:00:00",
+        "Posted": posted,
+        "DeletionMark": deleted,
+        "ВидОперации": operation,
+        "СуммаДокумента": amount,
+    }
 
 
 def _month_close_evidence() -> dict:
@@ -215,7 +266,188 @@ def _usn_tax_evidence() -> dict:
             "evidenceStatus": "loaded",
         },
     ]
+    evidence["usnPayrollPaymentEvidence"] = {
+        "value": "0",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_accounting_bank_out",
+        "monthlyValues": [],
+    }
     return evidence
+
+
+def _detailed_vat_evidence(*, purchase_status: str = "empty_expected") -> dict:
+    return materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        refresh_run_id="generation-vat-books",
+        sources={
+            "onec_accounting_counterparties": AccountingEvidenceSource(
+                source_type="onec_accounting_counterparties",
+                status="loaded",
+                snapshot_id="counterparties-sha",
+                rows=(
+                    {"Ref_Key": "BUYER-1", "Description": "ООО Покупатель"},
+                    {"Ref_Key": "BUYER-2", "Description": "ИП Заказчик"},
+                ),
+            ),
+            "onec_vat_sales_book": AccountingEvidenceSource(
+                source_type="onec_vat_sales_book",
+                status="loaded",
+                snapshot_id="sales-book-sha",
+                rows=(
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-03-31T00:00:00",
+                        "Active": True,
+                        "Покупатель_Key": "BUYER-1",
+                        "СтавкаНДС": "НДС5",
+                        "СуммаБезНДС": "100",
+                        "НДС": "5",
+                        "НомерСчетаФактурыНаАванс": "СФ-1",
+                        "ДатаСчетаФактурыНаАванс": "2026-03-30T00:00:00",
+                        "ЗаписьДополнительногоЛиста": False,
+                        "Исправление": False,
+                    },
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-06-30T00:00:00",
+                        "Active": True,
+                        "Покупатель_Key": "BUYER-2",
+                        "СтавкаНДС": "БезНДС",
+                        "СуммаБезНДС": "50",
+                        "НДС": "0",
+                        "НомерДокументаОплаты": "ПЛ-2",
+                        "ДатаДокументаОплаты": "2026-06-29T00:00:00",
+                        "ЗаписьДополнительногоЛиста": True,
+                        "Исправление": True,
+                    },
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-05-31T00:00:00",
+                        "Active": False,
+                        "Покупатель_Key": "BUYER-1",
+                        "СтавкаНДС": "НДС20",
+                        "СуммаБезНДС": "999",
+                        "НДС": "199.8",
+                    },
+                    {
+                        "Организация_Key": "ORG-2",
+                        "Period": "2026-06-30T00:00:00",
+                        "Active": True,
+                        "Покупатель_Key": "BUYER-1",
+                        "СтавкаНДС": "НДС20",
+                        "СуммаБезНДС": "999",
+                        "НДС": "199.8",
+                    },
+                ),
+            ),
+            "onec_vat_purchase_book": AccountingEvidenceSource(
+                source_type="onec_vat_purchase_book",
+                status=purchase_status,
+                snapshot_id="purchase-book-sha",
+                rows=(),
+            ),
+        },
+    )
+
+
+def _rwb_vat_evidence(
+    *,
+    supplier_expenses_status: str = "loaded",
+    purchase_invoice_date: str | None = "2026-04-14T00:00:00",
+) -> dict:
+    return materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),
+        refresh_run_id="generation-rwb-vat",
+        sources={
+            "onec_accounting_counterparties": AccountingEvidenceSource(
+                source_type="onec_accounting_counterparties",
+                status="loaded",
+                snapshot_id="counterparties-sha",
+                rows=(
+                    {"Ref_Key": "RWB", "Description": "ООО РВБ"},
+                    {"Ref_Key": "OTHER", "Description": "ООО Поставщик"},
+                ),
+            ),
+            "onec_nomenclature": AccountingEvidenceSource(
+                source_type="onec_nomenclature",
+                status="loaded",
+                snapshot_id="nomenclature-sha",
+                rows=(
+                    {"Ref_Key": "COMMISSION", "Description": "Комиссия WB"},
+                    {"Ref_Key": "DELIVERY", "Description": "Услуга доставки"},
+                ),
+            ),
+            "onec_supplier_receipts": AccountingEvidenceSource(
+                source_type="onec_supplier_receipts",
+                status="loaded",
+                snapshot_id="receipts-sha",
+                rows=(
+                    {
+                        "Ref_Key": "RWB-UPD-1",
+                        "Date": "2026-04-15T00:00:00",
+                        "Number": "1C-15",
+                        "Posted": True,
+                        "DeletionMark": False,
+                        "Организация_Key": "ORG-1",
+                        "Контрагент_Key": "RWB",
+                        "НомерВходящегоДокумента": "УПД-7",
+                        "ДатаВходящегоДокумента": "2026-04-14T00:00:00",
+                    },
+                ),
+            ),
+            "onec_supplier_receipt_expenses": AccountingEvidenceSource(
+                source_type="onec_supplier_receipt_expenses",
+                status=supplier_expenses_status,
+                snapshot_id="receipt-expenses-sha",
+                rows=(
+                    {
+                        "Ref_Key": "RWB-UPD-1",
+                        "LineNumber": 1,
+                        "Номенклатура_Key": "COMMISSION",
+                        "Сумма": "100",
+                        "СуммаНДС": "20",
+                        "Всего": "120",
+                    },
+                    {
+                        "Ref_Key": "RWB-UPD-1",
+                        "LineNumber": 2,
+                        "Номенклатура_Key": "DELIVERY",
+                        "Сумма": "50",
+                        "СуммаНДС": "10",
+                        "Всего": "60",
+                    },
+                )
+                if supplier_expenses_status == "loaded"
+                else (),
+            ),
+            "onec_vat_purchase_book": AccountingEvidenceSource(
+                source_type="onec_vat_purchase_book",
+                status="loaded",
+                snapshot_id="purchase-book-sha",
+                rows=(
+                    {
+                        "Организация_Key": "ORG-1",
+                        "Period": "2026-04-30T00:00:00",
+                        "Active": True,
+                        "Поставщик_Key": "RWB",
+                        "СтавкаНДС": "НДС20",
+                        "СуммаБезНДС": "150",
+                        "НДС": "30",
+                        "НомерСчетаФактуры": "УПД-7",
+                        "ДатаСчетаФактуры": purchase_invoice_date,
+                        "ЗаписьДополнительногоЛиста": False,
+                    },
+                ),
+            ),
+        },
+    )
 
 
 def test_month_close_prefers_balance_and_turnovers_and_warns_on_any_delta() -> None:
@@ -389,7 +621,73 @@ def test_tax_load_formula_excludes_agent_and_insurance_rows() -> None:
     assert summary["benchmarkValue"] is None
     assert payload["businessStatus"] == "accountant_review_required"
     assert payload["accountantApproval"] is None
-    assert payload["contractVersion"] == "tax-load-report-v2"
+    assert payload["contractVersion"] == "tax-load-report-v6"
+
+
+def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -> None:
+    evidence = _detailed_vat_evidence()
+
+    assert evidence["contractVersion"] == "tax-load-evidence-v6"
+    assert evidence["vatSummary"] == {
+        "status": "loaded",
+        "periodStart": "2026-06-01",
+        "periodEnd": "2026-06-30",
+        "salesBookStatus": "loaded",
+        "purchaseBookStatus": "empty_expected",
+        "outputVat": "0",
+        "inputVat": "0",
+        "payableVat": None,
+        "salesBookRows": 2,
+        "purchaseBookRows": 0,
+        "ytdOutputVat": "5",
+        "ytdInputVat": "0",
+        "vatDifference": "5",
+        "sourceKind": "onec_vat_books",
+    }
+    books = evidence["vatBooks"]
+    assert books["periodStart"] == "2026-01-01"
+    assert books["periodEnd"] == "2026-06-30"
+    assert books["salesTotals"] == {
+        "rowCount": 2,
+        "amountExcludingVat": "150",
+        "vatAmount": "5",
+        "amountIncludingVat": "155",
+    }
+    assert books["purchaseTotals"] == {
+        "rowCount": 0,
+        "amountExcludingVat": "0",
+        "vatAmount": "0",
+        "amountIncludingVat": "0",
+    }
+    assert [row["counterpartyName"] for row in books["salesRows"]] == [
+        "ООО Покупатель",
+        "ИП Заказчик",
+    ]
+    assert [row["vatRate"] for row in books["salesRows"]] == ["5 %", "Без НДС"]
+    assert books["salesRows"][1]["entryKind"] == "Дополнительный лист"
+    assert books["salesRows"][1]["correctionStatus"] == "Исправление"
+    serialized = json.dumps(books, ensure_ascii=False)
+    assert "Покупатель_Key" not in serialized
+    assert "Recorder" not in serialized
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
+        evidence=evidence,
+    )
+    assert payload["contractVersion"] == "tax-load-report-v6"
+    assert payload["vatBooks"]["salesRows"] == books["salesRows"]
+
+    missing_purchase = _detailed_vat_evidence(purchase_status="missing")
+    assert missing_purchase["vatSummary"]["status"] == "partial_source"
+    assert missing_purchase["vatSummary"]["inputVat"] is None
+    assert missing_purchase["vatSummary"]["vatDifference"] is None
+    assert missing_purchase["vatBooks"]["purchaseTotals"] == {
+        "rowCount": 0,
+        "amountExcludingVat": None,
+        "vatAmount": None,
+        "amountIncludingVat": None,
+    }
 
 
 def test_tax_load_requires_confirmed_classified_numerator_and_denominator() -> None:
@@ -467,9 +765,9 @@ def test_tax_load_ip_usn_without_financial_results_keeps_ratio_null_without_zero
     payload = build_tax_load_payload(
         _report("tax_load"),
         tax_profile={
-            "taxSystem": "usn_income",
+            "taxSystem": "УСН Доходы",
             "profileStatus": "ready",
-            "revenueTaxRate": "1",
+            "revenueTaxRate": "0.01",
             "sourceKind": "1c",
         },
         evidence=evidence,
@@ -508,7 +806,7 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
         tax_profile={
             "taxSystem": "usn_income",
             "profileStatus": "ready",
-            "revenueTaxRate": "1",
+            "revenueTaxRate": "0.01",
             "sourceKind": "1c",
         },
         evidence=evidence,
@@ -522,11 +820,133 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
     assert summary["usnIncomeTaxBurden"] == "5.0000"
     assert summary["usnIncomeStatus"] == "management_reference"
     assert summary["usnIncomeDenominatorKind"] == "usn_income_receipts_excluding_vat"
+    assert payload["usnDetail"]["calculatedTaxYtd"] == "20.00"
+    assert payload["usnDetail"]["paidTaxYtd"] == "100"
+    assert payload["usnDetail"]["taxPayable"] == "-80.00"
+    assert payload["usnDetail"]["status"] == "ready"
     assert payload["businessStatus"] == "preliminary"
 
 
-def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
+def test_tax_load_usn_income_minus_expenses_has_no_management_ratio() -> None:
+    evidence = _usn_tax_evidence()
+    evidence["usnIncomeEvidence"] = {
+        "value": "2000",
+        "status": "confirmed",
+        "sourceKind": "onec_kudir",
+    }
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы минус расходы",
+            "profileStatus": "ready",
+        },
+        evidence=evidence,
+    )
+
+    summary = payload["taxLoadSummary"]
+    assert summary["usnIncomeValue"] is None
+    assert summary["usnIncomeTaxBurden"] is None
+    assert summary["usnIncomeStatus"] is None
+
+
+def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation(
+) -> None:
     sources = {
+        "onec_accounting_bank_in": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_in",
+            status="loaded",
+            snapshot_id="bank-in-sha",
+            rows=(
+                _bank_in_row(
+                    "2026-01-10",
+                    amount="105",
+                    vat="5",
+                    counterparty_id="RWB",
+                ),
+                _bank_in_row(
+                    "2026-02-10",
+                    amount="210",
+                    vat="10",
+                    counterparty_id="OZON",
+                ),
+                _bank_in_row(
+                    "2026-03-10",
+                    amount="55",
+                    vat="5",
+                    operation="Прочее",
+                ),
+                _bank_in_row(
+                    "2026-04-10",
+                    amount="1000",
+                    vat="0",
+                    operation="ЛичныеСредстваПредпринимателя",
+                ),
+                _bank_in_row(
+                    "2026-05-09",
+                    amount="500",
+                    vat="0",
+                    operation="РасчетыПоКредитам",
+                ),
+                _bank_in_row(
+                    "2026-05-10", amount="999", vat="0", posted=False
+                ),
+                _bank_in_row(
+                    "2026-05-11", amount="999", vat="0", deleted=True
+                ),
+                _bank_in_row(
+                    "2026-06-10",
+                    amount="999",
+                    vat="0",
+                    organization_id="ORG-2",
+                ),
+            ),
+        ),
+        "onec_accounting_bank_out": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_out",
+            status="loaded",
+            snapshot_id="bank-out-sha",
+            rows=(
+                _bank_out_row(
+                    "2026-01-31",
+                    amount="70",
+                    operation="ПеречислениеЗаработнойПлаты",
+                ),
+                _bank_out_row(
+                    "2026-02-15",
+                    amount="80",
+                    operation="ОплатаПоставщику",
+                ),
+                _bank_out_row(
+                    "2026-03-31",
+                    amount="90",
+                    operation="ВыплатаЗарплаты",
+                ),
+                _bank_out_row(
+                    "2026-03-31",
+                    amount="999",
+                    operation="ВыплатаЗарплаты",
+                    posted=False,
+                ),
+            ),
+        ),
+        "onec_accounting_counterparties": AccountingEvidenceSource(
+            source_type="onec_accounting_counterparties",
+            status="loaded",
+            snapshot_id="counterparties-sha",
+            rows=(
+                {
+                    "Ref_Key": "RWB",
+                    "Description": "ООО РВБ",
+                    "DeletionMark": False,
+                },
+                {
+                    "Ref_Key": "OZON",
+                    "Description": "ООО Интернет Решения",
+                    "DeletionMark": False,
+                },
+            ),
+        ),
         "onec_kudir": AccountingEvidenceSource(
             source_type="onec_kudir",
             status="loaded",
@@ -536,6 +956,10 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
                  "ДоходБаза": "1200", "ВидЗаписи": "Приход"},
                 {"Организация_Key": "ORG-1", "Period": "2026-06-20T00:00:00",
                  "ДоходБаза": "800", "ВидЗаписи": "Приход"},
+                {"Организация_Key": "ORG-1", "Period": "2026-06-21T00:00:00",
+                 "ДоходБаза": "700", "ВидЗаписи": "РасходыНаУслуги"},
+                {"Организация_Key": "ORG-1", "Period": "2026-06-22T00:00:00",
+                 "ДоходБаза": "600", "ВидЗаписи": "ДоходыПрочие", "Active": False},
                 # Другая организация — не суммируется.
                 {"Организация_Key": "ORG-2", "Period": "2026-05-10T00:00:00",
                  "ДоходБаза": "999", "ВидЗаписи": "Приход"},
@@ -556,10 +980,341 @@ def test_tax_load_evidence_reads_usn_income_base_from_kudir() -> None:
     )
 
     usn = evidence["usnIncomeEvidence"]
-    assert usn["sourceKind"] == "onec_kudir"
+    assert usn["sourceKind"] == "onec_accounting_bank_in"
     assert usn["status"] == "loaded"
+    assert usn["classificationStatus"] == "review_required"
+    assert usn["value"] == "300"
+    assert usn["unclassifiedValue"] == "50"
+    assert usn["excludedValue"] == "1000"
+    assert usn["loanReceiptsValue"] == "500"
+    assert usn["confirmedRowCount"] == 2
+    assert usn["unclassifiedRowCount"] == 1
+    assert usn["excludedRowCount"] == 1
+    assert usn["loanReceiptRowCount"] == 1
+    assert usn["marketplaceBreakdownStatus"] == "ready"
+    marketplace = {
+        item["category"]: item for item in usn["marketplaceBreakdown"]
+    }
+    assert marketplace["wildberries"]["value"] == "100"
+    assert marketplace["ozon"]["value"] == "200"
+    assert marketplace["other"]["value"] == "0"
+    assert len(marketplace["wildberries"]["monthlyValues"]) == 6
+    assert marketplace["wildberries"]["monthlyValues"][1]["value"] == "0"
+    assert sum(Decimal(item["value"]) for item in marketplace.values()) == Decimal(
+        usn["value"]
+    )
+    for month_index in range(6):
+        categorized = sum(
+            Decimal(item["monthlyValues"][month_index]["value"])
+            for item in marketplace.values()
+        )
+        confirmed = next(
+            (
+                Decimal(item["value"])
+                for item in usn["monthlyValues"]
+                if item["month"] == f"2026-{month_index + 1:02d}"
+            ),
+            Decimal("0"),
+        )
+        assert categorized == confirmed
+    assert usn["monthlyValues"] == [
+        {
+            "month": "2026-01",
+            "value": "100",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+        {
+            "month": "2026-02",
+            "value": "200",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+    ]
+    assert usn["monthlyUnclassifiedValues"] == [
+        {
+            "month": "2026-03",
+            "value": "50",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    assert usn["monthlyExcludedValues"] == [
+        {
+            "month": "2026-04",
+            "value": "1000",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    assert usn["monthlyLoanReceiptValues"] == [
+        {
+            "month": "2026-05",
+            "value": "500",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    payroll = evidence["usnPayrollPaymentEvidence"]
+    assert payroll["value"] == "160"
+    assert payroll["classificationStatus"] == "ready"
+    assert payroll["rowCount"] == 2
+    assert payroll["monthlyValues"] == [
+        {
+            "month": "2026-01",
+            "value": "70",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+        {
+            "month": "2026-03",
+            "value": "90",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+    ]
+    kudir = evidence["kudirIncomeEvidence"]
     # Только ORG-1 и только период с начала года: 1200 + 800.
-    assert usn["value"] == "2000"
+    assert kudir["value"] == "2000"
+    assert kudir["monthlyValues"] == [
+        {
+            "month": "2026-05",
+            "value": "1200",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+        {
+            "month": "2026-06",
+            "value": "800",
+            "status": "loaded",
+            "rowCount": 1,
+        },
+    ]
+    assert any(
+        issue["code"] == "usn_bank_income_classification_required"
+        for issue in evidence["issues"]
+    )
+
+
+def test_tax_load_payroll_control_does_not_coerce_unknown_operation_to_zero(
+) -> None:
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        refresh_run_id="gen-payroll-review",
+        sources={
+            "onec_accounting_bank_out": AccountingEvidenceSource(
+                source_type="onec_accounting_bank_out",
+                status="loaded",
+                snapshot_id="bank-out-sha",
+                rows=(
+                    _bank_out_row(
+                        "2026-05-15",
+                        amount="100",
+                        operation="",
+                    ),
+                ),
+            )
+        },
+    )
+
+    payroll = evidence["usnPayrollPaymentEvidence"]
+    assert payroll["value"] is None
+    assert payroll["classificationStatus"] == "review_required"
+    assert payroll["monthlyValues"] == []
+    assert any(
+        issue["code"] == "usn_payroll_classification_required"
+        for issue in evidence["issues"]
+    )
+
+
+def test_tax_load_bank_income_rejects_unreconciled_payment_breakdown() -> None:
+    row = _bank_in_row("2026-05-10", amount="100", vat="5")
+    row["РасшифровкаПлатежа"][0]["СуммаПлатежа"] = "90"
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        refresh_run_id="gen-invalid-bank-income",
+        sources={
+            "onec_accounting_bank_in": AccountingEvidenceSource(
+                source_type="onec_accounting_bank_in",
+                status="loaded",
+                snapshot_id="bank-in-sha",
+                rows=(row,),
+            )
+        },
+    )
+
+    assert evidence["usnIncomeEvidence"]["value"] is None
+    assert evidence["usnIncomeEvidence"]["classificationStatus"] == "source_gap"
+    assert evidence["usnIncomeEvidence"]["monthlyValues"] == [
+        {
+            "month": "2026-05",
+            "value": None,
+            "status": "partial_source",
+            "rowCount": 1,
+        }
+    ]
+    assert any(
+        issue["code"] == "usn_bank_income_amount_unconfirmed"
+        for issue in evidence["issues"]
+    )
+    assert evidence["usnPayrollPaymentEvidence"]["value"] is None
+    assert (
+        evidence["usnPayrollPaymentEvidence"]["classificationStatus"]
+        == "source_gap"
+    )
+    assert any(
+        issue["code"] == "usn_payroll_source_gap"
+        for issue in evidence["issues"]
+    )
+
+
+def test_tax_load_uses_classified_bank_tax_payments_when_ens_is_empty() -> None:
+    sources = {
+        "onec_tax_kinds": AccountingEvidenceSource(
+            source_type="onec_tax_kinds",
+            status="loaded",
+            snapshot_id="tax-kinds-sha",
+            rows=(
+                {"Ref_Key": "TAX-USN", "Description": "Налог при УСН"},
+                {"Ref_Key": "TAX-VAT", "Description": "НДС"},
+            ),
+        ),
+        "onec_accounting_taxes": AccountingEvidenceSource(
+            source_type="onec_accounting_taxes",
+            status="loaded",
+            snapshot_id="tax-register-sha",
+            rows=(
+                {
+                    "Организация_Key": "ORG-1",
+                    "Period": "2026-05-31T00:00:00",
+                    "ВидНалога_Key": "TAX-USN",
+                    "Сумма": "100",
+                },
+                {
+                    "Организация_Key": "ORG-1",
+                    "Period": "2026-05-31T00:00:00",
+                    "ВидНалога_Key": "TAX-VAT",
+                    "Сумма": "50",
+                },
+            ),
+        ),
+        "onec_accounting_taxes_on_ens": AccountingEvidenceSource(
+            source_type="onec_accounting_taxes_on_ens",
+            status="empty_expected",
+            snapshot_id="ens-empty-sha",
+            rows=(),
+        ),
+        "onec_accounting_bank_out": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_out",
+            status="loaded",
+            snapshot_id="bank-out-sha",
+            rows=(
+                {
+                    "Организация_Key": "ORG-1",
+                    "Date": "2026-03-20T00:00:00",
+                    "Posted": True,
+                    "DeletionMark": False,
+                    "ВидОперации": "Налоги",
+                    "НазначениеПлатежа": "Налог УСН",
+                    "СуммаДокумента": "100",
+                },
+                {
+                    "Организация_Key": "ORG-1",
+                    "Date": "2026-05-21T00:00:00",
+                    "Posted": True,
+                    "DeletionMark": False,
+                    "ВидОперации": "Налоги",
+                    "НазначениеПлатежа": "НДС",
+                    "СуммаДокумента": "50",
+                },
+            ),
+        ),
+        "onec_accounting_bank_in": AccountingEvidenceSource(
+            source_type="onec_accounting_bank_in",
+            status="loaded",
+            snapshot_id="bank-in-sha",
+            rows=(
+                _bank_in_row("2026-05-15", amount="2000", vat="0"),
+            ),
+        ),
+        "onec_kudir": AccountingEvidenceSource(
+            source_type="onec_kudir",
+            status="loaded",
+            snapshot_id="kudir-sha",
+            rows=(
+                {
+                    "Организация_Key": "ORG-1",
+                    "Period": "2026-05-31T00:00:00",
+                    "ДоходБаза": "2000",
+                },
+            ),
+        ),
+    }
+
+    evidence = materialize_accounting_evidence(
+        report_kind="tax_load",
+        organization_id="ORG-1",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        refresh_run_id="gen-bank-payments",
+        sources=sources,
+    )
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={"taxSystem": "УСН Доходы", "profileStatus": "ready"},
+        evidence=evidence,
+    )
+
+    assert {row["sourceKind"] for row in evidence["taxRows"]} == {
+        "onec_accounting_bank_out"
+    }
+    assert fns_paid_taxes_numerator(evidence["taxRows"]) == Decimal("150")
+    assert not any(
+        issue["code"] in {
+            "onec_accounting_taxes_on_ens_gap",
+            "paid_tax_fact_unconfirmed",
+        }
+        for issue in evidence["issues"]
+    )
+    assert evidence["usnTaxPaymentEvidence"]["monthlyValues"] == [
+        {
+            "month": "2026-03",
+            "value": "100",
+            "status": "loaded",
+            "rowCount": 1,
+        }
+    ]
+    assert payload["taxLoadSummary"]["usnIncomeTaxBurden"] == "7.5000"
+
+
+def test_bank_tax_payment_fallback_rejects_unclassified_document() -> None:
+    payments, classified = _bank_tax_payments(
+        [
+            {
+                "Posted": True,
+                "DeletionMark": False,
+                "ВидОперации": "Налоги",
+                "НазначениеПлатежа": "Налог УСН",
+                "СуммаДокумента": "100",
+            },
+            {
+                "Posted": True,
+                "DeletionMark": False,
+                "ВидОперации": "Налоги",
+                "НазначениеПлатежа": "Налоговый платеж без расшифровки",
+                "СуммаДокумента": "50",
+            },
+        ]
+    )
+
+    assert payments == {}
+    assert classified is False
 
 
 def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
@@ -573,9 +1328,10 @@ def test_tax_load_usn_management_ratio_source_gap_without_receipts() -> None:
     assert summary["usnIncomeValue"] is None
     assert summary["usnIncomeTaxBurden"] is None
     assert summary["usnIncomeStatus"] == "source_gap"
+    assert payload["usnDetail"]["status"] == "source_gap"
 
 
-def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -> None:
+def test_scenario_excel_has_exact_sheets_and_traceable_overview(tmp_path: Path) -> None:
     cases = [
         (
             build_month_close_control_payload(
@@ -605,8 +1361,702 @@ def test_scenario_excel_has_exact_sheets_and_same_payload_hash(tmp_path: Path) -
             for row in workbook[summary_sheet].iter_rows(values_only=True)
             if row[0]
         }
-        assert values["reportId"] == payload["meta"]["reportId"]
-        assert values["payloadSha256"] == payload_hash
+        if payload["reportKind"] == "tax_load":
+            assert "ID отчёта" not in values
+            assert "Версия методики" not in values
+            assert "reportId" not in values
+            assert "payloadSha256" not in values
+            assert workbook.properties.identifier == payload["meta"]["reportId"]
+            assert workbook.properties.version == payload["meta"]["methodologyVersion"]
+            assert workbook.properties.language == "ru-RU"
+        else:
+            assert values["reportId"] == payload["meta"]["reportId"]
+            assert values["payloadSha256"] == payload_hash
+
+
+def test_tax_load_excel_localizes_headers_and_enum_values(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "revenueTaxRate": "0.06",
+        },
+        evidence=_tax_evidence(),
+    )
+    payload["issues"].append(
+        {
+            "severity": "warning",
+            "section": "Доходный знаменатель",
+            "message": (
+                "Источник onec_official_financial_results не подтвержден "
+                "за выбранный период."
+            ),
+            "nextAction": "Повторить read-only загрузку.",
+        }
+    )
+    path = tmp_path / "tax-load-russian.xlsx"
+    write_scenario_excel(
+        payload,
+        canonical_payload_sha256(payload),
+        path,
+        export_context={
+            "clientName": "Клиент А",
+            "organizationName": "ИП Клиент А",
+        },
+    )
+    workbook = load_workbook(path, data_only=True)
+
+    overview = {
+        row[0]: row[1]
+        for row in workbook["Обзор"].iter_rows(values_only=True)
+        if row[0]
+    }
+    assert overview["Клиент"] == "Клиент А"
+    assert overview["Организация 1С"] == "ИП Клиент А"
+    assert overview["Вид отчёта"] == "Налоговая нагрузка"
+    assert overview["Выбранный месяц"] == "Январь 2026"
+    assert overview["Период расчёта"] == "Предварительно, с начала года"
+    assert overview["Налоговый режим"] == "УСН «Доходы»"
+    assert overview["Статус налогового профиля"] == "Готово"
+    assert overview["Статус отчёта"] == "Нужна проверка бухгалтера"
+    assert overview["Подтверждение бухгалтера"] == "Не подтверждено"
+    assert overview["Начало отчётного периода"].date() == date(2026, 1, 1)
+    assert overview["Начало периода с начала года"].date() == date(2026, 1, 1)
+
+    taxes = list(workbook["Налоги"].iter_rows(values_only=True))
+    assert taxes[0] == (
+        "Налог",
+        "Период",
+        "Налоговая база",
+        "Начислено",
+        "Уплачено",
+        "Сальдо",
+        "Срок уплаты",
+        "Включён в нагрузку ФНС",
+        "Причина исключения",
+        "Статус подтверждения",
+        "Источник",
+    )
+    assert taxes[1][7] == "Да"
+    assert taxes[1][9] == "Загружено"
+    assert taxes[2][8] == "Агентский платёж"
+    assert "Код налога" not in taxes[0]
+    assert "Код замечания" not in taxes[0]
+
+    coverage = list(workbook["Источники и статус"].iter_rows(values_only=True))
+    assert coverage[0] == (
+        "Источник",
+        "Начало отчётного периода",
+        "Окончание отчётного периода",
+        "Статус",
+    )
+    assert coverage[1][0] == "Налоговый учёт 1С"
+    assert coverage[1][3] == "Загружено"
+    assert "ID снимка" not in coverage[0]
+
+    assert workbook["Налоги"].freeze_panes == "A2"
+    assert workbook["Налоги"].sheet_view.showGridLines is False
+    tax_table = next(iter(workbook["Налоги"].tables.values()))
+    assert tax_table.tableStyleInfo.name == "TableStyleMedium2"
+    assert tax_table.autoFilter is not None
+
+    paid_column = taxes[0].index("Уплачено") + 1
+    paid_cell = workbook["Налоги"].cell(row=2, column=paid_column)
+    assert paid_cell.data_type == "n"
+    assert "₽" in paid_cell.number_format
+    ratio_row = next(
+        row
+        for row in workbook["Обзор"].iter_rows()
+        if row[0].value == "Налоговая нагрузка по методике ФНС, %"
+    )
+    assert ratio_row[1].data_type == "n"
+    assert "%" in ratio_row[1].number_format
+    due_date_column = taxes[0].index("Срок уплаты") + 1
+    due_date_cell = workbook["Налоги"].cell(row=2, column=due_date_column)
+    assert due_date_cell.data_type == "d"
+    assert due_date_cell.number_format == "DD.MM.YYYY"
+    workbook_text = " ".join(
+        str(cell.value or "")
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+    )
+    assert "onec_official_financial_results" not in workbook_text
+    assert "read-only" not in workbook_text
+    assert "Отчёт о финансовых результатах 1С" in workbook_text
+    assert "только для чтения" in workbook_text
+    assert payload["meta"]["reportId"] not in workbook_text
+    assert payload["meta"]["methodologyVersion"] not in workbook_text
+
+
+def test_tax_load_excel_has_readable_detailed_vat_books(tmp_path: Path) -> None:
+    report = _report("tax_load")
+    report.period_start = date(2026, 6, 1)
+    payload = build_tax_load_payload(
+        report,
+        tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
+        evidence=_detailed_vat_evidence(),
+    )
+    path = tmp_path / "tax-load-vat-books.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+
+    assert "Книга продаж" in workbook.sheetnames
+    assert "Книга покупок" in workbook.sheetnames
+    sales = list(workbook["Книга продаж"].iter_rows(values_only=True))
+    assert sales[0] == (
+        "Дата записи",
+        "Контрагент",
+        "Номер счёта-фактуры / документа",
+        "Дата счёта-фактуры / документа",
+        "Ставка НДС",
+        "Сумма без НДС",
+        "Сумма НДС",
+        "Сумма с НДС",
+        "Вид записи",
+        "Исправление",
+    )
+    assert sales[1][1] == "ООО Покупатель"
+    assert sales[1][2] == "СФ-1"
+    assert sales[1][4] == "5 %"
+    assert sales[1][3].date() == date(2026, 3, 30)
+    assert sales[1][5:8] == (100, 5, 105)
+    assert sales[2][8:] == ("Дополнительный лист", "Исправление")
+    assert workbook["Книга продаж"]["A2"].data_type == "d"
+    assert workbook["Книга продаж"]["F2"].data_type == "n"
+    assert "₽" in workbook["Книга продаж"]["F2"].number_format
+
+    purchase = list(workbook["Книга покупок"].iter_rows(values_only=True))
+    assert purchase[1][0] == "За период в 1С записей нет"
+    for title in ("Книга продаж", "Книга покупок"):
+        table = next(iter(workbook[title].tables.values()))
+        assert table.autoFilter is not None
+        assert workbook[title].freeze_panes == "A2"
+
+    vat_summary = {
+        row[0]: row[1] for row in workbook["НДС"].iter_rows(values_only=True) if row[0]
+    }
+    assert vat_summary["Статус книги покупок"] == "Ожидаемо нет данных"
+    assert vat_summary["Записей в книге продаж с начала года"] == 2
+    assert vat_summary["Разница НДС по книгам с начала года"] == 5
+    workbook_text = " ".join(
+        str(cell.value or "")
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+    )
+    assert "Покупатель_Key" not in workbook_text
+    assert "Поставщик_Key" not in workbook_text
+    assert "Recorder" not in workbook_text
+
+
+def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
+    tmp_path: Path,
+) -> None:
+    evidence = _rwb_vat_evidence()
+    reconciliation = evidence["rwbVatReconciliation"]
+
+    assert evidence["contractVersion"] == "tax-load-evidence-v6"
+    assert reconciliation["status"] == "matched"
+    assert reconciliation["serviceTotals"] == {
+        "rowCount": 2,
+        "amountExcludingVat": "150",
+        "vatAmount": "30",
+        "amountIncludingVat": "180",
+    }
+    assert reconciliation["purchaseBookTotals"] == {
+        "rowCount": 1,
+        "amountExcludingVat": "150",
+        "vatAmount": "30",
+        "amountIncludingVat": "180",
+    }
+    assert reconciliation["vatDifference"] == "0"
+    assert [row["serviceCategory"] for row in reconciliation["rows"]] == [
+        "Комиссия WB",
+        "Логистика",
+    ]
+    assert {row["purchaseBookIncluded"] for row in reconciliation["rows"]} == {
+        "yes"
+    }
+
+    report = _report("tax_load")
+    report.period_start = date(2026, 6, 1)
+    payload = build_tax_load_payload(
+        report,
+        tax_profile={
+            "taxSystem": "osno",
+            "profileStatus": "ready",
+            "vatMode": "included",
+            "vatDeductionMode": "allowed",
+        },
+        evidence=evidence,
+    )
+    assert payload["contractVersion"] == "tax-load-report-v6"
+    assert payload["rwbVatReconciliation"]["applicability"] == "allowed"
+    assert payload["rwbVatReconciliation"]["status"] == "matched"
+    assert not any(
+        issue["code"] == "rwb_vat_reconciliation_review_required"
+        for issue in payload["issues"]
+    )
+
+    path = tmp_path / "tax-load-rwb-vat.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    rows = list(workbook["НДС РВБ"].iter_rows(values_only=True))
+    headers = {value: index for index, value in enumerate(rows[0])}
+    summary = rows[-1]
+    assert len(rows) == 4
+    assert summary[headers["Строка"]] == "Итого"
+    assert summary[headers["Сумма НДС"]] == 30
+    assert summary[headers["НДС книги покупок РВБ"]] == 30
+    assert summary[headers["Расхождение НДС РВБ"]] == 0
+    assert summary[headers["Статус сверки"]] == "Сходится"
+    assert workbook["НДС РВБ"].freeze_panes == "A2"
+    assert next(iter(workbook["НДС РВБ"].tables.values())).autoFilter is not None
+
+
+@pytest.mark.parametrize("vat_deduction_mode", ["not_applicable", "not_allowed"])
+def test_tax_load_rwb_vat_sheet_stays_visible_when_deduction_not_applicable(
+    tmp_path: Path,
+    vat_deduction_mode: str,
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "vatMode": "none",
+            "vatDeductionMode": vat_deduction_mode,
+        },
+        evidence=_rwb_vat_evidence(),
+    )
+
+    assert payload["rwbVatReconciliation"]["status"] == "not_applicable"
+    assert not any(
+        issue["code"] == "rwb_vat_reconciliation_review_required"
+        for issue in payload["issues"]
+    )
+    path = tmp_path / f"tax-load-rwb-vat-{vat_deduction_mode}.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    rows = list(workbook["НДС РВБ"].iter_rows(values_only=True))
+    applicability_index = rows[0].index("Применимость вычета")
+    status_index = rows[0].index("Статус сверки")
+    assert {row[applicability_index] for row in rows[1:]} == {"Не применяется"}
+    assert {row[status_index] for row in rows[1:]} == {"Не применяется"}
+
+
+def test_tax_load_rwb_vat_keeps_incomplete_service_rows_explicit() -> None:
+    reconciliation = _rwb_vat_evidence(
+        supplier_expenses_status="missing"
+    )["rwbVatReconciliation"]
+
+    assert reconciliation["status"] == "partial_source"
+    assert reconciliation["sourceStatus"] == "partial_source"
+    assert reconciliation["serviceTotals"] == {
+        "rowCount": 0,
+        "amountExcludingVat": None,
+        "vatAmount": None,
+        "amountIncludingVat": None,
+    }
+    assert reconciliation["vatDifference"] is None
+
+
+def test_tax_load_rwb_vat_does_not_exact_match_without_invoice_date() -> None:
+    rows = _rwb_vat_evidence(purchase_invoice_date=None)[
+        "rwbVatReconciliation"
+    ]["rows"]
+
+    assert {row["purchaseBookIncluded"] for row in rows} == {"unknown"}
+    assert {row["purchaseBookInvoiceNumber"] for row in rows} == {""}
+
+
+def test_tax_load_excel_builds_detailed_usn_monthly_matrix(tmp_path: Path) -> None:
+    evidence = _usn_tax_evidence()
+    evidence["usnIncomeEvidence"] = {
+        "value": "600",
+        "status": "loaded",
+        "classificationStatus": "review_required",
+        "sourceKind": "onec_accounting_bank_in",
+        "monthlyValues": [
+            {
+                "month": f"2026-{month:02d}",
+                "value": "100",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+            for month in range(1, 7)
+        ],
+        "unclassifiedValue": "20",
+        "monthlyUnclassifiedValues": [
+            {
+                "month": "2026-02",
+                "value": "20",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+        ],
+        "excludedValue": "5",
+        "monthlyExcludedValues": [
+            {
+                "month": "2026-01",
+                "value": "5",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+        ],
+        "loanReceiptsValue": "250",
+        "monthlyLoanReceiptValues": [
+            {
+                "month": "2026-03",
+                "value": "250",
+                "status": "loaded",
+                "rowCount": 1,
+            }
+        ],
+        "marketplaceBreakdownStatus": "ready",
+        "marketplaceBreakdown": [
+            {
+                "category": "wildberries",
+                "label": "Wildberries (РВБ)",
+                "value": "360",
+                "rowCount": 6,
+                "monthlyValues": [
+                    {
+                        "month": f"2026-{month:02d}",
+                        "value": "60",
+                        "status": "loaded",
+                        "rowCount": 1,
+                    }
+                    for month in range(1, 7)
+                ],
+            },
+            {
+                "category": "ozon",
+                "label": "Ozon (Интернет Решения)",
+                "value": "240",
+                "rowCount": 6,
+                "monthlyValues": [
+                    {
+                        "month": f"2026-{month:02d}",
+                        "value": "40",
+                        "status": "loaded",
+                        "rowCount": 1,
+                    }
+                    for month in range(1, 7)
+                ],
+            },
+            {
+                "category": "other",
+                "label": "Другие покупатели",
+                "value": "0",
+                "rowCount": 0,
+                "monthlyValues": [
+                    {
+                        "month": f"2026-{month:02d}",
+                        "value": "0",
+                        "status": "loaded",
+                        "rowCount": 0,
+                    }
+                    for month in range(1, 7)
+                ],
+            },
+        ],
+    }
+    evidence["kudirIncomeEvidence"] = {
+        "value": "580",
+        "status": "loaded",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {
+                "month": "2026-03",
+                "value": "290",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+            {
+                "month": "2026-06",
+                "value": "290",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+        ],
+    }
+    evidence["usnTaxPaymentEvidence"] = {
+        "status": "loaded",
+        "sourceKind": "onec_accounting_bank_out",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "40", "status": "loaded", "rowCount": 1},
+            {"month": "2026-04", "value": "60", "status": "loaded", "rowCount": 1},
+        ],
+    }
+    evidence["usnPayrollPaymentEvidence"] = {
+        "value": "150",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_accounting_bank_out",
+        "monthlyValues": [
+            {
+                "month": "2026-01",
+                "value": "70",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+            {
+                "month": "2026-06",
+                "value": "80",
+                "status": "loaded",
+                "rowCount": 1,
+            },
+        ],
+    }
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "revenueTaxRate": "0.01",
+        },
+        evidence=evidence,
+    )
+    path = tmp_path / "tax-load-usn-detail.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=False)
+    sheet = workbook["Расчёт УСН"]
+    rows = {
+        row[0].value: row
+        for row in sheet.iter_rows(min_row=2)
+        if row[0].value is not None
+    }
+    headers = [cell.value for cell in sheet[1]]
+
+    assert headers == [
+        "Показатель",
+        "Январь",
+        "Февраль",
+        "Март",
+        "Итого за I квартал",
+        "Апрель",
+        "Май",
+        "Июнь",
+        "Итого за полугодие",
+    ]
+    total = rows["Итого подтверждённый доход без НДС"]
+    assert total[4].value == Decimal("300")
+    assert total[8].value == Decimal("600")
+    assert rows["  Wildberries (РВБ)"][1].value == Decimal("60")
+    assert rows["  Wildberries (РВБ)"][8].value == Decimal("360")
+    assert rows["  Ozon (Интернет Решения)"][1].value == Decimal(
+        "40"
+    )
+    assert rows["Итого по маркетплейсам"][8].value == Decimal("600")
+    assert rows["  другие покупатели"][8].value == Decimal("0")
+    assert rows["Прочие поступления без НДС (на проверке)"][2].value == Decimal(
+        "20"
+    )
+    assert rows["Личные средства предпринимателя (не доход)"][1].value == Decimal(
+        "5"
+    )
+    assert rows["Кредиты и займы полученные (не доход)"][3].value == Decimal(
+        "250"
+    )
+    assert rows["Заработная плата (выплаты, справочно)"][1].value == Decimal(
+        "70"
+    )
+    assert rows["Заработная плата (выплаты, справочно)"][8].value == Decimal(
+        "150"
+    )
+    assert rows["База УСН по КУДиР (сверка)"][8].value == Decimal("580")
+    assert rows["Расхождение с КУДиР"][8].value == Decimal("20.00")
+    assert rows["Ставка УСН"][8].value == pytest.approx(0.01)
+    assert rows["Ставка УСН"][8].number_format == "0.00%"
+    assert rows["Исчислено УСН с начала года"][8].value == Decimal("6.00")
+    assert rows["Уплачено УСН"][8].value == Decimal("100")
+    assert rows["К доплате / переплата УСН"][8].value == Decimal("-94.00")
+    assert total[0].fill.fgColor.rgb.endswith("FFF200")
+    assert rows["Поступления от покупателей без НДС"][0].fill.fgColor.rgb.endswith(
+        "E2F0D9"
+    )
+    assert rows["Статус данных"][8].value == "Требуется проверка"
+    assert len(sheet.tables) == 1
+    assert not any(
+        cell.data_type == "f"
+        for worksheet in workbook.worksheets
+        for row in worksheet.iter_rows()
+        for cell in row
+    )
+
+
+def test_tax_load_excel_does_not_label_legacy_kudir_months_as_bank_receipts(
+    tmp_path: Path,
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы",
+            "profileStatus": "ready",
+            "revenueTaxRate": "0.01",
+        },
+        evidence=_usn_tax_evidence(),
+    )
+    payload["usnDetail"] = {
+        "status": "ready",
+        "sourceKind": "onec_kudir",
+        "revenueTaxRate": "0.01",
+        "incomeYtd": "580",
+        "calculatedTaxYtd": "5.80",
+        "paidTaxYtd": "100",
+        "taxPayable": "-94.20",
+        "monthlyIncome": [
+            {"month": "2026-03", "value": "290", "status": "loaded"},
+            {"month": "2026-06", "value": "290", "status": "loaded"},
+        ],
+    }
+
+    path = tmp_path / "tax-load-legacy-kudir.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    sheet = workbook["Расчёт УСН"]
+    rows = {
+        row[0].value: row
+        for row in sheet.iter_rows(min_row=2)
+        if row[0].value is not None
+    }
+
+    bank_receipts = rows["Поступления от покупателей без НДС"]
+    assert all(cell.value is None for cell in bank_receipts[1:])
+    kudir = rows["База УСН по КУДиР (сверка)"]
+    assert kudir[3].value == Decimal("290")
+    assert kudir[7].value == Decimal("290")
+    assert kudir[8].value == Decimal("580")
+    assert rows["Статус данных"][8].value == "Требуется повторное формирование"
+    assert (
+        rows["Помесячная детализация"][8].value
+        == "Сформируйте отчёт повторно для заполнения месяцев"
+    )
+
+
+def test_tax_load_excel_hides_1c_placeholder_due_date(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["taxRows"][0]["dueDate"] = "0001-01-01T00:00:00"
+    payload["paymentSchedule"][0]["dueDate"] = "0001-01-01T00:00:00"
+    path = tmp_path / "tax-load-placeholder-date.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+
+    for title in ("Налоги", "График платежей"):
+        sheet = workbook[title]
+        headers = [cell.value for cell in sheet[1]]
+        due_date_cell = sheet.cell(row=2, column=headers.index("Срок уплаты") + 1)
+        assert due_date_cell.value == "Не указано"
+        assert due_date_cell.data_type == "s"
+
+
+def test_tax_load_evidence_rejects_1c_placeholder_date() -> None:
+    assert _date_text("0001-01-01T00:00:00") is None
+    assert _date_text("2026-05-31T00:00:00") == "2026-05-31"
+
+
+def test_tax_load_source_gap_issue_has_only_user_facing_russian_text() -> None:
+    issue = _source_gap_issues(
+        {}, {"onec_official_financial_results": "Доходный знаменатель"}
+    )[0]
+
+    assert issue["message"] == (
+        "Источник «Доходный знаменатель» не подтверждён за выбранный период."
+    )
+    assert issue["nextAction"] == (
+        "Проверить публикацию 1С и повторить загрузку только для чтения."
+    )
+    assert "onec_" not in issue["message"]
+    assert "read-only" not in issue["nextAction"]
+
+
+def test_tax_load_excel_ignores_unapproved_internal_field(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["taxLoadSummary"]["futureInternalField"] = "internal_value"
+
+    path = tmp_path / "tax-load-untranslated.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    values = {
+        value
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows(values_only=True)
+        for value in row
+        if value is not None
+    }
+
+    assert "futureInternalField" not in values
+    assert "internal_value" not in values
+
+
+def test_tax_load_excel_hides_unknown_enum_value(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["businessStatus"] = "future_internal_status"
+    path = tmp_path / "tax-load-unknown-status.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    overview = {
+        row[0]: row[1]
+        for row in workbook["Обзор"].iter_rows(values_only=True)
+        if row[0]
+    }
+
+    assert overview["Статус отчёта"] == "Не определено"
+    assert "future_internal_status" not in overview.values()
+
+
+def test_tax_load_excel_neutralizes_formula_text(tmp_path: Path) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    payload["taxRows"][0]["taxName"] = '=HYPERLINK("https://example.test")'
+    path = tmp_path / "tax-load-safe-text.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=False)
+    cell = workbook["Налоги"].cell(row=2, column=1)
+
+    assert cell.value.startswith("=HYPERLINK")
+    assert cell.data_type == "s"
+
+
+def test_scenario_excel_atomic_save_preserves_previous_file_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={},
+        evidence=_tax_evidence(),
+    )
+    path = tmp_path / "tax-load-atomic.xlsx"
+    path.write_bytes(b"previous-complete-file")
+
+    def fail_save(_workbook: Workbook, temporary_path: Path) -> None:
+        Path(temporary_path).write_bytes(b"partial")
+        raise RuntimeError("simulated save failure")
+
+    monkeypatch.setattr(Workbook, "save", fail_save)
+    with pytest.raises(RuntimeError, match="simulated save failure"):
+        write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+
+    assert path.read_bytes() == b"previous-complete-file"
+    assert not list(tmp_path.glob(".tax-load-atomic-*.xlsx"))
 
 
 def test_fns_2025_reference_is_versioned_and_comparison_disabled() -> None:
@@ -778,6 +2228,38 @@ def _complete_generation(
         generation = db.get(SourceRefreshRun, generation_run_id)
         assert generation is not None
         user = db.scalar(select(User).where(User.email == "admin@example.com"))
+        base_tax_profile = db.get(OrganizationTaxProfile, "tax-profile-1")
+        if (
+            base_tax_profile is not None
+            and base_tax_profile.organization_id == generation.organization_id
+        ):
+            db.add(
+                OrganizationTaxProfile(
+                    id=f"tax-profile-{generation.id}",
+                    tenant_id=base_tax_profile.tenant_id,
+                    client_id=base_tax_profile.client_id,
+                    client_company_id=base_tax_profile.client_company_id,
+                    organization_id=base_tax_profile.organization_id,
+                    tax_system=base_tax_profile.tax_system,
+                    vat_rate=base_tax_profile.vat_rate,
+                    vat_mode=base_tax_profile.vat_mode,
+                    vat_deduction_mode=base_tax_profile.vat_deduction_mode,
+                    revenue_tax_rate=base_tax_profile.revenue_tax_rate,
+                    income_tax_kind=base_tax_profile.income_tax_kind,
+                    valid_from=base_tax_profile.valid_from,
+                    valid_to=base_tax_profile.valid_to,
+                    source=base_tax_profile.source,
+                    rate_basis_kind=base_tax_profile.rate_basis_kind,
+                    basis_document=base_tax_profile.basis_document,
+                    confirmed_by=base_tax_profile.confirmed_by,
+                    source_object_ids=base_tax_profile.source_object_ids,
+                    source_refresh_run_id=generation.id,
+                    source_snapshot_hash=base_tax_profile.source_snapshot_hash,
+                    methodology_version=base_tax_profile.methodology_version,
+                    status=base_tax_profile.status,
+                    created_at=repository.security.utcnow(),
+                )
+            )
         repository.add_source_refresh_collection(
             db,
             generation,
@@ -920,6 +2402,21 @@ def test_staff_api_generation_idempotency_current_audit_and_excel(
         other_organization.json()["generationRunId"],
         {**_month_close_evidence(), "organizationId": "ORG-2"},
     )
+    tax_export = client.get(f"/api/reports/{other_kind_report_id}/export.xlsx")
+    assert tax_export.status_code == 200
+    assert "xlsx" in tax_export.headers["content-disposition"]
+    assert "v6" in tax_export.headers["content-disposition"]
+    tax_workbook = load_workbook(BytesIO(tax_export.content), data_only=True)
+    tax_overview = {
+        row[0]: row[1]
+        for row in tax_workbook["Обзор"].iter_rows(values_only=True)
+        if row[0]
+    }
+    assert tax_overview["Клиент"] == "Клиент А"
+    assert tax_overview["Организация 1С"] == "ООО Клиент А"
+    assert tax_overview["Налоговый режим"] == "ОСНО"
+    assert tax_overview["Начало периода с начала года"].date() == date(2026, 1, 1)
+    assert "Код налога" not in {cell.value for cell in tax_workbook["Налоги"][1]}
 
     with session_factory() as db:
         reports = list(
