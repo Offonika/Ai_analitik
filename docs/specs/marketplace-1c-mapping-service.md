@@ -394,8 +394,14 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
   `imported_mapping_file` не заменяет более точную исходную строку того же
   файла. При одновременном наличии legacy-файла и WB product cards их alias
   объединяются до применения current mapping; legacy-файл не подавляет
-  дополнительные barcode alias карточек. Налоговые профили и current mapping
-  передаются builder-у из PostgreSQL.
+  дополнительные barcode alias карточек. Если legacy-файла в runtime нет,
+  accepted current mapping проецируется на стабильный product-level ключ
+  `seller_account_id + nm_id + vendor_code` текущей WB card и тем самым
+  покрывает исторические barcode alias того же товара. Проекция разрешена
+  только при единственном логическом товаре 1С; несколько разных current
+  решений для одного product-level ключа остаются явным
+  `missing_mapping`/`ambiguous_mapping`, а не выбираются догадкой. Налоговые
+  профили и current mapping передаются builder-у из PostgreSQL.
 - Старые TXT/TSV/CSV и 1С extension responses принимают однозначные связи как
   current mapping, а конфликтные строки оставляют для ручной проверки.
 - Отчет явно показывает `missing_mapping`, `ambiguous_mapping` и `excluded`.
@@ -453,3 +459,6 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
 - 2026-07-24 - preserved live WB product-card aliases alongside accepted legacy
   mapping files so current mapping decisions cover every known barcode alias
   during report rebuild.
+- 2026-07-25 - projected a unique accepted current mapping onto the stable WB
+  product-level key when an immutable runtime contains no local legacy mapping
+  files; conflicting current 1C items remain explicit instead of being guessed.

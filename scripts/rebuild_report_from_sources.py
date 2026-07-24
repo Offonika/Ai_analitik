@@ -41,6 +41,7 @@ from wb_unit_economics.mapping import (
     load_onec_rows,
     load_wb_card_flat_rows,
     merge_sku_mappings_with_current,
+    project_current_mapping_to_wb_card_products,
 )
 from wb_unit_economics.onec_cost import (
     extract_gross_profit_document_rows,
@@ -373,6 +374,11 @@ def build_db_first_payload(
     else:
         onec_barcodes = load_onec_rows(onec_dir, "barcodes")
         onec_nomenclature = load_onec_rows(onec_dir, "nomenclature")
+        wb_card_rows = (
+            load_wb_card_flat_rows(wb_cards_dir)
+            if wb_cards_dir is not None
+            else []
+        )
         fallback_sku_mappings = _fallback_sku_mappings(
             client_id=args.client_id,
             wb_cards_dir=wb_cards_dir,
@@ -381,12 +387,20 @@ def build_db_first_payload(
             onec_nomenclature=onec_nomenclature,
             account_mapping=account_mapping,
         )
+        expanded_current_mappings = (
+            project_current_mapping_to_wb_card_products(
+                supplied_sku_mappings,
+                wb_card_rows,
+            )
+            if supplied_sku_mappings is not None
+            else None
+        )
         sku_mappings = (
             merge_sku_mappings_with_current(
                 fallback_sku_mappings,
-                supplied_sku_mappings,
+                expanded_current_mappings,
             )
-            if supplied_sku_mappings is not None
+            if expanded_current_mappings is not None
             else fallback_sku_mappings
         )
 

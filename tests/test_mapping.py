@@ -10,6 +10,7 @@ from wb_unit_economics.mapping import (
     build_sku_mapping_from_articles,
     build_sku_mapping_from_onec_marketplace_files,
     merge_sku_mappings_with_current,
+    project_current_mapping_to_wb_card_products,
 )
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -106,8 +107,110 @@ def test_current_mapping_keeps_alias_characteristic_for_same_onec_item() -> None
     assert alias.onec_characteristic == "SIZE-L"
 
 
+def test_imported_current_projection_covers_card_aliases_without_legacy_file() -> None:
+    current = [
+        _sku_mapping(
+            barcode="111",
+            onec_item_id="CURRENT-ACCEPTED",
+            match_method="imported_mapping_file",
+        )
+    ]
+
+    projected = project_current_mapping_to_wb_card_products(
+        current,
+        [
+            {
+                "seller_account_id": "WB_ACCOUNT_1",
+                "nm_id": 101,
+                "vendor_code": "A-1",
+                "barcode": "111",
+            },
+            {
+                "seller_account_id": "WB_ACCOUNT_1",
+                "nm_id": 101,
+                "vendor_code": "A-1",
+                "barcode": "222",
+            },
+        ],
+    )
+
+    assert {
+        (item.nm_id, item.vendor_code, item.barcode)
+        for item in projected
+    } == {
+        (101, "A-1", "111"),
+        (101, "a-1", ""),
+    }
+    product_mapping = next(item for item in projected if not item.barcode)
+    assert product_mapping.onec_item_id == "CURRENT-ACCEPTED"
+    assert product_mapping.match_method == "mapping_service_imported"
+
+
+def test_unresolved_current_mapping_is_not_expanded_over_card_fallbacks() -> None:
+    current = [
+        _sku_mapping(
+            barcode="111",
+            onec_item_id="",
+            match_method="",
+        ).model_copy(update={"status": MappingStatus.MISSING})
+    ]
+
+    projected = project_current_mapping_to_wb_card_products(
+        current,
+        [
+            {
+                "seller_account_id": "WB_ACCOUNT_1",
+                "nm_id": 101,
+                "vendor_code": "A-1",
+                "barcode": "222",
+            }
+        ],
+    )
+
+    assert [(item.vendor_code, item.barcode) for item in projected] == [
+        ("A-1", "111")
+    ]
+
+
+def test_same_current_item_with_stronger_method_projects_once() -> None:
+    current = [
+        _sku_mapping(
+            barcode="111",
+            onec_item_id="CURRENT-ACCEPTED",
+            match_method="imported_mapping_file",
+        ),
+        _sku_mapping(
+            barcode="222",
+            onec_item_id="CURRENT-ACCEPTED",
+            match_method="mapping_service_auto_barcode",
+        ),
+    ]
+
+    projected = project_current_mapping_to_wb_card_products(
+        current,
+        [
+            {
+                "seller_account_id": "WB_ACCOUNT_1",
+                "nm_id": 101,
+                "vendor_code": "A-1",
+                "barcode": "333",
+            }
+        ],
+    )
+
+    product_mapping = next(item for item in projected if not item.barcode)
+    assert product_mapping.onec_item_id == "CURRENT-ACCEPTED"
+    assert product_mapping.match_method == "mapping_service_auto_barcode"
+
+
 def test_imported_current_projection_does_not_replace_legacy_file_identity() -> None:
-    fallback = [_sku_mapping(barcode="222", onec_item_id="LEGACY-PRECISE")]
+    fallback = [
+        _sku_mapping(
+            barcode="222",
+            onec_item_id="LEGACY-PRECISE",
+            match_method="imported_mapping_file",
+        )
+    ]
     current = [
         _sku_mapping(
             barcode="111",

@@ -205,6 +205,101 @@ def build_sku_mapping_from_barcodes(
     )
 
 
+def project_current_mapping_to_wb_card_products(
+    current_mappings: Iterable[SkuMapping],
+    wb_card_rows: Iterable[Mapping[str, Any]],
+) -> list[SkuMapping]:
+    """Project accepted current decisions onto stable WB product-level keys."""
+
+    current = list(current_mappings)
+    by_nm: dict[tuple[str, int], list[SkuMapping]] = defaultdict(list)
+    by_vendor: dict[tuple[str, str], list[SkuMapping]] = defaultdict(list)
+    for item in current:
+        if item.status not in {MappingStatus.MATCHED, MappingStatus.EXCLUDED}:
+            continue
+        if item.nm_id is not None:
+            by_nm[(item.seller_account_id, item.nm_id)].append(item)
+        vendor_code = normalize_article(item.vendor_code)
+        if vendor_code:
+            by_vendor[(item.seller_account_id, vendor_code)].append(item)
+
+    result = list(current)
+    seen_keys = {_sku_mapping_key(item) for item in current}
+    seen_products: set[tuple[str, int | None, str]] = set()
+    for row in wb_card_rows:
+        seller_account_id = _text(row.get("seller_account_id"))
+        nm_id = _int_or_none(row.get("nm_id"))
+        vendor_code = normalize_article(row.get("vendor_code"))
+        product_key = (seller_account_id, nm_id, vendor_code)
+        if (
+            not seller_account_id
+            or not vendor_code
+            or product_key in seen_products
+        ):
+            continue
+        seen_products.add(product_key)
+        candidates = (
+            list(by_nm.get((seller_account_id, nm_id), []))
+            if nm_id is not None
+            else []
+        )
+        if not candidates and vendor_code:
+            candidates = list(
+                by_vendor.get((seller_account_id, vendor_code), [])
+            )
+        logical: dict[
+            tuple[str, str, MappingStatus],
+            list[SkuMapping],
+        ] = defaultdict(list)
+        for item in candidates:
+            logical[
+                (
+                    item.onec_item_id,
+                    item.onec_characteristic,
+                    item.status,
+                )
+            ].append(item)
+        if len(logical) != 1:
+            continue
+        selected = max(
+            next(iter(logical.values())),
+            key=_current_projection_priority,
+        )
+        projected = selected.model_copy(
+            update={
+                "nm_id": nm_id,
+                "vendor_code": vendor_code,
+                "barcode": "",
+                "match_method": (
+                    "mapping_service_imported"
+                    if selected.match_method == "imported_mapping_file"
+                    else selected.match_method
+                ),
+            }
+        )
+        key = _sku_mapping_key(projected)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result.append(projected)
+    return result
+
+
+def _current_projection_priority(item: SkuMapping) -> tuple[int, datetime, str]:
+    method_priority = {
+        "mapping_service_manual": 50,
+        "mapping_service_excluded": 50,
+        "mapping_service_auto_barcode": 40,
+        "mapping_service_imported": 30,
+        "imported_mapping_file": 20,
+    }
+    return (
+        method_priority.get(item.match_method, 10),
+        item.updated_at,
+        item.barcode,
+    )
+
+
 def merge_sku_mappings_with_current(
     fallback_mappings: Iterable[SkuMapping],
     current_mappings: Iterable[SkuMapping],
