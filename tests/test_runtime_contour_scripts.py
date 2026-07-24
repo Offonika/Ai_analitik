@@ -50,20 +50,111 @@ def test_nginx_templates_proxy_accounting_workflow_route() -> None:
     test_config = (ROOT / "deploy/nginx/shumeiko.offonika.ru.conf").read_text(
         encoding="utf-8"
     )
-    production_config = (
-        ROOT / "deploy/nginx/analitika.offonika.ru.conf"
-    ).read_text(encoding="utf-8")
-
-    workflow_location = test_config.index(
-        "location ^~ /accounting-workflows"
+    production_config = (ROOT / "deploy/nginx/analitika.offonika.ru.conf").read_text(
+        encoding="utf-8"
     )
+
+    workflow_location = test_config.index("location ^~ /accounting-workflows")
     static_fallback = test_config.rindex("location / {")
     assert workflow_location < static_fallback
-    assert "proxy_pass http://127.0.0.1:8098;" in test_config[
-        workflow_location:static_fallback
-    ]
+    assert (
+        "proxy_pass http://127.0.0.1:8098;"
+        in test_config[workflow_location:static_fallback]
+    )
     assert "accounting-workflows" in production_config
     assert "proxy_pass http://127.0.0.1:8097;" in production_config
+
+
+def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
+    systemd_root = ROOT / "deploy/systemd"
+    prune_timer = (systemd_root / "shumeiko-source-refresh-prune.timer").read_text(
+        encoding="utf-8"
+    )
+    prune_service = (systemd_root / "shumeiko-source-refresh-prune.service").read_text(
+        encoding="utf-8"
+    )
+    release_timer = (systemd_root / "shumeiko-runtime-release-prune.timer").read_text(
+        encoding="utf-8"
+    )
+    release_service = (
+        systemd_root / "shumeiko-runtime-release-prune.service"
+    ).read_text(encoding="utf-8")
+    archive_timer = (systemd_root / "shumeiko-source-snapshot-archive.timer").read_text(
+        encoding="utf-8"
+    )
+    archive_service = (
+        systemd_root / "shumeiko-source-snapshot-archive.service"
+    ).read_text(encoding="utf-8")
+    assert "OnCalendar=*-*-* *:45:00" in prune_timer
+    assert "--daily-keep 3 --full-keep 2 --apply" in prune_service
+    assert "daily-20260712-065846" not in prune_service
+    assert "RequiresMountsFor=/data/shumeyko/source_refresh" in prune_service
+    assert "OnCalendar=*-*-* 04:35:00" in release_timer
+    assert "--keep-latest 2 --grace-hours 24 --apply" in release_service
+    assert "OnCalendar=*-*-* 04:50:00" in archive_timer
+    assert "archive-eligible --apply --evict" in archive_service
+    assert "--min-age-hours 48" in archive_service
+    assert "RequiresMountsFor=/data/shumeyko/source_refresh" in archive_service
+    assert not (systemd_root / "shumeiko-test-source-snapshot-archive.timer").exists()
+    assert not (
+        systemd_root / "shumeiko-test-source-snapshot-archive.service"
+    ).exists()
+
+    accounting_canary = (
+        systemd_root
+        / "shumeiko-web-test.service.d"
+        / "accounting-canary.conf"
+    ).read_text(encoding="utf-8")
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=false" in accounting_canary
+    assert "SHUMEYKO_ACCOUNTING_WORKFLOW_SCHEDULER_ENABLED=false" in (
+        accounting_canary
+    )
+    assert (
+        "SHUMEYKO_ACCOUNTING_WORKFLOW_EVIDENCE_ROOT="
+        "/data/shumeyko/test/accounting_workflow_evidence"
+    ) in accounting_canary
+
+    required_mounts = {
+        "shumeiko-web-prod.service": "/data/shumeyko/source_refresh",
+        "shumeiko-web-test.service": "/data/shumeyko/test",
+        "shumeiko-web-backup.service": "/var/backups",
+        "shumeiko-source-refresh-daily.service": "/data/shumeyko/source_refresh",
+        "shumeiko-source-refresh-weekly.service": "/data/shumeyko/source_refresh",
+        "shumeiko-source-refresh-worker@.service": "/data/shumeyko/source_refresh",
+    }
+    for unit_name, mount_path in required_mounts.items():
+        unit = (systemd_root / unit_name).read_text(encoding="utf-8")
+        assert f"RequiresMountsFor={mount_path}" in unit
+
+    for unit_name in (
+        "shumeiko-web-prod.service",
+        "shumeiko-source-refresh-daily.service",
+        "shumeiko-source-refresh-weekly.service",
+        "shumeiko-source-refresh-worker@.service",
+    ):
+        unit = (systemd_root / unit_name).read_text(encoding="utf-8")
+        assert "SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20" in unit
+        assert "/data/shumeyko/prod/reports" in unit
+
+    production_unit = (systemd_root / "shumeiko-web-prod.service").read_text(
+        encoding="utf-8"
+    )
+    test_unit = (systemd_root / "shumeiko-web-test.service").read_text(
+        encoding="utf-8"
+    )
+    assert "SHUMEYKO_RUNTIME_ENVIRONMENT=production" in production_unit
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in production_unit
+    assert "SHUMEYKO_RUNTIME_ENVIRONMENT=test" in test_unit
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=false" in test_unit
+    assert "SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false" in test_unit
+    assert "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports" in test_unit
+
+    health_helper = (ROOT / "scripts/check_web_cabinet_health.py").read_text(
+        encoding="utf-8"
+    )
+    assert "http://127.0.0.1:8097/api/health" in health_helper
+    assert 'default="shumeiko-web-prod.service"' in health_helper
+    assert "8096/api/health" not in health_helper
 
 
 def test_runtime_release_bootstrap_prefers_its_own_source(tmp_path: Path) -> None:
@@ -137,15 +228,19 @@ def test_runtime_env_generator_removes_production_secrets_from_test(
     production_values = _read_env(production)
     test_values = _read_env(test)
     assert production_values["SHUMEYKO_BOOTSTRAP_PASSWORD"] == "bootstrap-secret"
+    assert production_values["SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB"] == "20"
+    assert (
+        production_values["SHUMEYKO_ALLOWED_EXPORT_ROOT"]
+        == "/data/shumeyko/prod/reports"
+    )
     assert test_values["SHUMEYKO_BOOTSTRAP_PASSWORD"] == ""
     assert test_values["SHUMEYKO_INTEGRATION_SECRET_KEY"] == ""
     assert test_values["SHUMEYKO_OPENAI_API_KEY"] == ""
     assert test_values["ONEC_ODATA_PASSWORD"] == ""
     assert test_values["SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED"] == "false"
     assert test_values["SHUMEYKO_CLIENT_LOGIN_ENABLED"] == "false"
-    assert test_values["SHUMEYKO_DATABASE_URL"].endswith(
-        "/shumeyko_web_cabinet_test"
-    )
+    assert test_values["SHUMEYKO_ALLOWED_EXPORT_ROOT"] == "/data/shumeyko/test/reports"
+    assert test_values["SHUMEYKO_DATABASE_URL"].endswith("/shumeyko_web_cabinet_test")
     assert test_values["SHUMEYKO_SESSION_SECRET"] != "session-secret"
     assert production.stat().st_mode & 0o777 == 0o600
     assert test.stat().st_mode & 0o777 == 0o600
@@ -181,8 +276,7 @@ def test_runtime_env_generator_accepts_separate_test_database_role(
         env={
             **os.environ,
             "SHUMEYKO_TEST_DATABASE_URL": (
-                "postgresql+psycopg://test-app:placeholder@db/"
-                "shumeyko_web_cabinet_test"
+                "postgresql+psycopg://test-app:placeholder@db/shumeyko_web_cabinet_test"
             ),
         },
     )
@@ -193,9 +287,7 @@ def test_runtime_env_generator_accepts_separate_test_database_role(
     assert test_values["SHUMEYKO_DATABASE_URL"].startswith(
         "postgresql+psycopg://test-app:"
     )
-    assert test_values["SHUMEYKO_DATABASE_URL"].endswith(
-        "/shumeyko_web_cabinet_test"
-    )
+    assert test_values["SHUMEYKO_DATABASE_URL"].endswith("/shumeyko_web_cabinet_test")
 
 
 def test_test_database_sanitizer_reuses_safe_test_artifact(

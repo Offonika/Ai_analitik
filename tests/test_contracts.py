@@ -423,6 +423,175 @@ def test_tax_profiles_use_explicit_onec_organization_profile() -> None:
     assert profiles[0].source == "Catalog_Организации"
 
 
+def test_tax_profile_uses_effective_periodic_onec_settings_per_organization() -> None:
+    mapping = [
+        AccountOrgMapping(
+            client_id="client",
+            seller_account_id="OZON-1",
+            organization_id="ORG-1",
+            seller_account_name="Ozon cabinet",
+            organization_name="ИП на УСН",
+        )
+    ]
+    tax_settings = [
+        {
+            "Period": "2000-01-01T00:00:00",
+            "Организация_Key": "ORG-1",
+            "СистемаНалогообложения": "Упрощенная",
+            "ПлательщикУСН": True,
+            "ОбъектНалогообложения": "Доходы",
+            "СтавкаНалога": "6",
+            "ПлательщикНДСПрименяющийУСН": False,
+        },
+        {
+            "Period": "2026-01-01T00:00:00",
+            "Организация_Key": "ORG-1",
+            "СистемаНалогообложения": "Упрощенная",
+            "ПлательщикУСН": True,
+            "ОбъектНалогообложения": "ДоходыМинусРасходы",
+            "СтавкаНалога": "15",
+            "ПовышеннаяСтавкаНалога": "20",
+            "ПлательщикНДСПрименяющийУСН": True,
+        },
+        {
+            "Period": "2027-01-01T00:00:00",
+            "Организация_Key": "ORG-1",
+            "СистемаНалогообложения": "Упрощенная",
+            "ПлательщикУСН": True,
+            "ОбъектНалогообложения": "Доходы",
+            "СтавкаНалога": "6",
+            "ПлательщикНДСПрименяющийУСН": False,
+        },
+        {
+            "Period": "2026-01-01T00:00:00",
+            "Организация_Key": "ORG-2",
+            "СистемаНалогообложения": "Общая",
+            "ПлательщикУСН": False,
+            "СтавкаНалога": "25",
+        },
+    ]
+    vat_settings = [
+        {
+            "Period": "2026-01-01T00:00:00",
+            "Организация_Key": "ORG-1",
+            "ПрименяетсяОсвобождениеОтУплатыНДС": False,
+            "СтавкаНалогообложенияПриУСН": "Общая",
+        }
+    ]
+
+    profiles = tax_profiles_from_account_org_mapping(
+        "client",
+        mapping,
+        onec_organization_rows=[{"Ref_Key": "ORG-1"}],
+        tax_system_setting_rows=tax_settings,
+        vat_setting_rows=vat_settings,
+        calculation_date=date(2026, 6, 30),
+    )
+    diagnostic = tax_profile_source_diagnostic(
+        "ORG-1",
+        organization={"Ref_Key": "ORG-1"},
+        tax_system_setting_rows=tax_settings,
+        vat_setting_rows=vat_settings,
+        calculation_date=date(2026, 6, 30),
+    )
+
+    assert len(profiles) == 1
+    profile = profiles[0]
+    assert profile.tax_system == "УСН Доходы минус расходы"
+    assert profile.tax_object == "income_minus_expenses"
+    assert profile.tax_rate == Decimal("15")
+    assert profile.elevated_tax_rate == Decimal("20")
+    assert profile.vat_rate == Decimal("22")
+    assert profile.vat_mode is VatMode.INCLUDED
+    assert profile.vat_deduction_mode is VatDeductionMode.ALLOWED
+    assert profile.revenue_tax_rate == Decimal("0")
+    assert profile.valid_from == date(2026, 1, 1)
+    assert profile.source == "1C:tax_system_settings+vat_settings"
+    assert diagnostic["status"] == "ready"
+    assert diagnostic["derivedProfile"]["taxRate"] == "15"
+    assert diagnostic["derivedProfile"]["calculationSupported"] is False
+
+
+def test_periodic_onec_usn_income_profile_uses_rate_as_revenue_fraction() -> None:
+    profiles = tax_profiles_from_account_org_mapping(
+        "client",
+        [
+            AccountOrgMapping(
+                client_id="client",
+                seller_account_id="OZON-1",
+                organization_id="ORG-1",
+                seller_account_name="Ozon cabinet",
+                organization_name="ИП на УСН",
+            )
+        ],
+        onec_organization_rows=[{"Ref_Key": "ORG-1"}],
+        tax_system_setting_rows=[
+            {
+                "Period": "2025-01-01T00:00:00",
+                "Организация_Key": "ORG-1",
+                "СистемаНалогообложения": "Упрощенная",
+                "ПлательщикУСН": True,
+                "ОбъектНалогообложения": "Доходы",
+                "СтавкаНалога": "6",
+                "ПлательщикНДСПрименяющийУСН": False,
+                "ПлательщикНДС": False,
+            }
+        ],
+        calculation_date=date(2026, 6, 30),
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].tax_system == "УСН Доходы"
+    assert profiles[0].tax_object == "income"
+    assert profiles[0].tax_rate == Decimal("6")
+    assert profiles[0].revenue_tax_rate == Decimal("0.06")
+    assert profiles[0].vat_rate == Decimal("0")
+    assert profiles[0].vat_deduction_mode is VatDeductionMode.NOT_APPLICABLE
+
+
+def test_periodic_onec_profile_does_not_replace_missing_vat_kind_with_zero() -> None:
+    tax_settings = [
+        {
+            "Period": "2026-01-01T00:00:00",
+            "Организация_Key": "ORG-1",
+            "СистемаНалогообложения": "Упрощенная",
+            "ПлательщикУСН": True,
+            "ОбъектНалогообложения": "Доходы",
+            "СтавкаНалога": "6",
+            "ПлательщикНДСПрименяющийУСН": True,
+        }
+    ]
+    mapping = [
+        AccountOrgMapping(
+            client_id="client",
+            seller_account_id="OZON-1",
+            organization_id="ORG-1",
+            seller_account_name="Ozon cabinet",
+            organization_name="ИП на УСН",
+        )
+    ]
+
+    profiles = tax_profiles_from_account_org_mapping(
+        "client",
+        mapping,
+        onec_organization_rows=[
+            {"Ref_Key": "ORG-1", "ВидСтавкиНДСПоУмолчанию": "Общая"}
+        ],
+        tax_system_setting_rows=tax_settings,
+        calculation_date=date(2026, 6, 30),
+    )
+    diagnostic = tax_profile_source_diagnostic(
+        "ORG-1",
+        organization={"Ref_Key": "ORG-1", "ВидСтавкиНДСПоУмолчанию": "Общая"},
+        tax_system_setting_rows=tax_settings,
+        calculation_date=date(2026, 6, 30),
+    )
+
+    assert profiles == []
+    assert diagnostic["settingsEvidence"]["vatRate"] is None
+    assert "vatRate" in diagnostic["missingFields"]
+
+
 def test_wb_snapshot_contract_parses_decimal_and_sales_model() -> None:
     snapshot = wb_snapshots()[0]
     assert snapshot.sales_model is SalesModel.FBO

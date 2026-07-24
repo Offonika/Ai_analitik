@@ -373,10 +373,39 @@ def tax_profile_method_supported(tax_profile: TaxProfile) -> bool:
     return is_usn and "доход" in tax_system and "расход" not in tax_system
 
 
-def tax_profile_is_confirmed(tax_profile: TaxProfile) -> bool:
+def tax_profile_is_configured(tax_profile: TaxProfile) -> bool:
+    """Return whether the profile itself is complete, independently of formulas."""
+
     if (
-        tax_profile.vat_deduction_mode is VatDeductionMode.UNKNOWN
-        or not tax_profile_method_supported(tax_profile)
+        not tax_profile.tax_system.strip()
+        or tax_profile.vat_deduction_mode is VatDeductionMode.UNKNOWN
+    ):
+        return False
+    if tax_profile_is_osno(tax_profile):
+        return True
+    tax_system = re.sub(
+        r"[\s_\-]+",
+        " ",
+        tax_profile.tax_system.casefold(),
+    ).strip()
+    is_usn = "усн" in tax_system or "упрощ" in tax_system
+    if not is_usn:
+        return False
+    tax_object = tax_profile.tax_object.strip().casefold()
+    if not tax_object:
+        tax_object = (
+            "income_minus_expenses" if "расход" in tax_system else "income"
+        )
+    if tax_object == "income":
+        return tax_profile.tax_rate > 0 or tax_profile.revenue_tax_rate > 0
+    if tax_object == "income_minus_expenses":
+        return tax_profile.tax_rate > 0
+    return False
+
+
+def tax_profile_is_confirmed(tax_profile: TaxProfile) -> bool:
+    if not tax_profile_is_configured(tax_profile) or not tax_profile_method_supported(
+        tax_profile
     ):
         return False
     if tax_profile_is_osno(tax_profile):

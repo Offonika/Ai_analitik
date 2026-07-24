@@ -9,7 +9,7 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: ozon
 truth_priority: 100
-related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py, src/wb_unit_economics/source_integrity.py, src/wb_unit_economics/marketplace.py, src/wb_unit_economics/contracts.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/providers.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/app.js, scripts/materialize_ozon_typed_facts.py, scripts/compare_ozon_legacy_typed.py, scripts/restore_marketplace_raw_rows.py, scripts/migrate_ozon_tax_profiles.py]
+related_code: [src/wb_unit_economics/ozon.py, src/wb_unit_economics/ozon_mart.py, src/wb_unit_economics/source_integrity.py, src/wb_unit_economics/marketplace.py, src/wb_unit_economics/contracts.py, src/wb_unit_economics/config.py, src/wb_unit_economics/onec_odata.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/providers.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/static/app.js, scripts/materialize_ozon_typed_facts.py, scripts/compare_ozon_legacy_typed.py, scripts/restore_marketplace_raw_rows.py, scripts/migrate_ozon_tax_profiles.py]
 related_tests: [tests/test_ozon.py, tests/test_ozon_mart.py, tests/test_ozon_typed_parity.py, tests/test_source_integrity.py, tests/test_restore_marketplace_raw_rows.py, tests/test_migrate_ozon_tax_profiles.py, tests/test_marketplace_daily_facts.py, tests/test_contracts.py, tests/test_provider_registry.py, tests/test_source_refresh.py, tests/test_web_app.py]
 contracts: [ozon_api_snapshot, ozon_product_snapshot, ozon_stock_snapshot, ozon_sku_mapping, marketplace_api_snapshot, unit_economics_report]
 depends_on: [docs/specs/wb-unit-economics-db-first-report-marts.md, docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md, docs/specs/marketplace-1c-mapping-service.md]
@@ -33,7 +33,7 @@ code_anchors:
     symbols: ["def build_ozon_unit_economics_mart", "def combine_ozon_monthly_marts"]
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Implementation Status
@@ -305,6 +305,12 @@ Provider `ozon_api`:
 
 # Source Refresh
 
+Каждый Ozon/1C refresh читает периодические настройки налогового профиля из
+`InformationRegister_СистемыНалогообложенияОрганизаций` и
+`InformationRegister_НастройкиУчетаНДС`. Профиль разрешается отдельно для
+каждой связанной организации по состоянию на дату строки/периода; настройки
+одной организации не используются как fallback для другой.
+
 План collectors:
 
 | Mode | Collectors |
@@ -567,6 +573,12 @@ source refresh. Он возвращается только в
 - 1C `Document_ПриходнаяНакладная` и, если доступно,
   `Document_ПоступлениеТоваровУслуг_Услуги` - контроль разнесения расходов
   Ozon в 1C, не главный источник расходов V1;
+- приходная накладная 1C с операцией `ВозвратОтКомиссионера` или маркером
+  отчета о выкупленных товарах не является расходом услуг Ozon: она исключается
+  из дельты расходов и остается контекстом отдельной сверки выкупов. Для
+  `Document_ПриходнаяНакладная` snapshot обязан сохранять `ВидОперации`;
+  отсутствующая или неизвестная операция получает `unclassified` и не
+  включается в контроль расходов до проверки;
 - Ozon buyout reconciliation - отдельная сверка, не часть SKU profit;
 - Ozon mapping diagnostics - статус связи Ozon -> 1C.
 

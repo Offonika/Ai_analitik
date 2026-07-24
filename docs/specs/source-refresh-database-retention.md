@@ -10,6 +10,7 @@ source_of_truth: true
 truth_scope: source-retention
 truth_priority: 100
 related_code:
+  - scripts/archive_source_refresh_snapshots.py
   - scripts/prune_source_refresh_database.py
   - scripts/prune_source_refresh.py
   - scripts/prune_report_drafts.py
@@ -19,10 +20,14 @@ related_code:
   - scripts/restore_marketplace_raw_rows.py
   - scripts/build_runtime_release.py
   - scripts/promote_runtime_release.py
+  - deploy/systemd/shumeiko-runtime-release-prune.service
+  - deploy/systemd/shumeiko-runtime-release-prune.timer
   - src/wb_unit_economics/maintenance_safety.py
+  - src/wb_unit_economics/snapshot_archive.py
   - src/wb_unit_economics/runtime_release_lock.py
   - src/wb_unit_economics/web/models.py
 related_tests:
+  - tests/test_snapshot_archive.py
   - tests/test_source_refresh_database_retention.py
   - tests/test_report_draft_retention.py
   - tests/test_runtime_release_retention.py
@@ -53,9 +58,10 @@ test_anchors:
     symbols: ["test_dry_run_checks_report_drafts_before_raw_and_filesystem"]
 depends_on:
   - docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
+  - docs/specs/web-cabinet-runtime-contours.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-20"
+updated_at: "2026-07-24"
 ---
 
 # Implementation Status
@@ -225,6 +231,8 @@ Dry-run печатает только количество кандидатов,
 `reports_root`; общий, внешний, отсутствующий или symlink-путь не удаляется и
 блокирует destructive preflight. Ошибка удаления файла после commit оставляет
 только безопасный orphan и завершает команду ошибкой для ручной сверки.
+Production `reports_root` по умолчанию равен `/data/shumeyko/prod/reports` и не
+может находиться внутри Git checkout.
 
 # Индексы
 
@@ -272,6 +280,26 @@ fail-closed обертку после общей серверной уборки
 7. удаляет старые неактивные runtime releases под общим lock с builder и
    promoter, сохраняя active targets, последний rollback и 24-часовой grace.
 
+Scheduled maintenance по умолчанию обрабатывает все tenant-контуры. Опциональный
+`--tenant` остается только для адресного ручного запуска; пустой filter не
+смешивает данные между tenant, а применяет retention независимо внутри каждой
+области `tenant/client/report_kind/organization`.
+
+Отдельный ежедневный snapshot archive переносит не моложе 48 часов по одному
+каталогу в versioned S3. Каждый regular file загружается под immutable prefix,
+фиксируются object `VersionId`, размер и SHA-256. До локального eviction каждый
+объект полностью скачивается во временный файл и повторно хешируется; symlink,
+special file, отключенное versioning, неполный readback или активный refresh
+блокируют удаление. Локальный receipt с mode `0600` хранит точные версии всех
+объектов. Restore скачивает их во временный каталог, проверяет размер и SHA-256
+каждого файла и только затем атомарно возвращает исходное имя snapshot.
+
+Автоматический snapshot archive относится только к production. Test-контур не
+имеет scheduled source-refresh, archive или retention timers. Разовый ручной
+archive тестовых snapshots допустим только как staff-операция с явными test
+source root, S3 prefix, verify directory и receipt directory и не меняет
+запрет автоматических timers из runtime-contours spec.
+
 Filesystem backup остается ручным fallback: при запуске без `--s3-config`
 обертка проверяет минимум 8 GiB свободного места и сохраняет последний локальный
 maintenance bundle.
@@ -284,6 +312,16 @@ target вне release root или занятый lock блокирует уда�
 старые незавершенные `.runtime-*` и неактивные legacy releases с
 `sourceDirty=true` удаляются только после тех же проверок и не могут считаться
 rollback.
+
+Отдельный ежедневный `shumeiko-runtime-release-prune.timer` применяет только
+fail-closed filesystem retention релизов: сохраняет обе active цели, два
+последних полноценных rollback-релиза и 24-часовой grace. Тяжелый контур с S3
+backup, DB retention и `VACUUM (ANALYZE)` остается еженедельным. Filesystem
+snapshot prune запускается каждый час после rolling refresh и использует
+DB-lineage protection, поэтому активные и опубликованные наборы не удаляются.
+Production web и scheduled refresh units задают storage floor 20 GiB: новый
+refresh завершается контролируемым `blocked_low_disk` до внешних чтений, если
+свободное место `/data` опустилось ниже этого порога.
 
 Любая ошибка backup, worker preflight, PostgreSQL или файловой защиты завершает
 контур без продолжения к следующим destructive-шагам. Ежедневный operational
@@ -310,6 +348,22 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
 - Проверки спецификаций, manifest и релевантные pytest проходят.
 
 ## Changelog
+
+- 2026-07-24: устранён конфликт с runtime-contours spec: scheduled S3 archive
+  остаётся production-only; test допускает только явный ручной staff-запуск с
+  изолированными путями и prefix; production reports root перенесён из Git
+  checkout в `/data/shumeyko/prod/reports`.
+
+- 2026-07-20: добавлены versioned S3 archive/readback/restore receipts и
+  ежедневный fail-closed eviction одного snapshot старше 48 часов.
+
+- 2026-07-20: scheduled maintenance переведен с hardcoded tenant `shumeyko` на
+  all-tenant retention; защита и `keep_latest` продолжают считаться отдельно
+  внутри каждого tenant scope.
+
+- 2026-07-20: filesystem snapshot prune переведен на hourly cadence, добавлен
+  отдельный ежедневный fail-closed runtime release retention и обязательные
+  mount dependencies для `/data`.
 
 - 2026-07-20: added Ozon files-only qualification lineage, full-snapshot parity
   and multi-format restore requirements before raw DB deletion.

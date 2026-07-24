@@ -6,7 +6,7 @@ audience: ["engineering", "consultant"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-excel-mvp-implementation.md"
-updated_at: "2026-07-17"
+updated_at: "2026-07-21"
 ---
 
 # Excel MVP changelog
@@ -17,6 +17,11 @@ updated_at: "2026-07-17"
 
 ## Accepted-spec revisions since July 2026
 
+- 2026-07-21 — made periodic UNF registers
+  `СистемыНалогообложенияОрганизаций` and `НастройкиУчетаНДС` the primary
+  read-only tax-profile settings source per organization and effective date;
+  USN income-minus-expenses settings are persisted without applying their rate
+  to gross revenue.
 - 2026-07-17 — moved product name, WB/1C articles, barcode and `nmId` to the
   start of the DB-first `Юнит экономика` export; moved report/document lineage
   columns to the end; added a row-level, penny-reconciled profit bridge with an

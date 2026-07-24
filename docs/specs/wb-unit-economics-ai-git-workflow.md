@@ -45,7 +45,7 @@ depends_on:
   - AGENTS.md
 supersedes: []
 rollout_required: false
-updated_at: "2026-07-18"
+updated_at: "2026-07-24"
 ---
 
 # Implementation Status
@@ -212,7 +212,9 @@ production database URL.
 - Job `quality` использует Python 3.12 и Node.js 20, запускает Ruff, JavaScript
   syntax check, документальные контракты, DOCX/OpenAPI parity, no-secrets и Git
   safety checks.
-- Job `tests` запускает полный `pytest` на Python 3.12.
+- Job `tests` запускает полный `pytest` на Python 3.12 с timeout 45 минут:
+  локальный объединённый suite занимает более 30 минут, поэтому меньший лимит
+  может оборвать корректный blocking check до финального результата.
 - `permissions` ограничены `contents: read`, а checkout использует
   `persist-credentials: false`.
 - Проверка внешних ссылок видима в CI, но остается неблокирующей.
@@ -265,6 +267,9 @@ Rollback:
 
 # Changelog
 
+- 2026-07-24: timeout blocking job `tests` увеличен с 30 до 45 минут после
+  полного локального прогона `1034 passed` за `32:30`; состав проверок не
+  ослаблен.
 - 2026-07-18: added body-free operational runbook discovery for compact routes
   and evidence rules for environment claims, exact counts and subagent output.
 - 2026-07-18: accepted compact AI documentation routing contract with

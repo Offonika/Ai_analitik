@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/marketplace-unit-economics-ozon-integration.md"
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Ozon integration changelog
@@ -15,6 +15,16 @@ updated_at: "2026-07-20"
 требования остаются в
 `docs/specs/marketplace-unit-economics-ozon-integration.md`; этот файл хранит
 только хронологию изменений.
+
+- 2026-07-21: Исключены приходные накладные `ВозвратОтКомиссионера` и
+  документы с маркером отчета о выкупленных товарах из 1C-контроля расходов
+  Ozon. Коллектор сохраняет `ВидОперации`, а неизвестная операция остается
+  нераспределенной и требует проверки вместо автоматического признания
+  расходом.
+
+- 2026-07-21: Added composite 1C tax-profile settings from the periodic tax
+  system and VAT registers for every linked organization; unsupported tax-base
+  methods remain visible but uncalculated.
 
 - 2026-07-20: accepted the pre-pilot correction set: exact raw response bytes
   with dual hashes, explicit report/pagination failures, signed quantity/COGS,

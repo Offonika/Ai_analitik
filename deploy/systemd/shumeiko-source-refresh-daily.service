@@ -2,12 +2,17 @@
 Description=Shumeyko WB/1C daily source refresh
 After=network-online.target postgresql@16-main.service shumeiko-web-prod.service
 Wants=network-online.target
+RequiresMountsFor=/data/shumeyko/source_refresh /data/shumeyko/prod/reports
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/shumeyko-runtime/prod/current
 EnvironmentFile=/etc/shumeiko-web-prod.env
 Environment=SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko
+Environment=SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports
+Environment=SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/shumeyko_wb_excel_mvp.xlsx
+Environment=SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/source_refresh
+Environment=SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20
 ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode daily --reason "systemd daily source refresh"
 MemoryHigh=512M
 MemoryMax=1G

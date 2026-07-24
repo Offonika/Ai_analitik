@@ -2,6 +2,7 @@
 Description=Fail-closed Shumeyko source refresh retention maintenance
 After=network-online.target postgresql@16-main.service shumeiko-web-backup.service
 Wants=network-online.target
+RequiresMountsFor=/data/shumeyko/source_refresh /var/backups
 ConditionPathIsDirectory=/data/shumeyko/source_refresh
 ConditionPathIsDirectory=/opt/shumeyko-runtime/prod/current
 

@@ -122,7 +122,7 @@ def _build_release(args: argparse.Namespace) -> int:
         with tarfile.open(archive, "r") as bundle:
             bundle.extractall(app_dir, filter="data")
         (app_dir / "reports").symlink_to(
-            Path("/opt/shumeyko-partners-wb-unit-economics/reports"),
+            Path("/data/shumeyko/prod/reports"),
             target_is_directory=True,
         )
         shutil.copytree(venv, app_dir / ".venv", symlinks=True)

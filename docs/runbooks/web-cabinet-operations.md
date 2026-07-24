@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-21"
+updated_at: "2026-07-24"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -29,8 +29,22 @@ Runtime разделен на два процесса:
 - test: `shumeiko-web-test.service`, `127.0.0.1:8098`,
   `/etc/shumeiko-web-test.env`, `https://shumeiko.offonika.ru`.
 
-Legacy `shumeiko-web.service` на `8096` сохраняется только на 24-часовое окно
-rollback и после cutover не имеет публичного nginx-маршрута.
+Legacy rollback window завершено. `shumeiko-web.service`, порт `8096`,
+`/etc/shumeiko-web.env` и публичный nginx-маршрут должны отсутствовать.
+Штатное состояние — активны только `shumeiko-web-prod.service` и
+`shumeiko-web-test.service`. Откат выполняется переключением
+`/opt/shumeyko-runtime/prod/current` на предыдущий проверенный immutable release.
+
+Однократная очистка старого unit после подтверждения health обоих контуров:
+
+```bash
+systemctl disable --now shumeiko-web.service
+rm -f /etc/systemd/system/shumeiko-web.service
+rm -rf /etc/systemd/system/shumeiko-web.service.d
+rm -f /etc/shumeiko-web.env
+systemctl daemon-reload
+systemctl reset-failed
+```
 
 Оба локальных процесса контролируются отдельными timers:
 
@@ -44,6 +58,14 @@ systemctl start shumeiko-web-test-health.service
 Проверка считается успешной только при `status=ok`, правильном
 `runtimeEnvironment` и одинаковых `backendBuildId`/`staticBuildId`.
 
+После изменения systemd/nginx или очистки временных drop-in’ов проверить drift:
+
+```bash
+.venv/bin/python scripts/check_runtime_contour_drift.py
+```
+
+Проверка не читает EnvironmentFiles и должна завершаться без расхождений.
+
 ## Environment files
 
 Production environment задает `SHUMEYKO_RUNTIME_ENVIRONMENT=production`,
@@ -52,6 +74,20 @@ Production environment задает `SHUMEYKO_RUNTIME_ENVIRONMENT=production`,
 `SHUMEYKO_RUNTIME_ENVIRONMENT=test`, `SHUMEYKO_CLIENT_LOGIN_ENABLED=false`,
 отдельную test БД/report root/source root и по умолчанию
 `SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false`.
+
+Report roots разделены и не находятся в Git checkout:
+
+- production: `/data/shumeyko/prod/reports`;
+- test: `/data/shumeyko/test/reports`.
+
+Перед первым переключением production создать новый каталог и скопировать
+действующие artifacts без удаления старого root:
+
+```bash
+install -d -m 0750 /data/shumeyko/prod/reports
+rsync -a /opt/shumeyko-partners-wb-unit-economics/reports/ \
+  /data/shumeyko/prod/reports/
+```
 
 Если test БД принадлежит отдельной PostgreSQL-роли, перед запуском
 `scripts/create_runtime_env_files.py --apply` нужно передать ее полный URL через
@@ -121,6 +157,9 @@ Nginx должен проксировать в FastAPI:
 обращаться к `unitRows` из public summary. Актуальный nginx-шаблон лежит в
 `deploy/nginx/analitika.offonika.ru.conf` и
 `deploy/nginx/shumeiko.offonika.ru.conf`.
+
+Test nginx проксирует только известные FastAPI routes. Любой другой route
+возвращает `404`; fallback на файлы из `/var/www/offonika-shumeiko` запрещён.
 
 Маршрут `/accounting-workflows` должен проксироваться в FastAPI даже при
 выключенном feature-флаге. В этом случае backend вернёт штатный `404`; nginx не
@@ -619,10 +658,13 @@ SHUMEYKO_SOURCE_REFRESH_ENABLED=false
 3. Нажать `Проверить готовность` — это dry-run, без внешних WB/1С чтений и без
    публикации отчета.
 4. Если проверка прошла, нажать `Запустить full` — это явный read-only refresh
-   WB + 1С + mapping. Новый report публикуется только после успешной загрузки
-   обязательных источников и сборки отчета.
+   WB + 1С + mapping. После успешной загрузки обязательных источников и сборки
+   создаётся внутренний staff draft; текущий опубликованный отчёт не меняется.
 5. Смотреть статус в этом же блоке: режим, период, safe-сообщение, новый report
    id и коллекции источников.
+6. Проверить период, coverage, обязательные источники и финансовые замечания,
+   затем отдельным audited-действием финансовой приёмки опубликовать draft как
+   current. Без этого действия предыдущий current остаётся клиентским отчётом.
 
 Клиентская роль этот блок не видит. API не возвращает секреты, raw payloads и
 содержимое mapping; audit по загрузке mapping хранит только безопасное имя файла
@@ -685,8 +727,9 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   `needs_configuration` и не запускают внешние API;
 - `daily` читает rolling window и не публикует новый report run, чтобы не
   создать обрезанный отчет;
-- `weekly`/`full` читают полный настроенный период и создают новый report run
-  только если обязательные источники прошли;
+- `weekly`/`full` читают полный настроенный период и создают новый staff draft
+  только если обязательные источники прошли; автоматической публикации current
+  нет;
 - ошибка WB Finance detail, 1C nomenclature/barcodes/organizations/sales
   register или mapping блокирует новый отчет;
 - optional source failure, например weekly report list, дает report run со
@@ -695,8 +738,8 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   строки требуют проверки.
 - raw rows для WB Finance, weekly report list, 1C OData и mapping metadata
   пишутся в `source_snapshot_rows` после создания collection. Ошибка записи
-  raw rows по обязательному источнику блокирует публикацию, по optional source
-  переводит отчет в `needs_review`.
+  raw rows по обязательному источнику блокирует создание готового draft, по
+  optional source переводит draft в `needs_review`.
 
 Клиентская иерархия:
 
@@ -711,9 +754,9 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   `--client-name`, повторяемые `--company` и `--cabinet`.
 
 Для systemd использовать отдельные timers: daily каждый час на 15-й минуте по
-МСК для rolling raw refresh и weekly/full утром в понедельник для публикации
-нового отчета после закрытия недельных данных WB/1С. Сырые snapshots остаются
-в `data/source_refresh` и не публикуются клиенту.
+МСК для rolling raw refresh и weekly/full утром в понедельник для создания
+нового staff draft после закрытия недельных данных WB/1С. Сырые snapshots
+остаются в `data/source_refresh` и не публикуются клиенту.
 
 Проверка первого scheduled run:
 

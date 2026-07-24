@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from scripts.run_source_refresh_worker import worker_heartbeat_marker_is_fresh
 from wb_unit_economics.web import repository, security
 from wb_unit_economics.web.database import make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshRun
@@ -62,11 +63,22 @@ def main() -> int:
                         repository.ACTIVE_SOURCE_REFRESH_STATUSES
                     ),
                     SourceRefreshRun.finished_at.is_(None),
-                    SourceRefreshRun.heartbeat_at.is_not(None),
-                    SourceRefreshRun.heartbeat_at < cutoff,
+                    or_(
+                        SourceRefreshRun.heartbeat_at.is_(None),
+                        SourceRefreshRun.heartbeat_at < cutoff,
+                    ),
                 )
             )
         )
+    stale_runs = [
+        refresh_run
+        for refresh_run in stale_runs
+        if not worker_heartbeat_marker_is_fresh(
+            refresh_run,
+            source_refresh_root=settings.source_refresh_root_path,
+            cutoff=cutoff,
+        )
+    ]
     actionable_runs = [
         refresh_run
         for refresh_run in stale_runs

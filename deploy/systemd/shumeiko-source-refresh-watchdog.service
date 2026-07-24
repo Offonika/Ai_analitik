@@ -2,6 +2,7 @@
 Description=Shumeyko source refresh worker watchdog
 After=postgresql@16-main.service
 Requires=postgresql@16-main.service
+RequiresMountsFor=/data/shumeyko/source_refresh
 
 [Service]
 Type=oneshot

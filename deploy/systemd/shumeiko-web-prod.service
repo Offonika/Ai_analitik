@@ -3,6 +3,7 @@ Description=Shumeyko Analytics Production Web API
 After=network-online.target postgresql@16-main.service
 Wants=network-online.target
 Requires=postgresql@16-main.service
+RequiresMountsFor=/data/shumeyko/source_refresh /data/shumeyko/prod/reports
 
 [Service]
 Type=simple
@@ -10,6 +11,14 @@ WorkingDirectory=/opt/shumeyko-runtime/prod/current
 EnvironmentFile=/etc/shumeiko-web-prod.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPATH=/opt/shumeyko-runtime/prod/current/src
+Environment=SHUMEYKO_RUNTIME_ENVIRONMENT=production
+Environment=SHUMEYKO_SESSION_COOKIE_NAME=shumeyko_prod_session
+Environment=SHUMEYKO_CLIENT_LOGIN_ENABLED=true
+Environment=SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=true
+Environment=SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports
+Environment=SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/shumeyko_wb_excel_mvp.xlsx
+Environment=SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/source_refresh
+Environment=SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20
 ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python -m uvicorn wb_unit_economics.web.app:app --host 127.0.0.1 --port 8097 --workers 1
 Restart=on-failure
 RestartSec=5

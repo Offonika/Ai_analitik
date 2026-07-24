@@ -90,14 +90,12 @@ def main() -> int:
             "SHUMEYKO_CLIENT_LOGIN_ENABLED": "true",
             "SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED": "true",
             "SHUMEYKO_MAINTENANCE_MESSAGE": "",
-            "SHUMEYKO_ALLOWED_EXPORT_ROOT": (
-                "/opt/shumeyko-partners-wb-unit-economics/reports"
-            ),
+            "SHUMEYKO_ALLOWED_EXPORT_ROOT": "/data/shumeyko/prod/reports",
             "SHUMEYKO_DEFAULT_REPORT_WORKBOOK": (
-                "/opt/shumeyko-partners-wb-unit-economics/reports/"
-                "shumeyko_wb_excel_mvp.xlsx"
+                "/data/shumeyko/prod/reports/shumeyko_wb_excel_mvp.xlsx"
             ),
             "SHUMEYKO_SOURCE_REFRESH_ROOT": "/data/shumeyko/source_refresh",
+            "SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB": "20",
         }
     )
 

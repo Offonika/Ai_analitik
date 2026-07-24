@@ -7,7 +7,7 @@ status: active
 source_of_truth: true
 truth_scope: configuration
 truth_priority: 100
-updated_at: "2026-07-15"
+updated_at: "2026-07-24"
 ---
 
 # Config
@@ -77,12 +77,13 @@ Production rollout задается версионированными systemd d
   `SHUMEYKO_SESSION_COOKIE_NAME`, `SHUMEYKO_ALLOWED_EXPORT_ROOT` и
   `SHUMEYKO_SOURCE_REFRESH_ROOT`, запрещает client login и по умолчанию
   отключает `SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED`;
-- `deploy/systemd/shumeiko-web.service.d/accounting-report-kinds.conf` и
+- `deploy/systemd/shumeiko-web-prod.service.d/accounting-report-kinds.conf` и
   одноименный worker drop-in — безопасный initial rollout: новые бухгалтерские
   виды установлены, но выключены; включение выполняется добавлением
   `month_close_control`, затем `tax_load` после контрольных сверок;
-- `deploy/systemd/shumeiko-web.service.d/incremental-refresh.conf` — показывает
-  staff incremental в web и включает обязательные DB-first/daily-facts flags;
+- `deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf` —
+  показывает staff incremental в production web и включает обязательные
+  DB-first/daily-facts flags;
 - `deploy/systemd/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf`
   — разрешает тот же режим отдельному worker;
 - `deploy/systemd/shumeiko-source-refresh-worker@.service.d/marketplace-facts.conf`

@@ -13,6 +13,7 @@ from wb_unit_economics.onec_odata import (
     DEFAULT_SAMPLE_COLLECTIONS,
     GROSS_PROFIT_SAMPLE_COLLECTIONS,
     INPUT_VAT_SAMPLE_COLLECTIONS,
+    SERVICE_SAMPLE_COLLECTIONS,
     TAX_PROFILE_SAMPLE_COLLECTIONS,
     OnecODataClient,
     OnecODataSettings,
@@ -693,6 +694,8 @@ def test_tax_profile_collections_are_read_only_and_selectable() -> None:
     by_id = {item.sample_id: item for item in TAX_PROFILE_SAMPLE_COLLECTIONS}
 
     assert {
+        "tax_system_settings",
+        "vat_settings",
         "tax_kinds",
         "tax_accruals",
         "tax_accrual_lines",
@@ -701,7 +704,30 @@ def test_tax_profile_collections_are_read_only_and_selectable() -> None:
         "kudir",
         "tax_registrations",
     } <= set(by_id)
+    assert by_id["tax_system_settings"].period_filter_mode == "none"
+    assert "СтавкаНалога" in by_id["tax_system_settings"].select_fields
+    assert (
+        "СтавкаНалогообложенияПриУСН"
+        in by_id["vat_settings"].select_fields
+    )
     assert "Сумма" not in by_id["tax_accrual_lines"].select_fields
+    assert {
+        "Покупатель_Key",
+        "СуммаБезНДС",
+        "НДС",
+        "НомерСчетаФактурыНаАванс",
+        "ДатаСчетаФактурыНаАванс",
+        "ЗаписьДополнительногоЛиста",
+        "Исправление",
+    } <= set(by_id["vat_sales_book"].select_fields)
+    assert {
+        "Поставщик_Key",
+        "СуммаБезНДС",
+        "НДС",
+        "НомерСчетаФактуры",
+        "ДатаСчетаФактуры",
+        "ЗаписьДополнительногоЛиста",
+    } <= set(by_id["vat_purchase_book"].select_fields)
     assert _select_collections(["vat_sales_book"])[0] == by_id["vat_sales_book"]
 
 
@@ -718,6 +744,18 @@ def test_input_vat_collections_are_read_only_and_selectable() -> None:
     assert "Разделы" in by_id["import_expenses"].select_fields
     assert by_id["vat_presented"].period_field == ""
     assert _select_collections(["import_expenses"])[0] == by_id["import_expenses"]
+
+
+def test_incoming_invoice_collection_loads_operation_for_expense_classification(
+) -> None:
+    collection = next(
+        item
+        for item in SERVICE_SAMPLE_COLLECTIONS
+        if item.sample_id == "incoming_invoices"
+    )
+
+    assert collection.collection_name == "Document_ПриходнаяНакладная"
+    assert "ВидОперации" in collection.select_fields
 
 
 def test_accounting_recordtype_fallback_aggregates_by_organization(
@@ -858,6 +896,21 @@ def test_accounting_report_collections_do_not_require_server_period_filters() ->
     assert accounting["accounting_taxes"].period_field == ""
     assert accounting["accounting_taxes"].page_size == 5000
     assert accounting["accounting_bank_out"].period_field == ""
+    assert accounting["accounting_counterparties"].collection_name == (
+        "Catalog_Контрагенты"
+    )
+    assert accounting["accounting_counterparties"].select_fields == (
+        "Ref_Key",
+        "Description",
+        "DeletionMark",
+    )
+    assert accounting["nomenclature"].collection_name == "Catalog_Номенклатура"
+    assert accounting["supplier_receipts"].collection_name == (
+        "Document_ПоступлениеТоваровУслуг"
+    )
+    assert accounting["supplier_receipt_expenses"].collection_name == (
+        "Document_ПоступлениеТоваровУслуг_Услуги"
+    )
 
 
 def test_local_accounting_period_stops_after_selected_window(tmp_path: Path) -> None:

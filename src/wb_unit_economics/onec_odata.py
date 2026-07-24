@@ -244,6 +244,43 @@ DEFAULT_SAMPLE_COLLECTIONS = (
 
 TAX_PROFILE_SAMPLE_COLLECTIONS = (
     OnecSampleCollection(
+        sample_id="tax_system_settings",
+        collection_name="InformationRegister_СистемыНалогообложенияОрганизаций",
+        purpose=(
+            "Периодические настройки системы, объекта и ставки налога "
+            "отдельно по каждой организации 1С."
+        ),
+        page_size=1000,
+        order_by="Period asc,Организация_Key asc",
+        select_fields=(
+            "Period",
+            "Организация_Key",
+            "СистемаНалогообложения",
+            "ПлательщикУСН",
+            "ОбъектНалогообложения",
+            "СтавкаНалога",
+            "ПовышеннаяСтавкаНалога",
+            "ПлательщикНДСПрименяющийУСН",
+            "ПлательщикНДС",
+        ),
+    ),
+    OnecSampleCollection(
+        sample_id="vat_settings",
+        collection_name="InformationRegister_НастройкиУчетаНДС",
+        purpose=(
+            "Периодические настройки освобождения от НДС и вида ставки "
+            "отдельно по каждой организации 1С."
+        ),
+        page_size=1000,
+        order_by="Period asc,Организация_Key asc",
+        select_fields=(
+            "Period",
+            "Организация_Key",
+            "ПрименяетсяОсвобождениеОтУплатыНДС",
+            "СтавкаНалогообложенияПриУСН",
+        ),
+    ),
+    OnecSampleCollection(
         sample_id="tax_kinds",
         collection_name="Catalog_ВидыНалогов",
         purpose="Виды налогов 1С для подтверждения системы и объекта налога.",
@@ -285,8 +322,17 @@ TAX_PROFILE_SAMPLE_COLLECTIONS = (
             "LineNumber",
             "Active",
             "Организация_Key",
+            "Покупатель_Key",
             "СтавкаНДС",
+            "СуммаБезНДС",
             "НДС",
+            "ДатаСобытия",
+            "НомерСчетаФактурыНаАванс",
+            "ДатаСчетаФактурыНаАванс",
+            "НомерДокументаОплаты",
+            "ДатаДокументаОплаты",
+            "ЗаписьДополнительногоЛиста",
+            "Исправление",
         ),
     ),
     OnecSampleCollection(
@@ -300,8 +346,16 @@ TAX_PROFILE_SAMPLE_COLLECTIONS = (
             "LineNumber",
             "Active",
             "Организация_Key",
+            "Поставщик_Key",
             "СтавкаНДС",
+            "СуммаБезНДС",
             "НДС",
+            "ДатаСобытия",
+            "НомерСчетаФактуры",
+            "ДатаСчетаФактуры",
+            "НомерДокументаОплаты",
+            "ДатаДокументаОплаты",
+            "ЗаписьДополнительногоЛиста",
         ),
     ),
     OnecSampleCollection(
@@ -545,6 +599,7 @@ SERVICE_SAMPLE_COLLECTIONS = (
             "ДатаВходящегоДокумента",
             "НомерВходящегоДокумента",
             "Комментарий",
+            "ВидОперации",
             "СуммаДокумента",
             "Расходы",
             "Запасы",
@@ -571,9 +626,20 @@ SERVICE_SAMPLE_COLLECTIONS = (
 )
 
 ACCOUNTING_REPORT_SAMPLE_COLLECTIONS = (
+    DEFAULT_SAMPLE_COLLECTIONS[0],  # nomenclature for RWB service labels
     DEFAULT_SAMPLE_COLLECTIONS[1],  # organizations
     DEFAULT_SAMPLE_COLLECTIONS[2],  # special-tax notifications
     *TAX_PROFILE_SAMPLE_COLLECTIONS,
+    OnecSampleCollection(
+        sample_id="accounting_counterparties",
+        collection_name="Catalog_Контрагенты",
+        purpose=(
+            "Read-only справочник контрагентов для подтвержденной "
+            "расшифровки банковских поступлений по маркетплейсам."
+        ),
+        page_size=1000,
+        select_fields=("Ref_Key", "Description", "DeletionMark"),
+    ),
     OnecSampleCollection(
         sample_id="accounting_chart",
         collection_name="ChartOfAccounts_Управленческий",
@@ -667,6 +733,7 @@ ACCOUNTING_REPORT_SAMPLE_COLLECTIONS = (
         period_filter_mode="local_document_date",
         page_size=1000,
     ),
+    *SERVICE_SAMPLE_COLLECTIONS,
 )
 
 

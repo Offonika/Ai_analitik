@@ -72,6 +72,7 @@ def test_ci_workflow_runs_all_blocking_project_checks() -> None:
     for command in required_commands:
         assert command in quality_commands
     assert "python -m pytest -q" in tests_commands
+    assert workflow["jobs"]["tests"]["timeout-minutes"] == "45"
 
     external_links = next(
         step

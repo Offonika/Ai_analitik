@@ -9,14 +9,14 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: client-analytical-report
 truth_priority: 100
-related_code: [src/wb_unit_economics/client_report.py, src/wb_unit_economics/document_exports.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/report_scope.py, scripts/build_client_analytical_report.py]
+related_code: [src/wb_unit_economics/client_report.py, src/wb_unit_economics/document_exports.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/report_scope.py, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/index.html, scripts/build_client_analytical_report.py]
 related_tests: [tests/test_client_report.py, tests/test_web_app.py]
 contracts: [unit_economics_report, report_marts, client_analytical_report]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts]
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [docs/client-analytical-report-draft.md]
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-23"
 ---
 
 # Goal
@@ -186,12 +186,15 @@ Excel является параллельным экспортом из того
   кнопкой `Сформировать отчёт клиенту`; после успешной генерации тот же экран
   показывает прямые действия `Скачать DOCX` и, если конвертация доступна,
   `Скачать PDF`.
-- В окне `Отчёт клиенту` доступны три периода: `Последняя закрытая неделя`
-  (по умолчанию), `Весь период отчёта` и `Указать даты`. Последняя закрытая
+- В окне `Отчёт клиенту` доступны три периода:
+  `Последняя закрытая неделя в текущем отчёте` (по умолчанию),
+  `Весь период отчёта` и `Указать даты`. Последняя закрытая
   неделя определяется как понедельник-воскресенье, завершившиеся не позже
   `report.period_end`, и при пустом окне сервис последовательно берёт предыдущую
-  полную неделю со строками; произвольные даты обязаны находиться внутри report
-  run.
+  полную неделю со строками. UI и API при таком откате обязаны показать
+  запрошенную и фактически использованную недели; предыдущая неделя не
+  называется последней без пояснения. Произвольные даты обязаны находиться
+  внутри report run.
 - `POST /api/reports/{report_id}/analytical-report` принимает `scope` со
   значениями `last_closed_week`, `full` или `custom`, а для `custom` —
   обязательные `periodStart` и `periodEnd`.
@@ -260,6 +263,8 @@ Integration:
 - authenticated analytical-report endpoint;
 - DB-first payload передаётся генератору без workbook path;
 - default `last_closed_week`, явный `full` и валидируемый `custom` period;
+- requested/actual metadata и пользовательское предупреждение при fallback на
+  предыдущую непустую неделю;
 - tenant/report isolation;
 - artifact registry;
 - client financial blocker gate.

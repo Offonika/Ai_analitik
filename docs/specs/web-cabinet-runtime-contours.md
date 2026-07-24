@@ -9,12 +9,29 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: runtime-contours
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/runtime_release_lock.py, scripts/prepare_test_database.py, scripts/build_runtime_release.py, scripts/promote_runtime_release.py, scripts/prune_runtime_releases.py, scripts/check_runtime_health.py, deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf]
-related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_release_retention.py]
+related_code:
+  - src/wb_unit_economics/web/settings.py
+  - src/wb_unit_economics/web/app.py
+  - src/wb_unit_economics/runtime_release_lock.py
+  - scripts/prepare_test_database.py
+  - scripts/build_runtime_release.py
+  - scripts/promote_runtime_release.py
+  - scripts/prune_runtime_releases.py
+  - scripts/check_runtime_health.py
+  - scripts/check_runtime_contour_drift.py
+  - scripts/check_web_cabinet_health.py
+  - deploy/systemd/shumeiko-web-prod.service
+  - deploy/systemd/shumeiko-web-test.service
+  - deploy/systemd/shumeiko-web-prod-health.service
+  - deploy/systemd/shumeiko-web-test-health.service
+  - deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf
+  - deploy/nginx/analitika.offonika.ru.conf
+  - deploy/nginx/shumeiko.offonika.ru.conf
+related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_contour_drift.py, tests/test_runtime_release_retention.py]
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-19"
+updated_at: "2026-07-24"
 ---
 
 # Goal
@@ -29,12 +46,23 @@ deployment pointer.
 | --- | --- | ---: | --- | --- |
 | production | `analitika.offonika.ru` | 8097 | `shumeyko_web_cabinet` | client, consultant, admin |
 | test | `shumeiko.offonika.ru` | 8098 | `shumeyko_web_cabinet_test` | только consultant, admin |
-| legacy rollback | без публичного маршрута | 8096 | production | временно, не более 24 часов после cutover |
+
+Legacy process на 8096 завершил 24-часовое окно cutover и больше не входит в
+deployment contract. Его unit, EnvironmentFile и nginx route должны
+отсутствовать. Rollback выполняется только переключением production symlink на
+предыдущий проверенный immutable release.
 
 Оба контура могут использовать один PostgreSQL cluster, но database URL,
 session cookie, environment file, report root и source-refresh root всегда
 различаются. Test работает от отдельного непривилегированного system user без
 Linux capabilities и постоянно показывает заметную маркировку окружения.
+Production report root находится в `/data/shumeyko/prod/reports`, test — в
+`/data/shumeyko/test/reports`; writable runtime artifacts не размещаются внутри
+Git checkout.
+Обязательные non-secret границы (`runtime_environment`, cookie name, client
+login, external integrations и writable roots) повторяются в versioned
+systemd unit и имеют приоритет над EnvironmentFile. Секреты и database URL
+остаются только в EnvironmentFile.
 Если PostgreSQL использует отдельную test-роль, ее полный database URL
 передается генератору environment-файлов только через одноразовую переменную
 `SHUMEYKO_TEST_DATABASE_URL`. Генератор обязан проверить имя test БД и не
@@ -106,10 +134,9 @@ lock `/run/lock/shumeiko-runtime-release.lock`. Занятый lock заверш
 checkout запрещена; bootstrap выбора `release/src` входит отдельным hash в
 manifest и в общий content hash.
 
-Миграции до окончания 24-часового окна rollback только additive и обратно
-совместимы. Rollback меняет production symlink или временно возвращает nginx
-на legacy 8096; клиентская БД не восстанавливается без отдельного решения об
-откате данных.
+Миграции в пределах rollback window только additive и обратно совместимы.
+Rollback меняет production symlink на предыдущий проверенный immutable release;
+клиентская БД не восстанавливается без отдельного решения об откате данных.
 
 # Acceptance Criteria
 
@@ -127,10 +154,18 @@ manifest и в общий content hash.
 - unauthenticated reports/exports остаются закрыты, `.env`, JSON и XLSX не
   раздаются статически;
 - DNS и TLS нового домена готовы до передачи ссылки клиенту;
-- nginx reload атомарен, legacy 8096 сохраняется 24 часа для rollback.
+- nginx reload атомарен, неизвестные test routes не отдают legacy static shell;
+- `shumeiko-web.service`, порт 8096 и `/etc/shumeiko-web.env` отсутствуют.
+- read-only drift check подтверждает совпадение обязательных systemd/nginx
+  файлов с Git и отсутствие незарегистрированных prod/test drop-in’ов.
 
 # Changelog
 
+- 2026-07-24: завершено legacy rollback window: unit 8096 и старый
+  EnvironmentFile удаляются, rollback выполняется предыдущим immutable release;
+  test nginx больше не имеет fallback на старый статический shell, scheduled
+  source/archive/retention timers test-контура явно запрещены; добавлена
+  read-only проверка deployed-конфигурации на drift без чтения env-файлов.
 - 2026-07-19: production unit подключает versioned corporate-proxy login-shell
   drop-in, чтобы AI использовал одобренный proxy из root login profile без
   копирования URL или credentials proxy в Git либо runtime EnvironmentFile.
