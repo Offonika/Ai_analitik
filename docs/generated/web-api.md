@@ -5,8 +5,8 @@ status: active
 audience: ["engineering", "operations"]
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-07-23"
-updated_at: "2026-07-23"
+last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-07-24"
+updated_at: "2026-07-24"
 ---
 
 # FastAPI route inventory

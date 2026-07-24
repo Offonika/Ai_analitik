@@ -2701,7 +2701,7 @@ button.action-insight-card {
 }
 
 .quality-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .quality-grid .metric {

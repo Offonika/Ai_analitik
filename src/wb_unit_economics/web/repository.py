@@ -21851,6 +21851,8 @@ def _summary_quality_payload(
         "okRows": ok_rows,
         "okShare": ok_rows / row_count if row_count else 0,
         "missingCostRows": int(stats["missing_cost_rows"]),
+        "costAbsentRows": int(stats["cost_absent_rows"]),
+        "costRequiresReviewRows": int(stats["cost_requires_review_rows"]),
         "mappingRows": int(stats["mapping_rows"]),
         "partialPeriod": _is_partial_period(report),
         "incompleteSources": incomplete_sources,
