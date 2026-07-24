@@ -28,6 +28,7 @@ from wb_unit_economics.contracts import (
     InputVatPolicy,
     MarketplaceFinanceDailyFact,
     SalesModel,
+    SkuMapping,
     TaxProfile,
     VatDeductionMode,
     VatMode,
@@ -69,6 +70,39 @@ from wb_unit_economics.web import repository
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
 from wb_unit_economics.web.models import SourceRefreshRun
 from wb_unit_economics.web.settings import WebSettings
+
+
+def _fallback_sku_mappings(
+    *,
+    client_id: str,
+    wb_cards_dir: Path | None,
+    onec_marketplace_mapping_dir: Path,
+    onec_barcodes: list[dict[str, object]],
+    onec_nomenclature: list[dict[str, object]],
+    account_mapping: list[AccountOrgMapping],
+) -> list[SkuMapping]:
+    """Keep live WB aliases even when an accepted legacy mapping file exists."""
+
+    card_mappings = (
+        build_sku_mapping_from_articles(
+            client_id=client_id,
+            wb_card_rows=load_wb_card_flat_rows(wb_cards_dir),
+            onec_barcode_rows=onec_barcodes,
+            nomenclature_rows=onec_nomenclature,
+            account_org_mapping=account_mapping,
+        )
+        if wb_cards_dir is not None
+        else []
+    )
+    if not has_onec_marketplace_mapping_files(onec_marketplace_mapping_dir):
+        return card_mappings
+    file_mappings = build_sku_mapping_from_onec_marketplace_files(
+        client_id=client_id,
+        mapping_dir=onec_marketplace_mapping_dir,
+        nomenclature_rows=onec_nomenclature,
+        account_org_mapping=account_mapping,
+    )
+    return merge_sku_mappings_with_current(card_mappings, file_mappings)
 
 
 def main() -> int:
@@ -339,21 +373,14 @@ def build_db_first_payload(
     else:
         onec_barcodes = load_onec_rows(onec_dir, "barcodes")
         onec_nomenclature = load_onec_rows(onec_dir, "nomenclature")
-        if has_onec_marketplace_mapping_files(args.onec_marketplace_mapping_dir):
-            fallback_sku_mappings = build_sku_mapping_from_onec_marketplace_files(
-                client_id=args.client_id,
-                mapping_dir=args.onec_marketplace_mapping_dir,
-                nomenclature_rows=onec_nomenclature,
-                account_org_mapping=account_mapping,
-            )
-        else:
-            fallback_sku_mappings = build_sku_mapping_from_articles(
-                client_id=args.client_id,
-                wb_card_rows=load_wb_card_flat_rows(wb_cards_dir),
-                onec_barcode_rows=onec_barcodes,
-                nomenclature_rows=onec_nomenclature,
-                account_org_mapping=account_mapping,
-            )
+        fallback_sku_mappings = _fallback_sku_mappings(
+            client_id=args.client_id,
+            wb_cards_dir=wb_cards_dir,
+            onec_marketplace_mapping_dir=args.onec_marketplace_mapping_dir,
+            onec_barcodes=onec_barcodes,
+            onec_nomenclature=onec_nomenclature,
+            account_mapping=account_mapping,
+        )
         sku_mappings = (
             merge_sku_mappings_with_current(
                 fallback_sku_mappings,

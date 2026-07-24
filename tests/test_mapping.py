@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from scripts import rebuild_report_from_sources
 from wb_unit_economics.contracts import AccountOrgMapping, MappingStatus, SkuMapping
 from wb_unit_economics.mapping import (
     build_sku_mapping_from_articles,
@@ -34,6 +36,51 @@ def test_current_mapping_overrides_product_and_keeps_legacy_barcode_aliases() ->
     assert {item.match_method for item in merged} == {
         "mapping_service_auto_barcode"
     }
+
+
+def test_rebuild_keeps_card_aliases_when_legacy_mapping_file_exists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    card_mappings = [
+        _sku_mapping(barcode="111", onec_item_id="OLD"),
+        _sku_mapping(barcode="222", onec_item_id="OLD"),
+    ]
+    file_mappings = [
+        _sku_mapping(barcode="111", onec_item_id="NEW"),
+    ]
+    monkeypatch.setattr(
+        rebuild_report_from_sources,
+        "load_wb_card_flat_rows",
+        lambda _path: [{"card": "fixture"}],
+    )
+    monkeypatch.setattr(
+        rebuild_report_from_sources,
+        "build_sku_mapping_from_articles",
+        lambda **_kwargs: card_mappings,
+    )
+    monkeypatch.setattr(
+        rebuild_report_from_sources,
+        "has_onec_marketplace_mapping_files",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        rebuild_report_from_sources,
+        "build_sku_mapping_from_onec_marketplace_files",
+        lambda **_kwargs: file_mappings,
+    )
+
+    merged = rebuild_report_from_sources._fallback_sku_mappings(
+        client_id="client",
+        wb_cards_dir=tmp_path / "cards",
+        onec_marketplace_mapping_dir=tmp_path / "mapping",
+        onec_barcodes=[],
+        onec_nomenclature=[],
+        account_mapping=account_mapping(),
+    )
+
+    assert {item.barcode for item in merged} == {"111", "222"}
+    assert {item.onec_item_id for item in merged} == {"NEW"}
 
 
 def test_current_mapping_keeps_alias_characteristic_for_same_onec_item() -> None:
