@@ -13,8 +13,9 @@ from wb_unit_economics.web.reports.contracts import (
 from wb_unit_economics.web.reports.month_close import normalize_month_close_osv
 
 MONTH_CLOSE_CONTRACT_VERSION = "month-close-control-report-v2"
-TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v6"
+TAX_LOAD_CONTRACT_VERSION = "tax-load-report-v7"
 FNS_TAX_BURDEN_METHODOLOGY_VERSION = "fns-tax-burden-v1-2026-07-14"
+USN_INCOME_EXPENSES_METHODOLOGY_VERSION = "usn_income_expenses_v1"
 CONFIRMED_EVIDENCE_STATUSES = {"loaded", "confirmed"}
 OFFICIAL_INCOME_SOURCE_KINDS = {
     "financial_result_statement",
@@ -68,6 +69,26 @@ def _is_usn_income_tax_system(value: object) -> bool:
     has_income = "income" in normalized or "доход" in normalized
     has_expenses = "expense" in normalized or "расход" in normalized
     return is_usn and has_income and not has_expenses
+
+
+def _is_usn_income_expenses_tax_system(
+    tax_system: object,
+    tax_object: object = None,
+) -> bool:
+    normalized_system = str(tax_system or "").strip().casefold()
+    normalized_object = str(tax_object or "").strip().casefold()
+    is_usn = (
+        "usn" in normalized_system
+        or "усн" in normalized_system
+        or "упрощ" in normalized_system
+    )
+    has_expenses = (
+        "expense" in normalized_system
+        or "расход" in normalized_system
+        or "expense" in normalized_object
+        or "расход" in normalized_object
+    )
+    return is_usn and has_expenses
 
 
 def fns_paid_taxes_numerator(tax_rows: object) -> Decimal | None:
@@ -146,6 +167,28 @@ def _safe_summary(value: object, allowed: tuple[str, ...]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     return {key: value.get(key) for key in allowed}
+
+
+def _safe_usn_expense_breakdown(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        result.append(
+            {
+                "category": item.get("category"),
+                "label": item.get("label"),
+                "valueYtd": _decimal_text(item.get("value")),
+                "rowCount": item.get("rowCount"),
+                "monthlyValues": _safe_rows(
+                    item.get("monthlyValues"),
+                    ("month", "value", "status", "rowCount"),
+                ),
+            }
+        )
+    return result
 
 
 def _safe_vat_books(value: object) -> dict[str, Any]:
@@ -372,15 +415,26 @@ def build_tax_load_payload(
     # НДС из поступлений (для ИП, у которого нет отчета о финансовых результатах;
     # spec: Tax Methodology Boundary, решение от 21.07.2026). Официальный
     # fns_tax_burden_ratio при этом не подменяется.
-    is_usn = _is_usn_income_tax_system(profile.get("taxSystem"))
+    is_usn_income = _is_usn_income_tax_system(profile.get("taxSystem"))
+    is_usn_income_expenses = _is_usn_income_expenses_tax_system(
+        profile.get("taxSystem"),
+        profile.get("taxObject"),
+    )
+    is_usn = is_usn_income or is_usn_income_expenses
     usn_income_value: str | None = None
+    usn_bank_income_value: str | None = None
     usn_income_ratio: Decimal | None = None
     usn_income_evidence = evidence.get("usnIncomeEvidence")
     if is_usn and isinstance(usn_income_evidence, Mapping):
         usn_status = str(usn_income_evidence.get("status") or "").strip().lower()
         if usn_status in CONFIRMED_EVIDENCE_STATUSES:
-            usn_income_value = _decimal_text(usn_income_evidence.get("value"))
-            usn_income_ratio = fns_tax_burden_ratio(numerator, usn_income_value)
+            usn_bank_income_value = _decimal_text(
+                usn_income_evidence.get("value")
+            )
+    if is_usn_income:
+        usn_income_value = usn_bank_income_value
+    if is_usn_income and usn_income_value is not None:
+        usn_income_ratio = fns_tax_burden_ratio(numerator, usn_income_value)
     tax_rows = _safe_rows(
         evidence.get("taxRows"),
         (
@@ -488,6 +542,37 @@ def build_tax_load_payload(
         if is_usn and isinstance(kudir_income_evidence, Mapping)
         else []
     )
+    kudir_expense_evidence = evidence.get("kudirExpenseEvidence")
+    kudir_expense_ytd = (
+        _decimal_text(kudir_expense_evidence.get("value"))
+        if is_usn_income_expenses
+        and isinstance(kudir_expense_evidence, Mapping)
+        else None
+    )
+    kudir_expense_monthly = (
+        _safe_rows(
+            kudir_expense_evidence.get("monthlyValues"),
+            ("month", "value", "status", "rowCount"),
+        )
+        if is_usn_income_expenses
+        and isinstance(kudir_expense_evidence, Mapping)
+        else []
+    )
+    usn_expense_breakdown = (
+        _safe_usn_expense_breakdown(kudir_expense_evidence.get("breakdown"))
+        if is_usn_income_expenses
+        and isinstance(kudir_expense_evidence, Mapping)
+        else []
+    )
+    usn_expense_classification_status = (
+        str(
+            kudir_expense_evidence.get("classificationStatus")
+            or "source_gap"
+        )
+        if is_usn_income_expenses
+        and isinstance(kudir_expense_evidence, Mapping)
+        else None
+    )
     usn_payment_evidence = evidence.get("usnTaxPaymentEvidence")
     usn_tax_payments_monthly = (
         _safe_rows(
@@ -539,9 +624,18 @@ def build_tax_load_payload(
         str(row.get("dueDate")) for row in usn_tax_rows if row.get("dueDate")
     }
     revenue_tax_rate = _decimal(profile.get("revenueTaxRate"))
+    profile_tax_rate = _decimal(profile.get("taxRate"))
+    usn_tax_base: Decimal | None = None
+    usn_regular_tax: Decimal | None = None
+    usn_minimum_tax_reference: Decimal | None = None
+    usn_minimum_tax_application_status: str | None = None
+    monthly_tax_base: list[dict[str, Any]] = []
+    monthly_regular_tax: list[dict[str, Any]] = []
+    monthly_minimum_tax_reference: list[dict[str, Any]] = []
+    monthly_calculated_tax: list[dict[str, Any]] = []
     usn_calculated_tax: Decimal | None = None
     if (
-        is_usn
+        is_usn_income
         and revenue_tax_rate is not None
         and Decimal("0") < revenue_tax_rate <= Decimal("1")
         and (usn_income_decimal := _decimal(usn_income_value)) is not None
@@ -549,6 +643,46 @@ def build_tax_load_payload(
         usn_calculated_tax = (usn_income_decimal * revenue_tax_rate).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
+    elif is_usn_income_expenses:
+        income_expenses_metrics = _usn_income_expenses_metrics(
+            period_end=report.period_end,
+            income_ytd=kudir_income_ytd,
+            expense_ytd=kudir_expense_ytd,
+            income_monthly=kudir_income_monthly,
+            expense_monthly=kudir_expense_monthly,
+            income_status=(
+                kudir_income_evidence.get("status")
+                if isinstance(kudir_income_evidence, Mapping)
+                else None
+            ),
+            expense_status=(
+                kudir_expense_evidence.get("status")
+                if isinstance(kudir_expense_evidence, Mapping)
+                else None
+            ),
+            tax_rate=profile_tax_rate,
+        )
+        usn_tax_base = _decimal(income_expenses_metrics["taxBaseYtd"])
+        usn_regular_tax = _decimal(
+            income_expenses_metrics["regularTaxYtd"]
+        )
+        usn_minimum_tax_reference = _decimal(
+            income_expenses_metrics["minimumTaxReferenceYtd"]
+        )
+        usn_minimum_tax_application_status = str(
+            income_expenses_metrics["minimumTaxApplicationStatus"]
+        )
+        usn_calculated_tax = _decimal(
+            income_expenses_metrics["calculatedTaxYtd"]
+        )
+        monthly_tax_base = income_expenses_metrics["monthlyTaxBase"]
+        monthly_regular_tax = income_expenses_metrics["monthlyRegularTax"]
+        monthly_minimum_tax_reference = income_expenses_metrics[
+            "monthlyMinimumTaxReference"
+        ]
+        monthly_calculated_tax = income_expenses_metrics[
+            "monthlyCalculatedTax"
+        ]
     usn_tax_payable = (
         (usn_calculated_tax - usn_paid_tax).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -556,7 +690,7 @@ def build_tax_load_payload(
         if usn_calculated_tax is not None and usn_paid_tax is not None
         else None
     )
-    reconciliation_income = _decimal(usn_income_value)
+    reconciliation_income = _decimal(usn_bank_income_value)
     reconciliation_kudir = _decimal(kudir_income_ytd)
     usn_reconciliation_delta = (
         (reconciliation_income - reconciliation_kudir).quantize(
@@ -605,17 +739,58 @@ def build_tax_load_payload(
                 ),
             }
         )
-    payment_schedule = [
-        {
-            "taxCode": row.get("taxCode"),
-            "taxName": row.get("taxName"),
-            "dueDate": row.get("dueDate"),
-            "amount": row.get("balance"),
-            "confirmationStatus": "informational",
-        }
-        for row in tax_rows
-        if row.get("dueDate")
-    ]
+    payment_schedule = _safe_rows(
+        evidence.get("paymentSchedule"),
+        (
+            "taxCode",
+            "taxName",
+            "dueDate",
+            "amount",
+            "confirmationStatus",
+            "evidenceStatus",
+            "sourceKind",
+            "issueCode",
+        ),
+    )
+    if not payment_schedule:
+        payment_schedule = [
+            {
+                "taxCode": row.get("taxCode"),
+                "taxName": row.get("taxName"),
+                "dueDate": row.get("dueDate"),
+                "amount": row.get("balance"),
+                "confirmationStatus": "informational",
+            }
+            for row in tax_rows
+            if row.get("dueDate")
+        ]
+    if not is_usn:
+        usn_detail_status = "not_applicable"
+    elif usn_calculated_tax is None or usn_paid_tax is None:
+        usn_detail_status = "source_gap"
+    elif (
+        is_usn_income_expenses
+        and usn_expense_classification_status == "review_required"
+    ):
+        usn_detail_status = "review_required"
+    elif is_usn_income_expenses:
+        usn_detail_status = (
+            "ready"
+            if usn_expense_classification_status == "ready"
+            else "source_gap"
+        )
+    elif (
+        usn_classification_status == "review_required"
+        or usn_payroll_classification_status == "review_required"
+    ):
+        usn_detail_status = "review_required"
+    elif (
+        usn_classification_status == "ready"
+        and usn_payroll_classification_status == "ready"
+    ):
+        usn_detail_status = "ready"
+    else:
+        usn_detail_status = "source_gap"
     payload = {
         "contractVersion": TAX_LOAD_CONTRACT_VERSION,
         "reportKind": "tax_load",
@@ -624,6 +799,9 @@ def build_tax_load_payload(
         "ytdEnd": report.period_end.isoformat(),
         "taxProfile": {
             "taxSystem": profile.get("taxSystem"),
+            "taxObject": profile.get("taxObject"),
+            "taxRate": _decimal_text(profile.get("taxRate")),
+            "elevatedTaxRate": _decimal_text(profile.get("elevatedTaxRate")),
             "profileStatus": profile.get("profileStatus", "missing"),
             "vatRate": _decimal_text(profile.get("vatRate")),
             "vatMode": profile.get("vatMode"),
@@ -665,38 +843,60 @@ def build_tax_load_payload(
         "paymentSchedule": payment_schedule,
         "usnDetail": (
             {
-                "status": (
-                    "source_gap"
-                    if usn_calculated_tax is None or usn_paid_tax is None
-                    else (
-                        "review_required"
-                        if usn_classification_status == "review_required"
-                        or usn_payroll_classification_status == "review_required"
-                        else (
-                            "ready"
-                            if usn_classification_status == "ready"
-                            and usn_payroll_classification_status == "ready"
-                            else "source_gap"
-                        )
-                    )
+                "status": usn_detail_status,
+                "calculationMode": (
+                    "income_expenses"
+                    if is_usn_income_expenses
+                    else "income"
+                ),
+                "methodologyVersion": (
+                    USN_INCOME_EXPENSES_METHODOLOGY_VERSION
+                    if is_usn_income_expenses
+                    else None
                 ),
                 "classificationStatus": usn_classification_status,
+                "expenseClassificationStatus": (
+                    usn_expense_classification_status
+                ),
                 "payrollClassificationStatus": (
                     usn_payroll_classification_status
                 ),
                 "sourceKind": (
-                    usn_income_evidence.get("sourceKind")
-                    if isinstance(usn_income_evidence, Mapping)
-                    else None
+                    "onec_kudir"
+                    if is_usn_income_expenses
+                    else (
+                        usn_income_evidence.get("sourceKind")
+                        if isinstance(usn_income_evidence, Mapping)
+                        else None
+                    )
                 ),
                 "revenueTaxRate": _decimal_text(revenue_tax_rate),
-                "incomeYtd": usn_income_value,
+                "taxRate": _decimal_text(profile_tax_rate),
+                "minimumTaxRate": (
+                    "0.01" if is_usn_income_expenses else None
+                ),
+                "incomeYtd": (
+                    kudir_income_ytd
+                    if is_usn_income_expenses
+                    else usn_income_value
+                ),
+                "cashIncomeYtd": usn_bank_income_value,
                 "unclassifiedIncomeYtd": usn_unclassified_income,
                 "excludedIncomeYtd": usn_excluded_income,
                 "loanReceiptsYtd": usn_loan_receipts,
                 "payrollPaymentsYtd": usn_payroll_payments,
                 "kudirIncomeYtd": kudir_income_ytd,
+                "kudirExpenseYtd": kudir_expense_ytd,
+                "expenseBreakdown": usn_expense_breakdown,
                 "reconciliationDelta": _decimal_text(usn_reconciliation_delta),
+                "taxBaseYtd": _decimal_text(usn_tax_base),
+                "regularTaxYtd": _decimal_text(usn_regular_tax),
+                "minimumTaxReferenceYtd": _decimal_text(
+                    usn_minimum_tax_reference
+                ),
+                "minimumTaxApplicationStatus": (
+                    usn_minimum_tax_application_status
+                ),
                 "calculatedTaxYtd": _decimal_text(usn_calculated_tax),
                 "paidTaxYtd": _decimal_text(usn_paid_tax),
                 "taxPayable": _decimal_text(usn_tax_payable),
@@ -718,6 +918,13 @@ def build_tax_load_payload(
                 "marketplaceIncomeYtd": usn_marketplace_income,
                 "monthlyMarketplaceIncome": usn_marketplace_income_monthly,
                 "monthlyKudirIncome": kudir_income_monthly,
+                "monthlyKudirExpense": kudir_expense_monthly,
+                "monthlyTaxBase": monthly_tax_base,
+                "monthlyRegularTax": monthly_regular_tax,
+                "monthlyMinimumTaxReference": (
+                    monthly_minimum_tax_reference
+                ),
+                "monthlyCalculatedTax": monthly_calculated_tax,
                 "monthlyTaxPayments": usn_tax_payments_monthly,
             }
             if is_usn
@@ -750,7 +957,7 @@ def build_tax_load_payload(
             "usnIncomeStatus": (
                 "management_reference"
                 if usn_income_ratio is not None
-                else ("source_gap" if is_usn else None)
+                else ("source_gap" if is_usn_income else None)
             ),
         },
         "issues": issues,
@@ -760,6 +967,209 @@ def build_tax_load_payload(
         "accountantApproval": None,
     }
     return TaxLoadPayload.model_validate(payload).model_dump(mode="json")
+
+
+def _usn_income_expenses_metrics(
+    *,
+    period_end: Any,
+    income_ytd: object,
+    expense_ytd: object,
+    income_monthly: list[dict[str, Any]],
+    expense_monthly: list[dict[str, Any]],
+    income_status: object,
+    expense_status: object,
+    tax_rate: Decimal | None,
+) -> dict[str, Any]:
+    complete_statuses = {
+        "loaded",
+        "ready",
+        "complete",
+        "confirmed",
+        "empty_expected",
+    }
+    sources_complete = (
+        str(income_status or "").strip().lower() in complete_statuses
+        and str(expense_status or "").strip().lower() in complete_statuses
+    )
+    income_total = _decimal(income_ytd) if sources_complete else None
+    expense_total = _decimal(expense_ytd) if sources_complete else None
+    valid_rate = (
+        tax_rate
+        if tax_rate is not None and Decimal("0") < tax_rate <= Decimal("100")
+        else None
+    )
+    tax_base_ytd = (
+        max(income_total - expense_total, Decimal("0"))
+        if income_total is not None and expense_total is not None
+        else None
+    )
+    regular_tax_ytd = (
+        (tax_base_ytd * valid_rate / Decimal("100")).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if tax_base_ytd is not None and valid_rate is not None
+        else None
+    )
+    minimum_tax_ytd = (
+        (income_total * Decimal("0.01")).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if income_total is not None
+        else None
+    )
+    annual = getattr(period_end, "month", None) == 12
+    if regular_tax_ytd is None or minimum_tax_ytd is None:
+        calculated_tax_ytd = None
+        minimum_application_status = "source_gap"
+    elif annual and minimum_tax_ytd > regular_tax_ytd:
+        calculated_tax_ytd = minimum_tax_ytd
+        minimum_application_status = "minimum_tax_applied"
+    elif annual:
+        calculated_tax_ytd = regular_tax_ytd
+        minimum_application_status = "regular_tax_applied"
+    else:
+        calculated_tax_ytd = regular_tax_ytd
+        minimum_application_status = "reference_only"
+
+    year = getattr(period_end, "year", None)
+    end_month = int(getattr(period_end, "month", 0) or 0)
+
+    def monthly_map(rows: list[dict[str, Any]]) -> dict[int, Decimal | None]:
+        result: dict[int, Decimal | None] = {}
+        for row in rows:
+            month_text = str(row.get("month") or "")
+            if year is None or not month_text.startswith(f"{year:04d}-"):
+                continue
+            try:
+                month_number = int(month_text[5:7])
+            except (TypeError, ValueError):
+                continue
+            if 1 <= month_number <= 12:
+                result[month_number] = _decimal(row.get("value"))
+        return result
+
+    income_by_month = monthly_map(income_monthly)
+    expense_by_month = monthly_map(expense_monthly)
+    monthly_tax_base: list[dict[str, Any]] = []
+    monthly_regular_tax: list[dict[str, Any]] = []
+    monthly_minimum_tax: list[dict[str, Any]] = []
+    monthly_calculated_tax: list[dict[str, Any]] = []
+    cumulative_income = Decimal("0")
+    cumulative_expense = Decimal("0")
+    cumulative_complete = sources_complete
+    for month_number in range(1, end_month + 1):
+        income_value = (
+            income_by_month.get(month_number, Decimal("0"))
+            if sources_complete
+            else None
+        )
+        expense_value = (
+            expense_by_month.get(month_number, Decimal("0"))
+            if sources_complete
+            else None
+        )
+        if income_value is None or expense_value is None:
+            cumulative_complete = False
+            monthly_base = None
+        else:
+            cumulative_income += income_value
+            cumulative_expense += expense_value
+            monthly_base = max(income_value - expense_value, Decimal("0"))
+        cumulative_base = (
+            max(cumulative_income - cumulative_expense, Decimal("0"))
+            if cumulative_complete
+            else None
+        )
+        monthly_regular = (
+            (monthly_base * valid_rate / Decimal("100")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            if monthly_base is not None and valid_rate is not None
+            else None
+        )
+        cumulative_regular = (
+            (cumulative_base * valid_rate / Decimal("100")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            if cumulative_base is not None and valid_rate is not None
+            else None
+        )
+        monthly_minimum = (
+            (income_value * Decimal("0.01")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            if income_value is not None
+            else None
+        )
+        cumulative_minimum = (
+            (cumulative_income * Decimal("0.01")).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+            if cumulative_complete
+            else None
+        )
+        applicable_ytd = (
+            max(cumulative_regular, cumulative_minimum)
+            if month_number == 12
+            and cumulative_regular is not None
+            and cumulative_minimum is not None
+            else cumulative_regular
+        )
+        month_key = f"{year:04d}-{month_number:02d}"
+        value_status = "loaded" if cumulative_complete else "source_gap"
+        monthly_tax_base.append(
+            {
+                "month": month_key,
+                "value": _decimal_text(monthly_base),
+                "ytdValue": _decimal_text(cumulative_base),
+                "status": value_status,
+            }
+        )
+        monthly_regular_tax.append(
+            {
+                "month": month_key,
+                "value": _decimal_text(monthly_regular),
+                "ytdValue": _decimal_text(cumulative_regular),
+                "status": (
+                    value_status if valid_rate is not None else "source_gap"
+                ),
+            }
+        )
+        monthly_minimum_tax.append(
+            {
+                "month": month_key,
+                "value": _decimal_text(monthly_minimum),
+                "ytdValue": _decimal_text(cumulative_minimum),
+                "status": value_status,
+            }
+        )
+        monthly_calculated_tax.append(
+            {
+                "month": month_key,
+                "value": _decimal_text(monthly_regular),
+                "ytdValue": _decimal_text(applicable_ytd),
+                "status": (
+                    value_status if valid_rate is not None else "source_gap"
+                ),
+            }
+        )
+    return {
+        "taxBaseYtd": _decimal_text(tax_base_ytd),
+        "regularTaxYtd": _decimal_text(regular_tax_ytd),
+        "minimumTaxReferenceYtd": _decimal_text(minimum_tax_ytd),
+        "minimumTaxApplicationStatus": minimum_application_status,
+        "calculatedTaxYtd": _decimal_text(calculated_tax_ytd),
+        "monthlyTaxBase": monthly_tax_base,
+        "monthlyRegularTax": monthly_regular_tax,
+        "monthlyMinimumTaxReference": monthly_minimum_tax,
+        "monthlyCalculatedTax": monthly_calculated_tax,
+    }
 
 
 def _marketplace_subtotal(

@@ -7570,6 +7570,28 @@ td {
   color: var(--muted, #5f6b7a);
 }
 
+.scenario-gap-notice {
+  background: #fff8e8;
+  border: 1px solid #e5c46f;
+  border-radius: 0.75rem;
+  color: #5f4a16;
+  margin-top: 1rem;
+  padding: 1rem;
+}
+
+.scenario-gap-notice p {
+  margin: 0.45rem 0 0;
+}
+
+.scenario-gap-actions {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.scenario-gap-actions li + li {
+  margin-top: 0.35rem;
+}
+
 .scenario-metric-grid {
   display: grid;
   gap: 0.75rem;
@@ -7647,6 +7669,118 @@ td {
   margin-top: 1.5rem;
 }
 
+.scenario-table-intro {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  border-left: 4px solid #b87300;
+  border-radius: 0.5rem;
+  background: #fff8e8;
+  color: #5f4a24;
+  line-height: 1.5;
+}
+
+.scenario-table-wrap {
+  max-width: 100%;
+  border-radius: 0.5rem;
+}
+
+.scenario-table-wrap:focus-visible {
+  outline: 3px solid color-mix(in srgb, #0a747c, transparent 50%);
+  outline-offset: 3px;
+}
+
+.scenario-table {
+  min-width: 760px;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.scenario-tax-table {
+  min-width: 960px;
+}
+
+.scenario-table th,
+.scenario-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.scenario-table-caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.scenario-mobile-cards {
+  display: none;
+}
+
+.workspace-main .topbar-actions {
+  width: min(280px, calc(100vw - 24px));
+}
+
+.workspace-main .topbar-actions button,
+.workspace-main .topbar-actions .button-link {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.report-kind-switcher {
+  grid-area: report-kind;
+}
+
+.report-organization-switcher {
+  grid-area: organization;
+}
+
+.report-month-switcher {
+  grid-area: month;
+}
+
+body.accounting-report-mode .workspace-main .topbar-controls {
+  grid-template-columns:
+    minmax(150px, 0.8fr)
+    minmax(170px, 0.9fr)
+    minmax(250px, 1.35fr)
+    minmax(140px, 0.7fr)
+    48px;
+  grid-template-areas: "client report-kind organization month actions";
+}
+
+body.accounting-report-mode .workspace-header {
+  min-height: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+body.accounting-report-mode .workspace-header .brand-lockup {
+  display: contents;
+}
+
+body.accounting-report-mode .workspace-header .brand-lockup > :not(.report-load-retry) {
+  display: none;
+}
+
+body.accounting-report-mode .workspace-header .report-load-retry:not([hidden]) {
+  position: fixed;
+  right: 24px;
+  bottom: 82px;
+  z-index: 25;
+}
+
+body.accounting-report-mode .workspace-header .ai-assistant-button {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 25;
+}
+
 @media (max-width: 720px) {
   .scenario-heading {
     align-items: flex-start;
@@ -7667,6 +7801,88 @@ body.accounting-report-mode [data-workspace-panel="overview"]:not(.accounting-sc
 body.accounting-report-mode [data-workspace-panel="checks"]:not(.accounting-scenario-panel),
 body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-scenario-panel) {
   display: none !important;
+}
+
+@media (max-width: 920px) {
+  body.accounting-report-mode .workspace-main .topbar-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) 48px;
+    grid-template-areas:
+      "client report-kind actions"
+      "organization month actions";
+  }
+}
+
+@media (max-width: 700px) {
+  body.accounting-report-mode .workspace-main .topbar-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) 44px;
+    grid-template-areas:
+      "client report-kind actions"
+      "organization organization actions"
+      "month month actions";
+  }
+
+  body.accounting-report-mode .report-organization-switcher,
+  body.accounting-report-mode .report-month-switcher {
+    min-width: 0;
+  }
+
+  body.accounting-report-mode .workspace-header .ai-assistant-button {
+    right: 14px;
+    bottom: 14px;
+  }
+
+  body.accounting-report-mode .workspace-header .report-load-retry:not([hidden]) {
+    right: 14px;
+    bottom: 70px;
+  }
+
+  .scenario-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scenario-table-wrap.has-mobile-cards {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .scenario-table-wrap.has-mobile-cards .scenario-table {
+    display: none;
+  }
+
+  .scenario-mobile-cards {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .scenario-mobile-card {
+    min-width: 0;
+    padding: 0.9rem;
+    border: 1px solid #dbe3ec;
+    border-radius: 0.75rem;
+    background: #fff;
+  }
+
+  .scenario-mobile-card dl {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 0.8fr) minmax(0, 1.2fr);
+    gap: 0.55rem 0.75rem;
+    margin: 0;
+  }
+
+  .scenario-mobile-card dt {
+    color: #617086;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+
+  .scenario-mobile-card dd {
+    min-width: 0;
+    margin: 0;
+    color: #18324f;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
 }
 /* Runtime contour and maintenance state is intentionally visible before login. */
 .runtime-banner {

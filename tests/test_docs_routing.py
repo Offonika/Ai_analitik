@@ -150,9 +150,9 @@ def test_generated_jsonl_has_one_safe_record_per_manifest_entry() -> None:
         {
             "path": "docs/runbooks/wb-logistics-v4-continuation.md",
             "summary": (
-                "Operational state WB-логистики: F-1…F-5 приняты на "
-                "staff-only test; R-5 partial draft без blockers, "
-                "client/production rollout не выполнен."
+                "Operational state WB-логистики: F-1…F-5 включены "
+                "client-role только на test; R-5 partial draft без blockers "
+                "не опубликован, production rollout не выполнен."
             ),
         }
     ]

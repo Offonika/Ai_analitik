@@ -179,7 +179,7 @@ documents:
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
     operational_docs: ["docs/runbooks/wb-logistics-v4-continuation.md"]
-    summary: "Accepted WB-логистика v5: F-1…F-5 приняты на staff-only test; F-5 создаёт partial draft без blockers при empty/denied claims, client/production rollout не выполнен."
+    summary: "Accepted WB-логистика v5: F-1…F-5 включены client-role только на test; R-5 partial draft без blockers остаётся неопубликованным, production rollout не выполнен."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
     search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
   - path: "docs/specs/wb-logistics-cost-factors-implementation.md"
@@ -188,7 +188,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted WP-5: F-1…F-5 приняты на staff-only test; F-5 реализован fail-soft без ослабления exact row-level join, client/production rollout не выполнен."
+    summary: "Accepted WP-5: F-1…F-5 включены client-role только на test; F-5 остаётся fail-soft с exact row-level join, production rollout не выполнен."
     read_when: "Проектируется вторая очередь логистики WB: габариты, Analytics замеры/удержания, тарифы, склады, маршруты, витрины dimensions/measurements/routes или probe доступности источников."
     search_terms: ["факторы логистики", "габариты WB", "тарифы box pallet", "склад направление", "замеры штрафы", "вторая очередь"]
   - path: "docs/specs/wb-logistics-return-reasons-implementation.md"
@@ -197,7 +197,7 @@ documents:
     status: "implemented"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Implemented F-5: R-1…R-5 приняты на staff-only test; empty/denied claims остаются partial без blockers, exact rows активируются автоматически, client/production rollout не выполнен."
+    summary: "Implemented F-5: client-role включён только на test; empty/denied claims остаются partial без blockers, exact rows активируются автоматически, production rollout не выполнен."
     read_when: "Проектируется причина возврата WB: источники goods-return/claims, связывание по srid, покрытие причин, unmatched или обработка персональных данных покупателя."
     search_terms: ["причина возврата", "goods-return", "claims", "user_comment", "srid", "возвраты покупателей"]
   - path: "docs/specs/wb-logistics-calculators-implementation.md"
@@ -290,9 +290,9 @@ documents:
     source_of_truth: true
     truth_scope: "tax-load-report"
     truth_priority: 100
-    summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v2, профиль 1С, web и Excel."
-    read_when: "Меняется отчет налоговой нагрузки, формула ФНС, tax profile, evidence v2, web или Excel этого report_kind."
-    search_terms: ["налоговая нагрузка", "tax load", "формула ФНС", "tax profile", "evidence v2"]
+    summary: "Accepted staff-only advisory-отчет налоговой нагрузки: evidence v7, профили 1С, УСН «Доходы» и «Доходы минус расходы», web и Excel."
+    read_when: "Меняется отчет налоговой нагрузки, формула ФНС, УСН Д−Р, tax profile, evidence v7, web или Excel этого report_kind."
+    search_terms: ["налоговая нагрузка", "tax load", "УСН доходы минус расходы", "КУДиР", "tax profile", "evidence v7"]
   - path: "docs/specs/accounting-reports-smart-process-onepage.md"
     title: "ONEPAGE: смарт-процесс закрытия месяца и налоговой нагрузки"
     doc_type: "spec"
@@ -461,7 +461,7 @@ documents:
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Operational state WB-логистики: F-1…F-5 приняты на staff-only test; R-5 partial draft без blockers, client/production rollout не выполнен."
+    summary: "Operational state WB-логистики: F-1…F-5 включены client-role только на test; R-5 partial draft без blockers не опубликован, production rollout не выполнен."
   - path: "docs/runbooks/wb-logistics-factors-probe.md"
     title: "Probe доступности источников логистики (F-0 / R-0/R-0I/R-0L / C-0)"
     doc_type: "runbook"

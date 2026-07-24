@@ -7,7 +7,7 @@ status: accepted
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_content.py, src/wb_unit_economics/wb_measurements.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_stocks.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf, deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf]
 related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_content.py, tests/test_wb_measurements.py, tests/test_wb_tariffs.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_wb_supplier_sales.py, tests/test_wb_stocks.py, tests/test_logistics_analysis.py, tests/test_logistics_factor_marts.py, tests/test_db_first_publication.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
@@ -41,7 +41,7 @@ test_anchors:
   - path: tests/test_logistics_analysis.py
     symbols: ["def test_build_dimension_rows_links_by_nm_and_marks_unavailable"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_measurements_api_states_filters_and_full_slice_coverage", "def test_logistics_measurements_role_and_flag_matrix", "def test_required_measurement_context_controls_publication_readiness", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker"]
+    symbols: ["def test_logistics_dimensions_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_dimensions_role_and_flag_matrix", "def test_logistics_measurements_api_states_filters_and_full_slice_coverage", "def test_logistics_measurements_role_and_flag_matrix", "def test_required_measurement_context_controls_publication_readiness", "def test_logistics_tariffs_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_tariffs_role_and_flag_matrix", "def test_required_tariff_context_controls_publication_readiness", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_multi_client_report_access_requires_explicit_client"]
   - path: tests/test_source_refresh.py
     symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_dimension_snapshot_db_and_file_authoritative_are_equivalent", "def test_dimension_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_db_and_file_authoritative_are_equivalent", "def test_measurement_snapshot_integrity_failures_are_blocking", "def test_measurement_snapshot_precedence_partial_and_context_build", "def test_tariff_snapshot_db_and_file_authoritative_are_equivalent", "def test_tariff_snapshot_integrity_failures_are_blocking", "def test_tariff_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_tariff_context_and_rows_are_built_for_new_draft", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_snapshot_uses_primary_before_base_and_blocks_peer_conflict", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_goods_return.py
@@ -57,7 +57,7 @@ test_anchors:
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_f4_endpoints_are_read_only_minimal_and_cover_moscow_days", "def test_f4_status_aggregation_has_no_values_ids_labels_or_counts", "def test_claims_fetch_fails_closed_on_pagination_mismatch", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_runtime_contour_scripts.py
-    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only"]
+    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only", "def test_r6_test_drop_in_enables_all_logistics_for_client_role"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -114,8 +114,7 @@ state matrix, фильтры, SQL-pagination и coverage полного срез
 встроен в `#tables/logistics`. Operational evidence находится в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
 Статус всего factor-spec остаётся `accepted`: factor AI digest,
-клиентский/production rollout и третья очередь остаются следующими
-подпакетами.
+production rollout и третья очередь остаются следующими подпакетами.
 
 F-2 «Тарифы» реализован сквозным пакетом и принят на staff-only test 21 июля
 2026 года: verified box/pallet snapshot, tariff context/mart, read-only
@@ -154,6 +153,12 @@ R-5 staff-only test acceptance завершён на immutable `main@a9ec18c`: �
 неопубликованный draft имеет `partial` context без blockers, staff API/UI
 приняты, а client API/section закрыты. Exact claim становится фактом только
 после автоматического same-name match к одной Finance return chain.
+
+R-6 отдельно включил client-role только на test на immutable `b4d7376`.
+Client login и все master/client flags F-1…F-5 активны через tracked
+test-only override; current published report доступен, R-5 draft и чужой scope
+остаются закрыты. Role/tenant/PII API acceptance и browser QA
+1440×900/390×844 пройдены. Production и публикация draft не менялись.
 
 # Цель
 
@@ -1144,8 +1149,9 @@ blocker с report run, который обязан был пройти gate, н�
 - Отдельный retention для tariff snapshot не вводится: действует retention
   source-refresh, а опубликованный report хранит только нормализованный mart.
 
-Закрытые probe и staff-приёмка (2026-07-19…23): F-1…F-5 приняты на
-staff-only test; production/client enable не выполнялся. Для F-5 новый
+Закрытые probe и приёмка (2026-07-19…23): F-1…F-5 сначала приняты на
+staff-only test, затем отдельно включены client-role только на test;
+production enable не выполнялся. Для F-5 новый
 неопубликованный draft устранил Finance DB/file ambiguity, и повторный R-0I
 открыл goods-return identity gate. Claims source keys в текущем окне не
 обнаружены. Repeat R-0I после pagination hardening подтвердил
@@ -1155,6 +1161,13 @@ fail-soft контракт R-2 реализованы; live claims identity gate
 витрину, API или публикацию.
 
 # Changelog
+
+- 2026-07-23 — R-6 client-role rollout принят только на test. Immutable
+  runtime `b4d7376`, tracked override и effective client/master flags F-1…F-5
+  подтверждены. API текущего published report, tenant/draft isolation,
+  отсутствие raw/hash/PII и browser QA 1440×900/390×844 прошли; чужой
+  `client_id` теперь возвращает 404 вместо 500. Production и публикация R-5
+  draft не менялись, временный acceptance-контур очищен.
 
 - 2026-07-23 — F-5/R-5 принят на staff-only test. Immutable
   `main@a9ec18c`, additive schema и tracked drop-in подтверждены; новый

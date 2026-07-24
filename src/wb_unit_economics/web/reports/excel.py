@@ -56,6 +56,9 @@ TAX_LOAD_FIELD_LABELS = {
     "ytdStart": "Начало периода с начала года",
     "ytdEnd": "Окончание периода с начала года",
     "taxSystem": "Налоговый режим",
+    "taxObject": "Объект налогообложения",
+    "taxRate": "Ставка УСН, %",
+    "elevatedTaxRate": "Повышенная ставка УСН, %",
     "profileStatus": "Статус налогового профиля",
     "revenueTaxRate": "Ставка налога с выручки, %",
     "accountantApprovalStatus": "Подтверждение бухгалтера",
@@ -80,6 +83,12 @@ TAX_LOAD_FIELD_LABELS = {
     "usnIncomeValue": "Доход УСН без НДС",
     "usnIncomeTaxBurden": "Управленческая нагрузка УСН, %",
     "usnIncomeStatus": "Статус показателя УСН",
+    "usnExpenseValue": "Признанные расходы УСН по КУДиР",
+    "usnTaxBaseValue": "Налоговая база УСН с начала года",
+    "usnRegularTaxValue": "Обычный налог УСН с начала года",
+    "usnMinimumTaxValue": "Минимальный налог 1% (справочно)",
+    "usnCalculatedTaxValue": "Применяемый налог УСН с начала года",
+    "usnTaxPayableValue": "К доплате / переплата УСН",
     "businessStatus": "Статус отчёта",
     "contractVersion": "Версия контракта",
     "payloadSha256": "SHA-256 отчёта",
@@ -177,6 +186,9 @@ TAX_LOAD_VALUE_LABELS = {
     "summary": "Итого",
     "review_required": "Требуется проверка",
     "management_reference": "Управленческий ориентир",
+    "reference_only": "Справочно, до годового расчёта",
+    "minimum_tax_applied": "Применён минимальный налог 1%",
+    "regular_tax_applied": "Применён обычный налог",
     "pending_methodology_confirmation": "Ожидает подтверждения методики",
     "preliminary_ytd": "Предварительно, с начала года",
     "ytd": "С начала года",
@@ -204,6 +216,8 @@ TAX_LOAD_VALUE_LABELS = {
     "usn_income_expense": "УСН «Доходы минус расходы»",
     "усн доходы": "УСН «Доходы»",
     "усн доходы минус расходы": "УСН «Доходы минус расходы»",
+    "income": "Доходы",
+    "income_minus_expenses": "Доходы минус расходы",
 }
 
 TAX_LOAD_SOURCE_LABELS = {
@@ -284,6 +298,7 @@ TAX_LOAD_ENUM_FIELDS = {
     "purchaseBookIncluded",
     "severity",
     "taxSystem",
+    "taxObject",
     "profileStatus",
     "accountantApprovalStatus",
 }
@@ -292,6 +307,12 @@ TAX_LOAD_CURRENCY_FIELDS = {
     "numeratorValue",
     "denominatorValue",
     "usnIncomeValue",
+    "usnExpenseValue",
+    "usnTaxBaseValue",
+    "usnRegularTaxValue",
+    "usnMinimumTaxValue",
+    "usnCalculatedTaxValue",
+    "usnTaxPayableValue",
     "taxBase",
     "accrued",
     "paid",
@@ -313,6 +334,8 @@ TAX_LOAD_PERCENT_FIELDS = {
     "fnsTaxBurdenRatio",
     "benchmarkValue",
     "usnIncomeTaxBurden",
+    "taxRate",
+    "elevatedTaxRate",
 }
 TAX_LOAD_FRACTION_PERCENT_FIELDS = {"revenueTaxRate"}
 TAX_LOAD_OVERVIEW_FIELDS = (
@@ -322,7 +345,9 @@ TAX_LOAD_OVERVIEW_FIELDS = (
     "selectedMonth",
     "calculationPeriodKind",
     "taxSystem",
+    "taxObject",
     "profileStatus",
+    "taxRate",
     "revenueTaxRate",
     "periodStart",
     "periodEnd",
@@ -334,6 +359,12 @@ TAX_LOAD_OVERVIEW_FIELDS = (
     "usnIncomeValue",
     "usnIncomeTaxBurden",
     "usnIncomeStatus",
+    "usnExpenseValue",
+    "usnTaxBaseValue",
+    "usnRegularTaxValue",
+    "usnMinimumTaxValue",
+    "usnCalculatedTaxValue",
+    "usnTaxPayableValue",
     "methodologyStatus",
     "businessStatus",
     "accountantApprovalStatus",
@@ -814,8 +845,344 @@ def _usn_row_values(
     return result
 
 
+def _usn_metric_row_values(
+    columns: list[dict[str, Any]],
+    rows: Any,
+    *,
+    final_value: Any,
+    month_field: str,
+) -> list[Any]:
+    monthly: dict[int, dict[str, Decimal | None]] = {}
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            month_text = str(row.get("month") or "")
+            status = str(row.get("status") or "").strip().casefold()
+            if status not in {
+                "loaded",
+                "ready",
+                "complete",
+                "confirmed",
+                "empty_expected",
+            }:
+                continue
+            try:
+                month = int(month_text[5:7])
+            except (TypeError, ValueError):
+                continue
+            if 1 <= month <= 12:
+                monthly[month] = {
+                    "value": _tax_load_decimal(row.get("value")),
+                    "ytdValue": _tax_load_decimal(row.get("ytdValue")),
+                }
+    result: list[Any] = []
+    for column in columns:
+        month = (
+            int(column["month"])
+            if column["kind"] == "month"
+            else int(column["cutoff"])
+        )
+        field = month_field if column["kind"] == "month" else "ytdValue"
+        result.append((monthly.get(month) or {}).get(field))
+    final_decimal = _tax_load_decimal(final_value)
+    if columns and columns[-1].get("isFinal") and final_decimal is not None:
+        result[-1] = final_decimal
+    return result
+
+
+def _write_usn_income_expenses_calculation(
+    sheet: Any,
+    payload: Mapping[str, Any],
+    detail: Mapping[str, Any],
+) -> None:
+    if (
+        payload.get("contractVersion") != "tax-load-report-v7"
+        or detail.get("calculationMode") != "income_expenses"
+    ):
+        _append_safe_row(sheet, ["Показатель", "Значение"])
+        _append_safe_row(
+            sheet,
+            [
+                "Статус",
+                "Требуется повторное формирование по методике "
+                "«УСН Доходы минус расходы»",
+            ],
+        )
+        return
+
+    columns = _usn_period_columns(payload.get("ytdEnd"))
+    _append_safe_row(sheet, ["Показатель", *(item["label"] for item in columns)])
+    profile = dict(payload.get("taxProfile") or {})
+
+    def last_only(value: Any) -> list[Any]:
+        return [None] * (len(columns) - 1) + [value]
+
+    income_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyKudirIncome")),
+        final_value=detail.get("incomeYtd"),
+        require_complete_months=False,
+    )
+    expense_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyKudirExpense")),
+        final_value=detail.get("kudirExpenseYtd"),
+        require_complete_months=False,
+    )
+    expense_rows: list[tuple[str, list[Any], str]] = []
+    for item in detail.get("expenseBreakdown") or []:
+        if not isinstance(item, Mapping):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        expense_rows.append(
+            (
+                f"  {label}",
+                _usn_row_values(
+                    columns,
+                    _usn_month_values(item.get("monthlyValues")),
+                    final_value=item.get("valueYtd"),
+                    require_complete_months=False,
+                ),
+                "currency",
+            )
+        )
+
+    tax_base_month_values = _usn_metric_row_values(
+        columns,
+        detail.get("monthlyTaxBase"),
+        final_value=detail.get("taxBaseYtd"),
+        month_field="value",
+    )
+    tax_base_ytd_values = _usn_metric_row_values(
+        columns,
+        detail.get("monthlyTaxBase"),
+        final_value=detail.get("taxBaseYtd"),
+        month_field="ytdValue",
+    )
+    regular_tax_values = _usn_metric_row_values(
+        columns,
+        detail.get("monthlyRegularTax"),
+        final_value=detail.get("regularTaxYtd"),
+        month_field="ytdValue",
+    )
+    minimum_tax_values = _usn_metric_row_values(
+        columns,
+        detail.get("monthlyMinimumTaxReference"),
+        final_value=detail.get("minimumTaxReferenceYtd"),
+        month_field="ytdValue",
+    )
+    calculated_tax_values = _usn_metric_row_values(
+        columns,
+        detail.get("monthlyCalculatedTax"),
+        final_value=detail.get("calculatedTaxYtd"),
+        month_field="ytdValue",
+    )
+    payment_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyTaxPayments")),
+        final_value=detail.get("paidTaxYtd"),
+        require_complete_months=False,
+    )
+
+    cash_income_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyIncome")),
+        final_value=detail.get("cashIncomeYtd"),
+        require_complete_months=True,
+    )
+    unclassified_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyUnclassifiedIncome")),
+        final_value=detail.get("unclassifiedIncomeYtd"),
+        require_complete_months=False,
+    )
+    excluded_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyExcludedIncome")),
+        final_value=detail.get("excludedIncomeYtd"),
+        require_complete_months=False,
+    )
+    loan_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyLoanReceipts")),
+        final_value=detail.get("loanReceiptsYtd"),
+        require_complete_months=False,
+    )
+    payroll_values = _usn_row_values(
+        columns,
+        _usn_month_values(detail.get("monthlyPayrollPayments")),
+        final_value=detail.get("payrollPaymentsYtd"),
+        require_complete_months=False,
+    )
+    marketplace_rows: list[tuple[str, list[Any], str]] = []
+    marketplace_labels = {
+        "wildberries": "  Wildberries (РВБ)",
+        "ozon": "  Ozon (Интернет Решения)",
+        "other": "  другие покупатели",
+    }
+    if detail.get("marketplaceBreakdownStatus") == "ready":
+        for item in detail.get("marketplaceIncomeBreakdown") or []:
+            if not isinstance(item, Mapping):
+                continue
+            label = marketplace_labels.get(str(item.get("category") or ""))
+            if label:
+                marketplace_rows.append(
+                    (
+                        label,
+                        _usn_row_values(
+                            columns,
+                            _usn_month_values(item.get("monthlyValues")),
+                            final_value=item.get("valueYtd"),
+                            require_complete_months=True,
+                        ),
+                        "currency",
+                    )
+                )
+        marketplace_rows.append(
+            (
+                "Итого по маркетплейсам",
+                _usn_row_values(
+                    columns,
+                    _usn_month_values(detail.get("monthlyMarketplaceIncome")),
+                    final_value=detail.get("marketplaceIncomeYtd"),
+                    require_complete_months=True,
+                ),
+                "currency",
+            )
+        )
+
+    tax_rate = _tax_load_decimal(
+        detail.get("taxRate") or profile.get("taxRate")
+    )
+    tax_rate_fraction = (
+        tax_rate / Decimal("100") if tax_rate is not None else None
+    )
+    rows = (
+        ("Доходы УСН по КУДиР (признанные)", income_values, "currency"),
+        ("Расходы УСН по КУДиР (признанные)", expense_values, "currency"),
+        *expense_rows,
+        ("Налоговая база за месяц", tax_base_month_values, "currency"),
+        (
+            "Налоговая база нарастающим итогом",
+            tax_base_ytd_values,
+            "currency",
+        ),
+        ("Ставка УСН", last_only(tax_rate_fraction), "rate"),
+        (
+            "Обычный налог с начала года",
+            regular_tax_values,
+            "currency",
+        ),
+        (
+            "Минимальный налог 1% (справочно)",
+            minimum_tax_values,
+            "currency",
+        ),
+        (
+            "Применяемый налог с начала года",
+            calculated_tax_values,
+            "currency",
+        ),
+        ("Уплачено УСН", payment_values, "currency"),
+        (
+            "К доплате / переплата УСН",
+            last_only(_tax_load_decimal(detail.get("taxPayable"))),
+            "currency",
+        ),
+        (
+            "Статус минимального налога",
+            last_only(
+                _tax_load_cell(
+                    "status",
+                    detail.get("minimumTaxApplicationStatus") or "source_gap",
+                )
+            ),
+            "text",
+        ),
+        (
+            "Поступления от покупателей без НДС (контроль)",
+            cash_income_values,
+            "currency",
+        ),
+        *marketplace_rows,
+        (
+            "Прочие поступления без НДС (на проверке)",
+            unclassified_values,
+            "currency",
+        ),
+        (
+            "Личные средства предпринимателя (не доход)",
+            excluded_values,
+            "currency",
+        ),
+        (
+            "Кредиты и займы полученные (не доход)",
+            loan_values,
+            "currency",
+        ),
+        (
+            "Заработная плата (выплаты, справочно)",
+            payroll_values,
+            "currency",
+        ),
+        (
+            "Расхождение поступлений с доходом КУДиР",
+            last_only(_tax_load_decimal(detail.get("reconciliationDelta"))),
+            "currency",
+        ),
+        (
+            "Срок уплаты",
+            last_only(_tax_load_date(detail.get("dueDate")) or "Не указано"),
+            "date",
+        ),
+        (
+            "Статус данных",
+            last_only(
+                _tax_load_cell(
+                    "status",
+                    detail.get("status") or "source_gap",
+                )
+            ),
+            "text",
+        ),
+        (
+            "Версия методики",
+            last_only(
+                detail.get("methodologyVersion")
+                or "Требуется повторное формирование"
+            ),
+            "text",
+        ),
+    )
+    for label, values, value_kind in rows:
+        _append_safe_row(sheet, [label, *values])
+        for column in range(2, sheet.max_column + 1):
+            cell = sheet.cell(row=sheet.max_row, column=column)
+            if value_kind == "currency":
+                cell.number_format = TAX_LOAD_CURRENCY_FORMAT
+            elif value_kind == "rate":
+                cell.number_format = TAX_LOAD_FRACTION_PERCENT_FORMAT
+            elif value_kind == "date" and isinstance(cell.value, (date, datetime)):
+                cell.number_format = TAX_LOAD_DATE_FORMAT
+
+
 def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
     detail = dict(payload.get("usnDetail") or {})
+    profile = dict(payload.get("taxProfile") or {})
+    normalized_tax_system = str(profile.get("taxSystem") or "").casefold()
+    normalized_tax_object = str(profile.get("taxObject") or "").casefold()
+    is_income_expenses = (
+        "расход" in normalized_tax_system
+        or "expense" in normalized_tax_system
+        or "расход" in normalized_tax_object
+        or "expense" in normalized_tax_object
+    )
+    if detail.get("calculationMode") == "income_expenses" or is_income_expenses:
+        _write_usn_income_expenses_calculation(sheet, payload, detail)
+        return
     if detail.get("status") == "not_applicable":
         _append_safe_row(sheet, ["Показатель", "Значение"])
         _append_safe_row(
@@ -826,7 +1193,6 @@ def _write_usn_calculation(sheet: Any, payload: Mapping[str, Any]) -> None:
     columns = _usn_period_columns(payload.get("ytdEnd"))
     _append_safe_row(sheet, ["Показатель", *(item["label"] for item in columns)])
     summary = dict(payload.get("taxLoadSummary") or {})
-    profile = dict(payload.get("taxProfile") or {})
     income_ytd = detail.get("incomeYtd") or summary.get("usnIncomeValue")
     has_bank_detail = (
         "unclassifiedIncomeYtd" in detail
@@ -1119,18 +1485,28 @@ def _style_tax_load(workbook: Workbook) -> None:
             for row_index in range(2, sheet.max_row + 1):
                 label = str(sheet.cell(row=row_index, column=1).value or "")
                 sheet.cell(row=row_index, column=1).font = LABEL_FONT
-                if label == "Поступления от покупателей без НДС":
+                if label in {
+                    "Поступления от покупателей без НДС",
+                    "Поступления от покупателей без НДС (контроль)",
+                }:
                     for cell in sheet[row_index]:
                         cell.fill = USN_SOURCE_FILL
                 elif label in {
                     "Итого по маркетплейсам",
                     "Итого подтверждённый доход без НДС",
+                    "Доходы УСН по КУДиР (признанные)",
+                    "Налоговая база нарастающим итогом",
+                    "Применяемый налог с начала года",
                     "К доплате / переплата УСН",
                 }:
                     for cell in sheet[row_index]:
                         cell.fill = USN_INCOME_FILL
                         cell.font = LABEL_FONT
-                elif label == "Прочие поступления без НДС (на проверке)":
+                elif label in {
+                    "Прочие поступления без НДС (на проверке)",
+                    "Расходы УСН по КУДиР (признанные)",
+                    "Минимальный налог 1% (справочно)",
+                }:
                     for cell in sheet[row_index]:
                         cell.fill = USN_TOTAL_FILL
                 elif label in {
@@ -1220,6 +1596,10 @@ def write_scenario_excel(
         meta = dict(payload.get("meta") or {})
         profile = dict(payload.get("taxProfile") or {})
         summary = dict(payload.get("taxLoadSummary") or {})
+        usn_detail = dict(payload.get("usnDetail") or {})
+        is_income_expenses = (
+            usn_detail.get("calculationMode") == "income_expenses"
+        )
         approval = payload.get("accountantApproval")
         context = dict(export_context or {})
         overview = {
@@ -1229,8 +1609,14 @@ def write_scenario_excel(
             "selectedMonth": _tax_load_month_label(meta.get("periodStart")),
             "calculationPeriodKind": summary.get("calculationPeriodKind"),
             "taxSystem": profile.get("taxSystem"),
+            "taxObject": profile.get("taxObject"),
             "profileStatus": profile.get("profileStatus"),
-            "revenueTaxRate": profile.get("revenueTaxRate"),
+            "taxRate": profile.get("taxRate"),
+            "revenueTaxRate": (
+                None
+                if is_income_expenses
+                else profile.get("revenueTaxRate")
+            ),
             "periodStart": meta.get("periodStart"),
             "periodEnd": meta.get("periodEnd"),
             "ytdStart": payload.get("ytdStart"),
@@ -1238,9 +1624,21 @@ def write_scenario_excel(
             "numeratorValue": summary.get("numeratorValue"),
             "denominatorValue": summary.get("denominatorValue"),
             "fnsTaxBurdenRatio": summary.get("fnsTaxBurdenRatio"),
-            "usnIncomeValue": summary.get("usnIncomeValue"),
+            "usnIncomeValue": (
+                usn_detail.get("incomeYtd")
+                if is_income_expenses
+                else summary.get("usnIncomeValue")
+            ),
             "usnIncomeTaxBurden": summary.get("usnIncomeTaxBurden"),
             "usnIncomeStatus": summary.get("usnIncomeStatus"),
+            "usnExpenseValue": usn_detail.get("kudirExpenseYtd"),
+            "usnTaxBaseValue": usn_detail.get("taxBaseYtd"),
+            "usnRegularTaxValue": usn_detail.get("regularTaxYtd"),
+            "usnMinimumTaxValue": usn_detail.get(
+                "minimumTaxReferenceYtd"
+            ),
+            "usnCalculatedTaxValue": usn_detail.get("calculatedTaxYtd"),
+            "usnTaxPayableValue": usn_detail.get("taxPayable"),
             "methodologyStatus": summary.get("methodologyStatus"),
             "businessStatus": payload.get("businessStatus"),
             "accountantApprovalStatus": (

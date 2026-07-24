@@ -46,6 +46,38 @@ def test_r5_test_drop_in_keeps_return_reasons_staff_only() -> None:
     assert "SHUMEYKO_LOGISTICS_MEASUREMENTS_CLIENT_ENABLED=false" in drop_in
 
 
+def test_r6_test_drop_in_enables_all_logistics_for_client_role() -> None:
+    drop_in_path = (
+        ROOT
+        / "deploy/systemd/shumeiko-web-test.service.d/"
+        "zzz-logistics-r6-client-test.conf"
+    )
+    drop_in = drop_in_path.read_text(encoding="utf-8")
+    exec_start = next(
+        line
+        for line in drop_in.splitlines()
+        if line.startswith("ExecStart=/usr/bin/env ")
+    )
+
+    assert drop_in_path.name > "zz-logistics-r5-return-reasons.conf"
+    assert "ExecStart=" in drop_in.splitlines()
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in drop_in
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in exec_start
+    for flag in (
+        "SHUMEYKO_LOGISTICS_ANALYSIS",
+        "SHUMEYKO_LOGISTICS_FACTORS",
+        "SHUMEYKO_LOGISTICS_TARIFFS",
+        "SHUMEYKO_LOGISTICS_ROUTES",
+        "SHUMEYKO_LOGISTICS_MEASUREMENTS",
+        "SHUMEYKO_LOGISTICS_RETURN_REASONS",
+    ):
+        assert f"{flag}_ENABLED=true" in drop_in
+        assert f"{flag}_CLIENT_ENABLED=true" in drop_in
+        assert f"{flag}_ENABLED=true" in exec_start
+        assert f"{flag}_CLIENT_ENABLED=true" in exec_start
+    assert "_CLIENT_ENABLED=false" not in drop_in
+
+
 def test_nginx_templates_proxy_accounting_workflow_route() -> None:
     test_config = (ROOT / "deploy/nginx/shumeiko.offonika.ru.conf").read_text(
         encoding="utf-8"

@@ -7,7 +7,7 @@ status: implemented
 owner: "engineering"
 audience: ["engineering", "consultant"]
 source_of_truth: false
-related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf]
+related_code: [scripts/probe_wb_logistics_factors.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/database.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf, deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf]
 related_tests: [tests/test_probe_wb_logistics_factors.py, tests/test_wb_finance.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
@@ -51,11 +51,11 @@ test_anchors:
   - path: tests/test_source_refresh.py
     symbols: ["def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_record_registers_verified_collection_and_rows", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_claims_record_and_selector_keep_only_safe_flat_fields", "def test_return_claims_access_denied_is_review_state_not_blocker", "def test_return_reason_context_builds_from_lineage_and_denied_claims_is_partial"]
   - path: tests/test_web_app.py
-    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_logistics_return_reason_analysis_is_atomic_and_published_immutable", "def test_required_return_reason_context_controls_publication_readiness", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering"]
+    symbols: ["def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_logistics_return_reason_analysis_is_atomic_and_published_immutable", "def test_required_return_reason_context_controls_publication_readiness", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering", "def test_multi_client_report_access_requires_explicit_client"]
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_r0_identity_same_name_match_opens_only_source_specific_gate", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_runtime_contour_scripts.py
-    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only"]
+    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only", "def test_r6_test_drop_in_enables_all_logistics_for_client_role"]
 depends_on: [workspace-shumeyko-partners-wb-logistics-cost-analysis-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -65,8 +65,8 @@ updated_at: "2026-07-23"
 
 Статус — `implemented`. R-1…R-4 реализованы и влиты, R-5 staff-only
 test acceptance завершён 23 июля 2026 года на immutable runtime и новом
-неопубликованном draft. Клиентское и production-включение не выполнялись и
-остаются отдельными решениями.
+неопубликованном draft. 23 июля 2026 года client-role отдельно включён только
+на test; production-включение остаётся отдельным решением.
 
 Это подчинённый implementation-spec внутри truth_scope
 `logistics-cost-analysis`. Канонический документ scope — accepted
@@ -141,7 +141,14 @@ mobile-карточки, локальные states и рекомендации �
 причинам. R-5 staff-only test acceptance завершён на immutable
 `main@a9ec18c`: новый неопубликованный draft, live safe API, desktop/mobile
 browser QA и client no-request boundary приняты. Production и client enable не
-выполнялись.
+выполнялись в рамках R-5.
+
+R-6 client-role rollout завершён только на test на immutable `b4d7376`.
+Client login и master/client flags F-1…F-5 включены tracked override.
+Client API текущего published report отвечает 200, при этом exact R-5 draft,
+чужой scope и staff order chains остаются закрыты 404; raw IDs, hashes,
+комментарии и media отсутствуют. Browser QA 1440×900/390×844 пройдены.
+R-5 draft не опубликован, production не менялся.
 
 Первичный R-0 выполнен 22 июля 2026 года после принятия спека. Source schema
 gate пройден, но direct Finance/source join не подтвердился даже на
@@ -863,6 +870,13 @@ Rollback отключает новые маршруты и блок причин
   классификатор логистики).
 
 # Changelog
+
+- 2026-07-23 — завершён R-6 client-role rollout только на test. Immutable
+  runtime `b4d7376` и tracked client override подтверждены; client `/api/me`
+  разрешает F-1…F-5, API текущего published report отвечает 200, R-5 draft,
+  чужой scope и staff order chains закрыты 404. Raw/hash/PII поля отсутствуют,
+  browser QA 1440×900/390×844 прошёл без overflow и ошибок. Временный контур
+  очищен; production и публикация draft не менялись.
 
 - 2026-07-23 — завершён R-5 staff-only test acceptance. Test переключён на
   immutable release из `main@a9ec18c` с `sourceDirty=false`, применена additive

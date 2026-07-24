@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openpyxl import Workbook
 
+from scripts.attach_tax_load_draft_reference import draft_reference_rows
 from scripts.enqueue_accounting_report import _resolve_client_scope
 from scripts.verify_month_close_canary import _accounting_baseline_matches
 
@@ -87,3 +91,56 @@ def test_canary_verifier_rejects_accounting_baseline_drift() -> None:
     }
 
     assert _accounting_baseline_matches(args, actual) is False
+
+
+def test_tax_load_draft_reference_is_always_partial_source(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Б) График платеж по налог обяз"
+    sheet.append(["Служебный заголовок"])
+    sheet.append([])
+    sheet.append(
+        [
+            "Налог",
+            "Сумма",
+            "Срок платежа",
+            "Период",
+            "Основание",
+            "Статус",
+            "Примечание",
+        ]
+    )
+    sheet.append(
+        [
+            "Налог на прибыль",
+            125,
+            "28.07.2026",
+            "",
+            "",
+            "Черновик",
+            "Проверить",
+        ]
+    )
+    sheet.append(
+        [
+            "НДФЛ налогового агента",
+            50,
+            date(2026, 7, 30),
+            "",
+            "",
+            "Черновик",
+            "Проверить",
+        ]
+    )
+    path = tmp_path / "draft.xlsx"
+    workbook.save(path)
+
+    rows = draft_reference_rows(path, default_year=2026)
+
+    assert len(rows) == 2
+    assert {row["evidenceStatus"] for row in rows} == {"partial_source"}
+    assert all(row["paid"] is None for row in rows)
+    assert rows[0]["dueDate"] == "2026-07-28"
+    assert rows[0]["includedInFnsTaxBurden"] is True
+    assert rows[1]["paymentKind"] == "agent_ndfl"
+    assert rows[1]["includedInFnsTaxBurden"] is False
