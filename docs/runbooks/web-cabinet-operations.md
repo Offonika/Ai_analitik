@@ -1378,3 +1378,76 @@ Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/cu
 `runtime-2afb91e-contours-cleanup-20260724` через
 `scripts/promote_runtime_release.py --environment test`, перезапустить только
 `shumeiko-web-test.service` и повторить test health/safety smoke.
+
+## Test-first rollout объединённой логистики и налоговой нагрузки
+
+24 июля 2026 года PR
+[#72](https://github.com/Offonika/Ai_analitik/pull/72) объединил test-ветку
+логистики и изменения налоговой нагрузки с актуальным `main`. PR влит
+merge-коммитом `64d683ec932f1d32d6a69a0847907728e1ee4045`; обязательные
+`quality` и `tests` прошли и до merge, и в post-merge GitHub run
+`30111167048`. Полный локальный набор на merge-ревизии дал `1054 passed`.
+
+Из точного merge-коммита собран immutable release
+`runtime-main-64d683e-logistics-tax-integration-20260724`. Manifest
+подтверждает `sourceDirty=false` и content SHA-256
+`edb2061316aeac7c52f7c4f653798293f210e98bd81fc20ed8bff798dd54c4d0`.
+Test symlink атомарно переключён на этот release, перезапущен только
+`shumeiko-web-test.service`. Production сохранил release
+`runtime-main-880a214-cost-quality-split-20260724`, build
+`20260724-cost-quality-split-v1` и прежний PID; production service не
+перезапускался.
+
+Локальный и публичный test health вернули `status=ok`,
+`runtimeEnvironment=test` и совпадающие backend/static build
+`20260724-logistics-tax-integration-v1`. Оба штатных health-service
+завершились с `Result=success`. Неизвестный маршрут и `/.env` возвращают
+HTTP 404, неавторизованный `/api/reports` — HTTP 401. Client login и все
+client-флаги логистики остались выключены, активных client-пользователей нет;
+staff master-флаги `tax_load` и F-1…F-5 включены. Проверка
+`scripts/check_runtime_contour_drift.py` проходит без расхождений.
+
+Для нового интеграционного кандидата выполнен test-only `full` refresh
+`source_refresh_141195c8a889473bac683685d2d3815a` из текущего test runtime,
+через test EnvironmentFile и encrypted tenant integrations. Worker работал
+foreground с read-only источниками; production worker и production
+EnvironmentFile не использовались. Два предварительных запуска остановились
+fail closed до внешних чтений, пока transient worker не получил обязательные
+test-only `DB_FIRST_REPORTS_ENABLED` и `SOURCE_REFRESH_ENABLED`. Итоговый run
+завершился `needs_review` и создал неопубликованный draft
+`shumeyko_source_refresh_20260724_174105` с
+`publicationStatus=draft`, `isCurrent=false`; опубликованный current не
+изменился.
+
+Воспроизводимая read-only проверка выполнялась из release `64d683e` в
+транзакции `SET TRANSACTION READ ONLY` по точному `report_run_id`. Агрегат
+`report_unit_rows` подтвердил `12 227` строк, `MAX(week)=2026-07-13` и
+`MAX(accounting_period_date)=2026-07-19`, то есть последняя закрытая неделя
+13–19 июля присутствует. Себестоимость заполнена в `10 037` строках, ненулевая
+себестоимость — в `6 292`; ненулевая логистика есть в `11 154` строках,
+налог — в `7 358`. Статусы себестоимости остаются явными:
+`exact_week_exact_kind=6 534`, `nearest_week=2 985`, `cross_kind=561`,
+`missing=1 010`, пустой status — `1 137`; отсутствующие значения не
+подменялись нулём.
+
+Read-only вызовы repository payload из нового runtime подтвердили базовую
+логистику `ready` по методике `wb-logistics-v5` и непустые F-1…F-5 витрины.
+Факторные срезы честно остаются `partial`; общий readiness draft —
+`partial_source`, blocking codes отсутствуют, но остаются review-причины
+периода, источников, mapping, сверки себестоимости и финансовых связей.
+Поэтому draft не публиковался и не выдаётся за готовый клиентский отчет.
+
+У draft зарегистрированы восемь ready artifacts: пять CSV, DOCX, Excel и
+HTML. Excel размером `13 556 647` байт прошёл ZIP integrity и открытие
+`openpyxl` в read-only режиме, содержит 28 листов. Отдельный реальный
+`tax_load` draft `report_004f9a2f8541444787076fce19162744` повторно проверен
+под новым runtime: contract/payload `tax-load-report-v7`, payload hash
+совпадает, налоговый профиль `ready`, режим `income_expenses`, обязательные
+поля УСН Д−Р заполнены. Временный Excel успешно собран на 11 листов, не
+содержит формул и UUID и после проверки удалён.
+
+Rollback test — атомарно вернуть test symlink на
+`runtime-main-880a214-cost-quality-split-20260724`, перезапустить только
+`shumeiko-web-test.service` и повторить health, 404/401, flags и drift smoke.
+Source snapshots, новый draft и artifacts при runtime rollback не удаляются;
+production, его отчёты и БД не меняются.
