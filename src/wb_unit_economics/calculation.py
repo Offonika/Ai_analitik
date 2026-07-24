@@ -33,6 +33,7 @@ from wb_unit_economics.contracts import (
     WbExpenseAllocationBase,
     WbSalesReportSummaryRow,
 )
+from wb_unit_economics.onec_cost import STOCK_REGISTER_FALLBACK_COST_METHOD
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 DEFAULT_REPORT_PERIOD_START = date(2026, 3, 1)
@@ -2372,6 +2373,11 @@ def build_unit_economics_report(
             ),
             tax.data_quality_status,
         )
+        if (
+            isinstance(bucket["cost_methods"], set)
+            and STOCK_REGISTER_FALLBACK_COST_METHOD in bucket["cost_methods"]
+        ):
+            row_status = _worse_status(row_status, DataQualityStatus.NEEDS_REVIEW)
         rows.append(
             UnitEconomicsRow(
                 client_id=row_client_id,
@@ -3543,6 +3549,7 @@ def _grouped_quality_status(
     effective = set(statuses)
     if quantity == 0:
         effective.discard(DataQualityStatus.MISSING_COST)
+        effective.discard(DataQualityStatus.NEEDS_REVIEW)
     if not effective:
         return DataQualityStatus.RELIABLE
     return max(effective, key=STATUS_PRIORITY.__getitem__)
