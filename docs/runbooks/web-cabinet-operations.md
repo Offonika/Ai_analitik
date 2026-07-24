@@ -1117,3 +1117,49 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/check_web_cabinet_health.py
 - `/data/dashboard-data.json`, `/downloads/shumeyko_wb_excel_mvp.xlsx`,
   `/.env` не отдаются публично;
 - AI-виджет открывается, а ответ явно показывает ограничения источников.
+
+# Operational evidence: fallback себестоимости из `Запасов` — 24 июля 2026 года
+
+После явного разрешения пользователя на production rollout PR
+[#65](https://github.com/Offonika/Ai_analitik/pull/65) влит в `main` merge-коммитом
+`750e4a5429c5601ab03285a863e97189c5bd2aad`. На PR и merge-коммите GitHub CI
+создал и успешно завершил оба блокирующих job: `quality` и `tests`.
+
+Из merge-коммита собран immutable release
+`runtime-main-750e4a5-stock-cost-fallback-20260724`; manifest подтверждает
+`sourceDirty=false`. Перед migration создан потоковый production backup
+`/var/backups/shumeiko-web/shumeiko-web-20260724_082833.sql.gz` размером
+`2 625 399 876` байт, с правами `0600`; `gzip -t` завершился успешно.
+Additive migration подняла production schema до
+`2026_07_23_logistics_return_reasons_context_v1`. Production symlink атомарно
+переключен на новый release, перезапущен только
+`shumeiko-web-prod.service`.
+
+Локальный и публичный `/api/health` после restart вернули `status=ok`,
+`runtimeEnvironment=production` и одинаковые build ID. Public smoke подтвердил
+FastAPI shell, HTTP 401 для неавторизованного `/api/reports`,
+`X-Robots-Tag: noindex, nofollow, noarchive` и HTTP 404 для `/.env`.
+
+Из нового runtime выполнен read-only full source refresh
+`source_refresh_205e6d0e5d874cc195e0a537d60d0780`, snapshot set
+`full-20260724-115121`, период `2026-03-01` — `2026-07-23`. Все обязательные
+WB/1С-коллекции загрузились; итоговый `needs_review` обусловлен существующими
+mapping-задачами и явными optional-source предупреждениями, health refresh
+остался `ok`. Создан неопубликованный immutable draft
+`shumeyko_source_refresh_20260724_090120` с восемью artifact records;
+`publication_status=draft`, `is_current=false`.
+
+Сверка одинаковых `12 227` строк предыдущего и нового draft подтвердила:
+
+- `Нет себестоимости 1С`: `1 051` → `922` строки, `221` → `186` SKU;
+- `Себестоимость 1С требует сверки`: `842` → `971` строка,
+  `222` → `257` SKU;
+- метод `stock_register_fixed_receipt_fallback_needs_review` применен к
+  `335` строкам / `44` SKU;
+- `35` ранее отсутствовавших SKU получили резервную стоимость из регистра
+  `Запасы`.
+
+Опубликованный клиентский current report этим rollout не переключался.
+Rollback runtime выполняется возвратом production symlink на
+`runtime-2afb91e-contours-cleanup-20260724` и restart только production web;
+additive schema и созданный draft при rollback не удаляются.
