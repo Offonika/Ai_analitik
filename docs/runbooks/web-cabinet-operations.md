@@ -1283,3 +1283,27 @@ report. Public shell отдает новый cache-busting build ID, а загр
 `runtime-main-6e778e2-stock-fallback-zero-net-scope-20260724` и перезапустить
 только `shumeiko-web-prod.service`. Отчеты, artifacts и schema при таком
 rollback не меняются.
+
+## Выравнивание test после corrective rollout себестоимости
+
+24 июля 2026 года после merge PR
+[#70](https://github.com/Offonika/Ai_analitik/pull/70) локальный `main`
+fast-forward обновлен до `9ad7e88`. Test symlink атомарно переключен на уже
+проверенный production artifact
+`runtime-main-880a214-cost-quality-split-20260724`; перезапущен только
+`shumeiko-web-test.service`. Предыдущий test artifact
+`runtime-2afb91e-contours-cleanup-20260724` сохранен для rollback.
+
+После переключения оба локальных `/api/health` вернули `status=ok`,
+`backendBuildId=staticBuildId=20260724-cost-quality-split-v1` и schema
+`2026_07_23_logistics_return_reasons_context_v1`; окружения остались разными:
+`production` на 8097 и `test` на 8098. Оба штатных health service завершились с
+`Result=success`. В test client login остается выключен, активных
+client-пользователей нет, неизвестный маршрут и `/.env` возвращают HTTP 404,
+неавторизованный `/api/reports` — HTTP 401. Порт 8096 и legacy unit отсутствуют,
+а `scripts/check_runtime_contour_drift.py` проходит без расхождений.
+
+Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/current` на
+`runtime-2afb91e-contours-cleanup-20260724` через
+`scripts/promote_runtime_release.py --environment test`, перезапустить только
+`shumeiko-web-test.service` и повторить test health/safety smoke.
