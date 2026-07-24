@@ -21,6 +21,7 @@ related_code:
   - src/wb_unit_economics/web/app.py
   - src/wb_unit_economics/web/static/index.html
   - src/wb_unit_economics/web/static/app.js
+  - src/wb_unit_economics/web/static/tax-load-report.js
   - src/wb_unit_economics/web/static/styles.css
 related_tests:
   - tests/test_onec_month_close_audit_pack.py
@@ -50,7 +51,7 @@ related_specs:
   - docs/specs/accounting-reports-smart-process-onepage.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 ---
 
 # Статус документа
@@ -191,6 +192,12 @@ ONEPAGE; эта report spec их не переопределяет.
   управленческий знаменатель для ИП на УСН вместо отчета о финансовых
   результатах (подтверждено бухгалтером 21.07.2026); регистр УСН/КУДиР 1С
   используется как контрольная сверка;
+- для объекта `УСН Доходы минус расходы` — активные строки
+  `AccumulationRegister_КнигаУчетаДоходовИРасходов_RecordType` с ресурсами
+  `ДоходБаза`, `РасходБаза`, `ДоходВсего`, `РасходВсего`,
+  `ВзносыПодлежащиеУплате` и явным `ВидЗаписи`; признанная налоговая база
+  строится только из `ДоходБаза` и `РасходБаза`, а банковские движения и
+  вспомогательные ресурсы остаются сверкой;
 - `month_close_control_report` того же клиента, организации и месяца, если он
   сформирован;
 - аудируемое подтверждение бухгалтера для фактов, которых нет в read-only
@@ -295,6 +302,38 @@ fns_tax_burden_ratio =
 `usn_income_tax_burden = null`; доступные начисления и суммы налога УСН
 продолжают показываться, ноль не подставляется.
 
+Для профиля `УСН Доходы минус расходы` применяется отдельная методика
+`usn_income_expenses_v1`, основанная на образце
+`ИП УСН Доходы минус расходы_.xlsx` и признанной налоговой базе КУДиР:
+
+```text
+usn_income_expenses_tax_base_ytd =
+  max(kudir_income_base_ytd - kudir_expense_base_ytd, 0)
+
+usn_income_expenses_regular_tax_ytd =
+  usn_income_expenses_tax_base_ytd * tax_profile.tax_rate / 100
+
+usn_income_expenses_minimum_tax_reference_ytd =
+  kudir_income_base_ytd * 1%
+```
+
+`tax_profile.tax_rate` берется из того же снимка периодических настроек 1С,
+что и отчет. `revenue_tax_rate` для этого объекта остается нулевым и не
+используется. До декабря минимальный налог 1% является только справочным
+контрольным показателем и не заменяет авансовый платеж. Для отчета за декабрь
+`calculated_tax_ytd` равен большему из обычного и минимального налога; для
+января–ноября — обычному налогу по подтвержденной накопительной базе.
+
+Признанные расходы классифицируются по явному `ВидЗаписи` КУДиР:
+товары, услуги сторонних организаций, оплата труда, страховые взносы и прочие
+расходы. Общая сумма всегда берется из `РасходБаза`; классификация нужна для
+расшифровки и обязана сходиться с ней. Неизвестный вид записи остается в
+`Прочие расходы (требуют проверки)` и переводит расчет в `review_required`,
+но не исключается молча из уже признанной КУДиР базы. Отсутствующий
+`РасходБаза`, ставка или неполный источник оставляет базу и налог `null`.
+Поступления, возвраты, займы, зарплатные выплаты и маркетплейсы показываются
+как денежная сверка и не подменяют признанные доходы/расходы КУДиР.
+
 `tax_load_report` содержит:
 
 ```text
@@ -304,7 +343,8 @@ meta:
   ytd_start, ytd_end, methodology_version, generated_at
   calculation_status, publication_status
 tax_profile:
-  tax_system, profile_status, valid_from, valid_to, source_kind
+  tax_system, tax_object, tax_rate, elevated_tax_rate
+  profile_status, valid_from, valid_to, source_kind
 source_coverage[]:
   source_kind, period_start, period_end, status, snapshot_id
 tax_rows[]:
@@ -337,11 +377,14 @@ tax_load_summary:
   fns_tax_burden_ratio, calculation_period_kind
   methodology_status, comparison_status
 usn_detail:
-  status, classification_status, payroll_classification_status
-  source_kind, revenue_tax_rate
+  status, calculation_mode, classification_status
+  expense_classification_status, payroll_classification_status
+  source_kind, revenue_tax_rate, tax_rate, minimum_tax_rate
   income_ytd, unclassified_income_ytd, excluded_income_ytd
   loan_receipts_ytd, payroll_payments_ytd, marketplace_income_ytd
-  kudir_income_ytd, reconciliation_delta
+  kudir_income_ytd, kudir_expense_ytd, reconciliation_delta
+  tax_base_ytd, regular_tax_ytd, minimum_tax_reference_ytd
+  minimum_tax_application_status
   calculated_tax_ytd, paid_tax_ytd, tax_payable, due_date
   monthly_income[]: month, value, status, row_count
   monthly_unclassified_income[]: month, value, status, row_count
@@ -352,6 +395,12 @@ usn_detail:
   marketplace_income_breakdown[]:
     category, label, value_ytd, row_count, monthly_values[]
   monthly_kudir_income[]: month, value, status, row_count
+  monthly_kudir_expense[]: month, value, status, row_count
+  expense_breakdown[]:
+    category, label, value_ytd, row_count, monthly_values[]
+  monthly_tax_base[]: month, value, status
+  monthly_regular_tax[]: month, value, status
+  monthly_minimum_tax_reference[]: month, value, status
   monthly_tax_payments[]: month, value, status, row_count
 issues[]:
   code, severity, section, message, next_action
@@ -359,8 +408,9 @@ business_status
 accountant_approval
 ```
 
-Версия сохраненного контракта с контрольными строками кредитов, маркетплейсов и
-заработной платы — `tax-load-report-v6`.
+Версия сохраненного контракта с отдельным расчетом объекта
+`УСН Доходы минус расходы` — `tax-load-report-v7`; соответствующий
+нормализованный evidence — `tax-load-evidence-v7`.
 В `meta` фиксируются `source_refresh_run_id`, `source_snapshot_set_id` и
 `evidence_sha256`; налоговый профиль должен ссылаться на тот же refresh run или
 на конкретную версию ручного override.
@@ -504,6 +554,23 @@ Web-представление v2 показывает бухгалтеру по
 к доплате или переплату и срок из source evidence. Квартальные и YTD значения
 рассчитываются в backend из сохраненного evidence, а не скрытыми
 Excel-формулами.
+
+Для профиля `УСН Доходы минус расходы` тот же лист переключается на отдельную
+структуру образца Д−Р и не показывает сообщение «применяется только для УСН
+Доходы». В основном блоке идут признанный доход КУДиР, признанные расходы и их
+категории, база за месяц, база нарастающим итогом, ставка из налогового профиля,
+обычный налог, минимальный налог 1% справочно, применимый итоговый налог,
+подтвержденные платежи и сумма к доплате/переплата. Денежная сверка поступлений,
+Ozon, Wildberries, других покупателей, возвратов, займов и зарплатных выплат
+остается отдельным контрольным блоком и не меняет налоговую базу КУДиР.
+
+Помесячные значения КУДиР показываются только по фактической дате движения
+регистра. Если текущая 1С записывает их квартальной датой, отсутствующие месяцы
+остаются пустыми, а YTD-итог сохраняется; данные не размазываются по месяцам.
+Квартальные и YTD-итоги, налоговая база, обычный и минимальный налог
+рассчитываются backend и записываются в Excel значениями без формул.
+Сохраненный payload до v7 для профиля Д−Р требует повторного формирования и
+не получает вычисленные расходы или налог задним числом.
 
 Подтвержденное поступление строится из проведенного и не помеченного на удаление
 документа `ПоступлениеНаСчет` выбранной организации. Сумма без НДС равна сумме
@@ -657,6 +724,13 @@ XLSX и не занимают пользовательские ячейки; в 
   заработной платы с помесячными и YTD-значениями.
 - Кредиты и займы не увеличивают доход УСН, а заработная плата не уменьшает
   базу режима `УСН Доходы`; неизвестная операция не подменяется нулем.
+- Для `УСН Доходы минус расходы` лист содержит признанные доходы и расходы
+  КУДиР, категории расходов, месячную и накопительную базу, ставку профиля,
+  обычный налог и минимальный налог 1% справочно.
+- До декабря минимальный налог не подменяет авансовый платеж; в декабрьском
+  отчете итоговый налог равен большему из обычного и минимального налога.
+- Категории расходов сходятся с `РасходБаза`; неизвестный вид записи явно
+  требует проверки, а missing-расходы или ставка оставляют расчет пустым.
 - Подтверждение фактов и утверждение клиентского вывода фиксируются раздельно;
   в первом rollout оба действия может выполнить один ответственный специалист.
 - Staff может тестировать preliminary отчет при business warnings.
@@ -691,6 +765,11 @@ XLSX и не занимают пользовательские ячейки; в 
   покупок, отсутствие двойного счета и профили allowed/not-applicable;
 - классификация кредитов и заработной платы только по `ВидОперации`, исключение
   их из базы УСН, помесячная/YTD-сверка маркетплейсов и legacy payload до v6;
+- профильные тесты `УСН Доходы минус расходы`: ресурсы и виды записей КУДиР,
+  YTD-база, ставка профиля, обычный налог, справочный минимум 1%, применение
+  минимума только за декабрь, платежи и legacy payload до v7;
+- Excel-тест структуры образца Д−Р, backend-only значений, категорий расходов,
+  пустых месяцев и отсутствия формул;
 - advisory warnings allow staff draft/export;
 - security violations remain blocking;
 - `.venv/bin/python scripts/validate_specs.py`;
@@ -710,8 +789,71 @@ XLSX и не занимают пользовательские ячейки; в 
 Rollback скрывает `tax_load` в registry. Report runs и audit сохраняются;
 current других видов не меняется.
 
+## Production Rollout Evidence
+
+- 2026-07-22: accounting-report wizard объединён с действующим production
+  исправлением налогового профиля 1С и зафиксирован в commit
+  `dba3d7df103b74e578889b0103f85e25ef8f827d`. Полный локальный набор дал
+  `977 passed`; GitHub run `29951864864` завершил обязательные `quality` и
+  `tests` со статусом `success`.
+- Из commit собран immutable release
+  `runtime-dba3d7d-accounting-wizard-prod-20260722`, сначала promoted в
+  `test`, затем после повторного health/smoke — в `production`. Оба контура
+  возвращают `status=ok`, совпадающие backend/static build
+  `20260722-accounting-wizard-tax-profile-v2` и корректный environment;
+  cwd production-процесса указывает на тот же release.
+- Перед production restart через штатный systemd EnvironmentFile применена
+  идемпотентная additive migration до
+  `2026_07_21_logistics_measurements_context_v1`; содержимое environment-файла
+  не читалось и не выводилось. После переключения production health-service
+  завершился с `success`, а unauthenticated reports и generation endpoints
+  вернули `401`. Предыдущий release
+  `runtime-fcfc52b-tax-profile-configured-20260721` сохранён как совместимый
+  rollback target.
+
 ## Test Rollout Evidence
 
+- 2026-07-23: отдельное test read-only подключение 1С сохранено в
+  зашифрованном виде и подтверждено live GET-проверкой OData metadata со
+  статусом `200`. Июньский canary для пилотного клиента завершился с
+  `tax-load-report-v7`, профилем `УСН Доходы минус расходы` и режимом
+  `income_expenses`: доход, расход, ставка, база, обычный и минимальный налог
+  заполнены, формулы и категории расходов сходятся. Excel содержит 11
+  обязательных листов, не содержит формул и видимых UUID. Подтверждённый факт
+  уплаты УСН в источнике отсутствует, поэтому зависимые поля оставлены
+  неопределёнными, без подстановки нуля.
+- 2026-07-23: operator smoke выявил два test-only дефекта после canary:
+  generation POST с `Idempotency-Key` терял `Content-Type` из-за порядка
+  слияния frontend-заголовков, а root-проверка Excel оставила каталог
+  недоступным для web-service. Frontend исправлен в commit
+  `1d6ecf0b8681807a4c97101c84e60e300a885c6f`, cache-busting build повышен до
+  `20260723-usn-income-expenses-v2`, права test-каталога восстановлены.
+  Локально прошли Ruff, JS syntax, документационные/secret validators и полный
+  набор `982 passed`. Immutable release
+  `runtime-1d6ecf0-accounting-wizard-header-fix-test-20260723` promoted только
+  в `test`; local/public health подтвердили `status=ok`, `environment=test` и
+  совпадающие backend/static build. Авторизованный smoke подтвердил
+  generation `202`, completed v7 и Excel download `200` с валидным XLSX.
+  Production сохранил прежний release и build.
+- 2026-07-23: реализация `УСН Доходы минус расходы` из commit
+  `15073f584aeac72f82e44b7e4597662236201c2a` прошла Ruff, документационные
+  валидаторы, secret check и полный локальный набор `982 passed`. GitHub run
+  `29984321098` завершил обязательные `quality` и `tests` со статусом
+  `success`. Из точного commit собран immutable release
+  `runtime-15073f5-usn-income-expenses-test-20260723` с
+  `sourceDirty=false`; атомарно переключён и перезапущен только test.
+  Штатный health-service, local и public health подтвердили `status=ok`,
+  `environment=test`, совпадающие backend/static build
+  `20260723-usn-income-expenses-v1`, действующую schema и отсутствие активного
+  source refresh. Shell и новый asset доступны, закрытые API без авторизации
+  возвращают `401`. Production сохранил прежний release и build.
+- Canary для клиента Сабура и июня 2026 поставлен в очередь на test штатным
+  путём, но завершился fail-closed до чтения 1С с
+  `onec_readonly_not_ready`: отдельное test read-only подключение не настроено.
+  Новый report run не создан; production credentials, production DB и
+  production runtime не использовались. До настройки test read-only доступа
+  методика v7 подтверждена воспроизводимыми synthetic contract/Excel-тестами,
+  но не объявляется live data canary.
 - 2026-07-22: пошаговый accounting-report wizard из commit
   `5b859bc77e4e2b2e9d63211814211589dca36d4e` собран в immutable release
   `runtime-5b859bc-accounting-wizard-20260722` и promoted только в `test`.
@@ -780,6 +922,11 @@ checks и клиентскую публикацию, но не accepted staff-on
 
 # Changelog
 
+- 2026-07-23: контракт повышен до `tax-load-report-v7` и
+  `tax-load-evidence-v7`; принят отдельный расчет `УСН Доходы минус расходы`
+  по признанным ресурсам КУДиР, ставке профиля и минимальному налогу 1%.
+  Образец Д−Р восстановлен из локального архива документации; банковские
+  движения остаются сверкой и не подменяют налоговую базу.
 - 2026-07-22: принят пошаговый staff-master бухгалтерского отчёта по образцу
   мастера юнит-экономики: существующая ревизия, параметры нового запуска,
   progress и точная ссылка на созданный Excel показаны раздельно.

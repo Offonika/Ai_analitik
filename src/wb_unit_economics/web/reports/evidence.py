@@ -14,7 +14,7 @@ from wb_unit_economics.onec_services import classify_marketplace_service
 from wb_unit_economics.web.report_kinds import MONTH_CLOSE_CONTROL, TAX_LOAD
 
 MONTH_CLOSE_EVIDENCE_VERSION = "month-close-evidence-v2"
-TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v6"
+TAX_LOAD_EVIDENCE_VERSION = "tax-load-evidence-v7"
 
 COMPLETE_SOURCE_STATUSES = frozenset(
     {"loaded", "ready", "complete", "confirmed", "empty_expected"}
@@ -24,6 +24,15 @@ USN_MARKETPLACE_CATEGORIES = (
     ("ozon", "Ozon (Интернет Решения)"),
     ("wildberries", "Wildberries (РВБ)"),
     ("other", "Другие покупатели"),
+)
+
+USN_EXPENSE_CATEGORIES = (
+    ("goods", "Товары (признанные расходы КУДиР)"),
+    ("services", "Услуги сторонних организаций"),
+    ("payroll", "Оплата труда"),
+    ("contributions", "Страховые взносы"),
+    ("other", "Прочие признанные расходы"),
+    ("review_required", "Прочие расходы (требуют проверки)"),
 )
 
 
@@ -595,17 +604,55 @@ def _tax_load_evidence(
         )
         if _is_kudir_income_row(row)
     ]
+    usn_expense_rows = [
+        row
+        for row in _organization_period_rows(
+            usn_income_source,
+            organization_id,
+            ytd_start,
+            period_end,
+            date_fields=("Period", "Date", "Дата"),
+        )
+        if _is_kudir_expense_row(row)
+    ]
+    kudir_status = _source_status(usn_income_source)
     kudir_income_evidence = {
-        "value": _sum_rows(usn_income_rows, ("ДоходБаза", "ДоходВсего")),
-        "status": _source_status(usn_income_source),
+        "value": _confirmed_sum_rows(
+            usn_income_rows,
+            ("ДоходБаза",),
+            source_status=kudir_status,
+        ),
+        "status": kudir_status,
         "sourceKind": "onec_kudir",
         "snapshotId": usn_income_source.snapshot_id if usn_income_source else "",
         "monthlyValues": _monthly_values(
             usn_income_rows,
             date_fields=("Period", "Date", "Дата"),
-            amount_fields=("ДоходБаза", "ДоходВсего"),
-            source_status=_source_status(usn_income_source),
+            amount_fields=("ДоходБаза",),
+            source_status=kudir_status,
         ),
+    }
+    expense_breakdown, expense_classification_status = _kudir_expense_breakdown(
+        usn_expense_rows,
+        source_status=kudir_status,
+    )
+    kudir_expense_evidence = {
+        "value": _confirmed_sum_rows(
+            usn_expense_rows,
+            ("РасходБаза",),
+            source_status=kudir_status,
+        ),
+        "status": kudir_status,
+        "classificationStatus": expense_classification_status,
+        "sourceKind": "onec_kudir",
+        "snapshotId": usn_income_source.snapshot_id if usn_income_source else "",
+        "monthlyValues": _monthly_values(
+            usn_expense_rows,
+            date_fields=("Period", "Date", "Дата"),
+            amount_fields=("РасходБаза",),
+            source_status=kudir_status,
+        ),
+        "breakdown": expense_breakdown,
     }
     usn_bank_payment_rows = [
         row
@@ -753,12 +800,45 @@ def _tax_load_evidence(
                 ),
             }
         )
+    if expense_classification_status == "review_required":
+        issues.append(
+            {
+                "code": "usn_kudir_expense_classification_required",
+                "severity": "warning",
+                "section": "Расходы УСН",
+                "message": (
+                    "Часть признанных расходов КУДиР имеет ручной или "
+                    "неизвестный вид записи."
+                ),
+                "nextAction": (
+                    "Проверить вид записи КУДиР; общая признанная сумма "
+                    "расходов уже сохранена в расчёте."
+                ),
+            }
+        )
+    elif expense_classification_status == "source_gap":
+        issues.append(
+            {
+                "code": "usn_kudir_expense_source_gap",
+                "severity": "warning",
+                "section": "Расходы УСН",
+                "message": (
+                    "Источник признанных расходов КУДиР неполный или не "
+                    "содержит подтверждённую сумму РасходБаза."
+                ),
+                "nextAction": (
+                    "Повторить read-only загрузку КУДиР и проверить ресурс "
+                    "РасходБаза."
+                ),
+            }
+        )
     return {
         "sourceCoverage": _coverage(sources, ytd_start, period_end),
         "taxRows": tax_rows,
         "incomeEvidence": income_evidence,
         "usnIncomeEvidence": usn_income_evidence,
         "kudirIncomeEvidence": kudir_income_evidence,
+        "kudirExpenseEvidence": kudir_expense_evidence,
         "usnTaxPaymentEvidence": usn_tax_payment_evidence,
         "usnPayrollPaymentEvidence": usn_payroll_payment_evidence,
         "vatSummary": {
@@ -1633,6 +1713,107 @@ def _complete_sum_rows(
     )
 
 
+def _confirmed_sum_rows(
+    rows: list[Mapping[str, Any]],
+    keys: tuple[str, ...],
+    *,
+    source_status: str,
+) -> str | None:
+    if source_status not in COMPLETE_SOURCE_STATUSES:
+        return None
+    return _complete_sum_rows(rows, keys)
+
+
+def _normalized_kudir_record_kind(row: Mapping[str, Any]) -> str:
+    return "".join(
+        character
+        for character in str(row.get("ВидЗаписи") or "").casefold()
+        if character.isalnum()
+    )
+
+
+def _kudir_expense_category(row: Mapping[str, Any]) -> str:
+    record_kind = _normalized_kudir_record_kind(row)
+    if "расходынатовары" in record_kind:
+        return "goods"
+    if "расходынауслуги" in record_kind:
+        return "services"
+    if "расходынаоплатутруда" in record_kind:
+        return "payroll"
+    if (
+        "расходынастраховыевзносы" in record_kind
+        or "расходынавзносыподлежащиеуплатеип" in record_kind
+    ):
+        return "contributions"
+    if record_kind in {
+        "расходынаосинма",
+        "расходыпрочие",
+        "расходынатаможенныеплатежи",
+        "расходыенп",
+    }:
+        return "other"
+    return "review_required"
+
+
+def _is_kudir_expense_row(row: Mapping[str, Any]) -> bool:
+    if row.get("Active") is False:
+        return False
+    record_kind = _normalized_kudir_record_kind(row)
+    if not record_kind or "доход" in record_kind or "приход" in record_kind:
+        return False
+    if _kudir_expense_category(row) != "review_required":
+        return True
+    if "расход" in record_kind:
+        return True
+    expense_amount = _first_decimal(row, ("РасходБаза", "РасходВсего"))
+    return expense_amount is not None and expense_amount != 0
+
+
+def _kudir_expense_breakdown(
+    rows: list[Mapping[str, Any]],
+    *,
+    source_status: str,
+) -> tuple[list[dict[str, Any]], str]:
+    source_complete = source_status in COMPLETE_SOURCE_STATUSES
+    amounts_complete = all(
+        _first_decimal(row, ("РасходБаза",)) is not None for row in rows
+    )
+    review_required = any(
+        _kudir_expense_category(row) == "review_required" for row in rows
+    )
+    if not source_complete or not amounts_complete:
+        classification_status = "source_gap"
+    elif review_required:
+        classification_status = "review_required"
+    else:
+        classification_status = "ready"
+
+    result: list[dict[str, Any]] = []
+    for category, label in USN_EXPENSE_CATEGORIES:
+        category_rows = [
+            row for row in rows if _kudir_expense_category(row) == category
+        ]
+        result.append(
+            {
+                "category": category,
+                "label": label,
+                "value": (
+                    _complete_sum_rows(category_rows, ("РасходБаза",))
+                    if source_complete
+                    else None
+                ),
+                "rowCount": len(category_rows),
+                "monthlyValues": _monthly_values(
+                    category_rows,
+                    date_fields=("Period", "Date", "Дата"),
+                    amount_fields=("РасходБаза",),
+                    source_status=source_status,
+                ),
+            }
+        )
+    return result, classification_status
+
+
 def _bank_income_category(row: Mapping[str, Any]) -> str:
     normalized = _normalized_bank_operation(row)
     if normalized in {"отпокупателя", "оплатаотпокупателя"}:
@@ -1671,7 +1852,10 @@ def _is_kudir_income_row(row: Mapping[str, Any]) -> bool:
     if row.get("Active") is False:
         return False
     record_kind = str(row.get("ВидЗаписи") or "").strip().casefold()
-    return not record_kind or "доход" in record_kind or "приход" in record_kind
+    if not record_kind or "доход" in record_kind or "приход" in record_kind:
+        return True
+    income_amount = _first_decimal(row, ("ДоходБаза", "ДоходВсего"))
+    return income_amount is not None and income_amount != 0
 
 
 def _bank_income_net_amount(row: Mapping[str, Any]) -> Decimal | None:

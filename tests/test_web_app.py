@@ -5938,10 +5938,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260724-cost-quality-split-v1"
+        "20260724-logistics-tax-integration-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260724-cost-quality-split-v1"
+        "20260724-logistics-tax-integration-v1"
     )
 
     page = client.get("/")
@@ -6094,8 +6094,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260724-cost-quality-split-v1" in cabinet.text
-    assert "app.js?v=20260724-cost-quality-split-v1" in cabinet.text
+    assert "styles.css?v=20260724-logistics-tax-integration-v1" in cabinet.text
+    assert "app.js?v=20260724-logistics-tax-integration-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6425,6 +6425,9 @@ def test_accounting_report_wizard_separates_existing_and_new_revisions(
     assert "accounting-report-wizard-overlay" in app_js.text
     assert "els.reportDownloadButton.hidden = !visible || accounting" in app_js.text
     assert "await generateAccountingReport()" not in app_js.text
+    api_fetch = app_js.text.split("async function api(url, options = {})", 1)[1]
+    api_fetch = api_fetch.split("async function readApiErrorDetail", 1)[0]
+    assert api_fetch.index("...options,") < api_fetch.index("headers,")
 
 
 def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
@@ -6476,7 +6479,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260724-cost-quality-split-v1" in cabinet.text
+    assert "20260724-logistics-tax-integration-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(

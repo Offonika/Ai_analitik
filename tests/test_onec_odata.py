@@ -728,6 +728,15 @@ def test_tax_profile_collections_are_read_only_and_selectable() -> None:
         "ДатаСчетаФактуры",
         "ЗаписьДополнительногоЛиста",
     } <= set(by_id["vat_purchase_book"].select_fields)
+    assert {
+        "ДоходБаза",
+        "РасходБаза",
+        "РасходВсего",
+        "ВидЗаписи",
+        "ВзносыПодлежащиеУплате",
+        "Содержание",
+        "ДатаПервичногоДокумента",
+    } <= set(by_id["kudir"].select_fields)
     assert _select_collections(["vat_sales_book"])[0] == by_id["vat_sales_book"]
 
 

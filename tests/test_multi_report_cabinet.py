@@ -621,13 +621,13 @@ def test_tax_load_formula_excludes_agent_and_insurance_rows() -> None:
     assert summary["benchmarkValue"] is None
     assert payload["businessStatus"] == "accountant_review_required"
     assert payload["accountantApproval"] is None
-    assert payload["contractVersion"] == "tax-load-report-v6"
+    assert payload["contractVersion"] == "tax-load-report-v7"
 
 
 def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -> None:
     evidence = _detailed_vat_evidence()
 
-    assert evidence["contractVersion"] == "tax-load-evidence-v6"
+    assert evidence["contractVersion"] == "tax-load-evidence-v7"
     assert evidence["vatSummary"] == {
         "status": "loaded",
         "periodStart": "2026-06-01",
@@ -675,7 +675,7 @@ def test_tax_load_materializes_detailed_ytd_vat_books_without_technical_keys() -
         tax_profile={"taxSystem": "osno", "profileStatus": "ready"},
         evidence=evidence,
     )
-    assert payload["contractVersion"] == "tax-load-report-v6"
+    assert payload["contractVersion"] == "tax-load-report-v7"
     assert payload["vatBooks"]["salesRows"] == books["salesRows"]
 
     missing_purchase = _detailed_vat_evidence(purchase_status="missing")
@@ -827,18 +827,70 @@ def test_tax_load_ip_usn_management_ratio_from_receipts_when_no_financial_result
     assert payload["businessStatus"] == "preliminary"
 
 
-def test_tax_load_usn_income_minus_expenses_has_no_management_ratio() -> None:
+def test_tax_load_usn_income_minus_expenses_uses_kudir_base_and_profile_rate(
+) -> None:
     evidence = _usn_tax_evidence()
     evidence["usnIncomeEvidence"] = {
         "value": "2000",
         "status": "confirmed",
+        "sourceKind": "onec_accounting_bank_in",
+        "monthlyValues": [],
+    }
+    evidence["kudirIncomeEvidence"] = {
+        "value": "10000",
+        "status": "loaded",
         "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "6000", "status": "loaded"},
+            {"month": "2026-06", "value": "4000", "status": "loaded"},
+        ],
+    }
+    evidence["kudirExpenseEvidence"] = {
+        "value": "7000",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "3000", "status": "loaded"},
+            {"month": "2026-06", "value": "4000", "status": "loaded"},
+        ],
+        "breakdown": [
+            {
+                "category": "goods",
+                "label": "Товары (признанные расходы КУДиР)",
+                "value": "3000",
+                "rowCount": 1,
+                "monthlyValues": [
+                    {
+                        "month": "2026-01",
+                        "value": "3000",
+                        "status": "loaded",
+                    }
+                ],
+            },
+            {
+                "category": "services",
+                "label": "Услуги сторонних организаций",
+                "value": "4000",
+                "rowCount": 1,
+                "monthlyValues": [
+                    {
+                        "month": "2026-06",
+                        "value": "4000",
+                        "status": "loaded",
+                    }
+                ],
+            },
+        ],
     }
 
     payload = build_tax_load_payload(
         _report("tax_load"),
         tax_profile={
             "taxSystem": "УСН Доходы минус расходы",
+            "taxObject": "income_minus_expenses",
+            "taxRate": "15",
+            "revenueTaxRate": "0",
             "profileStatus": "ready",
         },
         evidence=evidence,
@@ -848,6 +900,118 @@ def test_tax_load_usn_income_minus_expenses_has_no_management_ratio() -> None:
     assert summary["usnIncomeValue"] is None
     assert summary["usnIncomeTaxBurden"] is None
     assert summary["usnIncomeStatus"] is None
+    detail = payload["usnDetail"]
+    assert payload["contractVersion"] == "tax-load-report-v7"
+    assert detail["calculationMode"] == "income_expenses"
+    assert detail["methodologyVersion"] == "usn_income_expenses_v1"
+    assert detail["incomeYtd"] == "10000"
+    assert detail["kudirExpenseYtd"] == "7000"
+    assert detail["taxBaseYtd"] == "3000"
+    assert detail["regularTaxYtd"] == "450.00"
+    assert detail["minimumTaxReferenceYtd"] == "100.00"
+    assert detail["minimumTaxApplicationStatus"] == "reference_only"
+    assert detail["calculatedTaxYtd"] == "450.00"
+    assert detail["paidTaxYtd"] == "100"
+    assert detail["taxPayable"] == "350.00"
+    assert detail["status"] == "ready"
+    assert detail["monthlyTaxBase"][-1] == {
+        "month": "2026-06",
+        "value": "0",
+        "ytdValue": "3000",
+        "status": "loaded",
+    }
+
+
+def test_tax_load_usn_income_minus_expenses_applies_minimum_tax_only_in_december(
+) -> None:
+    evidence = _usn_tax_evidence()
+    evidence["kudirIncomeEvidence"] = {
+        "value": "10000",
+        "status": "loaded",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {"month": "2026-12", "value": "10000", "status": "loaded"}
+        ],
+    }
+    evidence["kudirExpenseEvidence"] = {
+        "value": "9800",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {"month": "2026-12", "value": "9800", "status": "loaded"}
+        ],
+        "breakdown": [],
+    }
+    report = _report("tax_load")
+    report.period_end = date(2026, 12, 31)
+
+    payload = build_tax_load_payload(
+        report,
+        tax_profile={
+            "taxSystem": "УСН Доходы минус расходы",
+            "taxObject": "income_minus_expenses",
+            "taxRate": "15",
+            "profileStatus": "ready",
+        },
+        evidence=evidence,
+    )
+
+    detail = payload["usnDetail"]
+    assert detail["taxBaseYtd"] == "200"
+    assert detail["regularTaxYtd"] == "30.00"
+    assert detail["minimumTaxReferenceYtd"] == "100.00"
+    assert detail["minimumTaxApplicationStatus"] == "minimum_tax_applied"
+    assert detail["calculatedTaxYtd"] == "100.00"
+    assert detail["taxPayable"] == "0.00"
+
+
+@pytest.mark.parametrize(
+    ("expense_value", "tax_rate"),
+    ((None, "15"), ("7000", None)),
+)
+def test_tax_load_usn_income_minus_expenses_keeps_incomplete_calculation_null(
+    expense_value: str | None,
+    tax_rate: str | None,
+) -> None:
+    evidence = _usn_tax_evidence()
+    evidence["kudirIncomeEvidence"] = {
+        "value": "10000",
+        "status": "loaded",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [],
+    }
+    evidence["kudirExpenseEvidence"] = {
+        "value": expense_value,
+        "status": "loaded",
+        "classificationStatus": (
+            "ready" if expense_value is not None else "source_gap"
+        ),
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [],
+        "breakdown": [],
+    }
+
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы минус расходы",
+            "taxObject": "income_minus_expenses",
+            "taxRate": tax_rate,
+            "profileStatus": "ready",
+        },
+        evidence=evidence,
+    )
+
+    detail = payload["usnDetail"]
+    if expense_value is None:
+        assert detail["taxBaseYtd"] is None
+    else:
+        assert detail["taxBaseYtd"] == "3000"
+    assert detail["regularTaxYtd"] is None
+    assert detail["calculatedTaxYtd"] is None
+    assert detail["taxPayable"] is None
+    assert detail["status"] == "source_gap"
 
 
 def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation(
@@ -957,7 +1121,9 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
                 {"Организация_Key": "ORG-1", "Period": "2026-06-20T00:00:00",
                  "ДоходБаза": "800", "ВидЗаписи": "Приход"},
                 {"Организация_Key": "ORG-1", "Period": "2026-06-21T00:00:00",
-                 "ДоходБаза": "700", "ВидЗаписи": "РасходыНаУслуги"},
+                 "РасходБаза": "700", "ВидЗаписи": "РасходыНаУслуги"},
+                {"Организация_Key": "ORG-1", "Period": "2026-06-22T00:00:00",
+                 "РасходБаза": "50", "ВидЗаписи": "РучныеЗаписи"},
                 {"Организация_Key": "ORG-1", "Period": "2026-06-22T00:00:00",
                  "ДоходБаза": "600", "ВидЗаписи": "ДоходыПрочие", "Active": False},
                 # Другая организация — не суммируется.
@@ -1090,8 +1256,24 @@ def test_tax_load_evidence_uses_bank_receipts_and_keeps_kudir_for_reconciliation
             "rowCount": 1,
         },
     ]
+    kudir_expense = evidence["kudirExpenseEvidence"]
+    assert kudir_expense["value"] == "750"
+    assert kudir_expense["classificationStatus"] == "review_required"
+    expense_breakdown = {
+        item["category"]: item
+        for item in kudir_expense["breakdown"]
+    }
+    assert expense_breakdown["services"]["value"] == "700"
+    assert expense_breakdown["review_required"]["value"] == "50"
+    assert sum(
+        Decimal(item["value"]) for item in expense_breakdown.values()
+    ) == Decimal(kudir_expense["value"])
     assert any(
         issue["code"] == "usn_bank_income_classification_required"
+        for issue in evidence["issues"]
+    )
+    assert any(
+        issue["code"] == "usn_kudir_expense_classification_required"
         for issue in evidence["issues"]
     )
 
@@ -1557,7 +1739,7 @@ def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
     evidence = _rwb_vat_evidence()
     reconciliation = evidence["rwbVatReconciliation"]
 
-    assert evidence["contractVersion"] == "tax-load-evidence-v6"
+    assert evidence["contractVersion"] == "tax-load-evidence-v7"
     assert reconciliation["status"] == "matched"
     assert reconciliation["serviceTotals"] == {
         "rowCount": 2,
@@ -1592,7 +1774,7 @@ def test_tax_load_reconciles_rwb_service_vat_without_double_counting(
         },
         evidence=evidence,
     )
-    assert payload["contractVersion"] == "tax-load-report-v6"
+    assert payload["contractVersion"] == "tax-load-report-v7"
     assert payload["rwbVatReconciliation"]["applicability"] == "allowed"
     assert payload["rwbVatReconciliation"]["status"] == "matched"
     assert not any(
@@ -1934,6 +2116,156 @@ def test_tax_load_excel_does_not_label_legacy_kudir_months_as_bank_receipts(
     assert (
         rows["Помесячная детализация"][8].value
         == "Сформируйте отчёт повторно для заполнения месяцев"
+    )
+
+
+def test_tax_load_excel_matches_usn_income_expenses_structure_without_formulas(
+    tmp_path: Path,
+) -> None:
+    evidence = _usn_tax_evidence()
+    evidence["usnIncomeEvidence"] = {
+        "value": "2000",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_accounting_bank_in",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "2000", "status": "loaded"}
+        ],
+        "marketplaceBreakdownStatus": "source_gap",
+    }
+    evidence["kudirIncomeEvidence"] = {
+        "value": "10000",
+        "status": "loaded",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "6000", "status": "loaded"},
+            {"month": "2026-06", "value": "4000", "status": "loaded"},
+        ],
+    }
+    evidence["kudirExpenseEvidence"] = {
+        "value": "7000",
+        "status": "loaded",
+        "classificationStatus": "ready",
+        "sourceKind": "onec_kudir",
+        "monthlyValues": [
+            {"month": "2026-01", "value": "3000", "status": "loaded"},
+            {"month": "2026-06", "value": "4000", "status": "loaded"},
+        ],
+        "breakdown": [
+            {
+                "category": "goods",
+                "label": "Товары (признанные расходы КУДиР)",
+                "value": "3000",
+                "rowCount": 1,
+                "monthlyValues": [
+                    {
+                        "month": "2026-01",
+                        "value": "3000",
+                        "status": "loaded",
+                    }
+                ],
+            },
+            {
+                "category": "services",
+                "label": "Услуги сторонних организаций",
+                "value": "4000",
+                "rowCount": 1,
+                "monthlyValues": [
+                    {
+                        "month": "2026-06",
+                        "value": "4000",
+                        "status": "loaded",
+                    }
+                ],
+            },
+        ],
+    }
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы минус расходы",
+            "taxObject": "income_minus_expenses",
+            "taxRate": "15",
+            "revenueTaxRate": "0",
+            "profileStatus": "ready",
+        },
+        evidence=evidence,
+    )
+    path = tmp_path / "tax-load-usn-income-expenses.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=False)
+    sheet = workbook["Расчёт УСН"]
+    rows = {
+        row[0].value: row
+        for row in sheet.iter_rows(min_row=2)
+        if row[0].value is not None
+    }
+
+    assert rows["Доходы УСН по КУДиР (признанные)"][8].value == Decimal(
+        "10000"
+    )
+    assert rows["Расходы УСН по КУДиР (признанные)"][8].value == Decimal(
+        "7000"
+    )
+    assert rows["  Товары (признанные расходы КУДиР)"][8].value == Decimal(
+        "3000"
+    )
+    assert rows["  Услуги сторонних организаций"][8].value == Decimal("4000")
+    assert rows["Налоговая база за месяц"][1].value == Decimal("3000")
+    assert rows["Налоговая база за месяц"][7].value == Decimal("0")
+    assert rows["Налоговая база за месяц"][8].value == Decimal("3000")
+    assert rows["Налоговая база нарастающим итогом"][7].value == Decimal(
+        "3000"
+    )
+    assert rows["Ставка УСН"][8].value == pytest.approx(0.15)
+    assert rows["Обычный налог с начала года"][8].value == Decimal("450.00")
+    assert rows["Минимальный налог 1% (справочно)"][8].value == Decimal(
+        "100.00"
+    )
+    assert rows["Применяемый налог с начала года"][8].value == Decimal(
+        "450.00"
+    )
+    assert rows["Уплачено УСН"][8].value == Decimal("100")
+    assert rows["К доплате / переплата УСН"][8].value == Decimal("350.00")
+    assert (
+        rows["Статус минимального налога"][8].value
+        == "Справочно, до годового расчёта"
+    )
+    assert rows["Версия методики"][8].value == "usn_income_expenses_v1"
+    assert not any(
+        cell.data_type == "f"
+        for worksheet in workbook.worksheets
+        for row in worksheet.iter_rows()
+        for cell in row
+    )
+
+
+def test_tax_load_excel_requires_regeneration_for_legacy_income_expenses_payload(
+    tmp_path: Path,
+) -> None:
+    payload = build_tax_load_payload(
+        _report("tax_load"),
+        tax_profile={
+            "taxSystem": "УСН Доходы минус расходы",
+            "taxObject": "income_minus_expenses",
+            "taxRate": "15",
+            "profileStatus": "ready",
+        },
+        evidence=_usn_tax_evidence(),
+    )
+    payload["contractVersion"] = "tax-load-report-v6"
+    payload["usnDetail"] = {"status": "not_applicable"}
+
+    path = tmp_path / "tax-load-usn-income-expenses-legacy.xlsx"
+    write_scenario_excel(payload, canonical_payload_sha256(payload), path)
+    workbook = load_workbook(path, data_only=True)
+    sheet = workbook["Расчёт УСН"]
+
+    assert sheet["A2"].value == "Статус"
+    assert (
+        sheet["B2"].value
+        == "Требуется повторное формирование по методике "
+        "«УСН Доходы минус расходы»"
     )
 
 
@@ -2405,7 +2737,7 @@ def test_staff_api_generation_idempotency_current_audit_and_excel(
     tax_export = client.get(f"/api/reports/{other_kind_report_id}/export.xlsx")
     assert tax_export.status_code == 200
     assert "xlsx" in tax_export.headers["content-disposition"]
-    assert "v6" in tax_export.headers["content-disposition"]
+    assert "v7" in tax_export.headers["content-disposition"]
     tax_workbook = load_workbook(BytesIO(tax_export.content), data_only=True)
     tax_overview = {
         row[0]: row[1]

@@ -61,7 +61,7 @@ ADR `docs/decisions/2026-06-24-source-refresh-provider-registry-retention.md`
 | `runtime-contours` | `docs/specs/web-cabinet-runtime-contours.md` | 100 | accepted | Меняются production/test контуры, runtime paths, systemd units, releases, promotion или rollback. |
 | `source-refresh` | `docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md` | 100 | accepted | Меняется загрузка WB/1С/Ozon, provider registry, refresh guards, collectors, resume или raw snapshot lifecycle. |
 | `source-retention` | `docs/specs/source-refresh-database-retention.md` | 100 | accepted | Меняются raw-row retention, очистка старых черновиков отчетов, backup verification, VACUUM или освобождение диска. |
-| `tax-load-report` | `docs/specs/tax-load-report-implementation.md` | 100 | accepted | Меняется отчет налоговой нагрузки, формула ФНС, tax profile, evidence v2, web или Excel этого report_kind. |
+| `tax-load-report` | `docs/specs/tax-load-report-implementation.md` | 100 | accepted | Меняется отчет налоговой нагрузки, формула ФНС, УСН Д−Р, tax profile, evidence v7, web или Excel этого report_kind. |
 | `tax-methodology` | `docs/decisions/2026-07-10-tax-profiles-osno-profit.md` | 100 | accepted | Меняются налоговые профили, ОСНО, входящий/исходящий НДС, НДС к уплате или прибыль до налогов. |
 | `web-cabinet` | `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md` | 100 | accepted | Меняется авторизованный кабинет, роли, multi-client доступ, API, AI tools, readiness или закрытый экспорт. |
 <!-- END GENERATED AI ROUTING -->
