@@ -89,6 +89,12 @@ rsync -a /opt/shumeyko-partners-wb-unit-economics/reports/ \
   /data/shumeyko/prod/reports/
 ```
 
+С 23 июля 2026 года отдельный tracked R-6 override включает client login и
+логистику F-1…F-5 только на test. Он не меняет EnvironmentFile и закрепляет
+разрешённые booleans через `ExecStart=/usr/bin/env`, потому что systemd читает
+EnvironmentFile позже `Environment=`. Точное operational state и rollback
+записаны в `docs/runbooks/wb-logistics-v4-continuation.md`.
+
 Если test БД принадлежит отдельной PostgreSQL-роли, перед запуском
 `scripts/create_runtime_env_files.py --apply` нужно передать ее полный URL через
 одноразовую переменную окружения `SHUMEYKO_TEST_DATABASE_URL`. Скрипт проверит,
@@ -945,6 +951,36 @@ SHUMEYKO_LOGISTICS_RETURN_REASONS_CLIENT_ENABLED=false
    Draft не публиковать; production runtime, service и flags не менять.
 7. После приёмки удалить временные sessions, credential-файлы, browser script и
    screenshots; временных пользователей деактивировать и сбросить им пароли.
+
+Для отдельного R-6 client-role rollout после принятого R-5:
+
+1. Собрать immutable release из точного commit с `sourceDirty=false` и
+   переключить только test symlink.
+2. Установить tracked drop-in
+   `deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf`
+   в одноимённый каталог `/etc/systemd/system`. Он обязан применяться после
+   R-5 drop-in и включать client login, master/client flags основной логистики,
+   F-1, F-2, F-3, F-4 и F-5.
+3. Выполнить `systemctl daemon-reload`, перезапустить только
+   `shumeiko-web-test.service` и проверить `status=ok`, test environment,
+   совпадающие backend/static build и неизменный production PID/symlink.
+4. Под временной client-role проверить `/api/me`, HTTP 200 F-1…F-5 API,
+   видимость только current published report, HTTP 404 для draft, чужого
+   client/tenant scope и staff-only `/logistics/orders`.
+5. Проверить отсутствие raw IDs, source/input hashes, claim IDs, текста
+   комментариев, media/photo URLs. Безопасный агрегатный quality counter не
+   считается передачей исходного identifier.
+6. Выполнить authenticated browser-smoke 1440×900 и 390×844: все секции
+   F-1…F-5 видимы, staff orders скрыты, required requests отвечают 200, нет
+   page/workspace overflow и console/page/network errors.
+7. Draft не публиковать. После приёмки сбросить пароли, деактивировать временных
+   users, удалить sessions, credentials, screenshots и transient units.
+
+Rollback R-6: удалить только
+`/etc/systemd/system/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf`,
+выполнить `systemctl daemon-reload` и перезапустить только test web. R-5
+staff-only drop-in остаётся установленным; reports, marts, production и внешние
+источники не изменяются.
 
 Rollback выполняется установкой
 `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED=false` и перезапуском web/worker. Это скрывает

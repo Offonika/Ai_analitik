@@ -9,7 +9,7 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: logistics-cost-analysis
 truth_priority: 100
-related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf]
+related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf, deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf]
 related_tests: [tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_probe_wb_logistics_factors.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
@@ -59,9 +59,9 @@ test_anchors:
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering"]
+    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering", "def test_multi_client_report_access_requires_explicit_client"]
   - path: tests/test_runtime_contour_scripts.py
-    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only"]
+    symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only", "def test_r6_test_drop_in_enables_all_logistics_for_client_role"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
 updated_at: "2026-07-23"
@@ -76,9 +76,9 @@ updated_at: "2026-07-23"
 `Accepted` означает утвержденную цель реализации, но не подтверждает production
 rollout или завершение всех очередей. Первая очередь v5 и подпакеты факторов
 F-1…F-5 прошли отдельные staff-only test acceptance на immutable report runs.
-Production и клиентское включение факторов не выполнены. Подчинённый F-5 spec
-переведён в `implemented`; третья очередь и объединённое client/production
-решение остаются незавершёнными.
+23 июля 2026 года F-1…F-5 отдельно включены для client-role только на test;
+production rollout не выполнен. Подчинённый F-5 spec переведён в `implemented`;
+третья очередь и production-решение остаются незавершёнными.
 
 # Текущее состояние реализации
 
@@ -97,9 +97,9 @@ Defaults в коде для `SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED` и
 фактического состояния сред. Последнее записанное operational evidence и
 обязательные команды повторной проверки находятся в
 [`docs/runbooks/wb-logistics-v4-continuation.md`](../runbooks/wb-logistics-v4-continuation.md).
-Ближайший factor rollout допускается только на test; factor client flags
-остаются выключенными до отдельного согласования. F-1…F-4 приняты на staff-only
-test. Для F-5 принят отдельный контракт причин возвратов. После закрытого R-0I
+Factor client rollout разрешён и принят только на test; production flags
+остаются неизменными до отдельного согласования. F-1…F-4 сначала были приняты
+на staff-only test. Для F-5 принят отдельный контракт причин возвратов. После закрытого R-0I
 и R-0L отдельно разрешённый production full source refresh создал новый
 неопубликованный immutable draft: Finance загружен в verified
 file-authoritative storage без DB-строк и ambiguity, logistics context имеет
@@ -153,6 +153,19 @@ client-флаги `false`. Новый full refresh создал неопубли
 SQL-сортировка/пагинация и browser QA 1440×900/390×844 пройдены; client API
 возвращает 404, секция скрыта и request не выполняется. Production runtime,
 published current report и client flags не менялись.
+
+R-6 client-role rollout завершён только на test на immutable
+`b4d7376`, `sourceDirty=false`. Более поздний tracked drop-in включает client
+login и все master/client flags F-1…F-5 через effective `ExecStart`, не меняя
+секретный EnvironmentFile. Client `/api/me` подтверждает полную разрешённую
+матрицу; F-1…F-5 API текущего опубликованного отчёта отвечают 200, а
+неопубликованный R-5 draft, чужой tenant/client scope и staff-only order chains
+возвращают 404. Обнаруженный acceptance-дефект чужого `client_id` исправлен:
+маршрут теперь fail closed с 404 вместо 500. Payload не содержит raw
+идентификаторов, source hashes, комментариев или media. Authenticated browser
+QA 1440×900/390×844 прошёл без overflow и console/page/network errors.
+R-5 draft не опубликован, production runtime/service/flags не менялись;
+временные users, sessions, credentials и screenshots очищены.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -1131,6 +1144,16 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-23 — завершён отдельный R-6 client-role rollout только на test.
+  Immutable runtime собран из `b4d7376` с `sourceDirty=false`; tracked
+  `zzz-logistics-r6-client-test.conf` включает client login и все
+  master/client flags F-1…F-5 с корректным приоритетом над EnvironmentFile.
+  Client API текущего published report отвечает 200 для F-1…F-5; R-5 draft,
+  чужой client/tenant scope и staff order chains закрыты 404. Исправлен 500 на
+  чужом `client_id`, raw/hash/PII поля отсутствуют. Browser QA 1440×900 и
+  390×844 прошёл без overflow и ошибок. Временный контур очищен; production и
+  публикация draft не менялись.
 
 - 2026-07-23 — завершён F-5/R-5 staff-only test acceptance на immutable
   `main@a9ec18c` с `sourceDirty=false`. Test-only full refresh создал
