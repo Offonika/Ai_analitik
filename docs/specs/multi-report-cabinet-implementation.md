@@ -20,11 +20,13 @@ related_code:
   - src/wb_unit_economics/web/static/styles.css
   - src/wb_unit_economics/web/static/sortable-tables.js
   - src/wb_unit_economics/web/static/sortable-tables.css
+  - deploy/systemd/shumeiko-web-test.service.d/accounting-canary.conf
 related_tests:
   - tests/test_web_database.py
   - tests/test_db_first_publication.py
   - tests/test_web_app.py
   - tests/test_multi_report_cabinet.py
+  - tests/test_runtime_contour_scripts.py
 contracts:
   - unit_economics_report
   - month_close_control_report
@@ -50,7 +52,7 @@ related_specs:
   - docs/specs/accounting-reports-smart-process-onepage.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-18"
+updated_at: "2026-07-24"
 ---
 
 # Статус документа
@@ -544,6 +546,9 @@ Rollback убирает новые виды из `enabled_report_kinds` и ск�
 
 # Changelog
 
+- 2026-07-24: test accounting canary drop-in добавлен в Git и явно сохраняет
+  staff-only режим: client login выключен, scheduler выключен, evidence root
+  находится только внутри test writable-каталога.
 - 2026-07-22: бухгалтерские виды получили отдельный пошаговый staff-master по
   UX-контракту мастера юнит-экономики; прямой неоднозначный download в общем
   меню заменён разделением существующей и новой ревизии внутри мастера.

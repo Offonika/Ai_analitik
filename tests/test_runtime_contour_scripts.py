@@ -85,13 +85,6 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
     archive_service = (
         systemd_root / "shumeiko-source-snapshot-archive.service"
     ).read_text(encoding="utf-8")
-    test_archive_timer = (
-        systemd_root / "shumeiko-test-source-snapshot-archive.timer"
-    ).read_text(encoding="utf-8")
-    test_archive_service = (
-        systemd_root / "shumeiko-test-source-snapshot-archive.service"
-    ).read_text(encoding="utf-8")
-
     assert "OnCalendar=*-*-* *:45:00" in prune_timer
     assert "--daily-keep 3 --full-keep 2 --apply" in prune_service
     assert "daily-20260712-065846" not in prune_service
@@ -102,17 +95,24 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
     assert "archive-eligible --apply --evict" in archive_service
     assert "--min-age-hours 48" in archive_service
     assert "RequiresMountsFor=/data/shumeyko/source_refresh" in archive_service
-    assert "OnCalendar=*-*-* 07:00:00" in test_archive_timer
-    assert "EnvironmentFile=/etc/shumeiko-web-test.env" in test_archive_service
-    assert "WorkingDirectory=/opt/shumeyko-runtime/prod/current" in test_archive_service
-    assert "--source-root /data/shumeyko/test/source_refresh" in test_archive_service
-    assert "--prefix test-source-refresh-snapshots" in test_archive_service
-    assert "--min-age-hours 48" in test_archive_service
-    assert "--keep-daily 3 --keep-full 2" in test_archive_service
-    assert (
-        "RequiresMountsFor=/data/shumeyko/test/source_refresh"
-        in test_archive_service
+    assert not (systemd_root / "shumeiko-test-source-snapshot-archive.timer").exists()
+    assert not (
+        systemd_root / "shumeiko-test-source-snapshot-archive.service"
+    ).exists()
+
+    accounting_canary = (
+        systemd_root
+        / "shumeiko-web-test.service.d"
+        / "accounting-canary.conf"
+    ).read_text(encoding="utf-8")
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=false" in accounting_canary
+    assert "SHUMEYKO_ACCOUNTING_WORKFLOW_SCHEDULER_ENABLED=false" in (
+        accounting_canary
     )
+    assert (
+        "SHUMEYKO_ACCOUNTING_WORKFLOW_EVIDENCE_ROOT="
+        "/data/shumeyko/test/accounting_workflow_evidence"
+    ) in accounting_canary
 
     required_mounts = {
         "shumeiko-web-prod.service": "/data/shumeyko/source_refresh",
@@ -134,6 +134,14 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
     ):
         unit = (systemd_root / unit_name).read_text(encoding="utf-8")
         assert "SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20" in unit
+        assert "/data/shumeyko/prod/reports" in unit
+
+    health_helper = (ROOT / "scripts/check_web_cabinet_health.py").read_text(
+        encoding="utf-8"
+    )
+    assert "http://127.0.0.1:8097/api/health" in health_helper
+    assert 'default="shumeiko-web-prod.service"' in health_helper
+    assert "8096/api/health" not in health_helper
 
 
 def test_runtime_release_bootstrap_prefers_its_own_source(tmp_path: Path) -> None:
@@ -208,12 +216,17 @@ def test_runtime_env_generator_removes_production_secrets_from_test(
     test_values = _read_env(test)
     assert production_values["SHUMEYKO_BOOTSTRAP_PASSWORD"] == "bootstrap-secret"
     assert production_values["SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB"] == "20"
+    assert (
+        production_values["SHUMEYKO_ALLOWED_EXPORT_ROOT"]
+        == "/data/shumeyko/prod/reports"
+    )
     assert test_values["SHUMEYKO_BOOTSTRAP_PASSWORD"] == ""
     assert test_values["SHUMEYKO_INTEGRATION_SECRET_KEY"] == ""
     assert test_values["SHUMEYKO_OPENAI_API_KEY"] == ""
     assert test_values["ONEC_ODATA_PASSWORD"] == ""
     assert test_values["SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED"] == "false"
     assert test_values["SHUMEYKO_CLIENT_LOGIN_ENABLED"] == "false"
+    assert test_values["SHUMEYKO_ALLOWED_EXPORT_ROOT"] == "/data/shumeyko/test/reports"
     assert test_values["SHUMEYKO_DATABASE_URL"].endswith("/shumeyko_web_cabinet_test")
     assert test_values["SHUMEYKO_SESSION_SECRET"] != "session-secret"
     assert production.stat().st_mode & 0o777 == 0o600

@@ -17,8 +17,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--health-url", default="http://127.0.0.1:8096/api/health")
-    parser.add_argument("--service", default="shumeiko-web.service")
+    parser.add_argument("--health-url", default="http://127.0.0.1:8097/api/health")
+    parser.add_argument("--service", default="shumeiko-web-prod.service")
     parser.add_argument(
         "--database-url", default=os.getenv("SHUMEYKO_DATABASE_URL", "")
     )

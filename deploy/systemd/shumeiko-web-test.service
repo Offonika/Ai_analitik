@@ -26,7 +26,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/data/shumeyko/test
-InaccessiblePaths=/data/shumeyko/source_refresh /opt/shumeyko-partners-wb-unit-economics/reports /var/backups/shumeiko-web
+InaccessiblePaths=/data/shumeyko/source_refresh /data/shumeyko/prod/reports /opt/shumeyko-partners-wb-unit-economics/reports /var/backups/shumeiko-web
 
 [Install]
 WantedBy=multi-user.target

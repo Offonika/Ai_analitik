@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-23"
+updated_at: "2026-07-24"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -29,13 +29,22 @@ Runtime разделен на два процесса:
 - test: `shumeiko-web-test.service`, `127.0.0.1:8098`,
   `/etc/shumeiko-web-test.env`, `https://shumeiko.offonika.ru`.
 
-Legacy `shumeiko-web.service` на `8096` сохраняется только на 24-часовое окно
-rollback и после cutover не имеет публичного nginx-маршрута.
+Legacy rollback window завершено. `shumeiko-web.service`, порт `8096`,
+`/etc/shumeiko-web.env` и публичный nginx-маршрут должны отсутствовать.
+Штатное состояние — активны только `shumeiko-web-prod.service` и
+`shumeiko-web-test.service`. Откат выполняется переключением
+`/opt/shumeyko-runtime/prod/current` на предыдущий проверенный immutable release.
 
-После истечения rollback-окна legacy unit должен быть остановлен и исключен из
-автозапуска: `systemctl disable --now shumeiko-web.service`. Штатное состояние
-после cutover — активны только `shumeiko-web-prod.service` и
-`shumeiko-web-test.service`.
+Однократная очистка старого unit после подтверждения health обоих контуров:
+
+```bash
+systemctl disable --now shumeiko-web.service
+rm -f /etc/systemd/system/shumeiko-web.service
+rm -rf /etc/systemd/system/shumeiko-web.service.d
+rm -f /etc/shumeiko-web.env
+systemctl daemon-reload
+systemctl reset-failed
+```
 
 Оба локальных процесса контролируются отдельными timers:
 
@@ -49,6 +58,14 @@ systemctl start shumeiko-web-test-health.service
 Проверка считается успешной только при `status=ok`, правильном
 `runtimeEnvironment` и одинаковых `backendBuildId`/`staticBuildId`.
 
+После изменения systemd/nginx или очистки временных drop-in’ов проверить drift:
+
+```bash
+.venv/bin/python scripts/check_runtime_contour_drift.py
+```
+
+Проверка не читает EnvironmentFiles и должна завершаться без расхождений.
+
 ## Environment files
 
 Production environment задает `SHUMEYKO_RUNTIME_ENVIRONMENT=production`,
@@ -57,6 +74,20 @@ Production environment задает `SHUMEYKO_RUNTIME_ENVIRONMENT=production`,
 `SHUMEYKO_RUNTIME_ENVIRONMENT=test`, `SHUMEYKO_CLIENT_LOGIN_ENABLED=false`,
 отдельную test БД/report root/source root и по умолчанию
 `SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false`.
+
+Report roots разделены и не находятся в Git checkout:
+
+- production: `/data/shumeyko/prod/reports`;
+- test: `/data/shumeyko/test/reports`.
+
+Перед первым переключением production создать новый каталог и скопировать
+действующие artifacts без удаления старого root:
+
+```bash
+install -d -m 0750 /data/shumeyko/prod/reports
+rsync -a /opt/shumeyko-partners-wb-unit-economics/reports/ \
+  /data/shumeyko/prod/reports/
+```
 
 Если test БД принадлежит отдельной PostgreSQL-роли, перед запуском
 `scripts/create_runtime_env_files.py --apply` нужно передать ее полный URL через
@@ -126,6 +157,9 @@ Nginx должен проксировать в FastAPI:
 обращаться к `unitRows` из public summary. Актуальный nginx-шаблон лежит в
 `deploy/nginx/analitika.offonika.ru.conf` и
 `deploy/nginx/shumeiko.offonika.ru.conf`.
+
+Test nginx проксирует только известные FastAPI routes. Любой другой route
+возвращает `404`; fallback на файлы из `/var/www/offonika-shumeiko` запрещён.
 
 Маршрут `/accounting-workflows` должен проксироваться в FastAPI даже при
 выключенном feature-флаге. В этом случае backend вернёт штатный `404`; nginx не
