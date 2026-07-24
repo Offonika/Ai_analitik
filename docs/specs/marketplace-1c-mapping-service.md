@@ -9,14 +9,14 @@ audience: ["engineering", "consultant", "operations"]
 source_of_truth: true
 truth_scope: mapping
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/mapping_service.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/source_refresh.py, scripts/check_source_refresh_preflight.py, sql/web_cabinet_schema.sql]
-related_tests: [tests/test_mapping_service.py, tests/test_source_refresh.py, tests/test_source_refresh_preflight.py, tests/test_web_app.py]
+related_code: [src/wb_unit_economics/mapping.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/mapping_service.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/source_refresh.py, scripts/check_source_refresh_preflight.py, scripts/rebuild_report_from_sources.py, sql/web_cabinet_schema.sql]
+related_tests: [tests/test_mapping.py, tests/test_mapping_service.py, tests/test_source_refresh.py, tests/test_source_refresh_preflight.py, tests/test_web_app.py]
 contracts: [sku_mapping, sku_mapping_snapshot, ozon_sku_mapping]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/marketplace-unit-economics-ozon-integration.md]
 supersedes: [docs/specs/onec-marketplace-mapping-http-service.md, docs/specs/onec-marketplace-mapping-client-extension.md]
 rollout_required: true
-updated_at: "2026-07-13"
+updated_at: "2026-07-24"
 ---
 
 # Goal
@@ -109,6 +109,12 @@ read-only источниками справочников и фактов, а р
 - локальные ignored mapping files как импорт подтвержденных связей, если строка
   однозначно сопоставляет товар маркетплейса и товар 1С;
 - исторические `sku_mapping` snapshots как начальный seed для сервиса.
+
+Если одновременно доступны текущие WB product cards и локальный accepted
+mapping-файл, расчетная проекция объединяет оба источника alias: файл сохраняет
+приоритет подтвержденного товара 1С, а карточки сохраняют все актуальные
+`nm_id`/barcode alias этого товара. Наличие legacy-файла не должно отключать
+alias из живого read-only snapshot карточек.
 
 Запрещено:
 
@@ -386,7 +392,10 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
   `nm_id`/barcode alias. Решения `mapping_service_auto_barcode`, manual и
   excluded переопределяют товар для всех его alias; проекция
   `imported_mapping_file` не заменяет более точную исходную строку того же
-  файла. Налоговые профили и current mapping передаются builder-у из PostgreSQL.
+  файла. При одновременном наличии legacy-файла и WB product cards их alias
+  объединяются до применения current mapping; legacy-файл не подавляет
+  дополнительные barcode alias карточек. Налоговые профили и current mapping
+  передаются builder-у из PostgreSQL.
 - Старые TXT/TSV/CSV и 1С extension responses принимают однозначные связи как
   current mapping, а конфликтные строки оставляют для ручной проверки.
 - Отчет явно показывает `missing_mapping`, `ambiguous_mapping` и `excluded`.
@@ -441,3 +450,6 @@ WB-строки `SkuMapping` и Ozon-строки `OzonSkuMapping` с теми �
 - 2026-07-11 - accepted system `auto_accept` for the only exact barcode from
   live read-only 1C, protected existing accepted mappings, added conflict and
   report-impact counters, and kept all weaker/ambiguous candidates manual.
+- 2026-07-24 - preserved live WB product-card aliases alongside accepted legacy
+  mapping files so current mapping decisions cover every known barcode alias
+  during report rebuild.
