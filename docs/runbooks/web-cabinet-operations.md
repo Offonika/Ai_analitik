@@ -1163,3 +1163,55 @@ mapping-задачами и явными optional-source предупрежде�
 Rollback runtime выполняется возвратом production symlink на
 `runtime-2afb91e-contours-cleanup-20260724` и restart только production web;
 additive schema и созданный draft при rollback не удаляются.
+
+## Corrective rollout статуса нулевых fallback-строк
+
+Production-сверка первого draft выявила, что из `335` строк с методом
+`stock_register_fixed_receipt_fallback_needs_review` статус
+`Себестоимость 1С требует сверки` имели только `129` ненулевых строк, а `206`
+строк с взаимно погашенными продажами и возвратами получили `ОК`. PR
+[#66](https://github.com/Offonika/Ai_analitik/pull/66) сохранил
+`needs_review` для нулевых строк, но контрольный неопубликованный draft показал
+слишком широкое действие правила: общее количество строк проверки выросло до
+`3 546`, включая `2 575` экономически не примененных стоимостных слоев других
+методов. Этот draft не публиковался.
+
+PR [#67](https://github.com/Offonika/Ai_analitik/pull/67) сузил правило:
+нулевая строка по-прежнему не создает ложный `missing_cost`, специальный
+fallback из `Запасов` всегда сохраняет `needs_review`, а иные технически
+подобранные, но не попавшие в COGS стоимостные слои не создают отдельную
+задачу. На PR и merge-коммите
+`6e778e2c5ec0d1916fe76fd36cec20daaedd48f4` GitHub CI успешно завершил оба
+блокирующих job: `quality` и `tests`.
+
+Из merge-коммита собран immutable release
+`runtime-main-6e778e2-stock-fallback-zero-net-scope-20260724`; manifest
+подтверждает `sourceDirty=false`. Production symlink атомарно переключен на
+него, перезапущен только `shumeiko-web-prod.service`. Schema осталась
+`2026_07_23_logistics_return_reasons_context_v1`, локальный и публичный
+`/api/health` вернули `status=ok` и `runtimeEnvironment=production`.
+
+После transient `ReadTimeout` планового daily refresh выполнен read-only retry
+`source_refresh_9d7d8b07f65442359a60c6ad2a1f07fb`; все обязательные источники
+загрузились, source-refresh health вернулся в приемлемый `needs_review`, а
+общий `/api/health` — в `ok`.
+
+Финальный read-only full refresh
+`source_refresh_ded28bb464d5403abed6cb7997d23596`, snapshot set
+`full-20260724-143223`, создал неопубликованный draft
+`shumeyko_source_refresh_20260724_114209` с восемью artifact records. На
+одинаковых `12 227` строках проверка подтвердила:
+
+- `Нет себестоимости 1С`: `922` строки / `186` SKU;
+- `Себестоимость 1С требует сверки`: `1 177` строк / `266` SKU;
+- fallback из `Запасов`: `335` строк / `44` SKU, все `335` имеют
+  `Себестоимость 1С требует сверки`, строк `ОК` нет;
+- из fallback-строк `206` имеют нулевое итоговое количество, и все они
+  сохраняют задачу сверки.
+
+Финальный report имеет `publication_status=draft`, `is_current=false`;
+опубликованный клиентский current report не переключался. Технический rollback
+runtime — возврат production symlink на
+`runtime-main-d6ff3d5-cost-review-zero-net-20260724` и restart только
+`shumeiko-web-prod.service`; при таком откате новые draft нельзя публиковать до
+повторной финансовой проверки статусов.
