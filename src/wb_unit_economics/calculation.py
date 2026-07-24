@@ -3543,7 +3543,6 @@ def _grouped_quality_status(
     effective = set(statuses)
     if quantity == 0:
         effective.discard(DataQualityStatus.MISSING_COST)
-        effective.discard(DataQualityStatus.NEEDS_REVIEW)
     if not effective:
         return DataQualityStatus.RELIABLE
     return max(effective, key=STATUS_PRIORITY.__getitem__)
