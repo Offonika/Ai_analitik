@@ -1235,3 +1235,51 @@ report как `latestPublishedReportId`.
 `shumeiko-web-prod.service`. Публикационный rollback выполняется отдельным
 возвратом предыдущего проверенного report в `published/current`; уже созданные
 immutable artifacts при rollback не удаляются.
+
+## Corrective rollout раздельных счетчиков себестоимости
+
+24 июля 2026 года PR
+[#69](https://github.com/Offonika/Ai_analitik/pull/69) разделил в
+`summary.quality` отсутствующую себестоимость и предварительную себестоимость,
+требующую сверки. Совместимый `missingCostRows` сохранен как общий счетчик
+cost-review workflow; UI больше не подписывает его целиком как
+`Без себестоимости`. На PR оба обязательных GitHub CI job, `quality` и `tests`,
+завершились успешно. PR влит в `main` merge-коммитом
+`880a2148d0f6988c5a7ac930d5351334cfdf67f9`.
+
+Из merge-коммита собран immutable release
+`runtime-main-880a214-cost-quality-split-20260724`; manifest подтверждает
+`sourceDirty=false`. В 16:44 MSK production symlink атомарно переключен на
+release, перезапущен только `shumeiko-web-prod.service`. Миграция и
+пересборка отчета не выполнялись: schema осталась
+`2026_07_23_logistics_return_reasons_context_v1`, опубликованный current report
+остался `shumeyko_source_refresh_20260724_114209`.
+
+Read-only проверка `report_summary_payload()` из нового runtime над
+production-БД вернула:
+
+- `rowCount=12 227`, `okRows=9 919`;
+- совместимый агрегат `missingCostRows=1 893`;
+- `costAbsentRows=922`;
+- `costRequiresReviewRows=971`.
+
+Еще `206` fallback-строк из регистра `Запасы` имеют нулевое итоговое количество
+и сохраняют отдельную задачу сверки, но по принятой методике не входят в
+финансовый `missingCostRows`. Поэтому верхняя диагностика показывает
+`922` как `Без себестоимости` и `971` как `Требует сверки`, не выдавая
+`1 893` за полностью отсутствующую стоимость.
+
+Локальный и публичный `/api/health` вернули `status=ok`,
+`backendBuildId=staticBuildId=20260724-cost-quality-split-v1` и тот же current
+report. Public shell отдает новый cache-busting build ID, а загруженный
+`app.js` содержит отдельные подписи `Стоимость не найдена` и
+`Стоимость рассчитана предварительно`. Неавторизованный `/api/reports`
+возвращает HTTP 401, `/.env` — HTTP 404, `X-Robots-Tag` остался
+`noindex, nofollow, noarchive`. `scripts/check_web_cabinet_health.py`, запущенный
+через production `EnvironmentFile` без вывода его содержимого, завершился
+успешно: service, HTTP health и PostgreSQL database имеют статус `ok`.
+
+Технический rollback — атомарно вернуть production symlink на
+`runtime-main-6e778e2-stock-fallback-zero-net-scope-20260724` и перезапустить
+только `shumeiko-web-prod.service`. Отчеты, artifacts и schema при таком
+rollback не меняются.
