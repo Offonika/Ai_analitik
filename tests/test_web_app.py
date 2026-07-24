@@ -9922,6 +9922,34 @@ def test_report_export_uses_current_published_report_for_stale_link(
 
     assert export.status_code == 200
     assert export.content == b"current-xlsx"
+    assert export.headers["cache-control"] == "no-store"
+
+
+def test_report_export_returns_requested_staff_draft_artifact(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    draft_export = tmp_path / "reports" / "draft.xlsx"
+    draft_export.write_bytes(b"draft-xlsx")
+    with client.app.state.session_factory() as db:
+        import_dashboard_payload(
+            db,
+            deepcopy(sample_payload()),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-draft",
+            source_workbook_path=str(draft_export),
+            publication_status="draft",
+            publish=False,
+        )
+        db.commit()
+
+    export = client.get("/api/reports/report-draft/export.xlsx")
+
+    assert export.status_code == 200
+    assert export.content == b"draft-xlsx"
+    assert export.headers["cache-control"] == "no-store"
 
 
 def test_report_rows_period_filter_uses_month_when_week_is_missing(

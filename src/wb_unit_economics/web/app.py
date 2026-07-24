@@ -3776,7 +3776,12 @@ def create_app(
             )
         export_report = report
         path = _report_excel_export_path(db, export_report, runtime_settings)
-        if not report.is_current:
+        if report.publication_status != "published":
+            _require_staff_or_403(current, report.tenant_id)
+        if (
+            report.publication_status in {"published", "superseded"}
+            and not report.is_current
+        ):
             latest_report = repository.latest_report_for_client(
                 db,
                 current,
@@ -3811,6 +3816,7 @@ def create_app(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=export_report.source_workbook or "shumeyko_wb_excel_mvp.xlsx",
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.post("/api/admin/reports/import")
