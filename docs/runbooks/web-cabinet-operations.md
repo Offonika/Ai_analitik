@@ -813,6 +813,40 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
 БД недоступна. Дополнительно проверить `journalctl` по timer service: в логах не
 должно быть токенов, connection strings или raw payload.
 
+## Staff-ready калькулятор маржинальности
+
+Code defaults выключены:
+
+```text
+SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_ENABLED=false
+SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=false
+```
+
+Наличие кода не является evidence включения на test или production. Порядок
+rollout:
+
+1. На test включить только
+   `SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_ENABLED=true`; client-флаг оставить
+   `false`. Штатный versioned override:
+   `deploy/systemd/shumeiko-web-test.service.d/zzzz-unit-economics-calculator-staff-test.conf`;
+   он переопределяет только ExecStart калькулятора и наследует фактически
+   установленные test-флаги остальных модулей без их включения или выключения.
+2. Под consultant/admin проверить контрольные товары с УСН, ОСНО, отсутствующей
+   себестоимостью, неполным СПП и неположительным чистым количеством.
+3. Сверить общий waterfall с опубликованным отчётом до копейки и target solver
+   с допуском 0,01 п.п.; до и после POST количество строк и source hashes
+   отчёта должны совпасть.
+4. Выполнить authenticated browser-smoke 1440×900 и 390×844: кнопка находится
+   внутри sticky-ячейки товара, dialog удерживает фокус, факт/оценка различимы,
+   горизонтальная таблица и окно не создают page overflow.
+5. Зафиксировать датированное test evidence. Только после отдельного решения
+   включить `SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=true` на test.
+   Production требует отдельного разрешения и нового evidence.
+
+Rollback: установить оба флага `false` и перезапустить web. Endpoint и кнопка
+скрываются как 404/невидимый UI; компенсация не требуется, потому что сценарии
+не сохраняются и отчёт/внешние системы не меняются.
+
 ## Staff-ready анализ логистики
 
 Code defaults остаются выключенными:

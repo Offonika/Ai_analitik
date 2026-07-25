@@ -78,6 +78,28 @@ def test_r6_test_drop_in_enables_all_logistics_for_client_role() -> None:
     assert "_CLIENT_ENABLED=false" not in drop_in
 
 
+def test_margin_calculator_test_drop_in_is_staff_only_and_additive() -> None:
+    drop_in_path = (
+        ROOT
+        / "deploy/systemd/shumeiko-web-test.service.d/"
+        "zzzz-unit-economics-calculator-staff-test.conf"
+    )
+    drop_in = drop_in_path.read_text(encoding="utf-8")
+    exec_start = next(
+        line
+        for line in drop_in.splitlines()
+        if line.startswith("ExecStart=/usr/bin/env ")
+    )
+
+    assert drop_in_path.name > "zzz-logistics-r6-client-test.conf"
+    assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_ENABLED=true" in drop_in
+    assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=false" in drop_in
+    assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_ENABLED=true" in exec_start
+    assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=false" in exec_start
+    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED" not in exec_start
+    assert "SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED" not in exec_start
+
+
 def test_nginx_templates_proxy_accounting_workflow_route() -> None:
     test_config = (ROOT / "deploy/nginx/shumeiko.offonika.ru.conf").read_text(
         encoding="utf-8"

@@ -22,6 +22,7 @@ related_code:
   - scripts/check_web_cabinet_health.py
   - deploy/systemd/shumeiko-web-prod.service
   - deploy/systemd/shumeiko-web-test.service
+  - deploy/systemd/shumeiko-web-test.service.d/zzzz-unit-economics-calculator-staff-test.conf
   - deploy/systemd/shumeiko-web-prod-health.service
   - deploy/systemd/shumeiko-web-test-health.service
   - deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf

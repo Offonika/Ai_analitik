@@ -74,6 +74,8 @@ class WebSettings(BaseSettings):
     source_refresh_worker_unit_prefix: str = "shumeiko-source-refresh-worker"
     db_first_reports_enabled: bool = False
     enabled_report_kinds: str = "marketplace_unit_economics"
+    unit_economics_calculator_enabled: bool = False
+    unit_economics_calculator_client_enabled: bool = False
     logistics_analysis_enabled: bool = False
     logistics_analysis_client_enabled: bool = False
     logistics_factors_enabled: bool = False
