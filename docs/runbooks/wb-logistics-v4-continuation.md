@@ -28,16 +28,17 @@ accepted-спецификацию. При расхождении следова�
 `2026_07_23_logistics_return_reasons_context_v1`. Health имеет `status=ok`.
 Установлен staff-only R-5 drop-in; R-6 client drop-in отсутствует. Effective
 test flags подтверждают `client login=false`, master F-1…F-5 `true`, client
-F-1…F-5 `false`. Новый неопубликованный immutable draft построен по методике
-`wb-logistics-v6`: базовый logistics context имеет `ready`, contexts F-1…F-5 —
-явный `partial`; активный source refresh отсутствует. Client-role логистику
-видеть не должен.
+F-1…F-5 `false`. После отдельной финансовой приемки пользователя immutable
+отчет по методике `wb-logistics-v6` опубликован как current только на test:
+базовый logistics context имеет `ready`, contexts F-1…F-5 — явный `partial`;
+активный source refresh отсутствует. Client-role логистику видеть не должен.
 
-Excel нового draft зарегистрирован со статусом `ready` и существует на диске;
-прежний published/current report не переписывался. Реальные report IDs, source
-hashes, объёмы, пути к артефактам и клиентские строки в Git не фиксируются: их
-повторно получают из локальных runtime/БД во время acceptance. На новом draft
-обе неполные границы имеют `partial_week`, апрельский scheme-only кластер
+Excel опубликованного current report зарегистрирован со статусом `ready` и
+существует на диске; предыдущий current report переведен штатной атомарной
+публикацией, а его immutable rows не переписывались. Реальные report IDs,
+source hashes, объёмы, пути к артефактам и клиентские строки в Git не
+фиксируются: их повторно получают из локальных runtime/БД во время acceptance.
+Обе неполные границы имеют `partial_week`, апрельский scheme-only кластер
 связывается exact alias `not_applicable → fbo`, а live-фильтр
 `missing_profit_link` возвращает пустой срез. Настоящий missing link продолжает
 fail-closed покрываться regression-тестами.
@@ -45,10 +46,12 @@ fail-closed покрываться regression-тестами.
 Production остаётся на
 `runtime-main-880a214-cost-quality-split-20260724`, build
 `20260724-cost-quality-split-v1`, с той же schema. Health имеет `status=ok`,
-активный source refresh отсутствует. Current Excel зарегистрирован и существует
-на диске. Report не требует logistics contexts, production-логистика не
-включена. Test/client rollout и любой production rollout остаются отдельными
-решениями.
+активный source refresh отсутствует. Во время post-publish test acceptance
+штатный production daily refresh кратковременно был активен и самостоятельно
+завершился `needs_review`, не изменив production current report. Current Excel
+зарегистрирован и существует на диске. Report не требует logistics contexts,
+production-логистика не включена. Client rollout на test и любой production
+rollout остаются отдельными решениями.
 
 # Текст для нового чата
 
@@ -58,10 +61,10 @@ Production остаётся на
 операционное состояние в этом runbook. Test фактически staff-only: client login
 и client flags F-1…F-5 выключены, master flags включены. Исправление
 partial-week, exact alias not_applicable -> FBO и products-фильтр уже влиты,
-развернуты на test и прошли staff API/browser acceptance на новом
-неопубликованном draft. Реальные identifiers/hashes/данные в Git не переносить.
-Client enable, публикацию draft и production logistics без отдельных решений
-не выполнять.
+развернуты на test и прошли staff API/browser acceptance. После отдельной
+финансовой приемки v6 report опубликован как current только на test. Реальные
+identifiers/hashes/данные в Git не переносить. Client enable и production
+logistics без отдельных решений не выполнять.
 ```
 
 # Текущее состояние
@@ -80,11 +83,11 @@ Client enable, публикацию draft и production logistics без отд�
 - На test установлен только tracked R-5 staff-only drop-in: client login
   выключен, master flags F-1…F-5 включены, client flags F-1…F-5 выключены.
   Code defaults не считаются environment evidence.
-- Новый неопубликованный test-draft имеет базовый logistics context `ready`,
-  contexts F-1…F-5 `partial`, зарегистрированный готовый Excel и отдельную
-  immutable lineage. Прежний published/current report не менялся; активный
+- Опубликованный test current-report по методике `wb-logistics-v6` имеет
+  базовый logistics context `ready`, contexts F-1…F-5 `partial`,
+  зарегистрированный готовый Excel и отдельную immutable lineage. Активный
   source refresh отсутствует. Client-role логистику не видит.
-- Live-acceptance нового draft подтвердил `partial_week` на обеих границах,
+- Live-acceptance v6 report подтвердил `partial_week` на обеих границах,
   exact апрельскую связь `not_applicable → fbo`, nullable финансовые KPI на
   неполных границах и пустой live-срез `missing_profit_link`. Идентификаторы,
   объёмы и реальные строки в runbook не сохраняются.
@@ -92,15 +95,15 @@ Client enable, публикацию draft и production logistics без отд�
   rollout. После фактического rollback client-role снова получает 404 и не
   выполняет logistics requests; старые контексты staff-интерфейса честно
   показывают `needs_rebuild`, а draft и чужой scope остаются закрыты 404.
-- F-4 draft не публиковался. Общие publication blockers не скрыты и не
-  переопределены.
+- Исторические factor-drafts не переписывались. Готовый v6 report опубликован
+  штатным publication gate без скрытия или переопределения blockers.
 - Для F-5 на production создан отдельный неопубликованный immutable draft с
   verified file-authoritative Finance без DB/file ambiguity. Goods-return
   identity gate открыт, а claims identity gate отражает только фактическое
   покрытие и не является implementation/publication blocker; published current
   report и client flags не менялись.
-- R-1 source/selector/internal exact link влит в `main` через PR №56; test или
-  production refresh из этой ревизии не выполнялся.
+- R-1 source/selector/internal exact link влит в `main` через PR №56;
+  последующий v6 refresh и публикация выполнены только на test.
 - R-2 fail-soft claims source влит в `main` через PR №59. R-3 context/mart,
   source-refresh build, readiness, safe API и role/flag matrix влиты через
   PR №60 со schema `2026_07_23_logistics_return_reasons_context_v1`.
@@ -887,15 +890,54 @@ checkpoint и создал отдельный immutable draft с итоговы�
 Реальные report/source identifiers, source hashes, объёмы, суммы, пути к
 артефактам, client rows, credentials и screenshots в Git не переносились.
 
+# Operational evidence публикации v6 на test — 25 июля 2026 года
+
+Публикация выполнена только после отдельного явного решения пользователя.
+Перед ней повторно подтверждены точный test runtime/build/schema, один
+подходящий неопубликованный `wb-logistics-v6` report, готовый и существующий
+Excel, `ready` базовый context, `partial` contexts F-1…F-5, отсутствие
+publication blockers и активного source refresh. Создана и полностью
+верифицирована внешняя резервная копия PostgreSQL.
+
+Штатный repository publication gate атомарно сделал v6 report
+`published/current`; предыдущие immutable report rows не переписывались.
+Post-publish DB/API/public-browser acceptance подтвердил:
+
+- ровно один current published report по методике `wb-logistics-v6`;
+- готовый и существующий Excel, базовый context `ready`, F-1…F-5 `partial`;
+- пустой live-срез `missing_profit_link` и отсутствие fallback финансовых KPI;
+- видимый staff-раздел логистики без прежнего сообщения о пересборке, готовые
+  KPI и все пять factor-секций;
+- HTTP 200 для browser logistics requests и отсутствие console/page errors;
+- активный source refresh отсутствует;
+- временные acceptance users деактивированы, пароли сброшены, sessions и
+  временный browser script удалены.
+
+Effective test flags после публикации не менялись: client login и все
+client-флаги выключены, master F-1…F-5 включены только для staff. Production
+runtime/build/schema, current report и logistics requirements не менялись.
+Наблюдавшийся во время acceptance штатный production daily refresh
+самостоятельно завершился `needs_review`; финально активный refresh отсутствует.
+
+Реальные report/source identifiers, hashes, суммы, объёмы, пути к артефактам,
+client rows, credentials, backup receipt и screenshots в Git не переносились.
+
+Ретроспектива операции: полный off-host PostgreSQL backup перед этой
+test-публикацией был безопасным, но избыточным и занял несоразмерно больше
+времени, чем атомарное переключение report. Он не является прецедентом для
+следующих публикаций. При сохраненном immutable previous current, отсутствии
+schema/data rewrite и чистом publication preflight применяется легкая rollback-
+проверка без нового полного dump. Полный backup и любая подготовка дольше
+15 минут требуют условий из accepted web-cabinet spec и предварительного
+согласования с пользователем.
+
 # Следующий этап
 
-1. Новый v6 draft остаётся staff-only и неопубликованным. Публикация требует
-   отдельного решения с явным принятием его `needs_review` source states.
-2. Client rollout на test выполнять только отдельным решением; текущий
+1. Client rollout на test выполнять только отдельным решением; текущий
    staff-only drop-in и все client-флаги сохраняются.
-3. Любой logistics rollout на production выполнять отдельно; production report
+2. Любой logistics rollout на production выполнять отдельно; production report
    по-прежнему не требует logistics contexts.
-4. Append-only публикацию не собирать ручным копированием строк. Если
+3. Append-only публикацию не собирать ручным копированием строк. Если
    требование ещё актуально, сначала принять отдельное изменение
    спецификации/контракта.
 

@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-24"
+updated_at: "2026-07-25"
 ---
 
 # Implementation Status
@@ -1265,6 +1265,27 @@ Backups:
 - PostgreSQL backups are created by `scripts/backup_web_db.py` through systemd
   timer or manual run.
 - Keep retention short by default and keep backup archives outside Git.
+- Backup effort must be proportional to the operation. Publishing an existing
+  immutable draft on test does not require a new full PostgreSQL backup when
+  the previous current report remains immutable, publication is atomic, no
+  schema/data rewrite occurs, and exact draft/artifact/blocker/refresh
+  preflight has passed.
+- For that routine test publication, the required rollback control is the
+  atomic transaction plus immediate DB/API/browser smoke; the normal target is
+  5–10 minutes.
+- A new verified off-host full backup is required before schema migrations,
+  bulk rewrite/delete, raw-row prune/repack, destructive maintenance,
+  production work without a proven cheaper rollback, or when the user
+  explicitly requests it.
+- Reuse an existing verified backup when its freshness and scope cover the
+  operation instead of creating a duplicate.
+- Any preparatory step expected to exceed 15 minutes or materially outlast the
+  requested action must be explained and approved by the user before it starts.
+
+This proportionality rule does not weaken publication gates, immutable report
+history, tenant isolation or explicit rollback evidence. If any prerequisite
+for the lightweight path is uncertain, stop and resolve that uncertainty
+instead of silently choosing either no backup or a full backup.
 
 Monitoring:
 
