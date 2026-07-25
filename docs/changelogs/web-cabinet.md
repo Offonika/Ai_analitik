@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-24"
+updated_at: "2026-07-25"
 ---
 
 # AI web cabinet changelog
@@ -15,6 +15,13 @@ updated_at: "2026-07-24"
 нормативные требования остаются в
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
+
+- 2026-07-25: v2.61 закрепил пропорциональность backup перед публикацией:
+  атомарная test-публикация готового immutable draft по умолчанию не создает
+  новый полный dump, если предыдущий current сохранен и нет schema/data
+  rewrite. Полная внешняя копия обязательна только для явно более рискованных
+  операций, а подготовка дольше 15 минут требует предварительного объяснения
+  стоимости и подтверждения пользователя.
 
 - 2026-07-24: v2.60 объединил актуальный production workflow с доработками
   налоговой нагрузки и test-only логистики: выбранный `report_id` скачивает

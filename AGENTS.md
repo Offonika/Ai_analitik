@@ -110,6 +110,30 @@ change. `scripts/validate_specs.py` verifies paths, headings and symbols.
 - Preserve unrelated user changes in a dirty worktree. Explain any new
   dependency before adding it.
 
+## Operational Proportionality And Backups
+
+Use the least expensive rollback control that is sufficient for the actual
+risk. A routine test publication of an already-built immutable draft must not
+create a new full PostgreSQL maintenance backup when all of these are true:
+
+- publication is one atomic transaction;
+- the previous current report and its rows remain immutable and recoverable;
+- no schema, raw snapshot, source lineage or historical report rows are
+  rewritten or deleted;
+- the exact draft, ready artifact, publication blockers and inactive refresh
+  state were checked immediately before publication.
+
+A new verified off-host full backup is reserved for schema migrations, bulk
+rewrite/delete, raw-row prune/repack, destructive maintenance, production work
+without a proven cheaper rollback, or an explicit user request. Reuse a recent
+verified backup when its freshness and scope cover the operation; do not create
+a duplicate backup merely as ceremony.
+
+Before starting any preparatory step expected to take more than 15 minutes or
+materially longer than the requested action, explain the cost and ask the user
+to approve it. The normal target for test publication plus smoke checks is
+5–10 minutes.
+
 ## Verification And Handoff
 
 After documentation changes run:

@@ -922,6 +922,15 @@ runtime/build/schema, current report и logistics requirements не меняли
 Реальные report/source identifiers, hashes, суммы, объёмы, пути к артефактам,
 client rows, credentials, backup receipt и screenshots в Git не переносились.
 
+Ретроспектива операции: полный off-host PostgreSQL backup перед этой
+test-публикацией был безопасным, но избыточным и занял несоразмерно больше
+времени, чем атомарное переключение report. Он не является прецедентом для
+следующих публикаций. При сохраненном immutable previous current, отсутствии
+schema/data rewrite и чистом publication preflight применяется легкая rollback-
+проверка без нового полного dump. Полный backup и любая подготовка дольше
+15 минут требуют условий из accepted web-cabinet spec и предварительного
+согласования с пользователем.
+
 # Следующий этап
 
 1. Client rollout на test выполнять только отдельным решением; текущий
