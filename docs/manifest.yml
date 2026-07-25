@@ -179,9 +179,9 @@ documents:
     truth_scope: "logistics-cost-analysis"
     truth_priority: 100
     operational_docs: ["docs/runbooks/wb-logistics-v4-continuation.md"]
-    summary: "Accepted WB-логистика v5: F-1…F-5 включены client-role только на test; R-5 partial draft без blockers остаётся неопубликованным, production rollout не выполнен."
+    summary: "Accepted WB-логистика v6: test фактически staff-only; partial weeks отделены от missing profit link, financial scheme alias ограничен exact not_applicable→FBO; client/production rollout не выполнен."
     read_when: "Меняется анализ логистики WB, data gate, цепочки заказов, рейтинги SKU, рекомендации или логистические витрины."
-    search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS"]
+    search_terms: ["логистика WB", "logistics analysis", "цепочка заказа", "проблемные товары", "FBO FBS", "missing_profit_link", "partial week", "financial link"]
   - path: "docs/specs/wb-logistics-cost-factors-implementation.md"
     title: "WB: факторы затрат на логистику (вторая очередь)"
     doc_type: "spec"
@@ -461,7 +461,7 @@ documents:
     status: "active"
     audience: ["engineering", "agent", "operations"]
     source_of_truth: false
-    summary: "Operational state WB-логистики: F-1…F-5 включены client-role только на test; R-5 partial draft без blockers не опубликован, production rollout не выполнен."
+    summary: "Operational state WB-логистики: test staff-only, client flags выключены, production-логистика не включена; перед rollout обязательна свежая runtime/DB проверка."
   - path: "docs/runbooks/wb-logistics-factors-probe.md"
     title: "Probe доступности источников логистики (F-0 / R-0/R-0I/R-0L / C-0)"
     doc_type: "runbook"

@@ -49,7 +49,7 @@ test_anchors:
   - path: tests/test_return_reason_analysis.py
     symbols: ["def test_builds_exact_safe_return_reason_row", "def test_denied_claims_is_partial_not_blocking_and_keeps_reason_fact", "def test_multiple_return_segments_collapse_to_latest_finance_date"]
   - path: tests/test_logistics_analysis.py
-    symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions"]
+    symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions", "def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report", "def test_not_applicable_financial_link_uses_fbo_report_alias_only"]
   - path: tests/test_source_refresh.py
     symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot", "def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_reason_context_builds_from_lineage_and_denied_claims_is_partial", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_goods_return.py
@@ -59,12 +59,12 @@ test_anchors:
   - path: tests/test_probe_wb_logistics_factors.py
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_web_app.py
-    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering", "def test_multi_client_report_access_requires_explicit_client"]
+    symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_products_filter_returns_only_missing_profit_links", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering", "def test_multi_client_report_access_requires_explicit_client"]
   - path: tests/test_runtime_contour_scripts.py
     symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only", "def test_r6_test_drop_in_enables_all_logistics_for_client_role"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
-updated_at: "2026-07-23"
+updated_at: "2026-07-25"
 ---
 
 # Статус документа
@@ -76,14 +76,16 @@ updated_at: "2026-07-23"
 `Accepted` означает утвержденную цель реализации, но не подтверждает production
 rollout или завершение всех очередей. Первая очередь v5 и подпакеты факторов
 F-1…F-5 прошли отдельные staff-only test acceptance на immutable report runs.
-23 июля 2026 года F-1…F-5 отдельно включены для client-role только на test;
-production rollout не выполнен. Подчинённый F-5 spec переведён в `implemented`;
-третья очередь и production-решение остаются незавершёнными.
+R-6 client-role ранее был отдельно принят только на test, но свежая
+операционная проверка 25 июля 2026 года подтвердила его фактический rollback:
+client login и все client-флаги F-1…F-5 выключены, а master-флаги остаются
+staff-only. Production rollout не выполнен. Подчинённый F-5 spec переведён в
+`implemented`; третья очередь и production-решение остаются незавершёнными.
 
 # Текущее состояние реализации
 
 В текущем change set реализованы hardening-версия методики
-`wb-logistics-v5`, ключ `wb-order-product-v1`, классификатор
+`wb-logistics-v6`, ключ `wb-order-product-v1`, классификатор
 `wb-logistics-classifier-v1`, неизменяемые витрины order/SKU, многомерный
 reconciliation до действующего `ReportUnitRow`, три read-only API,
 детерминированные рекомендации и безопасный агрегатный контекст для AI.
@@ -154,18 +156,15 @@ SQL-сортировка/пагинация и browser QA 1440×900/390×844 п�
 возвращает 404, секция скрыта и request не выполняется. Production runtime,
 published current report и client flags не менялись.
 
-R-6 client-role rollout завершён только на test на immutable
-`b4d7376`, `sourceDirty=false`. Более поздний tracked drop-in включает client
-login и все master/client flags F-1…F-5 через effective `ExecStart`, не меняя
-секретный EnvironmentFile. Client `/api/me` подтверждает полную разрешённую
-матрицу; F-1…F-5 API текущего опубликованного отчёта отвечают 200, а
-неопубликованный R-5 draft, чужой tenant/client scope и staff-only order chains
-возвращают 404. Обнаруженный acceptance-дефект чужого `client_id` исправлен:
-маршрут теперь fail closed с 404 вместо 500. Payload не содержит raw
-идентификаторов, source hashes, комментариев или media. Authenticated browser
-QA 1440×900/390×844 прошёл без overflow и console/page/network errors.
-R-5 draft не опубликован, production runtime/service/flags не менялись;
-временные users, sessions, credentials и screenshots очищены.
+R-6 client-role rollout был завершён только на test и прошёл role/tenant/PII
+acceptance, но больше не описывает фактическую среду. На 25 июля 2026 года
+effective test-конфигурация снова staff-only: установлен более ранний
+staff-only drop-in, client login выключен, master-флаги F-1…F-5 включены, а
+client-флаги F-1…F-5 выключены. Текущий опубликованный test-report содержит
+`ready` базовый logistics context и явные `partial` contexts F-1…F-5; активный
+source refresh отсутствует. Клиентская роль не должна видеть сценарий
+логистики. Production runtime/report не требуют logistics contexts, и
+production-флаги логистики не включены.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -290,7 +289,7 @@ Excel-экспорт этого блока не входит в первую о�
 3. Сохраненный raw snapshot — доказательная база и возможность повторного
    расчета после изменения классификатора.
 
-`wb-logistics-v5` выбирает финансовую детализацию независимо от физического
+`wb-logistics-v6` выбирает финансовую детализацию независимо от физического
 способа хранения raw snapshot. Если строки сохранены в `source_snapshot_rows`,
 используется DB-authoritative reader. Если collection явно помечена
 `file_authoritative` или `skipped_large_snapshot` с
@@ -373,7 +372,7 @@ raw данных подтвердить:
 | Габариты и замеры | `phase_2_gap` | Габариты есть в raw-карточках, но пока не сохраняются в плоском слое; отдельные источники контрольных замеров и штрафов не подключены. |
 
 Исторический профиль выше объясняет исходные ограничения и не является
-разрешением на rollout. В `wb-logistics-v5` технический gate перед созданием
+разрешением на rollout. В `wb-logistics-v6` технический gate перед созданием
 order/SKU-витрин выполняется автоматически:
 
 1. получить новый read-only снимок с расширенным набором полей;
@@ -465,6 +464,12 @@ profit_effect_amount = -logistics_total
   `logistics_share_pct`, `profit_before_tax`, `profit_without_logistics` и
   `profit_effect_amount` возвращаются как `null`; точная логистика сохраняется,
   а строка получает `missing_profit_link` и `restore_profit_link`;
+- финансовая связь сначала ищется по нормализованному exact-ключу
+  `tenant/client/week/cabinet/company/scheme/product`; для логистической
+  коррекции со `scheme=not_applicable` разрешён только односторонний alias к
+  `scheme=fbo` при полном совпадении остальных измерений, потому что accepted
+  финансовый отчёт исторически относит отсутствующий `deliveryMethod` к FBO;
+  FBS и любой частичный/неоднозначный match не являются fallback;
 - если хотя бы один SKU выбранного среза имеет `missing_profit_link`, весь срез
   получает `financialMetricStatus=not_available_missing_profit_link` и
   `sliceStatus=partial`: финансовые KPI, финансовая динамика и рейтинги по доле
@@ -482,7 +487,9 @@ profit_effect_amount = -logistics_total
 - если выбранный период отсекает часть недели, `revenue`, доля логистики,
   прибыль и другие недельные финансовые KPI возвращаются `null` со статусом
   `financialMetricStatus=not_available_partial_week`; пропорциональное
-  распределение запрещено;
+  распределение запрещено; SKU-грань получает
+  `data_quality_status=partial_week`, а не `missing_profit_link`, и не получает
+  рекомендацию `restore_profit_link`;
 - `profit_before_ndfl` и состав его расходов не пересчитываются отдельной
   формулой этого блока, а переиспользуют accepted Excel-методику.
 
@@ -581,7 +588,11 @@ input hash; изменение правил требует новой верси
 факт исходной логистической строки, а nullable `financial_revenue` — только как
 связь с `ReportUnitRow`. При отсутствующей связи финансовые поля остаются
 `null`; legacy non-null колонки получают реальный source-факт или точное
-`-logistics_total`, но никогда sentinel `0`.
+`-logistics_total`, но никогда sentinel `0`. Неполная граничная неделя хранится
+как `partial_week` без ложного `restore_profit_link`. Для
+`scheme=not_applicable` финансовая часть может быть взята только из FBO-строки
+того же exact product/week/cabinet/company scope; сама логистическая схема
+остаётся `not_applicable` и не переписывается.
 
 ## `report_logistics_route_rows`
 
@@ -641,6 +652,11 @@ rows; missing/unmatched/empty/denied даёт `partial/data_unavailable` и са
 `client_company_id` (организация) остается поддержанным на уровне API как
 additive-фильтр, но витрина логистики не выводит для него отдельный контрол
 (см. «Интерфейс»).
+`GET .../logistics/products` дополнительно принимает allowlisted
+`dataQualityStatus=missing_profit_link`; иное непустое значение возвращает
+HTTP 400. Фильтр применяется в SQL до подсчёта `total`, сортировки и пагинации
+и не ослабляет остальные period/tenant/cabinet/company/scheme/product
+ограничения.
 Ответы содержат `dataStatus`, `sliceStatus`, фильтрованное `coverage`,
 `reportCoverage`, включая `invalidReportRows`, `reportRequiredFieldErrors` и
 `chainDimensionConflicts`, `invalidSourcePayloadShapes`,
@@ -683,7 +699,11 @@ Products и orders агрегируются, сортируются и паги�
    или `Качество данных`. Строки могут описывать пересекающиеся срезы, поэтому
    интерфейс запрещает воспринимать их как слагаемые одного итога. В первой
    строке пользователь должен увидеть главное доступное действие без раскрытия
-   цепочек заказа.
+   цепочек заказа. Действие `Проверить связь с отчётом` для
+   `restore_profit_link` остаётся внутри логистического сценария, включает
+   серверный фильтр `missing_profit_link`, прокручивает к рейтингу конкретных
+   затронутых товаров и показывает видимый сбрасываемый статус фильтра; переход
+   в общую сверку WB ↔ 1С запрещён.
 4. Отдельная компактная полоса доверия показывает покрытие классификации,
    свежесть, полноту среза и `low_sample`; она не конкурирует с денежным итогом.
 5. Рейтинг товаров, динамика, фильтры и детерминированные рекомендации идут
@@ -936,7 +956,7 @@ rollout; калькуляторы остаются третьей очередь
     запрещен; исправление выполняется новым report run.
 14. строки `ReportUnitRow` без обязательных dimensions входят в контрольную
     сумму, получают счетчики качества и блокируют витрины.
-15. контексты v1–v4 и несовместимая версия ключа возвращают `needs_rebuild`.
+15. контексты v1–v5 и несовместимая версия ключа возвращают `needs_rebuild`.
 16. поврежденный JSON payload, смешанный tenant/client scope, неоднозначная
     ревизия или неизвестный context status не могут дать `ready` или публикацию.
 17. все logistics endpoint отклоняют инвертированный и внешний период кодом
@@ -1008,6 +1028,16 @@ rollout; калькуляторы остаются третьей очередь
 39. `/logistics/return-reasons` соблюдает tenant/role/flag matrix, считает
     coverage по полному SQL-срезу и не возвращает raw `srid`, source hashes,
     claim IDs, комментарии или media.
+40. SKU на неполной граничной неделе сохраняет точную логистику и nullable
+    финансовые поля со статусом `partial_week`; он не увеличивает
+    `missingProfitLinks` и не получает `restore_profit_link`.
+41. `scheme=not_applicable` связывается с финансовой строкой FBO только при
+    exact совпадении tenant/client/week/cabinet/company/product. FBS, соседняя
+    неделя, другой товар или другой scope не используются как fallback; при
+    отсутствии FBO связь остаётся fail-closed.
+42. Действие `Проверить связь с отчётом` запрашивает и показывает только товары
+    с `missing_profit_link`, сохраняет текущий разрешённый срез, имеет видимый
+    сброс фильтра и не открывает общую сверку WB ↔ 1С.
 
 # Test Plan
 
@@ -1029,6 +1059,10 @@ rollout; калькуляторы остаются третьей очередь
 - SKU без profit link: nullable financial fields, сохраненная логистика,
   `missing_profit_link`, отсутствие `check_margin` и запрет source-revenue
   fallback;
+- неполная граничная неделя: `partial_week`, nullable financial fields и
+  отсутствие `restore_profit_link`;
+- односторонний alias `not_applicable → fbo` только при exact совпадении
+  остальных измерений; FBS и частичные совпадения не принимаются;
 - одинаковая связь order/SKU/report при пробелах вокруг любой строковой
   dimension;
 - exact goods-return/claims scoped links, nullable claims coverage и схлопывание
@@ -1085,6 +1119,9 @@ rollout; калькуляторы остаются третьей очередь
   и ошибки запроса без stale/zero fallback;
 - mixed ready/missing-profit-link срез: fail-closed summary/dynamics,
   отсутствующие финансовые рейтинги и доступная точная логистика;
+- allowlisted products-фильтр `dataQualityStatus=missing_profit_link`,
+  SQL-пагинация/`total`, отказ на неизвестном значении и UI-action с видимым
+  сбросом без перехода в общую сверку;
 - семантический regression: итоговая логистика не называется целиком
   устранимой потерей, а пересекающиеся зоны проверки нельзя ошибочно сложить;
 - mobile regression: глобальные фильтры не скрываются, карточки зон проверки
@@ -1117,7 +1154,7 @@ Staff-only приемка draft выполняется по прямой ссы�
 Rollback отключает новый раздел и новые API-маршруты, не изменяя существующие
 отчеты. Отключение флага не снимает publication blocker с report run, который
 обязан был пройти gate, но не прошел его. Новые витрины являются добавочными и
-остаются неизменяемыми; v1–v4-строки не переписываются. Внешние источники при
+остаются неизменяемыми; v1–v5-строки не переписываются. Внешние источники при
 rollout и rollback не изменяются.
 
 # Согласованные решения
@@ -1144,6 +1181,16 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-25 — методика повышена до `wb-logistics-v6`: неполные граничные
+  недели отделены от настоящего `missing_profit_link`, а финансовая связь
+  нейтральной логистической коррекции получила детерминированный односторонний
+  alias `not_applicable → fbo` при exact совпадении остальных измерений.
+  Products API и действие рекомендации получили allowlisted фильтр только
+  затронутых строк. Свежая environment-проверка также зафиксировала фактический
+  staff-only rollback test после исторического R-6; production остаётся без
+  logistics rollout. Идентификаторы отчётов, source hashes, объёмы и реальные
+  строки в документ не переносились.
 
 - 2026-07-23 — завершён отдельный R-6 client-role rollout только на test.
   Immutable runtime собран из `b4d7376` с `sourceDirty=false`; tracked

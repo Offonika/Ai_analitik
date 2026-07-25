@@ -192,6 +192,7 @@ LOGISTICS_PRODUCT_SORT_KEYS = frozenset(
         "quality",
     }
 )
+LOGISTICS_PRODUCT_DATA_QUALITY_FILTERS = frozenset({"", "missing_profit_link"})
 LOGISTICS_ORDER_SORT_KEYS = frozenset(
     {
         "chainRef",
@@ -16567,6 +16568,7 @@ def report_logistics_summary_payload(
         "client_company_id": client_company_id,
         "scheme": scheme,
         "product_query": product_query,
+        "data_quality_status": "",
         "financial_status": financial_status,
         "offset": 0,
         "limit": 10,
@@ -16674,6 +16676,7 @@ def report_logistics_products_payload(
     client_company_id: str = "",
     scheme: str = "",
     product_query: str = "",
+    data_quality_status: str = "",
     sort_by: str = "logisticsTotal",
     sort_order: str = "desc",
     offset: int = 0,
@@ -16691,6 +16694,10 @@ def report_logistics_products_payload(
         scheme=scheme,
         product_query=product_query,
     )
+    meta["filterContext"] = {
+        **meta["filterContext"],
+        "dataQualityStatus": data_quality_status or None,
+    }
     if not _logistics_context_usable(report, context):
         return _logistics_json_safe(
             {**meta, "items": [], "total": 0, "offset": offset, "limit": limit}
@@ -16704,6 +16711,7 @@ def report_logistics_products_payload(
         client_company_id=client_company_id,
         scheme=scheme,
         product_query=product_query,
+        data_quality_status=data_quality_status,
         financial_status=meta["financialMetricStatus"],
         sort_by=sort_by,
         sort_order=sort_order,
@@ -17256,6 +17264,7 @@ def _query_logistics_products(
     client_company_id: str,
     scheme: str,
     product_query: str,
+    data_quality_status: str,
     financial_status: str,
     sort_by: str,
     sort_order: str,
@@ -17271,6 +17280,26 @@ def _query_logistics_products(
         scheme=scheme,
         product_query=product_query,
     )
+    if data_quality_status:
+        affected_product_refs = (
+            select(ReportLogisticsSkuRow.product_ref)
+            .where(
+                *_logistics_sku_conditions(
+                    report,
+                    period_start=period_start,
+                    period_end=period_end,
+                    wb_cabinet_id=wb_cabinet_id,
+                    client_company_id=client_company_id,
+                    scheme=scheme,
+                    product_query="",
+                ),
+                ReportLogisticsSkuRow.data_quality_status == data_quality_status,
+            )
+            .distinct()
+        )
+        order_conditions.append(
+            ReportLogisticsOrderRow.product_ref.in_(affected_product_refs)
+        )
     orders = (
         select(
             ReportLogisticsOrderRow.product_ref.label("product_ref"),
@@ -17901,7 +17930,7 @@ def _logistics_recommendations(
                 "valueType": "fact",
                 "impactAmount": missing_profit_link_amount,
                 "evidenceType": "data_quality",
-                "actionTarget": "source",
+                "actionTarget": "missing_profit_links",
                 "actionLabel": "Проверить связь с отчётом",
                 "evidence": {"affectedSkuRows": missing_profit_link_count},
             }

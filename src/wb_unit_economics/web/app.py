@@ -2796,6 +2796,7 @@ def create_app(
         clientCompanyId: str = "",
         scheme: str = "",
         product: str = "",
+        dataQualityStatus: str = "",
         sortBy: str = "logisticsTotal",
         sortOrder: str = "desc",
         offset: int = 0,
@@ -2812,6 +2813,11 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported sortBy")
         if sortOrder not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="unsupported sortOrder")
+        if dataQualityStatus not in repository.LOGISTICS_PRODUCT_DATA_QUALITY_FILTERS:
+            raise HTTPException(
+                status_code=400,
+                detail="unsupported dataQualityStatus",
+            )
         return repository.report_logistics_products_payload(
             db,
             report,
@@ -2821,6 +2827,7 @@ def create_app(
             client_company_id=clientCompanyId,
             scheme=scheme,
             product_query=product,
+            data_quality_status=dataQualityStatus,
             sort_by=sortBy,
             sort_order=sortOrder,
             offset=max(offset, 0),

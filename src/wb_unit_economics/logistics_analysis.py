@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Literal
 
-LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v5"
+LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v6"
 LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
 LOGISTICS_FACTORS_METHODOLOGY_VERSION = "wb-logistics-factors-v1"
 LOGISTICS_TARIFFS_METHODOLOGY_VERSION = "wb-logistics-tariffs-v1"
@@ -667,7 +667,12 @@ def build_logistics_analysis(
     order_rows = build_order_rows(
         source_rows, report_period_start=effective_period_start
     )
-    sku_rows = build_sku_rows(order_rows, valid_unit_rows)
+    sku_rows = build_sku_rows(
+        order_rows,
+        valid_unit_rows,
+        report_period_start=effective_period_start,
+        report_period_end=effective_period_end,
+    )
     order_total = sum((row.logistics_total for row in order_rows), Decimal("0"))
     sku_total = sum((row.logistics_total for row in sku_rows), Decimal("0"))
     post_build_blocking: list[str] = []
@@ -880,6 +885,9 @@ def build_order_rows(
 def build_sku_rows(
     order_rows: Sequence[LogisticsOrderRow],
     unit_rows: Sequence[UnitEconomicsSlice],
+    *,
+    report_period_start: date | None = None,
+    report_period_end: date | None = None,
 ) -> list[LogisticsSkuRow]:
     order_buckets: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in order_rows:
@@ -940,7 +948,18 @@ def build_sku_rows(
     result: list[LogisticsSkuRow] = []
     for key in sorted(order_buckets, key=str):
         order = order_buckets[key]
-        unit = unit_buckets.get(key)
+        partial_week = not _week_fully_contained(
+            key[2],
+            report_period_start,
+            report_period_end,
+        )
+        unit = None if partial_week else unit_buckets.get(key)
+        if unit is None and not partial_week and key[5] == "not_applicable":
+            # The accepted financial report historically assigns a missing
+            # deliveryMethod to FBO. Keep the logistics correction neutral,
+            # but allow its financial KPI link only through this exact,
+            # one-way scheme alias; FBS is never a fallback.
+            unit = unit_buckets.get((*key[:5], "fbo", *key[6:]))
         source = order["row"]
         revenue = unit["revenue"] if unit is not None else None
         profit = unit["profit"] if unit is not None else None
@@ -954,7 +973,7 @@ def build_sku_rows(
             flags.append("check_returns")
         if total != 0 and revenue is not None and revenue > 0:
             flags.append("check_margin")
-        if unit is None:
+        if unit is None and not partial_week:
             flags.append("restore_profit_link")
         result.append(
             LogisticsSkuRow(
@@ -1003,7 +1022,11 @@ def build_sku_rows(
                 ),
                 coverage_status="ready",
                 data_quality_status=(
-                    "ready" if unit is not None else "missing_profit_link"
+                    "partial_week"
+                    if partial_week
+                    else "ready"
+                    if unit is not None
+                    else "missing_profit_link"
                 ),
                 recommendation_flags=tuple(flags),
                 source_hash_digest=_digest_strings(order["hashes"]),

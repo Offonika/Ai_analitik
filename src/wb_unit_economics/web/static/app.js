@@ -78,6 +78,7 @@ const state = {
   logisticsProductsOffset: 0,
   logisticsProductsSortBy: "logisticsTotal",
   logisticsProductsSortDirection: "desc",
+  logisticsProductsDataQualityStatus: "",
   logisticsDimensions: null,
   logisticsDimensionsOffset: 0,
   logisticsDimensionsSortBy: "product",
@@ -211,6 +212,12 @@ const els = {
   logisticsRecommendations: document.querySelector("#logistics-recommendations"),
   logisticsDynamics: document.querySelector("#logistics-dynamics"),
   logisticsProductsCount: document.querySelector("#logistics-products-count"),
+  logisticsProductsFilterStatus: document.querySelector(
+    "#logistics-products-filter-status",
+  ),
+  logisticsProductsFilterClear: document.querySelector(
+    "#logistics-products-filter-clear",
+  ),
   logisticsProductsTable: document.querySelector("#logistics-products-table"),
   logisticsProductsRows: document.querySelector("#logistics-products-rows"),
   logisticsProductsPagination: document.querySelector(
@@ -850,6 +857,11 @@ function init() {
       return;
     }
     state.logisticsProductsOffset += LOGISTICS_PAGE_SIZE;
+    loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsProductsFilterClear?.addEventListener("click", () => {
+    state.logisticsProductsDataQualityStatus = "";
+    state.logisticsProductsOffset = 0;
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsDimensionsPrev?.addEventListener("click", () => {
@@ -5736,6 +5748,7 @@ async function loadLogisticsAnalysis(options = {}) {
   const reportId = state.reportId;
   const summaryParams = logisticsFilterParams();
   const productParams = logisticsFilterParams({
+    dataQualityStatus: state.logisticsProductsDataQualityStatus,
     sortBy: state.logisticsProductsSortBy,
     sortOrder: state.logisticsProductsSortDirection,
     offset: state.logisticsProductsOffset,
@@ -6263,6 +6276,7 @@ function onLogisticsStateAction() {
   if (els.logisticsStateAction.dataset.action === "reset-filters") {
     els.logisticsSchemeFilter.value = "";
     els.logisticsProductFilter.value = "";
+    state.logisticsProductsDataQualityStatus = "";
     state.logisticsProductsOffset = 0;
   }
   loadLogisticsAnalysis({ force: true });
@@ -6552,6 +6566,14 @@ function logisticsRecommendationField(labelText, valueText, className = "") {
 }
 
 function runLogisticsRecommendationAction(recommendation) {
+  if (recommendation.actionTarget === "missing_profit_links") {
+    state.logisticsProductsDataQualityStatus = "missing_profit_link";
+    state.logisticsProductsOffset = 0;
+    loadLogisticsAnalysis({ force: true });
+    document.querySelector("[aria-labelledby='logistics-products-title']")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
   if (recommendation.actionTarget === "source") {
     selectTableScenario("wb-expenses", { updateLocation: true, focus: true });
     return;
@@ -7420,6 +7442,11 @@ function logisticsReturnReasonClaimText(item) {
 
 function renderLogisticsProducts(items) {
   const total = state.logisticsProductsTotal;
+  const missingProfitLinkFilterActive =
+    state.logisticsProductsDataQualityStatus === "missing_profit_link";
+  if (els.logisticsProductsFilterStatus) {
+    els.logisticsProductsFilterStatus.hidden = !missingProfitLinkFilterActive;
+  }
   const start = items.length ? state.logisticsProductsOffset + 1 : 0;
   const end = items.length ? state.logisticsProductsOffset + items.length : 0;
   els.logisticsProductsCount.textContent = items.length
@@ -7441,7 +7468,9 @@ function renderLogisticsProducts(items) {
     const cell = document.createElement("td");
     cell.colSpan = 8;
     cell.className = "muted";
-    cell.textContent = "В выбранном срезе нет товарных строк.";
+    cell.textContent = missingProfitLinkFilterActive
+      ? "В выбранном срезе нет товаров без финансовой связи."
+      : "В выбранном срезе нет товарных строк.";
     row.append(cell);
     els.logisticsProductsRows.replaceChildren(row);
     return;
@@ -17893,6 +17922,7 @@ function resetClientScopedState(options = {}) {
   state.logisticsProductsOffset = 0;
   state.logisticsProductsSortBy = "logisticsTotal";
   state.logisticsProductsSortDirection = "desc";
+  state.logisticsProductsDataQualityStatus = "";
   state.logisticsDimensions = null;
   state.logisticsDimensionsOffset = 0;
   state.logisticsDimensionsSortBy = "product";
