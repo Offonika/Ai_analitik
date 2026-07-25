@@ -1462,35 +1462,28 @@ WHERE report_run_id = :'report_id';
 без расхождений. Публичный production `/api/health` также возвращает
 `status=ok`; production report, runtime symlink и web PID не менялись.
 
-Для проверки на production-подобном объёме 25 июля 2026 года live draft
-`shumeyko_source_refresh_20260725_013916` опубликован только в test после
-повторной проверки отсутствия активного source refresh и publication blockers.
-Audit содержит отдельные события `report_financial_acceptance_confirmed` и
-`report_published_current`. Новый report имеет
-`publication_status=published`, `is_current=true`; предыдущий test current
-`shumeyko_logistics_v5_recovery_source_refresh_73b76e796b864008bbdb648a4fb9f74a`
-переведён в `superseded`, но сохранён для публикационного rollback.
+25 июля 2026 года full live draft опубликован только в test после повторной
+проверки отсутствия активного source refresh и publication blockers. Реальные
+report IDs, source hashes, объёмы клиентских данных и пути к артефактам в Git не
+фиксируются; их нужно получать непосредственно из локального test runtime и БД
+во время повторной проверки.
 
-Артефакты повторно сформированы из точного нового `report_id` внутри test
-export root. `scripts/check_db_first_publication.py` с явными путями к
-зарегистрированным Excel и CSV, ожидаемыми `12 227` строками юнит-экономики,
-`162` строками упущенных продаж и `9` ready artifacts завершился
-`Health: ok`; Excel и оба контрольных CSV совпали с DB по числу строк, PDF
-зарегистрирован со статусом `ready`. Явные пути обязательны: значения по
-умолчанию этого скрипта относятся к файлам внутри immutable runtime, а не к
-артефактам конкретного source refresh.
+`scripts/check_db_first_publication.py` запускался с явными путями к
+зарегистрированным артефактам опубликованного отчёта. Проверка DB-first
+публикации завершилась успешно: Excel и контрольные CSV совпали с DB по числу
+строк, а все обязательные артефакты имели допустимые статусы. Явные пути
+обязательны: значения по умолчанию этого скрипта относятся к файлам внутри
+immutable runtime, а не к артефактам конкретного source refresh.
 
-После публикации локальный и публичный test health показывают новый
-`latestPublishedReportId`, `status=ok` и отсутствие активного refresh.
-Safety smoke сохранил HTTP 404 для неизвестного маршрута и `/.env`, HTTP 401
-для неавторизованного `/api/reports`, выключенный client login и `0` активных
-client-пользователей. Production остался на
-`runtime-main-880a214-cost-quality-split-20260724`, PID `3466421` и current
-`shumeyko_source_refresh_20260724_114209`; локальный и публичный production
-health имеют `status=ok`.
+После публикации локальный и публичный test health имели `status=ok`, активный
+refresh отсутствовал, client login оставался выключенным. Safety smoke сохранил
+ожидаемые ответы для неизвестного маршрута, запроса `/.env` и
+неавторизованного `/api/reports`. Локальный и публичный production health также
+имели `status=ok`; production runtime и current report в ходе test-only
+публикации не изменялись.
 
-Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/current` на
-`runtime-main-f5cf057-mapping-alias-fix-20260724` через
+Rollback test — атомарно вернуть test symlink на предварительно подтверждённый
+предыдущий immutable runtime через
 `scripts/promote_runtime_release.py --environment test`, перезапустить только
 `shumeiko-web-test.service` и повторить test health/safety smoke. Draft reports,
 source snapshots и production при runtime rollback не изменяются.
