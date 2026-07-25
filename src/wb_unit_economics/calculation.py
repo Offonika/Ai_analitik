@@ -161,6 +161,23 @@ class TaxCalculation:
     data_quality_status: DataQualityStatus
 
 
+@dataclass(frozen=True)
+class ManagementWaterfall:
+    revenue_after_spp: Decimal
+    revenue_without_vat: Decimal
+    pnl_revenue: Decimal
+    cogs: Decimal
+    commission: Decimal
+    logistics: Decimal
+    storage: Decimal
+    acceptance: Decimal
+    promotion: Decimal
+    penalties: Decimal
+    acquiring: Decimal
+    service_input_vat_for_pnl: Decimal
+    profit_before_tax: Decimal
+
+
 def money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -169,6 +186,76 @@ def ratio(numerator: Decimal, denominator: Decimal) -> Decimal | None:
     if denominator == 0:
         return None
     return (numerator / denominator).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
+def calculate_management_waterfall(
+    *,
+    revenue_after_spp: Decimal,
+    cogs: Decimal,
+    commission: Decimal,
+    logistics: Decimal,
+    storage: Decimal,
+    acceptance: Decimal,
+    promotion: Decimal,
+    penalties: Decimal,
+    acquiring: Decimal,
+    tax_profile: TaxProfile | None,
+    service_input_vat_for_pnl: Decimal | None = None,
+) -> ManagementWaterfall:
+    """Calculate the shared pre-tax WB management P&L waterfall.
+
+    Amounts are not rounded inside the subtraction so the persisted report keeps
+    its existing aggregation behavior. Callers round presentation values with
+    ``money`` after aggregation.
+    """
+
+    without_vat_pnl = _tax_profile_uses_without_vat_pnl(tax_profile)
+    revenue_without_vat = _revenue_without_vat_for_profile(
+        revenue_after_spp,
+        tax_profile,
+    )
+    eligible_service_gross = (
+        commission + logistics + storage + acceptance + promotion + acquiring
+    )
+    effective_service_input_vat = (
+        service_input_vat_for_pnl
+        if service_input_vat_for_pnl is not None
+        else (
+            _service_input_vat_from_gross(eligible_service_gross)
+            if without_vat_pnl
+            else Decimal("0")
+        )
+    )
+    pnl_revenue = revenue_without_vat if without_vat_pnl else revenue_after_spp
+    profit_before_tax = (
+        pnl_revenue
+        - commission
+        - logistics
+        - storage
+        - acceptance
+        - promotion
+        - penalties
+        - acquiring
+        + (effective_service_input_vat if without_vat_pnl else Decimal("0"))
+        - cogs
+    )
+    return ManagementWaterfall(
+        revenue_after_spp=revenue_after_spp,
+        revenue_without_vat=revenue_without_vat,
+        pnl_revenue=pnl_revenue,
+        cogs=cogs,
+        commission=commission,
+        logistics=logistics,
+        storage=storage,
+        acceptance=acceptance,
+        promotion=promotion,
+        penalties=penalties,
+        acquiring=acquiring,
+        service_input_vat_for_pnl=(
+            effective_service_input_vat if without_vat_pnl else Decimal("0")
+        ),
+        profit_before_tax=profit_before_tax,
+    )
 
 
 def _worse_vat_input_completeness(current: str, candidate: str) -> str:
@@ -1946,26 +2033,20 @@ def build_unit_economics_report(
             and input_vat_completeness in {VAT_INPUT_CONFIRMED, VAT_INPUT_PARTIAL}
         ):
             input_vat_completeness = VAT_INPUT_MANAGEMENT_ASSUMPTION
-        revenue_for_pnl = (
-            _revenue_without_vat_for_profile(snapshot.net_revenue, tax_profile)
-            if without_vat_pnl
-            else snapshot.net_revenue
+        management_waterfall = calculate_management_waterfall(
+            revenue_after_spp=snapshot.net_revenue,
+            cogs=cogs,
+            commission=snapshot.wb_commission,
+            logistics=snapshot.logistics,
+            storage=controlled_expenses.storage.allocated,
+            acceptance=snapshot.acceptance,
+            promotion=controlled_expenses.wb_promotion.allocated,
+            penalties=snapshot.penalties_and_holdbacks,
+            acquiring=snapshot.acquiring,
+            tax_profile=tax_profile,
+            service_input_vat_for_pnl=accounting_service_input_vat,
         )
-        service_vat_for_pnl = (
-            accounting_service_input_vat if without_vat_pnl else Decimal("0")
-        )
-        calculated_gross_profit = (
-            revenue_for_pnl
-            - snapshot.wb_commission
-            - snapshot.logistics
-            - controlled_expenses.storage.allocated
-            - snapshot.acceptance
-            - controlled_expenses.wb_promotion.allocated
-            - snapshot.penalties_and_holdbacks
-            - snapshot.acquiring
-            + service_vat_for_pnl
-            - cogs
-        )
+        calculated_gross_profit = management_waterfall.profit_before_tax
         gross_profit = (
             snapshot.precomputed_gross_profit
             if snapshot.preallocated_finance

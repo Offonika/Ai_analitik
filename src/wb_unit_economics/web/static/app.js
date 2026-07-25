@@ -69,6 +69,9 @@ const state = {
   rowsTotal: 0,
   rowsSortBy: "",
   rowsSortDirection: "",
+  marginCalculatorItem: null,
+  marginCalculatorBaseline: {},
+  marginCalculatorRequestId: 0,
   taxInputPage: 0,
   taxInputSortBy: "",
   taxInputSortDirection: "",
@@ -498,6 +501,39 @@ const els = {
   drilldownTableWrap: document.querySelector("#drilldown-table-wrap"),
   drilldownRowsHead: document.querySelector("#drilldown-rows-head"),
   drilldownRows: document.querySelector("#drilldown-rows"),
+  marginCalculatorOverlay: document.querySelector("#margin-calculator-overlay"),
+  marginCalculatorClose: document.querySelector("#margin-calculator-close"),
+  marginCalculatorSubtitle: document.querySelector("#margin-calculator-subtitle"),
+  marginCalculatorDataStatus: document.querySelector(
+    "#margin-calculator-data-status",
+  ),
+  marginCalculatorFactGrid: document.querySelector("#margin-calculator-fact-grid"),
+  marginCalculatorSource: document.querySelector("#margin-calculator-source"),
+  marginCalculatorForm: document.querySelector("#margin-calculator-form"),
+  marginCalculatorMode: document.querySelector("#margin-calculator-mode"),
+  marginTargetField: document.querySelector("#margin-target-field"),
+  marginTargetMargin: document.querySelector("#margin-target-margin"),
+  marginPriceBeforeSpp: document.querySelector("#margin-price-before-spp"),
+  marginSppRate: document.querySelector("#margin-spp-rate"),
+  marginUnitCost: document.querySelector("#margin-unit-cost"),
+  marginCommissionRate: document.querySelector("#margin-commission-rate"),
+  marginAcquiringRate: document.querySelector("#margin-acquiring-rate"),
+  marginLogistics: document.querySelector("#margin-logistics"),
+  marginStorage: document.querySelector("#margin-storage"),
+  marginAcceptance: document.querySelector("#margin-acceptance"),
+  marginPromotion: document.querySelector("#margin-promotion"),
+  marginPenalties: document.querySelector("#margin-penalties"),
+  marginCalculatorStatus: document.querySelector("#margin-calculator-status"),
+  marginCalculatorSubmit: document.querySelector("#margin-calculator-submit"),
+  marginCalculatorScenarioGrid: document.querySelector(
+    "#margin-calculator-scenario-grid",
+  ),
+  marginCalculatorWaterfall: document.querySelector(
+    "#margin-calculator-waterfall",
+  ),
+  marginCalculatorAssumptions: document.querySelector(
+    "#margin-calculator-assumptions",
+  ),
   buyoutReconciliationCount: document.querySelector(
     "#buyout-reconciliation-count",
   ),
@@ -1186,6 +1222,23 @@ function init() {
     if (event.target === els.drilldownWidgetOverlay) {
       closeDrilldownWidget();
     }
+  });
+  els.marginCalculatorClose?.addEventListener("click", closeMarginCalculator);
+  els.marginCalculatorOverlay?.addEventListener("click", (event) => {
+    if (event.target === els.marginCalculatorOverlay) {
+      closeMarginCalculator();
+    }
+  });
+  els.marginCalculatorMode?.addEventListener("change", () => {
+    syncMarginCalculatorMode();
+    markChangedMarginInputs();
+  });
+  els.marginCalculatorForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    calculateMarginScenario();
+  });
+  marginCalculatorInputs().forEach((input) => {
+    input?.addEventListener("input", markChangedMarginInputs);
   });
   els.reconciliationOpenButton?.addEventListener("click", () =>
     openReconciliationHub("documents"),
@@ -4449,6 +4502,7 @@ function closeAllWidgets() {
   closeMappingWidget({ restoreFocus: false });
   closeNewClientWidget({ restoreFocus: false });
   closeDrilldownWidget({ restoreFocus: false });
+  closeMarginCalculator({ restoreFocus: false });
   state.activeWidgetOverlay = null;
   restoreWidgetFocus();
 }
@@ -4463,7 +4517,8 @@ function updateWidgetBodyState() {
       !els.integrationsWidgetOverlay.hidden ||
       !els.mappingWidgetOverlay.hidden ||
       !els.newClientWidgetOverlay.hidden ||
-      !els.drilldownWidgetOverlay.hidden,
+      !els.drilldownWidgetOverlay.hidden ||
+      !els.marginCalculatorOverlay.hidden,
   );
 }
 
@@ -4498,6 +4553,7 @@ function currentOpenWidgetOverlay() {
     els.mappingWidgetOverlay,
     els.newClientWidgetOverlay,
     els.drilldownWidgetOverlay,
+    els.marginCalculatorOverlay,
   ].find((overlay) => overlay && !overlay.hidden) || null;
 }
 
@@ -17612,8 +17668,26 @@ function reportRowNode(item) {
   const row = document.createElement("tr");
   row.className = tableRowClass(item);
   const bridge = unitProfitBridge(item);
+  const productCell = document.createElement("td");
+  productCell.className = "text-wide text-strong";
+  const productContent = document.createElement("div");
+  productContent.className = "product-cell-content";
+  const productName = document.createElement("span");
+  productName.textContent = item.product || "-";
+  productContent.append(productName);
+  if (state.user?.unitEconomicsCalculatorEnabled === true) {
+    const calculatorButton = document.createElement("button");
+    calculatorButton.type = "button";
+    calculatorButton.className = "margin-calculator-open";
+    calculatorButton.textContent = "Рассчитать маржу";
+    calculatorButton.setAttribute("aria-haspopup", "dialog");
+    calculatorButton.setAttribute("aria-controls", "margin-calculator-overlay");
+    calculatorButton.addEventListener("click", () => openMarginCalculator(item));
+    productContent.append(calculatorButton);
+  }
+  productCell.append(productContent);
+  row.append(productCell);
   appendTableCells(row, [
-    { value: item.product || "-", className: "text-wide text-strong" },
     { value: item.articleWb || "-", className: "text-code" },
     { value: item.article1c || "-", className: "text-code" },
     { value: item.barcode || "-", className: "text-code" },
@@ -17721,6 +17795,465 @@ function unitProfitBridge(item) {
     pnlVatAdjustment: profitBeforeTax - beforeVatAdjustment,
     includedTaxes: profitBeforeTax - profit,
   };
+}
+
+function marginCalculatorInputs() {
+  return [
+    els.marginPriceBeforeSpp,
+    els.marginSppRate,
+    els.marginUnitCost,
+    els.marginCommissionRate,
+    els.marginAcquiringRate,
+    els.marginLogistics,
+    els.marginStorage,
+    els.marginAcceptance,
+    els.marginPromotion,
+    els.marginPenalties,
+    els.marginTargetMargin,
+  ].filter(Boolean);
+}
+
+function marginCalculatorFieldConfig() {
+  return [
+    { element: els.marginPriceBeforeSpp, key: "priceBeforeSpp" },
+    { element: els.marginSppRate, key: "sppRate", percent: true },
+    { element: els.marginUnitCost, key: "unitCost" },
+    { element: els.marginCommissionRate, key: "commissionRate", percent: true },
+    { element: els.marginAcquiringRate, key: "acquiringRate", percent: true },
+    { element: els.marginLogistics, key: "logistics" },
+    { element: els.marginStorage, key: "storage" },
+    { element: els.marginAcceptance, key: "acceptance" },
+    { element: els.marginPromotion, key: "promotion" },
+    { element: els.marginPenalties, key: "penalties" },
+  ];
+}
+
+function openMarginCalculator(item) {
+  if (!state.reportId || state.user?.unitEconomicsCalculatorEnabled !== true) {
+    return;
+  }
+  state.marginCalculatorItem = item;
+  state.marginCalculatorBaseline = {};
+  els.marginCalculatorForm.reset();
+  syncMarginCalculatorMode();
+  els.marginCalculatorSubtitle.textContent = [
+    item.product || "Товар",
+    item.articleWb || item.nmId || "",
+    "Факт не изменяется; сценарий не сохраняется.",
+  ].filter(Boolean).join(" · ");
+  els.marginCalculatorStatus.textContent = "Загружаем фактические параметры…";
+  els.marginCalculatorDataStatus.textContent = "Загрузка";
+  els.marginCalculatorFactGrid.replaceChildren();
+  els.marginCalculatorScenarioGrid.replaceChildren();
+  els.marginCalculatorWaterfall.replaceChildren();
+  els.marginCalculatorAssumptions.replaceChildren();
+  openWidgetOverlay(els.marginCalculatorOverlay);
+  calculateMarginScenario({ initial: true });
+}
+
+function closeMarginCalculator(options = {}) {
+  state.marginCalculatorRequestId += 1;
+  state.marginCalculatorItem = null;
+  state.marginCalculatorBaseline = {};
+  if (els.marginCalculatorOverlay) {
+    closeWidgetOverlay(els.marginCalculatorOverlay, options);
+  }
+}
+
+function syncMarginCalculatorMode() {
+  const targetMode = els.marginCalculatorMode.value === "target_price";
+  els.marginTargetField.hidden = !targetMode;
+  els.marginTargetMargin.required = targetMode;
+}
+
+function marginCalculatorPeriod() {
+  const report = state.reports.find((item) => item.id === state.reportId) || {};
+  const reportStart =
+    report.periodStart || els.filterPeriodStart.min || state.summary?.meta?.periodStart || "";
+  const reportEnd =
+    report.periodEnd || els.filterPeriodEnd.max || state.summary?.meta?.periodEnd || "";
+  let periodStart = els.filterPeriodStart.value || reportStart;
+  let periodEnd = els.filterPeriodEnd.value || reportEnd;
+  const monthPeriod = marginMonthPeriod(els.filterMonth.value);
+  if (monthPeriod) {
+    periodStart = monthPeriod.periodStart;
+    periodEnd = monthPeriod.periodEnd;
+  }
+  if (reportStart && periodStart < reportStart) {
+    periodStart = reportStart;
+  }
+  if (reportEnd && periodEnd > reportEnd) {
+    periodEnd = reportEnd;
+  }
+  return { periodStart, periodEnd };
+}
+
+function marginMonthPeriod(label) {
+  const normalizedLabel = normalize(label);
+  const monthNames = {
+    январь: 1,
+    февраль: 2,
+    март: 3,
+    апрель: 4,
+    май: 5,
+    июнь: 6,
+    июль: 7,
+    август: 8,
+    сентябрь: 9,
+    октябрь: 10,
+    ноябрь: 11,
+    декабрь: 12,
+  };
+  const yearMatch = normalizedLabel.match(/\b(20\d{2})\b/);
+  const month = Object.entries(monthNames).find(([name]) =>
+    normalizedLabel.startsWith(name),
+  )?.[1];
+  if (!month || !yearMatch) {
+    return null;
+  }
+  const year = Number(yearMatch[1]);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    periodStart: `${year}-${String(month).padStart(2, "0")}-01`,
+    periodEnd: `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
+
+function marginCalculatorBaseRequest() {
+  const item = state.marginCalculatorItem || {};
+  const period = marginCalculatorPeriod();
+  const requestedScheme = els.filterScheme.value || item.scheme || "";
+  return {
+    rowId: item.id || "",
+    periodStart: period.periodStart || null,
+    periodEnd: period.periodEnd || null,
+    wbCabinetId: els.filterCabinet.value || item.wbCabinetId || item.cabinet || "",
+    clientCompanyId:
+      els.filterOrganization.value ||
+      item.clientCompanyId ||
+      item.organization ||
+      "",
+    scheme: marginCalculatorRequestScheme(requestedScheme),
+    mode: els.marginCalculatorMode.value || "scenario",
+  };
+}
+
+function marginCalculatorRequestScheme(value) {
+  const scheme = String(value || "").trim();
+  return ["FBO", "FBS"].includes(scheme) ? scheme : "";
+}
+
+function marginInputNumber(element, { percent = false } = {}) {
+  if (!element || element.value.trim() === "") {
+    return null;
+  }
+  const value = Number(element.value);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return percent ? value / 100 : value;
+}
+
+function marginValueChanged(key, value) {
+  const baseline = state.marginCalculatorBaseline[key];
+  if (value === null) {
+    return baseline !== null && baseline !== undefined;
+  }
+  if (baseline === null || baseline === undefined) {
+    return true;
+  }
+  return Math.abs(Number(value) - Number(baseline)) > 0.000001;
+}
+
+function marginCalculatorScenarioRequest() {
+  const payload = marginCalculatorBaseRequest();
+  const priceBeforeSpp = marginInputNumber(els.marginPriceBeforeSpp);
+  const sppRate = marginInputNumber(els.marginSppRate, { percent: true });
+  if (marginValueChanged("priceBeforeSpp", priceBeforeSpp)) {
+    payload.priceBeforeSpp = priceBeforeSpp;
+  }
+  if (marginValueChanged("sppRate", sppRate)) {
+    payload.sppRate = sppRate;
+  }
+  const overrideFields = [
+    ["unitCost", els.marginUnitCost, false],
+    ["commissionRate", els.marginCommissionRate, true],
+    ["acquiringRate", els.marginAcquiringRate, true],
+    ["logisticsPerUnit", els.marginLogistics, false, "logistics"],
+    ["storagePerUnit", els.marginStorage, false, "storage"],
+    ["acceptancePerUnit", els.marginAcceptance, false, "acceptance"],
+    ["promotionPerUnit", els.marginPromotion, false, "promotion"],
+    ["penaltiesPerUnit", els.marginPenalties, false, "penalties"],
+  ];
+  payload.overrides = {};
+  overrideFields.forEach(([requestKey, element, percent, baselineKey = requestKey]) => {
+    const value = marginInputNumber(element, { percent });
+    if (marginValueChanged(baselineKey, value)) {
+      payload.overrides[requestKey] = value;
+    }
+  });
+  if (payload.mode === "target_price") {
+    const targetPercent = marginInputNumber(els.marginTargetMargin);
+    payload.targetMargin =
+      targetPercent === null ? null : targetPercent / 100;
+  }
+  return payload;
+}
+
+async function calculateMarginScenario(options = {}) {
+  if (!state.marginCalculatorItem || !state.reportId) {
+    return;
+  }
+  const requestId = ++state.marginCalculatorRequestId;
+  const initial = options.initial === true;
+  const request = initial
+    ? { ...marginCalculatorBaseRequest(), mode: "scenario", overrides: {} }
+    : marginCalculatorScenarioRequest();
+  els.marginCalculatorSubmit.disabled = true;
+  els.marginCalculatorStatus.textContent = initial
+    ? "Загружаем фактические параметры…"
+    : "Считаем сценарий…";
+  try {
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(state.reportId)}/unit-economics/calculate`,
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+      },
+    );
+    if (requestId !== state.marginCalculatorRequestId) {
+      return;
+    }
+    if (initial) {
+      populateMarginCalculatorInputs(payload.fact || {});
+    }
+    renderMarginCalculator(payload);
+    if (initial) {
+      window.setTimeout(() => els.marginPriceBeforeSpp.focus(), 0);
+    }
+  } catch (error) {
+    if (requestId !== state.marginCalculatorRequestId) {
+      return;
+    }
+    els.marginCalculatorStatus.textContent =
+      error.message || "Не удалось рассчитать сценарий.";
+  } finally {
+    if (requestId === state.marginCalculatorRequestId) {
+      els.marginCalculatorSubmit.disabled = false;
+    }
+  }
+}
+
+function populateMarginCalculatorInputs(fact) {
+  const baseline = {
+    priceBeforeSpp: numberOrNull(fact.priceBeforeSpp),
+    sppRate: numberOrNull(fact.sppRate),
+    unitCost: numberOrNull(fact.unitCost),
+    commissionRate: numberOrNull(fact.commissionRate),
+    acquiringRate: numberOrNull(fact.acquiringRate),
+    logistics: numberOrNull(fact.logistics),
+    storage: numberOrNull(fact.storage),
+    acceptance: numberOrNull(fact.acceptance),
+    promotion: numberOrNull(fact.promotion),
+    penalties: numberOrNull(fact.penalties),
+  };
+  state.marginCalculatorBaseline = baseline;
+  marginCalculatorFieldConfig().forEach(({ element, key, percent }) => {
+    const value = baseline[key];
+    element.value =
+      value === null ? "" : String(Math.round(value * (percent ? 10000 : 100)) / 100);
+  });
+  markChangedMarginInputs();
+}
+
+function markChangedMarginInputs() {
+  marginCalculatorFieldConfig().forEach(({ element, key, percent }) => {
+    const value = marginInputNumber(element, { percent });
+    element.classList.toggle("is-changed", marginValueChanged(key, value));
+  });
+  els.marginTargetMargin.classList.toggle(
+    "is-changed",
+    els.marginCalculatorMode.value === "target_price",
+  );
+}
+
+function renderMarginCalculator(payload) {
+  const fact = payload.fact || {};
+  const scenario = payload.scenario || {};
+  const delta = payload.delta || {};
+  const dataStatusLabels = {
+    ready: "Данные готовы",
+    needs_review: "Нужна проверка",
+    partial: "Частичные данные",
+    blocked: "Расчёт заблокирован",
+  };
+  els.marginCalculatorDataStatus.textContent =
+    dataStatusLabels[payload.dataStatus] || payload.dataStatus || "Нет статуса";
+  els.marginCalculatorDataStatus.className = `table-badge ${
+    payload.dataStatus === "ready"
+      ? "status-ok"
+      : payload.dataStatus === "blocked"
+        ? "status-blocked"
+        : "status-warning"
+  }`;
+  renderMarginMetricGrid(els.marginCalculatorFactGrid, [
+    ["Цена до СПП", marginMoney(fact.priceBeforeSpp)],
+    ["Цена после СПП", marginMoney(fact.priceAfterSpp)],
+    ["Маржа", marginPercent(fact.margin)],
+    ["Прибыль / шт.", marginMoney(fact.profitBeforeTax)],
+    ["Себестоимость", marginMoney(fact.unitCost)],
+    ["Чистое количество", fact.netQty == null ? "—" : number(fact.netQty)],
+  ]);
+  const source = payload.sourcePeriod || {};
+  els.marginCalculatorSource.textContent = [
+    `Период: ${source.periodStart || "—"} — ${source.periodEnd || "—"}`,
+    `Строк факта: ${number(fact.rowCount || 0)}`,
+    `Налоговый профиль: ${payload.taxProfile?.taxSystem || "не подтверждён"}`,
+  ].join(" · ");
+
+  if (!payload.scenario) {
+    els.marginCalculatorScenarioGrid.replaceChildren();
+    els.marginCalculatorWaterfall.replaceChildren();
+  } else {
+    renderMarginMetricGrid(els.marginCalculatorScenarioGrid, [
+      ["Цена до СПП", marginMoney(scenario.priceBeforeSpp, delta.priceBeforeSpp)],
+      ["Цена после СПП", marginMoney(scenario.priceAfterSpp, delta.priceAfterSpp)],
+      ["Маржа", marginPercent(scenario.margin, delta.margin)],
+      ["Прибыль / шт.", marginMoney(scenario.profitBeforeTax, delta.profitBeforeTax)],
+      ["Цена безубыточности", marginMoney(payload.breakEvenPrice)],
+      [
+        "Цена под цель",
+        payload.targetPrice == null ? "—" : marginMoney(payload.targetPrice),
+      ],
+      [
+        "После учтённых налогов",
+        marginMoney(scenario.profitAfterTaxes, delta.profitAfterTaxes),
+      ],
+      [
+        "Маржа после учтённых налогов",
+        marginPercent(scenario.marginAfterTaxes, delta.marginAfterTaxes),
+      ],
+    ]);
+    renderMarginWaterfall(scenario);
+  }
+  els.marginCalculatorAssumptions.replaceChildren(
+    ...asArray(payload.assumptions).map((text) => {
+      const item = document.createElement("li");
+      item.textContent = text;
+      return item;
+    }),
+  );
+  const missingInputLabels = {
+    priceBeforeSpp: "цена до СПП",
+    sppRate: "СПП",
+    unitCost: "себестоимость",
+    commissionRate: "ставка комиссии",
+    acquiringRate: "ставка эквайринга",
+    logisticsPerUnit: "логистика на единицу",
+    storagePerUnit: "хранение на единицу",
+    acceptancePerUnit: "приёмка на единицу",
+    promotionPerUnit: "продвижение на единицу",
+    penaltiesPerUnit: "штрафы на единицу",
+    targetMargin: "целевая маржа",
+  };
+  const missingInputs = asArray(payload.missingInputs).map(
+    (key) => missingInputLabels[key] || key,
+  );
+  const statusMessages = {
+    ready: "Сценарий рассчитан. Все результаты помечены как оценка.",
+    missing_inputs: `Заполните: ${missingInputs.join(", ")}.`,
+    blocked_quantity:
+      "Чистое количество не положительное: расчёт на единицу и подбор цены недоступны.",
+    unattainable:
+      "Целевая маржа недостижима при выбранных допущениях в допустимом диапазоне цены.",
+  };
+  els.marginCalculatorStatus.textContent =
+    statusMessages[payload.calculationStatus] || "Расчёт завершён.";
+  markChangedMarginInputs();
+}
+
+function renderMarginMetricGrid(target, metrics) {
+  target.replaceChildren(
+    ...metrics.map(([label, value]) => {
+      const card = document.createElement("div");
+      card.className = "margin-result-card";
+      const labelNode = document.createElement("span");
+      labelNode.textContent = label;
+      const valueNode = document.createElement("strong");
+      valueNode.textContent = value;
+      card.append(labelNode, valueNode);
+      return card;
+    }),
+  );
+}
+
+function renderMarginWaterfall(scenario) {
+  const vatAlreadyInPnl = scenario.pnlVatMode === "without_vat_for_osno";
+  const rows = [
+    ["Выручка для прибыли", scenario.pnlRevenue, false],
+    ["Себестоимость", scenario.unitCost, true],
+    ["Комиссия WB", scenario.commission, true],
+    ["Логистика", scenario.logistics, true],
+    ["Хранение", scenario.storage, true],
+    ["Приёмка", scenario.acceptance, true],
+    ["Продвижение", scenario.promotion, true],
+    ["Штрафы", scenario.penalties, true],
+    ["Эквайринг", scenario.acquiring, true],
+    ["НДС-корректировка услуг", scenario.serviceInputVat, false],
+    ["Управленческая прибыль WB", scenario.profitBeforeTax, false],
+    [
+      vatAlreadyInPnl ? "НДС к уплате (справочно)" : "НДС к уплате",
+      scenario.vatPayable,
+      !vatAlreadyInPnl,
+    ],
+    ["Налог с выручки", scenario.revenueTax, true],
+    ["Налог на прибыль / НДФЛ", scenario.incomeTax, true],
+    ["Прибыль после учтённых налогов", scenario.profitAfterTaxes, false],
+  ];
+  els.marginCalculatorWaterfall.replaceChildren(
+    ...rows.map(([label, value, expense]) => {
+      const row = document.createElement("div");
+      row.className = "margin-waterfall-row";
+      const labelNode = document.createElement("span");
+      labelNode.textContent = label;
+      const valueNode = document.createElement("strong");
+      const formatted = marginMoney(value);
+      valueNode.textContent =
+        expense && value != null && Number(value) !== 0 ? `−${formatted}` : formatted;
+      row.append(labelNode, valueNode);
+      return row;
+    }),
+  );
+}
+
+function marginMoney(value, delta = null) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const base = money(Number(value));
+  if (delta === null || delta === undefined || Number.isNaN(Number(delta))) {
+    return base;
+  }
+  return `${base} (${Number(delta) >= 0 ? "+" : ""}${money(Number(delta))})`;
+}
+
+function marginPercent(value, delta = null) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const base = `${new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 2,
+  }).format(Number(value) * 100)}%`;
+  if (delta === null || delta === undefined || Number.isNaN(Number(delta))) {
+    return base;
+  }
+  const deltaText = new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 2,
+    signDisplay: "always",
+  }).format(Number(delta) * 100);
+  return `${base} (${deltaText} п.п.)`;
 }
 
 function renderLostSales(rows, coverage = {}) {
