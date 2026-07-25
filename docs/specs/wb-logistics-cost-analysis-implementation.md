@@ -160,11 +160,12 @@ R-6 client-role rollout был завершён только на test и про
 acceptance, но больше не описывает фактическую среду. На 25 июля 2026 года
 effective test-конфигурация снова staff-only: установлен более ранний
 staff-only drop-in, client login выключен, master-флаги F-1…F-5 включены, а
-client-флаги F-1…F-5 выключены. Текущий опубликованный test-report содержит
-`ready` базовый logistics context и явные `partial` contexts F-1…F-5; активный
-source refresh отсутствует. Клиентская роль не должна видеть сценарий
-логистики. Production runtime/report не требуют logistics contexts, и
-production-флаги логистики не включены.
+client-флаги F-1…F-5 выключены. После отдельного решения пользователя
+25 июля 2026 года готовый отчет по методике `wb-logistics-v6` опубликован как
+текущий на test: базовый logistics context имеет `ready`, contexts F-1…F-5 —
+явный `partial`; активный source refresh отсутствует. Клиентская роль не должна
+видеть сценарий логистики. Production runtime/report не требуют logistics
+contexts, и production-флаги логистики не включены.
 Excel и калькуляторы в этот пакет не входят.
 
 # Цель
@@ -1181,6 +1182,15 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-25 — после отдельной финансовой приемки пользователя готовый
+  `wb-logistics-v6` draft атомарно опубликован как current только на test.
+  Перед операцией создана и верифицирована внешняя резервная копия PostgreSQL.
+  Post-publish DB/API/browser acceptance подтвердил готовый Excel, `ready`
+  базовую логистику, явные `partial` F-1…F-5, пустой фильтр
+  `missing_profit_link` и отсутствие browser/network errors. Test остается
+  staff-only; client login/client flags и production report/flags не менялись.
+  Реальные identifiers, hashes, суммы и клиентские строки не фиксировались.
 
 - 2026-07-25 — методика повышена до `wb-logistics-v6`: неполные граничные
   недели отделены от настоящего `missing_profit_link`, а финансовая связь
