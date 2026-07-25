@@ -9,8 +9,8 @@ audience: ["engineering", "consultant", "client"]
 source_of_truth: true
 truth_scope: logistics-cost-analysis
 truth_priority: 100
-related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf, deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf]
-related_tests: [tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_probe_wb_logistics_factors.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py, tests/test_runtime_contour_scripts.py]
+related_code: [src/wb_unit_economics/logistics_analysis.py, src/wb_unit_economics/return_reason_analysis.py, src/wb_unit_economics/wb_goods_return.py, src/wb_unit_economics/wb_return_claims.py, src/wb_unit_economics/wb_tariffs.py, src/wb_unit_economics/wb_supplier_sales.py, src/wb_unit_economics/wb_finance.py, src/wb_unit_economics/postgres_finance.py, src/wb_unit_economics/client_report.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/report_scope.py, src/wb_unit_economics/web/source_refresh.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/styles.css, sql/postgres_schema.sql, scripts/profile_wb_logistics_readiness.py, scripts/probe_wb_logistics_factors.py, deploy/systemd/shumeiko-web-test.service.d/zz-logistics-r5-return-reasons.conf, deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf]
+related_tests: [tests/test_logistics_analysis.py, tests/test_return_reason_analysis.py, tests/test_wb_goods_return.py, tests/test_wb_return_claims.py, tests/test_probe_wb_logistics_factors.py, tests/test_wb_tariffs.py, tests/test_wb_supplier_sales.py, tests/test_wb_finance.py, tests/test_postgres_finance.py, tests/test_profile_wb_logistics_readiness.py, tests/test_report_marts.py, tests/test_logistics_factor_marts.py, tests/test_source_refresh.py, tests/test_web_app.py, tests/test_ai_analyst.py, tests/test_client_report.py, tests/test_runtime_contour_scripts.py]
 contracts: [wb_api_snapshot, unit_economics_report, ai_analysis_summary]
 ai_sections:
   status: "Статус документа"
@@ -28,11 +28,11 @@ ai_sections:
   tests: "Test Plan"
 code_anchors:
   - path: src/wb_unit_economics/logistics_analysis.py
-    symbols: ["def build_logistics_analysis", "def build_order_rows", "def build_sku_rows", "def build_tariff_rows", "def build_route_rows"]
+    symbols: ["def resolve_logistics_period", "def build_logistics_analysis", "def build_order_rows", "def build_sku_rows", "def build_tariff_rows", "def build_route_rows"]
   - path: src/wb_unit_economics/return_reason_analysis.py
     symbols: ["class ReturnReasonMartRow", "class ReturnReasonAnalysisContext", "def build_return_reason_analysis"]
   - path: src/wb_unit_economics/web/repository.py
-    symbols: ["def replace_report_logistics_analysis", "def report_logistics_summary_payload", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload", "def replace_report_logistics_return_reason_analysis", "def report_logistics_return_reasons_payload", "def _logistics_context_state", "def _logistics_recommendations"]
+    symbols: ["def replace_report_logistics_analysis", "def report_logistics_summary_payload", "def report_logistics_analysis_payload", "def build_logistics_insight", "def replace_report_logistics_tariff_analysis", "def report_logistics_tariffs_payload", "def replace_report_logistics_route_analysis", "def report_logistics_routes_payload", "def replace_report_logistics_return_reason_analysis", "def report_logistics_return_reasons_payload", "def _logistics_context_state", "def _logistics_recommendations"]
   - path: src/wb_unit_economics/web/source_refresh.py
     symbols: ["def _build_and_persist_logistics_analysis", "def _record_wb_goods_return", "def _select_goods_return_snapshot", "def _record_wb_return_claims", "def _select_return_claims_snapshot", "def _build_and_persist_logistics_return_reasons", "def _build_and_persist_logistics_tariffs", "def _select_tariff_snapshot", "def _build_and_persist_logistics_routes", "def _select_route_snapshot"]
   - path: src/wb_unit_economics/wb_goods_return.py
@@ -44,12 +44,12 @@ code_anchors:
   - path: src/wb_unit_economics/web/settings.py
     symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool", "logistics_routes_enabled: bool", "logistics_routes_client_enabled: bool", "logistics_return_reasons_enabled: bool", "logistics_return_reasons_client_enabled: bool"]
   - path: src/wb_unit_economics/web/static/app.js
-    symbols: ["function loadLogisticsReturnReasons", "function renderLogisticsReturnReasons", "function logisticsReturnReasonsAvailable"]
+    symbols: ["function loadLogisticsAnalysis", "function renderLogisticsWorkspace", "function renderLogisticsInsight", "function loadLogisticsReturnReasons", "function renderLogisticsReturnReasons", "function logisticsReturnReasonsAvailable"]
 test_anchors:
   - path: tests/test_return_reason_analysis.py
     symbols: ["def test_builds_exact_safe_return_reason_row", "def test_denied_claims_is_partial_not_blocking_and_keeps_reason_fact", "def test_multiple_return_segments_collapse_to_latest_finance_date"]
   - path: tests/test_logistics_analysis.py
-    symbols: ["def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions", "def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report", "def test_not_applicable_financial_link_uses_fbo_report_alias_only"]
+    symbols: ["def test_closed_week_period_keeps_both_partial_boundaries_separate", "def test_closed_week_period_without_full_week_is_only_partial", "def test_builds_reconciled_order_and_sku_marts_with_low_sample", "def test_missing_profit_link_keeps_financial_kpis_null", "def test_sku_link_normalizes_all_string_dimensions", "def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report", "def test_not_applicable_financial_link_uses_fbo_report_alias_only"]
   - path: tests/test_source_refresh.py
     symbols: ["def test_logistics_analysis_is_built_from_persisted_read_only_snapshot", "def test_logistics_analysis_reads_verified_file_authoritative_snapshot", "def test_goods_return_snapshot_db_and_file_authoritative_are_equivalent", "def test_goods_return_snapshot_integrity_failures_are_blocking", "def test_return_reason_context_builds_from_lineage_and_denied_claims_is_partial", "def test_route_snapshot_db_and_file_authoritative_are_equivalent", "def test_route_snapshot_integrity_failures_are_blocking", "def test_route_context_and_rows_are_built_for_new_draft"]
   - path: tests/test_wb_goods_return.py
@@ -60,6 +60,10 @@ test_anchors:
     symbols: ["def test_claims_fetch_reconciles_all_pages_without_exposing_raw_values", "def test_run_r0_identity_probe_uses_all_claim_pages_and_keeps_r2_fail_soft"]
   - path: tests/test_web_app.py
     symbols: ["def test_logistics_api_returns_reconciled_safe_staff_payload", "def test_logistics_missing_profit_link_fails_financial_slice_closed", "def test_logistics_products_filter_returns_only_missing_profit_links", "def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten", "def test_logistics_routes_api_partial_coverage_uses_full_filtered_slice", "def test_logistics_routes_role_and_flag_matrix", "def test_required_route_context_controls_publication_readiness", "def test_logistics_return_reasons_api_states_filters_and_safe_payload", "def test_logistics_return_reasons_role_and_flag_matrix", "def test_required_return_reason_context_controls_publication_readiness", "def test_source_refresh_latest_exposes_safe_return_claims_marker", "def test_cabinet_static_assets_use_readiness_api_and_safe_rendering", "def test_multi_client_report_access_requires_explicit_client"]
+  - path: tests/test_ai_analyst.py
+    symbols: ["def test_ai_logistics_digest_excludes_external_ids_and_raw_lineage", "def test_ai_logistics_uses_requested_period_from_current_screen"]
+  - path: tests/test_client_report.py
+    symbols: ["def test_client_report_uses_same_logistics_insight_without_zero_substitution", "def test_client_report_docx_preserves_source_and_content"]
   - path: tests/test_runtime_contour_scripts.py
     symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only", "def test_r6_test_drop_in_enables_all_logistics_for_client_role"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
@@ -167,6 +171,13 @@ client-флаги F-1…F-5 выключены. После отдельного 
 видеть сценарий логистики. Production runtime/report не требуют logistics
 contexts, и production-флаги логистики не включены.
 Excel и калькуляторы в этот пакет не входят.
+
+Следующий принятый presentation-layer пакет не меняет методику v6 и
+immutable marts. Он вводит контракт `wb-logistics-insight-v1`: staff-интерфейс,
+AI и аналитический документ используют один детерминированный вывод по полным
+закрытым неделям, а неполные границы показывают отдельным фактическим блоком
+без финансовых KPI. Пакет не требует source refresh, DB migration или
+пересборки report run и разворачивается только на staff-only test.
 
 # Цель
 
@@ -491,6 +502,22 @@ profit_effect_amount = -logistics_total
   распределение запрещено; SKU-грань получает
   `data_quality_status=partial_week`, а не `missing_profit_link`, и не получает
   рекомендацию `restore_profit_link`;
+- presentation mode `closed_weeks` выделяет из запрошенного периода только
+  полностью входящие недели понедельник–воскресенье:
+  `analysisPeriodStart` равен первому понедельнику не раньше начала запроса,
+  `analysisPeriodEnd` — последнему воскресенью не позже конца запроса;
+- KPI, рейтинги, товары, факторы и AI-вывод в `closed_weeks` относятся только к
+  `analysisPeriod`. Нельзя делить логистику неполной границы на выручку
+  закрытого периода или включать такую границу в `profit_effect_amount`;
+- непустые ведущая и хвостовая границы возвращаются как `partialPeriods`.
+  Для них разрешены только фактическая логистика, компоненты, заказы, продажи и
+  возвраты; `revenue`, доля, прибыль и влияние всегда `null`;
+- если внутри запроса нет полной недели, `analysisPeriod` равен `null`,
+  финансовые KPI не строятся, а доступные факты остаются в `partialPeriods`;
+- режим `exact` сохраняет прежнюю семантику точного пользовательского периода и
+  `not_available_partial_week`; web-сценарий и AI по умолчанию используют
+  `closed_weeks`, а совместимые прямые API-вызовы без параметра остаются
+  `exact`;
 - `profit_before_ndfl` и состав его расходов не пересчитываются отдельной
   формулой этого блока, а переиспользуют accepted Excel-методику.
 
@@ -672,6 +699,19 @@ HTTP 400. Фильтр применяется в SQL до подсчёта `tota
 Products и orders агрегируются, сортируются и пагинируются в SQL; стабильный
 переход к цепочкам выполняется по `productRef`.
 
+`GET .../logistics/summary` дополнительно принимает
+`periodMode=exact|closed_weeks`. В `closed_weeks` ответ содержит:
+
+- `periodContext` с `requestedPeriod`, nullable `analysisPeriod`, режимом и
+  признаком неполных границ;
+- `partialPeriods` с безопасными фактическими агрегатами без финансовых KPI;
+- `insight` версии `wb-logistics-insight-v1`: `headline`, `findings`,
+  `actions`, `limitations` и статусы F-1…F-5 без raw identifiers и hashes.
+
+После summary web передает точные границы `analysisPeriod` в products и
+factor API. При отсутствии полной недели эти запросы не выполняются. API не
+меняет сохраненный report и не создает новый snapshot.
+
 Одна отсутствующая граница периода дополняется границей отчета. Инвертированный
 диапазон или выход за период report run возвращает HTTP 400 с кодом
 `invalid_logistics_period`; молчаливое обрезание запрещено.
@@ -691,7 +731,8 @@ Products и orders агрегируются, сортируются и паги�
 резервом оптимизации без отдельного подтвержденного расчета.
 
 1. Заголовок периода и короткий вывод `сколько ушло на логистику`: фактическая
-   сумма логистики и фраза о ее абсолютном влиянии на прибыль.
+   сумма логистики закрытого `analysisPeriod` и фраза о ее абсолютном влиянии
+   на прибыль. Рядом видны запрошенный и фактически использованный периоды.
 2. Рядом — доля в выручке и статус финансовых KPI. Для неполной недели доля и
    прибыль остаются `null`, а точная логистика не скрывается.
 3. Сразу под итогом — список `зона проверки -> сумма -> основание/ограничение
@@ -707,18 +748,25 @@ Products и orders агрегируются, сортируются и паги�
    в общую сверку WB ↔ 1С запрещён.
 4. Отдельная компактная полоса доверия показывает покрытие классификации,
    свежесть, полноту среза и `low_sample`; она не конкурирует с денежным итогом.
-5. Рейтинг товаров, динамика, фильтры и детерминированные рекомендации идут
+5. Блок `Текущая незакрытая неделя` показывает каждый `partialPeriod` только
+   фактическими суммами и количеством операций, с явной фразой, что доля и
+   влияние появятся после закрытия недели.
+6. Единый блок `Главный вывод и что проверить` рендерит `insight`: максимум
+   три факта, подтвержденные действия и ограничения F-1…F-5. `partial` не
+   превращается в ноль, экономию или установленную причину.
+7. Рейтинг товаров, динамика, фильтры и детерминированные рекомендации идут
    вторым уровнем после answer-first summary.
-6. Детальные цепочки, dimensions, reconciliation и технические поля находятся
+8. Детальные цепочки, dimensions, reconciliation и технические поля находятся
    в disclosure/drill-down. Цепочки доступны только `consultant/admin`;
    клиенту показываются разрешенные бизнес-поля без raw payload и внешних
    идентификаторов.
-7. Блок факторов показывает возвраты, габариты, коэффициенты, склады и
+9. Блок факторов показывает возвраты, габариты, коэффициенты, склады и
    направления только при подтвержденном источнике. Finance подтверждает факт
    и сумму возврата, но не причину покупателя: при отсутствии отдельного
    источника UI пишет `Причина недоступна в Finance`, а не выводит гипотезу как
    факт.
-8. Калькуляторы остаются отдельной третьей очередью с заметной меткой `Оценка`.
+10. Калькуляторы остаются отдельной третьей очередью с заметной меткой
+    `Оценка`.
 
 Строка фильтров витрины логистики выводит только схему продаж и поиск по
 товару; период и кабинет WB берутся из верхней панели кабинета и в витрине
@@ -795,6 +843,15 @@ AI получает только рассчитанные витрины и ра
 - объяснить, почему товар попал в рейтинг;
 - разделить факт, оценку и гипотезу;
 - предложить приоритет ручной проверки.
+
+Для staff AI читает период из сохраненного thread scope. Если scope содержит
+границы экрана логистики, base digest и F-1…F-5 строятся по тому же
+`analysisPeriod`; при отсутствии границ используется `closed_weeks` полного
+report run. `draft_management_report` и детерминированный клиентский
+аналитический документ используют тот же `insight`, а не отдельный LLM-расчет.
+Факторный digest ограничен статусом, coverage, подтвержденными рекомендациями и
+безопасными агрегатами; raw rows, external IDs, hashes и комментарии в AI не
+передаются.
 
 AI не может:
 
@@ -1039,6 +1096,19 @@ rollout; калькуляторы остаются третьей очередь
 42. Действие `Проверить связь с отчётом` запрашивает и показывает только товары
     с `missing_profit_link`, сохраняет текущий разрешённый срез, имеет видимый
     сброс фильтра и не открывает общую сверку WB ↔ 1С.
+43. `closed_weeks` выделяет все полные недели внутри выбранного периода,
+    считает финансовые KPI только по ним и возвращает неполные границы
+    отдельно без cross-period знаменателя.
+44. Если полной недели нет, UI показывает фактический partial-блок и объяснение
+    вместо пустого или нулевого финансового итога.
+45. Products и F-1…F-5 на странице относятся к тому же `analysisPeriod`, что и
+    основные KPI; stale response предыдущего report/build не рендерится.
+46. `insight` детерминирован, одинаков по смыслу в web, AI management report и
+    аналитическом Markdown/DOCX и не называет `partial` экономией.
+47. AI использует period scope текущего экрана и не получает raw identifiers,
+    hashes, claims comments или отсутствующие финансовые значения как нули.
+48. Пакет не меняет report rows, schema, source lineage, feature flags или
+    client/production rollout.
 
 # Test Plan
 
@@ -1069,6 +1139,9 @@ rollout; калькуляторы остаются третьей очередь
 - exact goods-return/claims scoped links, nullable claims coverage и схлопывание
   нескольких return segments до последней Finance return date;
 - расчет каждого KPI без раннего округления.
+- выделение накопленного закрытого периода и обеих неполных границ;
+- отсутствие полной недели и запрет cross-period финансовых KPI;
+- детерминированный insight для ready/partial/missing-link состояний.
 
 ## Contract And Repository
 
@@ -1128,6 +1201,10 @@ rollout; калькуляторы остаются третьей очередь
 - mobile regression: глобальные фильтры не скрываются, карточки зон проверки
   сохраняют подписи полей;
 - AI отвечает только по рассчитанным данным;
+- summary `periodContext` и `partialPeriods`, последовательная загрузка
+  products/F-1…F-5 по `analysisPeriod`, сброс stale состояния при смене report;
+- одинаковый logistics insight на странице, в AI management report и
+  Markdown/DOCX; AI thread scope задаёт фактический период;
 - return-reasons API: SQL filters/sorting/pagination, full-slice coverage,
   role/flag 404 и отсутствие raw/hash/PII;
 - калькулятор явно помечает сценарный результат как оценку.
@@ -1182,6 +1259,13 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-25 — принят presentation-layer контракт
+  `wb-logistics-insight-v1`: накопленные KPI считаются только по полным неделям
+  выбранного периода, неполные границы возвращаются отдельными фактами, а
+  единый детерминированный вывод используется web, staff AI и аналитическим
+  документом. Source refresh, DB migration, Excel, client/production rollout и
+  калькуляторы не входят.
 
 - 2026-07-25 — после отдельной финансовой приемки пользователя готовый
   `wb-logistics-v6` draft атомарно опубликован как current только на test.

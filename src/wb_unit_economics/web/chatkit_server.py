@@ -63,6 +63,8 @@ class CabinetChatKitStore(Store[CabinetChatKitContext]):
             except PermissionError as exc:
                 raise NotFoundError(thread.id) from exc
             existing.title = (thread.title or existing.title)[:200]
+            if context.scope:
+                repository.update_ai_thread_scope(existing, context.scope)
             return
         if not context.report_id:
             raise ValueError("ChatKit thread requires reportId metadata")
@@ -275,6 +277,8 @@ class CabinetChatKitServer(ChatKitServer[CabinetChatKitContext]):
             db_thread = repository.require_thread(
                 context.db, context.user, thread.id
             )
+            if context.scope:
+                repository.update_ai_thread_scope(db_thread, context.scope)
             question = (
                 self.store._user_text(input_user_message)  # type: ignore[attr-defined]
                 if input_user_message is not None

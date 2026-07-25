@@ -16,7 +16,7 @@ from wb_unit_economics.document_exports import (
     render_markdown_docx,
 )
 
-CLIENT_REPORT_CONTRACT_VERSION = "client-analytical-report.v3"
+CLIENT_REPORT_CONTRACT_VERSION = "client-analytical-report.v4"
 DEFAULT_LOGO = Path("reports/assets/shumeiko-logo.png")
 
 CABINET_EXPENSE_FIELDS = (
@@ -63,6 +63,7 @@ class ClientReportModel:
     returns: tuple[Mapping[str, Any], ...]
     lost_sales: tuple[Mapping[str, Any], ...]
     reconciliation_monthly: tuple[Mapping[str, Any], ...]
+    logistics_analysis: Mapping[str, Any]
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> ClientReportModel:
@@ -83,6 +84,7 @@ class ClientReportModel:
             returns=_rows(payload.get("returns")),
             lost_sales=_rows(payload.get("lostSales")),
             reconciliation_monthly=_rows(payload.get("reconciliationMonthly")),
+            logistics_analysis=_mapping(payload.get("logisticsAnalysis")),
         )
 
 
@@ -222,6 +224,7 @@ def build_client_analytical_markdown(
         tax_calculated=tax_calculated,
     )
     _append_driver_section(lines, model, tax_calculated=tax_calculated)
+    _append_logistics_section(lines, model)
     _append_returns_and_lost_sales(lines, model)
     _append_quality_section(lines, model)
     _append_tax_section(lines, model)
@@ -755,6 +758,125 @@ def _append_driver_section(
             ),
         ]
     )
+
+
+def _append_logistics_section(lines: list[str], model: ClientReportModel) -> None:
+    logistics = model.logistics_analysis
+    if not logistics:
+        return
+    insight = _mapping(logistics.get("insight"))
+    period_context = _mapping(logistics.get("periodContext"))
+    requested_period = _mapping(period_context.get("requestedPeriod"))
+    analysis_period = _mapping(period_context.get("analysisPeriod"))
+    requested_label = _iso_period_label(requested_period)
+    analysis_label = (
+        _iso_period_label(analysis_period)
+        if analysis_period
+        else "Нет полной недели для финансового анализа"
+    )
+    lines.extend(
+        [
+            "",
+            "## Логистика WB: факт и влияние",
+            "",
+            (
+                f"Запрошенный период: {requested_label}. "
+                f"Финансовый анализ: {analysis_label}."
+            ),
+            "",
+            f"**Главный вывод.** {_text(insight.get('headline'))}",
+        ]
+    )
+    findings = _rows(insight.get("findings"))
+    if findings:
+        lines.extend(
+            [
+                "",
+                "### Подтверждённые факты",
+                "",
+                _markdown_table(
+                    ["Факт", "Пояснение", "Сумма"],
+                    [
+                        [
+                            item.get("title") or "Логистика",
+                            item.get("message") or "Описание недоступно",
+                            _money(item.get("amount")),
+                        ]
+                        for item in findings
+                    ],
+                ),
+            ]
+        )
+    partial_periods = _rows(logistics.get("partialPeriods"))
+    if partial_periods:
+        lines.extend(
+            [
+                "",
+                "### Неполные границы — только оперативный факт",
+                "",
+                (
+                    "Выручка, доля и влияние на прибыль для этих границ не "
+                    "рассчитываются и не заменяются нулями."
+                ),
+                "",
+                _markdown_table(
+                    ["Период", "Фактическая логистика", "Цепочки", "Финансовые KPI"],
+                    [
+                        [
+                            _iso_period_label(item),
+                            _money(_mapping(item.get("kpis")).get("logisticsTotal")),
+                            _quantity(_mapping(item.get("kpis")).get("orderCount")),
+                            "Недоступны до закрытия полной недели",
+                        ]
+                        for item in partial_periods
+                    ],
+                ),
+            ]
+        )
+    factor_states = _rows(logistics.get("factorStates"))
+    if factor_states:
+        lines.extend(
+            [
+                "",
+                "### Статусы факторов F‑1…F‑5",
+                "",
+                _markdown_table(
+                    ["Фактор", "Статус", "Что подтверждено"],
+                    [
+                        [
+                            f"{item.get('code') or '—'} · "
+                            f"{item.get('label') or 'Не указан'}",
+                            item.get("status") or "missing",
+                            item.get("message") or "Контекст отсутствует",
+                        ]
+                        for item in factor_states
+                    ],
+                ),
+            ]
+        )
+    actions = _rows(insight.get("actions"))
+    if actions:
+        lines.extend(["", "### Что проверить", ""])
+        lines.extend(
+            f"- **{_text(item.get('title'))}.** {_text(item.get('message'))}"
+            for item in actions
+        )
+    limitations = tuple(
+        str(item).strip()
+        for item in (insight.get("limitations") or [])
+        if str(item).strip()
+    )
+    if limitations:
+        lines.extend(["", "### Ограничения логистического анализа", ""])
+        lines.extend(f"- {item}" for item in limitations)
+
+
+def _iso_period_label(value: Mapping[str, Any]) -> str:
+    start = str(value.get("periodStart") or "").strip()
+    end = str(value.get("periodEnd") or "").strip()
+    if not start or not end:
+        return "Не указан"
+    return f"{start} — {end}"
 
 
 def _append_returns_and_lost_sales(lines: list[str], model: ClientReportModel) -> None:

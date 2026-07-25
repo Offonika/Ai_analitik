@@ -102,7 +102,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260725-logistics-financial-link-v1"
+WEB_BUILD_ID = "20260725-logistics-closed-period-insight-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -221,6 +221,7 @@ class ThreadCreateRequest(BaseModel):
 
 class MessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+    scope: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClientDraftSaveRequest(BaseModel):
@@ -2757,6 +2758,7 @@ def create_app(
         db: DbSession,
         periodStart: date | None = None,
         periodEnd: date | None = None,
+        periodMode: str = "exact",
         wbCabinetId: str = "",
         clientCompanyId: str = "",
         scheme: str = "",
@@ -2771,11 +2773,14 @@ def create_app(
         period_start, period_end = _logistics_period(
             report, periodStart, periodEnd
         )
-        return repository.report_logistics_summary_payload(
+        if periodMode not in {"exact", "closed_weeks"}:
+            raise HTTPException(status_code=400, detail="unsupported periodMode")
+        return repository.report_logistics_analysis_payload(
             db,
             report,
             period_start=period_start,
             period_end=period_end,
+            period_mode=periodMode,
             wb_cabinet_id=wbCabinetId,
             client_company_id=clientCompanyId,
             scheme=scheme,
@@ -3454,6 +3459,21 @@ def create_app(
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if runtime_settings.logistics_analysis_enabled and repository.has_role(
+            current,
+            repository.STAFF_ROLES,
+            report.tenant_id,
+        ):
+            summary = {
+                **summary,
+                "logisticsAnalysis": repository.report_logistics_analysis_payload(
+                    db,
+                    report,
+                    period_start=period_start,
+                    period_end=period_end,
+                    period_mode="closed_weeks",
+                ),
+            }
         output_dir = _analytical_report_dir(runtime_settings, report.id)
         artifacts = build_client_analytical_report(
             summary=summary,
@@ -4114,6 +4134,8 @@ def create_app(
     ) -> dict[str, Any]:
         thread = _require_thread_or_404(db, current, thread_id)
         _reject_client_financial_recommendations(db, current, thread)
+        if payload.scope:
+            repository.update_ai_thread_scope(thread, payload.scope)
         repository.add_ai_message(
             db, thread=thread, role="user", content=payload.content
         )
@@ -4176,6 +4198,8 @@ def create_app(
     ) -> StreamingResponse:
         thread = _require_thread_or_404(db, current, thread_id)
         _reject_client_financial_recommendations(db, current, thread)
+        if payload.scope:
+            repository.update_ai_thread_scope(thread, payload.scope)
 
         def generate():
             sent_ids: set[int] = set()

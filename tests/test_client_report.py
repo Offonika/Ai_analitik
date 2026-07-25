@@ -157,6 +157,60 @@ def report_payload(*, tax_calculated: bool = True) -> dict:
     }
 
 
+def logistics_analysis_payload() -> dict:
+    return {
+        "periodContext": {
+            "requestedPeriod": {
+                "periodStart": "2026-07-01",
+                "periodEnd": "2026-07-24",
+            },
+            "analysisPeriod": {
+                "periodStart": "2026-07-06",
+                "periodEnd": "2026-07-19",
+            },
+        },
+        "partialPeriods": [
+            {
+                "periodStart": "2026-07-20",
+                "periodEnd": "2026-07-24",
+                "financialMetricStatus": "not_available_partial_week",
+                "kpis": {
+                    "logisticsTotal": 1200,
+                    "orderCount": 14,
+                    "revenue": None,
+                    "profitEffectAmount": None,
+                },
+            }
+        ],
+        "factorStates": [
+            {
+                "code": "F-1",
+                "label": "Габариты",
+                "status": "partial",
+                "message": "доступна только подтвержденная часть данных",
+            }
+        ],
+        "insight": {
+            "version": "wb-logistics-insight-v1",
+            "headline": "Финансовое влияние рассчитано по закрытым неделям.",
+            "findings": [
+                {
+                    "title": "Логистика закрытого периода",
+                    "message": "Фактический расход.",
+                    "amount": 12500,
+                }
+            ],
+            "actions": [
+                {
+                    "title": "Проверить обратную логистику",
+                    "message": "Сверить подтвержденные цепочки.",
+                }
+            ],
+            "limitations": ["Неполная неделя не входит в долю и влияние на прибыль."],
+        },
+    }
+
+
 def test_client_report_is_answer_first_and_uses_onec_tax_settings() -> None:
     markdown = build_client_analytical_markdown(report_payload())
 
@@ -180,6 +234,22 @@ def test_client_report_is_answer_first_and_uses_onec_tax_settings() -> None:
     assert "**На этой неделе — разобрать логистику.**" in markdown
     assert "прибыль вырастет" not in markdown
     assert CLIENT_REPORT_CONTRACT_VERSION in markdown
+
+
+def test_client_report_uses_same_logistics_insight_without_zero_substitution() -> None:
+    payload = report_payload()
+    payload["logisticsAnalysis"] = logistics_analysis_payload()
+
+    markdown = build_client_analytical_markdown(payload)
+
+    assert "## Логистика WB: факт и влияние" in markdown
+    assert "2026-07-06 — 2026-07-19" in markdown
+    assert "Финансовое влияние рассчитано по закрытым неделям." in markdown
+    assert "Неполные границы — только оперативный факт" in markdown
+    assert "Недоступны до закрытия полной недели" in markdown
+    assert "F‑1…F‑5" in markdown
+    assert "F-1 · Габариты | partial" in markdown
+    assert CLIENT_REPORT_CONTRACT_VERSION == "client-analytical-report.v4"
 
 
 def test_client_report_does_not_replace_missing_tax_with_zero() -> None:
@@ -226,8 +296,10 @@ def test_client_report_docx_preserves_source_and_content(
         "wb_unit_economics.client_report.convert_client_docx_to_pdf",
         lambda _path: (None, "unavailable", "test"),
     )
+    payload = report_payload()
+    payload["logisticsAnalysis"] = logistics_analysis_payload()
     artifacts = build_client_analytical_report(
-        summary=report_payload(),
+        summary=payload,
         output_dir=tmp_path,
         basename="client-report",
         branded=False,
@@ -240,6 +312,7 @@ def test_client_report_docx_preserves_source_and_content(
     assert normalized_docx_tokens(artifacts.docx_path) == normalized_markdown_tokens(
         markdown
     )
+    assert "Логистика WB: факт и влияние" in markdown
 
 
 def test_client_report_html_comes_from_same_markdown_and_escapes_values() -> None:

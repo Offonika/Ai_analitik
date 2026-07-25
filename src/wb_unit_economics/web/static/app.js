@@ -114,6 +114,7 @@ const state = {
   logisticsOrdersOffset: 0,
   logisticsOrdersSortBy: "financialDate",
   logisticsOrdersSortDirection: "desc",
+  logisticsSliceKey: "",
   logisticsRequestKey: "",
   logisticsRequestId: 0,
   logisticsOrdersRequestId: 0,
@@ -199,6 +200,18 @@ const els = {
   logisticsSchemeFilter: document.querySelector("#logistics-scheme-filter"),
   logisticsProductFilter: document.querySelector("#logistics-product-filter"),
   logisticsKpiGrid: document.querySelector("#logistics-kpi-grid"),
+  logisticsRequestedPeriod: document.querySelector("#logistics-requested-period"),
+  logisticsAnalysisPeriod: document.querySelector("#logistics-analysis-period"),
+  logisticsPartialPeriods: document.querySelector("#logistics-partial-periods"),
+  logisticsPartialPeriodsList: document.querySelector(
+    "#logistics-partial-periods-list",
+  ),
+  logisticsInsightHeadline: document.querySelector("#logistics-insight-headline"),
+  logisticsInsightFindings: document.querySelector("#logistics-insight-findings"),
+  logisticsInsightActions: document.querySelector("#logistics-insight-actions"),
+  logisticsInsightLimitations: document.querySelector(
+    "#logistics-insight-limitations",
+  ),
   logisticsTrustKeys: document.querySelector("#logistics-trust-keys"),
   logisticsTrustClassification: document.querySelector(
     "#logistics-trust-classification",
@@ -1605,17 +1618,15 @@ function loadChatKitScript() {
 async function chatkitFetch(input, init) {
   const request = new Request(input, init);
   let body = await request.clone().json();
-  if (body.type === "threads.create") {
-    body = {
-      ...body,
-      metadata: {
-        ...(body.metadata || {}),
-        reportId: state.reportId,
-        clientId: state.clientId,
-        scope: currentAiScope(),
-      },
-    };
-  }
+  body = {
+    ...body,
+    metadata: {
+      ...(body.metadata || {}),
+      reportId: state.reportId,
+      clientId: state.clientId,
+      scope: currentAiScope(),
+    },
+  };
   return fetch(request.url, {
     method: request.method,
     headers: request.headers,
@@ -1626,6 +1637,12 @@ async function chatkitFetch(input, init) {
 }
 
 function currentAiScope() {
+  const logisticsContext = state.logisticsSummary?.periodContext || {};
+  const logisticsRequested = logisticsContext.requestedPeriod || {};
+  const logisticsAnalysis = logisticsContext.analysisPeriod || {};
+  const logisticsSurface = (
+    state.workspace === "tables" && state.tableScenario === "logistics"
+  );
   return {
     reportKind: state.reportKind,
     organizationId: state.organizationId,
@@ -1638,6 +1655,28 @@ function currentAiScope() {
     cabinet: els.filterCabinet?.value || "",
     organization: els.filterOrganization?.value || "",
     scheme: els.filterScheme?.value || "",
+    analysisSurface: logisticsSurface ? "logistics" : "unit_economics",
+    logisticsRequestedPeriodStart: logisticsSurface
+      ? logisticsRequested.periodStart || els.topbarPeriodStart?.value || ""
+      : "",
+    logisticsRequestedPeriodEnd: logisticsSurface
+      ? logisticsRequested.periodEnd || els.topbarPeriodEnd?.value || ""
+      : "",
+    logisticsAnalysisPeriodStart: logisticsSurface
+      ? logisticsAnalysis.periodStart || ""
+      : "",
+    logisticsAnalysisPeriodEnd: logisticsSurface
+      ? logisticsAnalysis.periodEnd || ""
+      : "",
+    logisticsWbCabinetId: logisticsSurface
+      ? els.topbarCabinetSelect?.value || ""
+      : "",
+    logisticsScheme: logisticsSurface
+      ? els.logisticsSchemeFilter?.value || ""
+      : "",
+    logisticsProductQuery: logisticsSurface
+      ? els.logisticsProductFilter?.value.trim() || ""
+      : "",
   };
 }
 
@@ -4970,12 +5009,7 @@ async function loadReport(reportId, context = currentClientLoadContext()) {
     return;
   }
   if (state.reportId !== reportId) {
-    state.logisticsMeasurements = null;
-    state.logisticsMeasurementsOffset = 0;
-    state.logisticsMeasurementsSortBy = "eventDate";
-    state.logisticsMeasurementsSortDirection = "desc";
-    state.logisticsMeasurementsRequestKey = "";
-    state.logisticsMeasurementsRequestId += 1;
+    resetLogisticsReportState();
   }
   if (state.clientReportReportId !== reportId) {
     state.clientReportPayload = null;
@@ -5344,7 +5378,11 @@ async function ensureAiThread() {
   }
   const payload = await api("/api/ai/threads", {
     method: "POST",
-    body: JSON.stringify({ report_id: state.reportId, client_id: state.clientId }),
+    body: JSON.stringify({
+      report_id: state.reportId,
+      client_id: state.clientId,
+      scope: currentAiScope(),
+    }),
   });
   state.aiThreadId = payload.id;
   return state.aiThreadId;
@@ -5441,7 +5479,7 @@ async function sendAiQuestion(rawQuestion) {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: question }),
+        body: JSON.stringify({ content: question, scope: currentAiScope() }),
       },
     );
     if (!response.ok || !response.body) {
@@ -5736,6 +5774,26 @@ function logisticsFilterParams(extra = {}) {
   return params.toString();
 }
 
+function logisticsAnalysisPeriod(summary = state.logisticsSummary) {
+  const period = summary?.periodContext?.analysisPeriod;
+  if (!period?.periodStart || !period?.periodEnd) {
+    return null;
+  }
+  return period;
+}
+
+function logisticsAnalysisFilterParams(extra = {}) {
+  const period = logisticsAnalysisPeriod();
+  if (!period) {
+    return "";
+  }
+  return logisticsFilterParams({
+    ...extra,
+    periodStart: period.periodStart,
+    periodEnd: period.periodEnd,
+  });
+}
+
 async function loadLogisticsAnalysis(options = {}) {
   if (
     state.workspace !== "tables" ||
@@ -5746,15 +5804,17 @@ async function loadLogisticsAnalysis(options = {}) {
     return;
   }
   const reportId = state.reportId;
-  const summaryParams = logisticsFilterParams();
-  const productParams = logisticsFilterParams({
+  const summaryParams = logisticsFilterParams({ periodMode: "closed_weeks" });
+  const sliceKey = `${reportId}?${summaryParams}`;
+  const sliceChanged = sliceKey !== state.logisticsSliceKey;
+  const requestedProductParams = logisticsFilterParams({
     dataQualityStatus: state.logisticsProductsDataQualityStatus,
     sortBy: state.logisticsProductsSortBy,
     sortOrder: state.logisticsProductsSortDirection,
     offset: state.logisticsProductsOffset,
     limit: LOGISTICS_PAGE_SIZE,
   });
-  const requestKey = `${reportId}?${productParams}`;
+  const requestKey = `${reportId}?${summaryParams}&${requestedProductParams}`;
   if (!options.force && requestKey === state.logisticsRequestKey) {
     if (!state.logisticsBusy) {
       renderLogisticsWorkspace();
@@ -5762,45 +5822,25 @@ async function loadLogisticsAnalysis(options = {}) {
     return;
   }
   state.logisticsRequestKey = requestKey;
+  state.logisticsSliceKey = sliceKey;
   const requestId = ++state.logisticsRequestId;
   state.logisticsBusy = true;
   state.logisticsSelectedProductRef = "";
   closeLogisticsOrders();
-  if (logisticsFactorsAvailable()) {
-    loadLogisticsDimensions({ force: options.force });
-  } else {
-    resetLogisticsDimensions({ hide: true });
-  }
-  if (logisticsMeasurementsAvailable()) {
-    loadLogisticsMeasurements({ force: options.force });
-  } else {
-    resetLogisticsMeasurements({ hide: true });
-  }
-  if (logisticsTariffsAvailable()) {
-    loadLogisticsTariffs({ force: options.force });
-  } else {
-    resetLogisticsTariffs({ hide: true });
-  }
-  if (logisticsRoutesAvailable()) {
-    loadLogisticsRoutes({ force: options.force });
-  } else {
-    resetLogisticsRoutes({ hide: true });
-  }
-  if (logisticsReturnReasonsAvailable()) {
-    loadLogisticsReturnReasons({ force: options.force });
-  } else {
-    resetLogisticsReturnReasons({ hide: true });
+  if (sliceChanged) {
+    resetLogisticsDimensions({ hide: !logisticsFactorsAvailable() });
+    resetLogisticsMeasurements({ hide: !logisticsMeasurementsAvailable() });
+    resetLogisticsTariffs({ hide: !logisticsTariffsAvailable() });
+    resetLogisticsRoutes({ hide: !logisticsRoutesAvailable() });
+    resetLogisticsReturnReasons({ hide: !logisticsReturnReasonsAvailable() });
   }
   els.logisticsDataStatus.textContent = "Загружаем проверенную витрину…";
   try {
-    const [summary, products] = await Promise.all([
-      api(
+    const summary = !sliceChanged && state.logisticsSummary
+      ? state.logisticsSummary
+      : await api(
         `/api/reports/${encodeURIComponent(reportId)}/logistics/summary?${summaryParams}`,
-      ),
-      api(
-        `/api/reports/${encodeURIComponent(reportId)}/logistics/products?${productParams}`,
-      ),
-    ]);
+      );
     if (
       state.reportId !== reportId ||
       state.logisticsRequestKey !== requestKey ||
@@ -5809,9 +5849,54 @@ async function loadLogisticsAnalysis(options = {}) {
       return;
     }
     state.logisticsSummary = summary;
+    if (!logisticsAnalysisPeriod(summary)) {
+      state.logisticsProducts = [];
+      state.logisticsProductsTotal = 0;
+      resetLogisticsDimensions({ hide: true });
+      resetLogisticsMeasurements({ hide: true });
+      resetLogisticsTariffs({ hide: true });
+      resetLogisticsRoutes({ hide: true });
+      resetLogisticsReturnReasons({ hide: true });
+      renderLogisticsWorkspace();
+      return;
+    }
+    const productParams = logisticsAnalysisFilterParams({
+      dataQualityStatus: state.logisticsProductsDataQualityStatus,
+      sortBy: state.logisticsProductsSortBy,
+      sortOrder: state.logisticsProductsSortDirection,
+      offset: state.logisticsProductsOffset,
+      limit: LOGISTICS_PAGE_SIZE,
+    });
+    const products = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/products?${productParams}`,
+    );
+    if (
+      state.reportId !== reportId ||
+      state.logisticsRequestKey !== requestKey ||
+      state.logisticsRequestId !== requestId
+    ) {
+      return;
+    }
     state.logisticsProducts = asArray(products.items);
     state.logisticsProductsTotal = Number(products.total || 0);
     renderLogisticsWorkspace();
+    await Promise.all([
+      logisticsFactorsAvailable()
+        ? loadLogisticsDimensions({ force: sliceChanged })
+        : Promise.resolve(resetLogisticsDimensions({ hide: true })),
+      logisticsMeasurementsAvailable()
+        ? loadLogisticsMeasurements({ force: sliceChanged })
+        : Promise.resolve(resetLogisticsMeasurements({ hide: true })),
+      logisticsTariffsAvailable()
+        ? loadLogisticsTariffs({ force: sliceChanged })
+        : Promise.resolve(resetLogisticsTariffs({ hide: true })),
+      logisticsRoutesAvailable()
+        ? loadLogisticsRoutes({ force: sliceChanged })
+        : Promise.resolve(resetLogisticsRoutes({ hide: true })),
+      logisticsReturnReasonsAvailable()
+        ? loadLogisticsReturnReasons({ force: sliceChanged })
+        : Promise.resolve(resetLogisticsReturnReasons({ hide: true })),
+    ]);
   } catch (error) {
     if (
       state.reportId !== reportId ||
@@ -5841,13 +5926,14 @@ async function loadLogisticsDimensions(options = {}) {
     !logisticsFactorsAvailable() ||
     state.workspace !== "tables" ||
     state.tableScenario !== "logistics" ||
-    !state.reportId
+    !state.reportId ||
+    !logisticsAnalysisPeriod()
   ) {
     resetLogisticsDimensions({ hide: true });
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({
+  const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsDimensionsSortBy,
     sortOrder: state.logisticsDimensionsSortDirection,
     offset: state.logisticsDimensionsOffset,
@@ -5895,13 +5981,14 @@ async function loadLogisticsMeasurements(options = {}) {
     !logisticsMeasurementsAvailable() ||
     state.workspace !== "tables" ||
     state.tableScenario !== "logistics" ||
-    !state.reportId
+    !state.reportId ||
+    !logisticsAnalysisPeriod()
   ) {
     resetLogisticsMeasurements({ hide: true });
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({
+  const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsMeasurementsSortBy,
     sortOrder: state.logisticsMeasurementsSortDirection,
     offset: state.logisticsMeasurementsOffset,
@@ -5949,13 +6036,14 @@ async function loadLogisticsTariffs(options = {}) {
     !logisticsTariffsAvailable() ||
     state.workspace !== "tables" ||
     state.tableScenario !== "logistics" ||
-    !state.reportId
+    !state.reportId ||
+    !logisticsAnalysisPeriod()
   ) {
     resetLogisticsTariffs({ hide: true });
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({
+  const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsTariffsSortBy,
     sortOrder: state.logisticsTariffsSortDirection,
     offset: state.logisticsTariffsOffset,
@@ -6003,13 +6091,14 @@ async function loadLogisticsRoutes(options = {}) {
     !logisticsRoutesAvailable() ||
     state.workspace !== "tables" ||
     state.tableScenario !== "logistics" ||
-    !state.reportId
+    !state.reportId ||
+    !logisticsAnalysisPeriod()
   ) {
     resetLogisticsRoutes({ hide: true });
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({
+  const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsRoutesSortBy,
     sortOrder: state.logisticsRoutesSortDirection,
     offset: state.logisticsRoutesOffset,
@@ -6057,13 +6146,14 @@ async function loadLogisticsReturnReasons(options = {}) {
     !logisticsReturnReasonsAvailable() ||
     state.workspace !== "tables" ||
     state.tableScenario !== "logistics" ||
-    !state.reportId
+    !state.reportId ||
+    !logisticsAnalysisPeriod()
   ) {
     resetLogisticsReturnReasons({ hide: true });
     return;
   }
   const reportId = state.reportId;
-  const params = logisticsFilterParams({
+  const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsReturnReasonsSortBy,
     sortOrder: state.logisticsReturnReasonsSortDirection,
     offset: state.logisticsReturnReasonsOffset,
@@ -6115,6 +6205,15 @@ function resetLogisticsWorkspace() {
   }
   els.logisticsDataStatus.textContent = "Данные ещё не загружены.";
   els.logisticsDataStatus.dataset.status = "empty";
+  els.logisticsRequestedPeriod.textContent = "—";
+  els.logisticsAnalysisPeriod.textContent = "—";
+  els.logisticsPartialPeriods.hidden = true;
+  els.logisticsPartialPeriodsList.replaceChildren();
+  els.logisticsInsightHeadline.textContent =
+    "Вывод появится после загрузки проверенной витрины.";
+  els.logisticsInsightFindings.replaceChildren();
+  els.logisticsInsightActions.replaceChildren();
+  els.logisticsInsightLimitations.replaceChildren();
   els.logisticsTrustKeys.textContent = "—";
   els.logisticsTrustClassification.textContent = "—";
   els.logisticsTrustSlice.textContent = "Нет данных";
@@ -6142,6 +6241,30 @@ function resetLogisticsWorkspace() {
   resetLogisticsRoutes({ hide: !logisticsRoutesAvailable() });
   resetLogisticsReturnReasons({ hide: !logisticsReturnReasonsAvailable() });
   closeLogisticsOrders();
+}
+
+function resetLogisticsReportState() {
+  state.logisticsSummary = null;
+  state.logisticsProducts = [];
+  state.logisticsProductsTotal = 0;
+  state.logisticsProductsOffset = 0;
+  state.logisticsProductsDataQualityStatus = "";
+  state.logisticsDimensionsOffset = 0;
+  state.logisticsMeasurementsOffset = 0;
+  state.logisticsTariffsOffset = 0;
+  state.logisticsRoutesOffset = 0;
+  state.logisticsReturnReasonsOffset = 0;
+  state.logisticsOrders = [];
+  state.logisticsOrdersTotal = 0;
+  state.logisticsOrdersOffset = 0;
+  state.logisticsSliceKey = "";
+  state.logisticsRequestKey = "";
+  state.logisticsRequestId += 1;
+  state.logisticsOrdersRequestId += 1;
+  state.logisticsSelectedProductRef = "";
+  state.logisticsSelectedProductLabel = "";
+  state.logisticsBusy = false;
+  resetLogisticsWorkspace();
 }
 
 function resetLogisticsDimensions(options = {}) {
@@ -6284,6 +6407,9 @@ function onLogisticsStateAction() {
 
 function renderLogisticsWorkspace() {
   const summary = state.logisticsSummary || {};
+  renderLogisticsPeriodContext(summary.periodContext || {});
+  renderLogisticsPartialPeriods(asArray(summary.partialPeriods));
+  renderLogisticsInsight(summary.insight || {});
   const dataStatus = normalize(summary.dataStatus);
   const sliceStatus = normalize(summary.sliceStatus || dataStatus);
   const status = dataStatus === "partial" && sliceStatus === "ready"
@@ -6360,6 +6486,40 @@ function renderLogisticsWorkspace() {
     renderWorkspaceHeader();
     return;
   }
+  if (!logisticsAnalysisPeriod(summary)) {
+    renderMetrics(els.logisticsKpiGrid, [
+      [
+        "Общая логистика",
+        "—",
+        "Нет полной недели для финансового анализа",
+        "warning",
+      ],
+      [
+        "Доля в выручке",
+        "—",
+        "Неполная неделя показана отдельно",
+        "warning",
+      ],
+      [
+        "Влияние на прибыль",
+        "—",
+        "Появится после закрытия недели",
+        "warning",
+      ],
+    ]);
+    renderLogisticsEmpty(
+      els.logisticsComponents,
+      "Компоненты закрытого периода появятся после завершения полной недели.",
+    );
+    renderLogisticsEmpty(
+      els.logisticsDynamics,
+      "Для динамики нужна хотя бы одна полная неделя.",
+    );
+    renderLogisticsRecommendations(asArray(summary.recommendations));
+    renderLogisticsProducts([]);
+    renderWorkspaceHeader();
+    return;
+  }
   const kpis = summary.kpis || {};
   const profitEffect = Number(kpis.profitEffectAmount || 0);
   const financialMetricsReady = summary.financialMetricStatus === "ready";
@@ -6404,6 +6564,94 @@ function renderLogisticsWorkspace() {
   renderLogisticsRecommendations(asArray(summary.recommendations));
   renderLogisticsProducts(state.logisticsProducts);
   renderWorkspaceHeader();
+}
+
+function renderLogisticsPeriodContext(context) {
+  const requested = context.requestedPeriod || {};
+  const analysis = context.analysisPeriod || null;
+  els.logisticsRequestedPeriod.textContent = logisticsPeriodLabel(requested);
+  els.logisticsAnalysisPeriod.textContent = analysis
+    ? logisticsPeriodLabel(analysis)
+    : "Нет полной недели";
+}
+
+function logisticsPeriodLabel(period) {
+  if (!period?.periodStart || !period?.periodEnd) {
+    return "—";
+  }
+  return `${formatCompactDate(period.periodStart)} — ${formatCompactDate(period.periodEnd)}`;
+}
+
+function renderLogisticsPartialPeriods(items) {
+  els.logisticsPartialPeriods.hidden = !items.length;
+  if (!items.length) {
+    els.logisticsPartialPeriodsList.replaceChildren();
+    return;
+  }
+  const requestedEnd = state.logisticsSummary?.periodContext
+    ?.requestedPeriod?.periodEnd;
+  els.logisticsPartialPeriodsList.replaceChildren(
+    ...items.map((item) => {
+      const card = document.createElement("article");
+      card.className = "logistics-partial-period-card";
+      const period = document.createElement("small");
+      const amount = document.createElement("strong");
+      const facts = document.createElement("span");
+      const kpis = item.kpis || {};
+      const boundaryLabel = item.periodEnd === requestedEnd
+        ? "Текущая незакрытая неделя"
+        : "Начальная неполная неделя";
+      period.textContent = `${boundaryLabel} · ${logisticsPeriodLabel(item)}`;
+      amount.textContent = kpis.logisticsTotal == null
+        ? "Логистика не рассчитана"
+        : signedMoney(kpis.logisticsTotal);
+      facts.textContent = [
+        kpis.orderCount == null ? "" : `${number(kpis.orderCount)} цепочек`,
+        kpis.salesQuantity == null ? "" : `${number(kpis.salesQuantity)} продаж`,
+        kpis.returnQuantity == null
+          ? ""
+          : `${number(kpis.returnQuantity)} возвратов`,
+      ].filter(Boolean).join(" · ");
+      card.append(period, amount, facts);
+      return card;
+    }),
+  );
+}
+
+function renderLogisticsInsight(insight) {
+  els.logisticsInsightHeadline.textContent = insight.headline
+    || "Вывод пока недоступен: проверенная витрина не загружена.";
+  renderLogisticsInsightList(
+    els.logisticsInsightFindings,
+    asArray(insight.findings).map((item) => {
+      const amount = item.amount == null ? "" : ` · ${signedMoney(item.amount)}`;
+      return `${item.title || "Факт"}: ${item.message || ""}${amount}`;
+    }),
+    "Подтверждённых фактов для этого периода пока нет.",
+  );
+  renderLogisticsInsightList(
+    els.logisticsInsightActions,
+    asArray(insight.actions).map(
+      (item) => `${item.title || "Проверить данные"}: ${item.message || ""}`,
+    ),
+    "Дополнительных проверок по подтверждённым фактам нет.",
+  );
+  renderLogisticsInsightList(
+    els.logisticsInsightLimitations,
+    asArray(insight.limitations),
+    "Дополнительные ограничения не зафиксированы.",
+  );
+}
+
+function renderLogisticsInsightList(target, items, emptyText) {
+  const values = items.filter((item) => String(item || "").trim());
+  target.replaceChildren(
+    ...((values.length ? values : [emptyText]).map((value) => {
+      const item = document.createElement("li");
+      item.textContent = value;
+      return item;
+    })),
+  );
 }
 
 function renderLogisticsEmpty(target, text) {
@@ -7566,7 +7814,7 @@ async function loadLogisticsOrdersPage(options = {}) {
     { offset: 0, itemCount: 0, total: 0 },
   );
   try {
-    const params = logisticsFilterParams({
+    const params = logisticsAnalysisFilterParams({
       productRef,
       sortBy: state.logisticsOrdersSortBy,
       sortOrder: state.logisticsOrdersSortDirection,
@@ -17959,6 +18207,7 @@ function resetClientScopedState(options = {}) {
   state.logisticsOrdersSortBy = "financialDate";
   state.logisticsOrdersSortDirection = "desc";
   state.logisticsRequestKey = "";
+  state.logisticsSliceKey = "";
   state.logisticsSelectedProductRef = "";
   state.logisticsSelectedProductLabel = "";
   state.logisticsBusy = false;

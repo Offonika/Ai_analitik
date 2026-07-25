@@ -3173,6 +3173,11 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-trust-freshness"' in cabinet.text
     assert 'id="logistics-trust-low-sample"' in cabinet.text
     assert 'id="logistics-state-action"' in cabinet.text
+    assert 'id="logistics-requested-period"' in cabinet.text
+    assert 'id="logistics-analysis-period"' in cabinet.text
+    assert 'id="logistics-partial-periods"' in cabinet.text
+    assert 'id="logistics-insight-headline"' in cabinet.text
+    assert 'id="logistics-insight-actions"' in cabinet.text
     assert 'id="logistics-products-rows"' in cabinet.text
     assert 'id="logistics-products-pagination"' in cabinet.text
     assert 'id="logistics-dimensions"' in cabinet.text
@@ -3225,6 +3230,10 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "Основная логистика продолжает работать" in script.text
     assert "measuredPenaltyAmount" not in script.text
     assert "loadLogisticsAnalysis" in script.text
+    assert 'periodMode: "closed_weeks"' in script.text
+    assert "function logisticsAnalysisFilterParams" in script.text
+    assert "function resetLogisticsReportState" in script.text
+    assert "!logisticsAnalysisPeriod()" in script.text
     assert "function renderTableScenarioSummary" in script.text
     assert "Текущий отчёт собран до появления витрины логистики v5" in script.text
     assert 'reportId: params.get("report_id") || ""' in script.text
@@ -3320,6 +3329,49 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     ).json()
     assert partial_products["financialMetricStatus"] == "not_available_partial_week"
     assert partial_products["items"][0]["profitEffectAmount"] is None
+
+    closed_weeks = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-13",
+            "periodMode": "closed_weeks",
+        },
+    ).json()
+    assert closed_weeks["periodContext"] == {
+        "mode": "closed_weeks",
+        "requestedPeriod": {
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-13",
+        },
+        "analysisPeriod": {
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-12",
+        },
+        "hasPartialPeriods": True,
+    }
+    assert closed_weeks["kpis"]["logisticsTotal"] == 10
+    assert closed_weeks["kpis"]["logisticsSharePct"] == 10
+    assert closed_weeks["partialPeriods"][0]["periodStart"] == "2026-04-13"
+    assert closed_weeks["partialPeriods"][0]["kpis"]["revenue"] is None
+    assert closed_weeks["partialPeriods"][0]["kpis"]["profitEffectAmount"] is None
+    assert closed_weeks["insight"]["version"] == "wb-logistics-insight-v1"
+    assert len(closed_weeks["factorStates"]) == 5
+
+    no_closed_week = client.get(
+        "/api/reports/report-1/logistics/summary",
+        params={
+            "periodStart": "2026-04-06",
+            "periodEnd": "2026-04-06",
+            "periodMode": "closed_weeks",
+        },
+    ).json()
+    assert no_closed_week["periodContext"]["analysisPeriod"] is None
+    assert no_closed_week["financialMetricStatus"] == ("not_available_no_closed_week")
+    assert no_closed_week["kpis"]["logisticsTotal"] is None
+    assert no_closed_week["partialPeriods"][0]["kpis"]["logisticsTotal"] == 10
+    assert no_closed_week["partialPeriods"][0]["kpis"]["revenue"] is None
+    assert no_closed_week["insight"]["status"] == "partial"
 
     empty = client.get(
         "/api/reports/report-1/logistics/summary",
@@ -5988,10 +6040,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260725-logistics-financial-link-v1"
+        "20260725-logistics-closed-period-insight-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260725-logistics-financial-link-v1"
+        "20260725-logistics-closed-period-insight-v1"
     )
 
     page = client.get("/")
@@ -6144,8 +6196,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260725-logistics-financial-link-v1" in cabinet.text
-    assert "app.js?v=20260725-logistics-financial-link-v1" in cabinet.text
+    assert "styles.css?v=20260725-logistics-closed-period-insight-v1" in cabinet.text
+    assert "app.js?v=20260725-logistics-closed-period-insight-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6499,7 +6551,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Тарифы и коэффициенты WB" in cabinet.text
     assert "/logistics/measurements" in app_js.text
     assert "logisticsMeasurementsAvailable" in app_js.text
-    assert "if (logisticsMeasurementsAvailable())" in app_js.text
+    assert "loadLogisticsMeasurements({ force: sliceChanged })" in app_js.text
     assert "resetLogisticsMeasurements({ hide: true })" in app_js.text
     assert 'id="logistics-measurements"' in cabinet.text
     assert "Контрольные замеры и удержания WB" in cabinet.text
@@ -6518,7 +6570,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     )
     assert "/logistics/return-reasons" in app_js.text
     assert "logisticsReturnReasonsAvailable" in app_js.text
-    assert "if (logisticsReturnReasonsAvailable())" in app_js.text
+    assert "loadLogisticsReturnReasons({ force: sliceChanged })" in app_js.text
     assert "resetLogisticsReturnReasons({ hide: true })" in app_js.text
     assert 'id="logistics-return-reasons"' in cabinet.text
     assert "Причины возвратов" in cabinet.text
@@ -6529,7 +6581,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260725-logistics-financial-link-v1" in cabinet.text
+    assert "20260725-logistics-closed-period-insight-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
@@ -13235,7 +13287,11 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    client = make_client(tmp_path)
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
     received: dict[str, object] = {}
 
     assert client.post("/api/reports/report-1/analytical-report").status_code == 401
@@ -13278,8 +13334,17 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
     assert received["summary"]["meta"]["reportPeriod"] == (
         "08.06.2026 - 14.06.2026"
     )
+    assert received["summary"]["logisticsAnalysis"]["periodContext"][
+        "analysisPeriod"
+    ] == {
+        "periodStart": "2026-06-08",
+        "periodEnd": "2026-06-14",
+    }
+    assert received["summary"]["logisticsAnalysis"]["insight"]["version"] == (
+        "wb-logistics-insight-v1"
+    )
     assert payload["files"]["docx"]["url"].endswith("/analytical-report.docx")
-    assert payload["contractVersion"] == "client-analytical-report.v3"
+    assert payload["contractVersion"] == "client-analytical-report.v4"
     assert payload["scope"] == "last_closed_week"
     assert payload["periodStart"] == "2026-06-08"
     assert payload["periodEnd"] == "2026-06-14"
@@ -14014,25 +14079,39 @@ def test_onec_auto_refresh_returns_503_when_worker_is_unavailable(
 
 
 def test_ai_fallback_uses_report_facts(tmp_path: Path) -> None:
-    client = make_client(tmp_path)
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
     login(client)
 
     thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
     answer = client.post(
         f"/api/ai/threads/{thread['id']}/messages",
-        json={"content": "Что самое важное по убыточности?"},
+        json={
+            "content": "Что самое важное по убыточности?",
+            "scope": {
+                "analysisSurface": "logistics",
+                "logisticsRequestedPeriodStart": "2026-04-06",
+                "logisticsRequestedPeriodEnd": "2026-04-12",
+            },
+        },
     ).json()
     assistant_messages = [
         item["content"] for item in answer["messages"] if item["role"] == "assistant"
     ]
     assert assistant_messages
     assert "Убыточных строк" in assistant_messages[-1]
+    assert "06.04.2026 - 12.04.2026" in assistant_messages[-1]
     assert "не меняю данные" in assistant_messages[-1]
     assistant_payloads = [
         item for item in answer["messages"] if item["role"] == "assistant"
     ]
     assert assistant_payloads[-1]["citations"][0]["reportId"] == "report-1"
     assert assistant_payloads[-1]["citations"][0]["scopeHash"]
+    assert answer["scope"]["analysisSurface"] == "logistics"
+    assert answer["scopeHash"] != thread["scopeHash"]
     assert any(item["type"] == "tool_completed" for item in answer["events"])
     done_events = [
         item for item in answer["events"] if item["type"] == "assistant_done"

@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260725-logistics-financial-link-v1"
+      content="20260725-logistics-closed-period-insight-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="/static/icons/chart-bar.svg" type="image/svg+xml" />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260725-logistics-financial-link-v1"
+      href="/static/styles.css?v=20260725-logistics-closed-period-insight-v1"
     />
     <link
       rel="stylesheet"
@@ -382,7 +382,64 @@
             </p>
           </div>
 
+          <section class="panel logistics-period-panel" aria-labelledby="logistics-period-title">
+            <div>
+              <p class="eyebrow">Период расчёта</p>
+              <h3 id="logistics-period-title">Закрытые недели</h3>
+            </div>
+            <div class="logistics-period-values">
+              <span>
+                <small>Запрошено</small>
+                <strong id="logistics-requested-period">—</strong>
+              </span>
+              <span>
+                <small>Финансовый анализ</small>
+                <strong id="logistics-analysis-period">—</strong>
+              </span>
+            </div>
+          </section>
+
           <div id="logistics-kpi-grid" class="logistics-kpi-grid" aria-label="Показатели логистики"></div>
+
+          <section
+            id="logistics-partial-periods"
+            class="panel logistics-partial-periods"
+            aria-labelledby="logistics-partial-periods-title"
+            hidden
+          >
+            <p class="eyebrow">Оперативный факт</p>
+            <h3 id="logistics-partial-periods-title">
+              Текущая незакрытая неделя и другие неполные границы
+            </h3>
+            <p class="muted">
+              Здесь показана только фактическая логистика начальной или текущей
+              незакрытой недели. Доля в выручке и влияние на прибыль для них не
+              рассчитываются.
+            </p>
+            <div id="logistics-partial-periods-list" class="logistics-partial-periods-list"></div>
+          </section>
+
+          <section class="panel logistics-insight-panel" aria-labelledby="logistics-insight-title">
+            <p class="eyebrow">Единый аналитический вывод</p>
+            <h3 id="logistics-insight-title">Главный вывод и что проверить</h3>
+            <p id="logistics-insight-headline" class="logistics-insight-headline">
+              Вывод появится после загрузки проверенной витрины.
+            </p>
+            <div class="logistics-insight-columns">
+              <div>
+                <h4>Подтверждённые факты</h4>
+                <ul id="logistics-insight-findings"></ul>
+              </div>
+              <div>
+                <h4>Что проверить</h4>
+                <ul id="logistics-insight-actions"></ul>
+              </div>
+              <div>
+                <h4>Ограничения</h4>
+                <ul id="logistics-insight-limitations"></ul>
+              </div>
+            </div>
+          </section>
 
           <section id="logistics-state-message" class="panel logistics-state-message" hidden>
             <h3>Для текущего отчёта нет готовой логистической витрины</h3>
@@ -3160,9 +3217,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260725-logistics-financial-link-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260725-logistics-financial-link-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260725-logistics-financial-link-v1" defer></script>
-    <script src="/static/app.js?v=20260725-logistics-financial-link-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260725-logistics-closed-period-insight-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260725-logistics-closed-period-insight-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260725-logistics-closed-period-insight-v1" defer></script>
+    <script src="/static/app.js?v=20260725-logistics-closed-period-insight-v1" defer></script>
   </body>
 </html>

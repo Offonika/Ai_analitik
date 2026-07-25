@@ -61,12 +61,16 @@ from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LOGISTICS_INSIGHT_VERSION,
     LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
+    LogisticsPeriodMode,
+    LogisticsPeriodResolution,
+    resolve_logistics_period,
 )
 from wb_unit_economics.ozon_mart import (
     _onec_commissioner_revenue_by_item,
@@ -16666,6 +16670,310 @@ def report_logistics_summary_payload(
     )
 
 
+def report_logistics_analysis_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date,
+    period_end: date,
+    period_mode: LogisticsPeriodMode = "exact",
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+) -> dict[str, Any]:
+    resolution = resolve_logistics_period(
+        period_start=period_start,
+        period_end=period_end,
+        mode=period_mode,
+    )
+    common_filters = {
+        "wb_cabinet_id": wb_cabinet_id,
+        "client_company_id": client_company_id,
+        "scheme": scheme,
+        "product_query": product_query,
+    }
+    partial_payloads: list[dict[str, Any]] = []
+    requested_summary: dict[str, Any] | None = None
+    if resolution.has_closed_period:
+        summary = report_logistics_summary_payload(
+            db,
+            report,
+            period_start=resolution.analysis_start,
+            period_end=resolution.analysis_end,
+            **common_filters,
+        )
+    else:
+        requested_summary = report_logistics_summary_payload(
+            db,
+            report,
+            period_start=resolution.requested_start,
+            period_end=resolution.requested_end,
+            **common_filters,
+        )
+        requested_slice_status = str(requested_summary.get("sliceStatus") or "")
+        summary = {
+            **requested_summary,
+            "sliceStatus": (
+                requested_slice_status
+                if requested_slice_status in {"empty", "blocked", "needs_rebuild"}
+                else "partial"
+            ),
+            "financialMetricStatus": "not_available_no_closed_week",
+            "kpis": _empty_logistics_kpis(),
+            "dynamics": [],
+            "components": _empty_logistics_components(),
+            "rankings": {
+                "byTotal": [],
+                "byRevenueShare": [],
+                "byProfitEffect": [],
+            },
+            "recommendations": [],
+        }
+
+    for partial_start, partial_end in resolution.partial_periods:
+        if (
+            requested_summary is not None
+            and partial_start == resolution.requested_start
+            and partial_end == resolution.requested_end
+        ):
+            partial_summary = requested_summary
+        else:
+            partial_summary = report_logistics_summary_payload(
+                db,
+                report,
+                period_start=partial_start,
+                period_end=partial_end,
+                **common_filters,
+            )
+        partial_payloads.append(
+            _logistics_partial_period_payload(
+                partial_summary,
+                period_start=partial_start,
+                period_end=partial_end,
+            )
+        )
+
+    factor_states = _logistics_factor_states(db, report)
+    period_context = _logistics_period_context_payload(resolution)
+    payload = {
+        **summary,
+        "periodContext": period_context,
+        "partialPeriods": partial_payloads,
+        "factorStates": factor_states,
+    }
+    payload["insight"] = build_logistics_insight(payload)
+    return _logistics_json_safe(payload)
+
+
+def build_logistics_insight(payload: Mapping[str, Any]) -> dict[str, Any]:
+    period_context = payload.get("periodContext") or {}
+    analysis_period = period_context.get("analysisPeriod")
+    financial_status = str(payload.get("financialMetricStatus") or "")
+    kpis = payload.get("kpis") or {}
+    rankings = payload.get("rankings") or {}
+    partial_periods = list(payload.get("partialPeriods") or [])
+    factor_states = list(payload.get("factorStates") or [])
+
+    if not analysis_period:
+        headline = "В выбранном периоде пока нет полной закрытой недели."
+        status = "partial"
+    elif financial_status == "ready":
+        headline = "Финансовое влияние рассчитано по полным закрытым неделям."
+        status = "ready"
+    elif financial_status == "not_available_missing_profit_link":
+        headline = "Логистика рассчитана, но финансовая связь требует проверки."
+        status = "partial"
+    else:
+        headline = "Логистика рассчитана с явными ограничениями финансовых KPI."
+        status = "partial"
+    if status == "ready" and (
+        str(payload.get("sliceStatus") or "") != "ready"
+        or any(factor.get("status") != "ready" for factor in factor_states)
+    ):
+        status = "partial"
+
+    findings: list[dict[str, Any]] = []
+    logistics_total = kpis.get("logisticsTotal")
+    if analysis_period and logistics_total is not None:
+        findings.append(
+            {
+                "code": "closed_period_logistics",
+                "title": "Логистика закрытого периода",
+                "message": "Фактический расход по полностью закрытым неделям.",
+                "amount": logistics_total,
+                "valueType": "fact",
+            }
+        )
+    profit_effect = kpis.get("profitEffectAmount")
+    if analysis_period and profit_effect is not None:
+        findings.append(
+            {
+                "code": "profit_effect",
+                "title": "Влияние на прибыль",
+                "message": (
+                    "Знаковое влияние рассчитано по тому же закрытому периоду."
+                ),
+                "amount": profit_effect,
+                "valueType": "fact",
+            }
+        )
+    top_products = list(rankings.get("byTotal") or [])
+    if top_products:
+        leader = top_products[0]
+        findings.append(
+            {
+                "code": "top_logistics_product",
+                "title": "Товар с максимальной логистикой",
+                "message": str(leader.get("product") or "Название недоступно"),
+                "amount": leader.get("logisticsTotal"),
+                "valueType": "fact",
+            }
+        )
+    for item in partial_periods[:2]:
+        partial_kpis = item.get("kpis") or {}
+        findings.append(
+            {
+                "code": "partial_period_logistics",
+                "title": "Неполная неделя",
+                "message": (
+                    f"{item.get('periodStart')} — {item.get('periodEnd')}: "
+                    "только фактическая логистика без финансовых KPI."
+                ),
+                "amount": partial_kpis.get("logisticsTotal"),
+                "valueType": "fact",
+            }
+        )
+
+    actions = [
+        {
+            key: recommendation.get(key)
+            for key in (
+                "code",
+                "priority",
+                "title",
+                "message",
+                "impactAmount",
+                "evidenceType",
+                "actionTarget",
+                "actionLabel",
+            )
+        }
+        for recommendation in list(payload.get("recommendations") or [])[:3]
+        if isinstance(recommendation, Mapping)
+    ]
+    limitations: list[str] = []
+    if partial_periods:
+        limitations.append(
+            "Неполные границы не входят в долю, прибыль и финансовые рейтинги."
+        )
+    if financial_status == "not_available_missing_profit_link":
+        limitations.append(
+            "Финансовые KPI скрыты до восстановления точной связи с отчётом."
+        )
+    if not analysis_period:
+        limitations.append(
+            "Для финансового анализа нужна хотя бы одна полная неделя "
+            "понедельник–воскресенье."
+        )
+    for factor in factor_states:
+        if factor.get("status") != "ready":
+            limitations.append(f"{factor.get('label')}: {factor.get('message')}")
+
+    return {
+        "version": LOGISTICS_INSIGHT_VERSION,
+        "status": status,
+        "headline": headline,
+        "findings": findings[:3],
+        "actions": actions,
+        "limitations": limitations,
+    }
+
+
+def _logistics_period_context_payload(
+    resolution: LogisticsPeriodResolution,
+) -> dict[str, Any]:
+    return {
+        "mode": resolution.mode,
+        "requestedPeriod": {
+            "periodStart": resolution.requested_start.isoformat(),
+            "periodEnd": resolution.requested_end.isoformat(),
+        },
+        "analysisPeriod": (
+            {
+                "periodStart": resolution.analysis_start.isoformat(),
+                "periodEnd": resolution.analysis_end.isoformat(),
+            }
+            if resolution.has_closed_period
+            else None
+        ),
+        "hasPartialPeriods": bool(resolution.partial_periods),
+    }
+
+
+def _logistics_partial_period_payload(
+    payload: Mapping[str, Any],
+    *,
+    period_start: date,
+    period_end: date,
+) -> dict[str, Any]:
+    source_kpis = payload.get("kpis") or {}
+    return {
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "dataStatus": payload.get("dataStatus"),
+        "sliceStatus": payload.get("sliceStatus"),
+        "financialMetricStatus": "not_available_partial_week",
+        "valueType": "fact",
+        "kpis": {
+            "logisticsTotal": source_kpis.get("logisticsTotal"),
+            "logisticsPerOrder": source_kpis.get("logisticsPerOrder"),
+            "logisticsPerSale": source_kpis.get("logisticsPerSale"),
+            "orderCount": source_kpis.get("orderCount"),
+            "salesQuantity": source_kpis.get("salesQuantity"),
+            "returnQuantity": source_kpis.get("returnQuantity"),
+            "revenue": None,
+            "logisticsSharePct": None,
+            "profitEffectAmount": None,
+            "profitBeforeTax": None,
+            "profitWithoutLogistics": None,
+        },
+        "components": payload.get("components") or _empty_logistics_components(),
+    }
+
+
+def _logistics_factor_states(
+    db: Session,
+    report: ReportRun,
+) -> list[dict[str, Any]]:
+    definitions = (
+        ("F-1", "Габариты", ReportLogisticsDimensionContext),
+        ("F-2", "Тарифы и коэффициенты", ReportLogisticsTariffContext),
+        ("F-3", "Склады и направления", ReportLogisticsRouteContext),
+        ("F-4", "Контрольные замеры", ReportLogisticsMeasurementContext),
+        ("F-5", "Причины возвратов", ReportLogisticsReturnReasonContext),
+    )
+    result: list[dict[str, Any]] = []
+    for code, label, model in definitions:
+        context = db.get(model, report.id)
+        status = str(context.data_status) if context is not None else "missing"
+        message = {
+            "ready": "подтвержденные данные доступны",
+            "partial": "доступна только подтвержденная часть данных",
+            "blocked": "обязательная проверка данных не пройдена",
+            "missing": "контекст отсутствует",
+        }.get(status, "статус источника требует проверки")
+        result.append(
+            {
+                "code": code,
+                "label": label,
+                "status": status,
+                "message": message,
+            }
+        )
+    return result
+
+
 def report_logistics_products_payload(
     db: Session,
     report: ReportRun,
@@ -26404,6 +26712,19 @@ def create_ai_thread(
     return thread
 
 
+def update_ai_thread_scope(thread: AiThread, scope: Mapping[str, Any]) -> None:
+    normalized_scope = dict(scope)
+    thread.scope = normalized_scope
+    thread.scope_hash = hashlib.sha256(
+        json.dumps(
+            normalized_scope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def list_ai_threads(
     db: Session,
     *,
@@ -26931,20 +27252,67 @@ def management_report_summary_text(summary: dict[str, Any]) -> str:
     def money(value: Any) -> str:
         return "не рассчитано" if value is None else f"{float(value):,.0f} ₽"
 
+    def count(value: Any) -> str:
+        return "не рассчитано" if value is None else str(int(value))
+
     margin = kpis.get("margin")
     margin_text = "не рассчитано" if margin is None else f"{float(margin):.1%}"
     limitations = client_draft_limitations(summary)
-    return (
+    text = (
         f"Период: {summary['meta']['period']}\n"
         f"Выручка после СПП: {money(kpis.get('revenue'))}\n"
         f"Прибыль до налогов: {money(kpis.get('profit'))}\n"
         f"Управленческая прибыль WB: {money(kpis.get('profitBeforeTax'))}\n"
         f"Маржинальность до налогов: {margin_text}\n"
-        f"Убыточных строк: {int(kpis.get('lossRows') or 0)}\n"
-        f"Строк в расчете: {int(kpis.get('rowCount') or 0)}\n"
+        f"Убыточных строк: {count(kpis.get('lossRows'))}\n"
+        f"Строк в расчете: {count(kpis.get('rowCount'))}\n"
         f"Качество данных: {json.dumps(quality, ensure_ascii=False)}\n"
         f"Ограничения: {'; '.join(limitations)}"
     )
+    logistics = summary.get("logisticsAnalysis")
+    if not isinstance(logistics, Mapping):
+        return text
+    insight = logistics.get("insight") or {}
+    period_context = logistics.get("periodContext") or {}
+    analysis_period = period_context.get("analysisPeriod") or {}
+    logistics_lines = [
+        "",
+        "Логистика WB:",
+        (
+            "Период закрытых недель: "
+            + (
+                f"{analysis_period.get('periodStart')}.."
+                f"{analysis_period.get('periodEnd')}"
+                if analysis_period
+                else "нет полной недели"
+            )
+        ),
+        f"Главный вывод: {insight.get('headline') or 'не сформирован'}",
+    ]
+    for finding in (insight.get("findings") or [])[:5]:
+        if not isinstance(finding, Mapping):
+            continue
+        amount = finding.get("amount")
+        amount_text = f" ({money(amount)})" if amount is not None else ""
+        logistics_lines.append(
+            f"Факт: {finding.get('title') or 'Логистика'} — "
+            f"{finding.get('message') or 'описание недоступно'}{amount_text}"
+        )
+    for action in (insight.get("actions") or [])[:3]:
+        if isinstance(action, Mapping):
+            logistics_lines.append(
+                f"Проверить: {action.get('title') or action.get('message') or 'данные'}"
+            )
+    for limitation in (insight.get("limitations") or [])[:8]:
+        if limitation:
+            logistics_lines.append(f"Ограничение логистики: {limitation}")
+    for factor in (logistics.get("factorStates") or [])[:5]:
+        if isinstance(factor, Mapping):
+            logistics_lines.append(
+                f"{factor.get('code')}: {factor.get('label')} — "
+                f"{factor.get('status')}; {factor.get('message')}"
+            )
+    return "\n".join([text, *logistics_lines])
 
 
 def _next_client_draft_revision(db: Session, report: ReportRun) -> int:

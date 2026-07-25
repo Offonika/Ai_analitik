@@ -6211,6 +6211,74 @@ td {
   gap: 14px;
 }
 
+.logistics-period-panel,
+.logistics-period-values,
+.logistics-insight-columns,
+.logistics-partial-periods-list {
+  display: grid;
+  gap: 16px;
+}
+
+.logistics-period-panel {
+  grid-template-columns: minmax(180px, 0.65fr) minmax(0, 1.35fr);
+  align-items: center;
+}
+
+.logistics-period-values {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.logistics-period-values span,
+.logistics-partial-period-card {
+  display: grid;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fbfb;
+}
+
+.logistics-period-values small,
+.logistics-partial-period-card small {
+  color: #6b7b8e;
+}
+
+.logistics-partial-periods-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.logistics-partial-period-card strong {
+  font-size: 20px;
+}
+
+.logistics-partial-period-card span {
+  color: #617086;
+}
+
+.logistics-insight-headline {
+  margin: 8px 0 18px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.logistics-insight-columns {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.logistics-insight-columns h4 {
+  margin: 0 0 8px;
+}
+
+.logistics-insight-columns ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.logistics-insight-columns li + li {
+  margin-top: 8px;
+}
+
 .logistics-kpi-grid .metric {
   min-height: 142px;
   padding: 20px;
@@ -7936,6 +8004,13 @@ body.accounting-report-mode [data-workspace-panel~="tables"]:not(.accounting-sce
   }
 
   .logistics-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .logistics-period-panel,
+  .logistics-period-values,
+  .logistics-insight-columns,
+  .logistics-partial-periods-list {
     grid-template-columns: 1fr;
   }
 
