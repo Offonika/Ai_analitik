@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-24"
+updated_at: "2026-07-25"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -1378,3 +1378,92 @@ Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/cu
 `runtime-2afb91e-contours-cleanup-20260724` через
 `scripts/promote_runtime_release.py --environment test`, перезапустить только
 `shumeiko-web-test.service` и повторить test health/safety smoke.
+
+## Test-rollout product-level mapping aliases
+
+25 июля 2026 года PR
+[#75](https://github.com/Offonika/Ai_analitik/pull/75) с fail-closed
+проекцией accepted current mapping на product-level ключ WB влит в `main`
+merge-коммитом `2332a347d2d560718f7c0e09ca60624c8b83329f`. На PR и после
+merge в `main` оба обязательных GitHub CI job, `quality` и `tests`,
+завершились успешно. На head PR команда
+`.venv/bin/python -m pytest -q` вернула `1058 passed`.
+
+Из точного merge-коммита собран immutable release
+`runtime-main-2332a34-mapping-alias-fallback-20260725`; manifest подтверждает
+`sourceDirty=false`, source commit `2332a347d2d560718f7c0e09ca60624c8b83329f`
+и content SHA-256
+`3bbb7a26d73c6df14c897f80e03eaca8e8666a1bdf026b8e6e4016f8f0a45af2`.
+Атомарно переключен и перезапущен только test. Production остался на
+`runtime-main-880a214-cost-quality-split-20260724`; production PID `3466421`
+не изменился.
+
+Первый test-only full после rollout завершился до тяжелых WB-загрузок
+управляемой ошибкой `onec_odata_metadata_unavailable: ReadTimeout` и не создал
+report. После успешного штатного production daily run
+`source_refresh_3efeca9436fa401ab210ebdcc3e4f501` повторный test-only full
+`source_refresh_2f0bd99ec44d45f69c9efe2d07b8aac8` получил валидный
+`HTTP 200` для 1С OData metadata, собрал `48` source loads и завершился
+`needs_review`, создав новый staff-only draft
+`shumeyko_source_refresh_20260725_013916`. Draft имеет
+`publication_status=draft`, `is_current=false`; прежний test current report
+не менялся. Промежуточный draft на предыдущем immutable source snapshot также
+остался непublished и может быть удален штатным retention после приёмки live
+draft.
+
+Read-only SQL-агрегаты test-БД на runtime revision `2332a347` воспроизводят
+для live draft:
+
+- период отчета `2026-03-01` — `2026-07-24`, source coverage до `2026-07-24`;
+- `12 227` строк, последняя закрытая неделя начинается `2026-07-13`;
+- `10 047` строк `ОК`, `1 556` строк с себестоимостью на сверку,
+  `559` строк без себестоимости и `65` строк без сопоставления WB ↔ 1С;
+- ненулевая себестоимость у `6 700` строк, логистика у `11 154`, налог у
+  `7 358`;
+- `6` месячных сверок и `157` строк документной сверки;
+- logistics context `ready`, `max_dimension_delta=0`;
+- все зарегистрированные CSV/DOCX/Excel/HTML artifacts имеют статус `ready`.
+
+Ключевые агрегаты воспроизводятся без чтения raw payloads:
+
+```sql
+\set report_id 'shumeyko_source_refresh_20260725_013916'
+
+SELECT count(*) AS rows,
+       min(week) AS min_week,
+       max(week) AS max_week,
+       count(*) FILTER (WHERE cost <> 0) AS nonzero_cost_rows,
+       count(*) FILTER (WHERE logistics <> 0) AS nonzero_logistics_rows,
+       count(*) FILTER (WHERE usn <> 0) AS nonzero_tax_rows
+FROM wb_unit_economics.report_unit_rows
+WHERE report_run_id = :'report_id';
+
+SELECT status, count(*)
+FROM wb_unit_economics.report_unit_rows
+WHERE report_run_id = :'report_id'
+GROUP BY status
+ORDER BY count(*) DESC;
+
+SELECT publication_status, is_current, source_snapshot_set_id
+FROM wb_unit_economics.report_runs
+WHERE id = :'report_id';
+
+SELECT count(*)
+FROM wb_unit_economics.report_reconciliation_monthly
+WHERE report_run_id = :'report_id';
+```
+
+После live full локальный и публичный test `/api/health` вернули `status=ok`,
+`runtimeEnvironment=test`, одинаковые backend/static build ID и
+`latestSourceRefreshStatus=needs_review`. Оба штатных health service завершились
+с `Result=success`. В test client login выключен, активных client-пользователей
+`0`, неизвестный маршрут и `/.env` возвращают HTTP 404, неавторизованный
+`/api/reports` — HTTP 401. `scripts/check_runtime_contour_drift.py` проходит
+без расхождений. Публичный production `/api/health` также возвращает
+`status=ok`; production report, runtime symlink и web PID не менялись.
+
+Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/current` на
+`runtime-main-f5cf057-mapping-alias-fix-20260724` через
+`scripts/promote_runtime_release.py --environment test`, перезапустить только
+`shumeiko-web-test.service` и повторить test health/safety smoke. Draft reports,
+source snapshots и production при runtime rollback не изменяются.
