@@ -28,6 +28,10 @@ def test_margin_calculator_action_and_focus_lifecycle_are_wired() -> None:
     assert "closeMarginCalculator({ restoreFocus: false })" in script
     assert "openWidgetOverlay(els.marginCalculatorOverlay)" in script
     assert "closeWidgetOverlay(els.marginCalculatorOverlay, options)" in script
+    assert "scheme: marginCalculatorRequestScheme(requestedScheme)" in script
+    assert 'return ["FBO", "FBS"].includes(scheme) ? scheme : "";' in script
+    assert "populateMarginCalculatorInputs(payload.fact || {})" in script
+    assert "state.marginCalculatorBaseline = baseline" in script
     assert "changedInputs" not in script or "is-changed" in script
     assert "НДС к уплате" in script
     assert "Налог с выручки" in script
