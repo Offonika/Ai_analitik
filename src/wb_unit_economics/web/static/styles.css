@@ -2867,22 +2867,27 @@ button.action-insight-card {
 }
 
 .margin-calculator-widget {
-  width: min(1320px, 100%);
+  width: min(1400px, 100%);
   max-height: min(860px, calc(100vh - 48px));
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .margin-calculator-body {
   display: grid;
-  grid-template-columns: minmax(250px, 0.8fr) minmax(340px, 1fr) minmax(290px, 1fr);
-  gap: 18px;
+  grid-template-columns:
+    minmax(240px, 0.75fr)
+    minmax(500px, 1.35fr)
+    minmax(300px, 0.95fr);
+  align-items: start;
+  gap: 16px;
   padding-top: 8px;
 }
 
 .margin-calculator-body > section,
 .margin-calculator-form {
   min-width: 0;
-  padding: 16px;
+  padding: 18px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface, #fff);
@@ -2947,23 +2952,59 @@ button.action-insight-card {
   gap: 12px;
 }
 
+.margin-calculator-form {
+  gap: 16px;
+}
+
+.margin-mode-switch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: end;
+}
+
+.margin-calculator-form.is-target-mode .margin-mode-switch {
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 0.58fr);
+}
+
+.margin-calculator-hint {
+  margin: -4px 0 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--soft, #f6f7f8);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .margin-input-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 14px;
+  row-gap: 13px;
 }
 
 .margin-input-grid label,
 .margin-mode-switch label {
   gap: 6px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.margin-field-label {
+  display: flex;
+  align-items: flex-end;
+  min-height: 17px;
+  overflow-wrap: anywhere;
 }
 
 .margin-input-grid input,
 .margin-mode-switch input,
 .margin-mode-switch select {
   width: 100%;
-  min-height: 40px;
+  min-width: 0;
+  min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
@@ -2986,7 +3027,35 @@ button.action-insight-card {
 }
 
 .margin-calculator-actions p {
+  flex: 1 1 auto;
   margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.margin-calculator-actions button {
+  min-width: 124px;
+  min-height: 44px;
+}
+
+.margin-empty-state {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--soft, #f6f7f8);
+}
+
+.margin-empty-state strong {
+  font-size: 14px;
+}
+
+.margin-empty-state span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .margin-waterfall {
@@ -5350,6 +5419,29 @@ td {
     grid-template-columns: 1fr;
   }
 
+  .margin-calculator-widget {
+    width: min(1040px, 100%);
+  }
+
+  .margin-calculator-body {
+    grid-template-areas:
+      "fact parameters"
+      "scenario parameters";
+    grid-template-columns: minmax(260px, 0.8fr) minmax(460px, 1.2fr);
+  }
+
+  .margin-calculator-fact {
+    grid-area: fact;
+  }
+
+  .margin-calculator-form {
+    grid-area: parameters;
+  }
+
+  .margin-calculator-scenario {
+    grid-area: scenario;
+  }
+
   .action-insights-list {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -5375,6 +5467,19 @@ td {
 
   .topbar {
     align-items: stretch;
+  }
+
+  .margin-calculator-widget {
+    width: min(720px, 100%);
+  }
+
+  .margin-calculator-body {
+    grid-template-areas:
+      "fact"
+      "parameters"
+      "scenario";
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
   }
 
   .topbar-controls {
@@ -5780,6 +5885,19 @@ td {
   .margin-calculator-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .margin-calculator-form.is-target-mode .margin-mode-switch {
+    grid-template-columns: 1fr;
+  }
+
+  .margin-calculator-body > section,
+  .margin-calculator-form {
+    padding: 14px;
+  }
+
+  .margin-calculator-actions button {
+    width: 100%;
   }
 
   .ai-widget {

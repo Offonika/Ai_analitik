@@ -17,6 +17,9 @@ def test_margin_calculator_dialog_has_accessible_fact_scenario_structure() -> No
     assert 'id="margin-calculator-form"' in html
     assert html.count(" required") >= 11
     assert html.count("Оценка") >= 2
+    assert "Фактические значения уже подставлены." in html
+    assert "Себестоимость, ₽/шт." in html
+    assert "Себестоимость на единицу, ₽" not in html
     assert "Сохранить сценарий" not in html
 
 
@@ -32,6 +35,9 @@ def test_margin_calculator_action_and_focus_lifecycle_are_wired() -> None:
     assert 'return ["FBO", "FBS"].includes(scheme) ? scheme : "";' in script
     assert "populateMarginCalculatorInputs(payload.fact || {})" in script
     assert "state.marginCalculatorBaseline = baseline" in script
+    assert 'classList.toggle("is-target-mode", targetMode)' in script
+    assert "renderMarginCalculatorEmptyState(" in script
+    assert '"Цена, себестоимость и расходы подставятся автоматически."' in script
     assert "changedInputs" not in script or "is-changed" in script
     assert "НДС к уплате" in script
     assert "Налог с выручки" in script
@@ -42,6 +48,15 @@ def test_margin_calculator_layout_is_responsive_and_marks_changed_inputs() -> No
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
 
     assert ".margin-calculator-body" in styles
+    assert "align-items: start;" in styles
+    assert 'grid-template-areas:\n      "fact parameters"' in styles
+    assert (
+        'grid-template-areas:\n      "fact"\n      "parameters"\n      "scenario";'
+        in styles
+    )
     assert "grid-template-columns: 1fr;" in styles
+    assert ".margin-field-label" in styles
+    assert ".margin-empty-state" in styles
+    assert "min-height: 44px;" in styles
     assert ".margin-input-grid input.is-changed" in styles
     assert ".report-rows-table td:first-child" in styles
