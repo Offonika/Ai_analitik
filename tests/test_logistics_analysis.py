@@ -105,7 +105,7 @@ def test_chain_key_is_scoped_by_cabinet_and_product() -> None:
 
     assert CHAIN_KEY_VERSION == "wb-order-product-v1"
     assert LOGISTICS_CLASSIFIER_VERSION == "wb-logistics-classifier-v1"
-    assert LOGISTICS_METHODOLOGY_VERSION == "wb-logistics-v5"
+    assert LOGISTICS_METHODOLOGY_VERSION == "wb-logistics-v6"
     assert LOGISTICS_FACTORS_METHODOLOGY_VERSION == "wb-logistics-factors-v1"
     assert first == same
     assert first != other_product
@@ -253,6 +253,41 @@ def test_sku_link_normalizes_all_string_dimensions() -> None:
     assert sku.product_key == "nm:101"
     assert sku.revenue == Decimal("100")
     assert sku.data_quality_status == "ready"
+
+
+def test_not_applicable_financial_link_uses_fbo_report_alias_only() -> None:
+    source = _source_row(
+        scheme="not_applicable",
+        operation_name="Коррекция логистики",
+        delivery_amount=Decimal("0"),
+        return_amount=Decimal("0"),
+        rebill_logistic_cost=Decimal("10"),
+    )
+
+    result = build_logistics_analysis(
+        [source],
+        [_unit_row(scheme="Склад WB")],
+    )
+
+    assert result.context.data_status == "ready"
+    linked = result.sku_rows[0]
+    assert linked.scheme == "not_applicable"
+    assert linked.revenue == Decimal("100")
+    assert linked.profit_before_tax == Decimal("20")
+    assert linked.data_quality_status == "ready"
+    assert "restore_profit_link" not in linked.recommendation_flags
+
+    order = build_order_rows([source])[0]
+    fbs_only = build_sku_rows([order], [_unit_row(scheme="fbs")])[0]
+    other_scope = build_sku_rows(
+        [order],
+        [_unit_row(scheme="fbo", client_company_id="other-company")],
+    )[0]
+
+    assert fbs_only.data_quality_status == "missing_profit_link"
+    assert fbs_only.revenue is None
+    assert other_scope.data_quality_status == "missing_profit_link"
+    assert other_scope.revenue is None
 
 
 def test_result_hash_is_repeatable_and_return_can_reference_previous_order() -> None:
@@ -929,6 +964,13 @@ def test_partial_boundary_week_uses_exact_source_but_full_week_uses_report() -> 
         row for row in result.sku_rows if row.financial_week_start == date(2026, 3, 30)
     )
     assert boundary_sku.profit_before_tax is None
+    assert boundary_sku.data_quality_status == "partial_week"
+    assert "restore_profit_link" not in boundary_sku.recommendation_flags
+    full_sku = next(
+        row for row in result.sku_rows if row.financial_week_start == date(2026, 4, 6)
+    )
+    assert full_sku.data_quality_status == "ready"
+    assert full_sku.profit_before_tax == Decimal("20")
 
     mismatch = build_logistics_analysis(
         [boundary, full],

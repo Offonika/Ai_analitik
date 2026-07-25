@@ -1883,6 +1883,59 @@ def persist_logistics_fixture(client: TestClient) -> None:
         db.commit()
 
 
+def add_missing_profit_link_fixture(client: TestClient) -> None:
+    with client.app.state.session_factory() as db:
+        order_row = db.query(ReportLogisticsOrderRow).one()
+        sku_row = db.query(ReportLogisticsSkuRow).one()
+        order_values = {
+            column.name: getattr(order_row, column.name)
+            for column in ReportLogisticsOrderRow.__table__.columns
+            if column.name != "id"
+        }
+        order_values.update(
+            {
+                "chain_key": "a" * 64,
+                "chain_segment_key": "b" * 64,
+                "product_ref": "product:missing-profit-link",
+                "product_key": "nm:202",
+                "nm_id": "202",
+                "sku": "sku-202",
+                "vendor_code": "A-202",
+                "product": "Товар без финансовой связи",
+                "source_revenue": Decimal("999"),
+                "source_hash_digest": "c" * 64,
+            }
+        )
+        db.add(ReportLogisticsOrderRow(**order_values))
+        sku_values = {
+            column.name: getattr(sku_row, column.name)
+            for column in ReportLogisticsSkuRow.__table__.columns
+            if column.name != "id"
+        }
+        sku_values.update(
+            {
+                "row_uid": "d" * 64,
+                "product_ref": "product:missing-profit-link",
+                "product_key": "nm:202",
+                "nm_id": "202",
+                "sku": "sku-202",
+                "vendor_code": "A-202",
+                "product": "Товар без финансовой связи",
+                "revenue": Decimal("999"),
+                "financial_revenue": None,
+                "profit_before_tax": None,
+                "profit_without_logistics": None,
+                "profit_effect_amount": Decimal("-10"),
+                "logistics_share_pct": None,
+                "data_quality_status": "missing_profit_link",
+                "recommendation_flags": ["restore_profit_link"],
+                "source_hash_digest": "e" * 64,
+            }
+        )
+        db.add(ReportLogisticsSkuRow(**sku_values))
+        db.commit()
+
+
 def test_dimension_mart_persist_round_trip(tmp_path: Path) -> None:
     client = make_client(tmp_path, publish_report=False)
     with client.app.state.session_factory() as db:
@@ -3181,6 +3234,13 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "logisticsProfitEffectText(item.profitEffectAmount)" in script.text
     assert "Финансовая связь с отчётом отсутствует" in script.text
     assert "Финансовая связь отсутствует" in script.text
+    assert 'recommendation.actionTarget === "missing_profit_links"' in script.text
+    assert (
+        "dataQualityStatus: state.logisticsProductsDataQualityStatus"
+        in script.text
+    )
+    assert 'id="logistics-products-filter-status"' in cabinet.text
+    assert "Показаны только товары без финансовой связи с отчётом." in cabinet.text
     assert "Корректировка — схема не применяется" in script.text
     assert 'dataStatus === "partial" && sliceStatus === "ready"' in script.text
     assert 'normalize(item.dataQualityStatus) === "missing_profit_link"' in script.text
@@ -3410,56 +3470,7 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
         settings_overrides={"logistics_analysis_enabled": True},
     )
     persist_logistics_fixture(client)
-    with client.app.state.session_factory() as db:
-        order_row = db.query(ReportLogisticsOrderRow).one()
-        sku_row = db.query(ReportLogisticsSkuRow).one()
-        order_values = {
-            column.name: getattr(order_row, column.name)
-            for column in ReportLogisticsOrderRow.__table__.columns
-            if column.name != "id"
-        }
-        order_values.update(
-            {
-                "chain_key": "a" * 64,
-                "chain_segment_key": "b" * 64,
-                "product_ref": "product:missing-profit-link",
-                "product_key": "nm:202",
-                "nm_id": "202",
-                "sku": "sku-202",
-                "vendor_code": "A-202",
-                "product": "Товар без финансовой связи",
-                "source_revenue": Decimal("999"),
-                "source_hash_digest": "c" * 64,
-            }
-        )
-        db.add(ReportLogisticsOrderRow(**order_values))
-        sku_values = {
-            column.name: getattr(sku_row, column.name)
-            for column in ReportLogisticsSkuRow.__table__.columns
-            if column.name != "id"
-        }
-        sku_values.update(
-            {
-                "row_uid": "d" * 64,
-                "product_ref": "product:missing-profit-link",
-                "product_key": "nm:202",
-                "nm_id": "202",
-                "sku": "sku-202",
-                "vendor_code": "A-202",
-                "product": "Товар без финансовой связи",
-                "revenue": Decimal("999"),
-                "financial_revenue": None,
-                "profit_before_tax": None,
-                "profit_without_logistics": None,
-                "profit_effect_amount": Decimal("-10"),
-                "logistics_share_pct": None,
-                "data_quality_status": "missing_profit_link",
-                "recommendation_flags": ["restore_profit_link"],
-                "source_hash_digest": "e" * 64,
-            }
-        )
-        db.add(ReportLogisticsSkuRow(**sku_values))
-        db.commit()
+    add_missing_profit_link_fixture(client)
     login(client)
 
     filters = {"periodStart": "2026-04-06", "periodEnd": "2026-04-12"}
@@ -3500,7 +3511,7 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
     )
     assert restore_link["impactAmount"] == 10
     assert restore_link["evidenceType"] == "data_quality"
-    assert restore_link["actionTarget"] == "source"
+    assert restore_link["actionTarget"] == "missing_profit_links"
     assert "review_data_quality" not in {
         item["code"] for item in summary["recommendations"]
     }
@@ -3516,6 +3527,45 @@ def test_logistics_missing_profit_link_fails_financial_slice_closed(
     assert missing["logisticsTotal"] == 10
     assert missing["dataQualityStatus"] == "missing_profit_link"
     assert missing["recommendationFlags"] == ["restore_profit_link"]
+
+
+def test_logistics_products_filter_returns_only_missing_profit_links(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"logistics_analysis_enabled": True},
+    )
+    persist_logistics_fixture(client)
+    add_missing_profit_link_fixture(client)
+    login(client)
+    filters = {
+        "periodStart": "2026-04-06",
+        "periodEnd": "2026-04-12",
+        "dataQualityStatus": "missing_profit_link",
+    }
+
+    response = client.get(
+        "/api/reports/report-1/logistics/products",
+        params=filters,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["dataQualityStatus"] == "missing_profit_link"
+    assert (
+        payload["filterContext"]["dataQualityStatus"]
+        == "missing_profit_link"
+    )
+
+    invalid = client.get(
+        "/api/reports/report-1/logistics/products",
+        params={**filters, "dataQualityStatus": "partial_week"},
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"] == "unsupported dataQualityStatus"
 
 
 def test_logistics_api_rejects_inverted_and_outside_periods(tmp_path: Path) -> None:

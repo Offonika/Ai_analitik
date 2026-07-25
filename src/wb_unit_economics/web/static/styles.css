@@ -6126,6 +6126,31 @@ td {
   min-width: 0;
 }
 
+.logistics-products-filter-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #efc979;
+  border-radius: 10px;
+  background: #fff8e8;
+  color: #6f5318;
+  font-size: 13px;
+}
+
+.logistics-products-filter-status[hidden] {
+  display: none;
+}
+
+.logistics-products-filter-status .secondary-button {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .logistics-heading h2,
 .logistics-section-heading h3,
 .logistics-workspace h3 {
