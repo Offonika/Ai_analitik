@@ -17922,6 +17922,7 @@ function marginMonthPeriod(label) {
 function marginCalculatorBaseRequest() {
   const item = state.marginCalculatorItem || {};
   const period = marginCalculatorPeriod();
+  const requestedScheme = els.filterScheme.value || item.scheme || "";
   return {
     rowId: item.id || "",
     periodStart: period.periodStart || null,
@@ -17932,9 +17933,14 @@ function marginCalculatorBaseRequest() {
       item.clientCompanyId ||
       item.organization ||
       "",
-    scheme: els.filterScheme.value || item.scheme || "",
+    scheme: marginCalculatorRequestScheme(requestedScheme),
     mode: els.marginCalculatorMode.value || "scenario",
   };
+}
+
+function marginCalculatorRequestScheme(value) {
+  const scheme = String(value || "").trim();
+  return ["FBO", "FBS"].includes(scheme) ? scheme : "";
 }
 
 function marginInputNumber(element, { percent = false } = {}) {

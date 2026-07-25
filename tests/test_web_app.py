@@ -1639,6 +1639,37 @@ def test_unit_economics_calculator_endpoint_enforces_flag_and_tenant_without_htt
         assert tenant_error.value.status_code == 404
 
 
+def test_unit_economics_calculator_uses_anchor_for_legacy_scheme_label(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        row = db.scalar(
+            select(repository.ReportUnitRow).where(
+                repository.ReportUnitRow.report_run_id == "report-1",
+                repository.ReportUnitRow.row_uid == "unit-1",
+            )
+        )
+        assert report is not None
+        assert row is not None
+        row.scheme = "Продажи со склада WB"
+        db.flush()
+
+        context = repository.unit_economics_calculator_context(
+            db,
+            report,
+            row_id=row.row_uid,
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+            scheme="",
+        )
+
+    assert context["fact"]["scheme"] == "Продажи со склада WB"
+    assert context["defaults"]["price_before_spp"] is not None
+    assert context["defaults"]["unit_cost"] is not None
+
+
 def test_unit_economics_calculator_is_staff_flagged_and_read_only(
     tmp_path: Path,
 ) -> None:
@@ -6393,10 +6424,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260725-margin-calculator-v1"
+        "20260725-margin-calculator-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260725-margin-calculator-v1"
+        "20260725-margin-calculator-v2"
     )
 
     page = client.get("/")
@@ -6549,8 +6580,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260725-margin-calculator-v1" in cabinet.text
-    assert "app.js?v=20260725-margin-calculator-v1" in cabinet.text
+    assert "styles.css?v=20260725-margin-calculator-v2" in cabinet.text
+    assert "app.js?v=20260725-margin-calculator-v2" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6934,7 +6965,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260725-margin-calculator-v1" in cabinet.text
+    assert "20260725-margin-calculator-v2" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
