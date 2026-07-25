@@ -888,6 +888,39 @@ Rollback C-1: удалить только
 `systemctl daemon-reload`, перезапустить только `shumeiko-web-test.service` и
 повторить local/public health и safety smoke.
 
+### Corrective rollout C-1: responsive UX — 25 июля 2026 года
+
+По staff-снимку переработана только визуальная компоновка read-only
+калькулятора. Боковые секции больше не растягиваются до высоты формы,
+центральной колонке выделено больше места, подписи затрат сокращены до
+формата `₽/шт.`, а tablet/mobile раскладка последовательно показывает
+`Факт → Параметры → Сценарий`. Состояния загрузки, недоступного сценария и
+ошибки теперь содержат явный текст вместо пустой области. Расчётная методика,
+API и границы записи не менялись.
+
+Из отдельного calculator commit собран immutable release
+`runtime-f8e8d7b-margin-calculator-ux-v3-20260725`; manifest подтверждает
+`sourceDirty=false`. Атомарно переключён и перезапущен только test.
+
+После UX rollout:
+
+- local и public test `/api/health` вернули `status=ok`,
+  `runtimeEnvironment=test` и совпадающие
+  `backendBuildId=staticBuildId=20260725-margin-calculator-v3`;
+- публичные CSS/JS содержат новую responsive-сетку, empty states и
+  автоматическую подстановку фактических значений;
+- targeted static/calculator tests, Ruff, JavaScript syntax и diff check
+  прошли; две широкие проверки оболочки на локальном deprecated
+  `TestClient` остановлены по таймауту на первом static GET и не объявляются
+  пройденными;
+- systemd ExecStart сохранил staff-only конфигурацию:
+  master-флаг включён, client-флаг выключен;
+- штатный `shumeiko-web-test-health.service` завершился с `Result=success`;
+- production runtime и service не менялись.
+
+Authenticated browser-проверку desktop/mobile проводит staff через test UI;
+production и client-флаг UX rollout не затрагивал.
+
 ## Staff-ready анализ логистики
 
 Code defaults остаются выключенными:
