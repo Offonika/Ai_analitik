@@ -28,7 +28,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -36,6 +36,12 @@ from wb_unit_economics.client_report import (
     CLIENT_REPORT_CONTRACT_VERSION,
     ClientAnalyticalReportArtifacts,
     build_client_analytical_report,
+)
+from wb_unit_economics.margin_calculator import (
+    MarginScenarioInputs,
+    calculate_margin_scenario,
+    margin_scenario_payload,
+    solve_price_for_margin,
 )
 from wb_unit_economics.report_exports import (
     artifact_record,
@@ -102,7 +108,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260725-logistics-financial-link-v1"
+WEB_BUILD_ID = "20260725-margin-calculator-v1"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -144,6 +150,33 @@ def _logistics_period(
                 "code": "invalid_logistics_period",
                 "message": (
                     "Период логистики должен находиться внутри периода отчёта, "
+                    "а дата начала не может быть позже даты окончания."
+                ),
+                "reportPeriodStart": report.period_start.isoformat(),
+                "reportPeriodEnd": report.period_end.isoformat(),
+            },
+        )
+    return effective_start, effective_end
+
+
+def _calculator_period(
+    report: ReportRun,
+    period_start: date | None,
+    period_end: date | None,
+) -> tuple[date, date]:
+    effective_start = period_start or report.period_start
+    effective_end = period_end or report.period_end
+    if (
+        effective_start > effective_end
+        or effective_start < report.period_start
+        or effective_end > report.period_end
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_calculator_period",
+                "message": (
+                    "Период калькулятора должен находиться внутри периода отчёта, "
                     "а дата начала не может быть позже даты окончания."
                 ),
                 "reportPeriodStart": report.period_start.isoformat(),
@@ -324,6 +357,37 @@ class ReportImportRequest(BaseModel):
     client_id: str | None = None
     tenant_id: str | None = None
     tenant_name: str | None = None
+
+
+class UnitEconomicsOverridesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unitCost: Decimal | None = Field(default=None, ge=0)
+    commissionRate: Decimal | None = Field(default=None, ge=0, lt=1)
+    acquiringRate: Decimal | None = Field(default=None, ge=0, lt=1)
+    logisticsPerUnit: Decimal | None = Field(default=None, ge=0)
+    storagePerUnit: Decimal | None = Field(default=None, ge=0)
+    acceptancePerUnit: Decimal | None = Field(default=None, ge=0)
+    promotionPerUnit: Decimal | None = Field(default=None, ge=0)
+    penaltiesPerUnit: Decimal | None = Field(default=None, ge=0)
+
+
+class UnitEconomicsCalculateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rowId: str = Field(min_length=1, max_length=500)
+    periodStart: date | None = None
+    periodEnd: date | None = None
+    wbCabinetId: str = Field(default="", max_length=500)
+    clientCompanyId: str = Field(default="", max_length=500)
+    scheme: str = Field(default="", pattern="^(|FBO|FBS)$")
+    mode: str = Field(default="scenario", pattern="^(scenario|target_price)$")
+    priceBeforeSpp: Decimal | None = Field(default=None, gt=0)
+    sppRate: Decimal | None = Field(default=None, ge=0, lt=1)
+    targetMargin: Decimal | None = Field(default=None, gt=-0.99, lt=0.99)
+    overrides: UnitEconomicsOverridesRequest = Field(
+        default_factory=UnitEconomicsOverridesRequest
+    )
 
 
 class ReportGenerateRequest(BaseModel):
@@ -757,6 +821,12 @@ def create_app(
             user,
             clients,
             accounting_workflow_enabled=runtime_settings.accounting_workflow_enabled,
+            unit_economics_calculator_enabled=(
+                runtime_settings.unit_economics_calculator_enabled
+            ),
+            unit_economics_calculator_client_enabled=(
+                runtime_settings.unit_economics_calculator_client_enabled
+            ),
             logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
             logistics_analysis_client_enabled=(
                 runtime_settings.logistics_analysis_client_enabled
@@ -812,6 +882,12 @@ def create_app(
             current,
             clients,
             accounting_workflow_enabled=runtime_settings.accounting_workflow_enabled,
+            unit_economics_calculator_enabled=(
+                runtime_settings.unit_economics_calculator_enabled
+            ),
+            unit_economics_calculator_client_enabled=(
+                runtime_settings.unit_economics_calculator_client_enabled
+            ),
             logistics_analysis_enabled=(runtime_settings.logistics_analysis_enabled),
             logistics_analysis_client_enabled=(
                 runtime_settings.logistics_analysis_client_enabled
@@ -3592,6 +3668,61 @@ def create_app(
             offset=max(offset, 0),
         )
 
+    @app.post("/api/reports/{report_id}/unit-economics/calculate")
+    def calculate_report_unit_economics(
+        report_id: str,
+        payload: UnitEconomicsCalculateRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        _require_unit_economics_calculator_access_or_404(
+            current,
+            report.tenant_id,
+            runtime_settings,
+        )
+        period_start, period_end = _calculator_period(
+            report,
+            payload.periodStart,
+            payload.periodEnd,
+        )
+        try:
+            context = repository.unit_economics_calculator_context(
+                db,
+                report,
+                row_id=payload.rowId,
+                period_start=period_start,
+                period_end=period_end,
+                wb_cabinet_id=payload.wbCabinetId,
+                client_company_id=payload.clientCompanyId,
+                scheme=payload.scheme,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="report row not found") from exc
+        except ValueError as exc:
+            if str(exc) == "unsupported_marketplace":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": "unsupported_marketplace",
+                        "message": "Калькулятор первой версии поддерживает только WB.",
+                    },
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        try:
+            return _unit_economics_calculation_payload(context, payload)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "invalid_calculator_input",
+                    "message": str(exc),
+                },
+            ) from exc
+
     @app.get("/api/reports/{report_id}/document-reconciliation")
     def report_document_reconciliation(
         report_id: str,
@@ -4309,6 +4440,8 @@ def me_payload(
     clients: list[dict[str, Any]] | None = None,
     *,
     accounting_workflow_enabled: bool = False,
+    unit_economics_calculator_enabled: bool = False,
+    unit_economics_calculator_client_enabled: bool = False,
     logistics_analysis_enabled: bool = False,
     logistics_analysis_client_enabled: bool = False,
     logistics_factors_enabled: bool = False,
@@ -4338,6 +4471,15 @@ def me_payload(
         "clients": clients or [],
         "accountingWorkflowEnabled": accounting_workflow_enabled
         and any(item.role in repository.STAFF_ROLES for item in user.access),
+        "unitEconomicsCalculatorEnabled": unit_economics_calculator_enabled
+        and (
+            unit_economics_calculator_client_enabled
+            or any(item.role in repository.STAFF_ROLES for item in user.access)
+        ),
+        "unitEconomicsCalculatorClientEnabled": (
+            unit_economics_calculator_enabled
+            and unit_economics_calculator_client_enabled
+        ),
         "logisticsAnalysisEnabled": logistics_analysis_enabled
         and (
             logistics_analysis_client_enabled
@@ -4430,6 +4572,261 @@ def me_payload(
         and logistics_return_reasons_enabled
         and logistics_return_reasons_client_enabled,
     }
+
+
+def _unit_economics_calculation_payload(
+    context: dict[str, Any],
+    request: UnitEconomicsCalculateRequest,
+) -> dict[str, Any]:
+    defaults = context["defaults"]
+    overrides = request.overrides
+    values: dict[str, Decimal | None] = {
+        "price_before_spp": (
+            request.priceBeforeSpp
+            if request.priceBeforeSpp is not None
+            else defaults["price_before_spp"]
+        ),
+        "spp_rate": (
+            request.sppRate
+            if request.sppRate is not None
+            else defaults["spp_rate"]
+        ),
+        "unit_cost": (
+            overrides.unitCost
+            if overrides.unitCost is not None
+            else defaults["unit_cost"]
+        ),
+        "commission_rate": (
+            overrides.commissionRate
+            if overrides.commissionRate is not None
+            else defaults["commission_rate"]
+        ),
+        "acquiring_rate": (
+            overrides.acquiringRate
+            if overrides.acquiringRate is not None
+            else defaults["acquiring_rate"]
+        ),
+        "logistics_per_unit": (
+            overrides.logisticsPerUnit
+            if overrides.logisticsPerUnit is not None
+            else defaults["logistics_per_unit"]
+        ),
+        "storage_per_unit": (
+            overrides.storagePerUnit
+            if overrides.storagePerUnit is not None
+            else defaults["storage_per_unit"]
+        ),
+        "acceptance_per_unit": (
+            overrides.acceptancePerUnit
+            if overrides.acceptancePerUnit is not None
+            else defaults["acceptance_per_unit"]
+        ),
+        "promotion_per_unit": (
+            overrides.promotionPerUnit
+            if overrides.promotionPerUnit is not None
+            else defaults["promotion_per_unit"]
+        ),
+        "penalties_per_unit": (
+            overrides.penaltiesPerUnit
+            if overrides.penaltiesPerUnit is not None
+            else defaults["penalties_per_unit"]
+        ),
+    }
+    public_names = {
+        "price_before_spp": "priceBeforeSpp",
+        "spp_rate": "sppRate",
+        "unit_cost": "unitCost",
+        "commission_rate": "commissionRate",
+        "acquiring_rate": "acquiringRate",
+        "logistics_per_unit": "logisticsPerUnit",
+        "storage_per_unit": "storagePerUnit",
+        "acceptance_per_unit": "acceptancePerUnit",
+        "promotion_per_unit": "promotionPerUnit",
+        "penalties_per_unit": "penaltiesPerUnit",
+    }
+    missing_inputs = [
+        public_names[name]
+        for name, value in values.items()
+        if value is None
+        or (name == "price_before_spp" and value <= 0)
+        or (
+            name
+            not in {
+                "price_before_spp",
+                "spp_rate",
+                "commission_rate",
+                "acquiring_rate",
+            }
+            and value < 0
+        )
+        or (
+            name in {"spp_rate", "commission_rate", "acquiring_rate"}
+            and (value < 0 or value >= 1)
+        )
+    ]
+    if request.mode == "target_price" and request.targetMargin is None:
+        missing_inputs.append("targetMargin")
+
+    assumptions = [
+        "Факт агрегирован по выбранному SKU и текущему периоду фильтра.",
+        "Комиссия и эквайринг применяются как доля цены после СПП.",
+        "Логистика, хранение, приёмка, продвижение и штрафы фиксированы на единицу.",
+        "Расчёт является оценкой и не изменяет отчёт, WB или 1С.",
+    ]
+    changed_inputs = [
+        name
+        for name, changed in (
+            ("priceBeforeSpp", request.priceBeforeSpp is not None),
+            ("sppRate", request.sppRate is not None),
+            ("unitCost", overrides.unitCost is not None),
+            ("commissionRate", overrides.commissionRate is not None),
+            ("acquiringRate", overrides.acquiringRate is not None),
+            ("logisticsPerUnit", overrides.logisticsPerUnit is not None),
+            ("storagePerUnit", overrides.storagePerUnit is not None),
+            ("acceptancePerUnit", overrides.acceptancePerUnit is not None),
+            ("promotionPerUnit", overrides.promotionPerUnit is not None),
+            ("penaltiesPerUnit", overrides.penaltiesPerUnit is not None),
+        )
+        if changed
+    ]
+    if changed_inputs:
+        assumptions.append(
+            "Пользователь изменил: " + ", ".join(changed_inputs) + "."
+        )
+    if context["taxStatus"] == "missing":
+        assumptions.append(
+            "Налоговый профиль не подтверждён: показатели после налогов не рассчитаны."
+        )
+    elif context["taxStatus"] == "review":
+        assumptions.append(
+            "Налоговый профиль используется read-only, но полнота налогового "
+            "результата на единицу требует проверки."
+        )
+    if (
+        context["taxProfile"].get("vatMode") not in {None, "none"}
+        and context["taxStatus"] != "missing"
+    ):
+        assumptions.append(
+            "Входящий НДС товара на единицу сохранён из факта, а НДС услуг WB "
+            "пересчитан по сценарным расходам."
+        )
+    if context["dataStatus"] != "ready":
+        assumptions.append(
+            "Качество исходных данных требует проверки; статус сохранён в результате."
+        )
+
+    response: dict[str, Any] = {
+        "resultKind": "estimate",
+        "calculationStatus": "ready",
+        "fact": context["fact"],
+        "scenario": None,
+        "delta": None,
+        "targetPrice": None,
+        "breakEvenPrice": None,
+        "assumptions": assumptions,
+        "missingInputs": sorted(set(missing_inputs)),
+        "dataStatus": context["dataStatus"],
+        "taxStatus": context["taxStatus"],
+        "taxProfile": context["taxProfile"],
+        "sourcePeriod": context["sourcePeriod"],
+        "methodologyVersion": context["methodologyVersion"],
+        "changedInputs": changed_inputs,
+    }
+    if context["netQty"] <= 0:
+        response["calculationStatus"] = "blocked_quantity"
+        return response
+    if missing_inputs:
+        response["calculationStatus"] = "missing_inputs"
+        return response
+
+    def required_value(name: str) -> Decimal:
+        value = values[name]
+        if value is None:
+            raise ValueError(f"{public_names[name]} is required")
+        return value
+
+    scenario_inputs = MarginScenarioInputs(
+        price_before_spp=required_value("price_before_spp"),
+        spp_rate=required_value("spp_rate"),
+        unit_cost=required_value("unit_cost"),
+        commission_rate=required_value("commission_rate"),
+        acquiring_rate=required_value("acquiring_rate"),
+        logistics_per_unit=required_value("logistics_per_unit"),
+        storage_per_unit=required_value("storage_per_unit"),
+        acceptance_per_unit=required_value("acceptance_per_unit"),
+        promotion_per_unit=required_value("promotion_per_unit"),
+        penalties_per_unit=required_value("penalties_per_unit"),
+    )
+    calculation_kwargs = {
+        "tax_profile": context["_taxProfile"],
+        "product_input_vat_per_unit": context["productInputVatPerUnit"],
+        "vat_input_available": context["vatInputAvailable"],
+        "vat_input_completeness": context["vatInputCompleteness"],
+        "methodology_version": context["methodologyVersion"],
+    }
+    break_even = solve_price_for_margin(
+        scenario_inputs,
+        Decimal("0"),
+        **calculation_kwargs,
+    )
+    response["breakEvenPrice"] = (
+        float(break_even.price)
+        if break_even.status == "ready" and break_even.price is not None
+        else None
+    )
+    target_solution = None
+    if request.mode == "target_price":
+        if request.targetMargin is None:
+            raise ValueError("targetMargin is required")
+        target_solution = solve_price_for_margin(
+            scenario_inputs,
+            request.targetMargin,
+            **calculation_kwargs,
+        )
+        if (
+            target_solution.status != "ready"
+            or target_solution.result is None
+            or target_solution.price is None
+        ):
+            response["calculationStatus"] = "unattainable"
+            return response
+        scenario_result = target_solution.result
+        response["targetPrice"] = float(target_solution.price)
+    else:
+        scenario_result = calculate_margin_scenario(
+            scenario_inputs,
+            **calculation_kwargs,
+        )
+
+    response["scenario"] = margin_scenario_payload(scenario_result)
+    fact = context["fact"]
+    scenario = response["scenario"]
+
+    def difference(key: str) -> float | None:
+        scenario_value = scenario.get(key)
+        fact_value = fact.get(key)
+        if scenario_value is None or fact_value is None:
+            return None
+        return round(float(scenario_value) - float(fact_value), 4)
+
+    response["delta"] = {
+        "priceBeforeSpp": difference("priceBeforeSpp"),
+        "priceAfterSpp": difference("priceAfterSpp"),
+        "profitBeforeTax": difference("profitBeforeTax"),
+        "margin": difference("margin"),
+        "profitAfterTaxes": difference("profitAfterTaxes"),
+        "marginAfterTaxes": difference("marginAfterTaxes"),
+    }
+    response["taxStatus"] = scenario_result.tax_status
+    if (
+        scenario_result.tax_status == "review"
+        and context["taxStatus"] == "ready"
+    ):
+        assumptions.append(
+            "Налоговый профиль подтверждён, но не все налоги распределены "
+            "на единицу; результат после учтённых налогов требует проверки."
+        )
+    return response
 
 
 def _workflow_period(value: str) -> date:
@@ -4705,6 +5102,22 @@ def _require_staff_or_403(user: User, tenant_id: str) -> None:
         repository.require_staff(user, tenant_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="staff role required") from exc
+
+
+def _require_unit_economics_calculator_access_or_404(
+    user: User,
+    tenant_id: str,
+    settings: WebSettings,
+) -> None:
+    is_staff = repository.has_role(user, repository.STAFF_ROLES, tenant_id)
+    allowed = settings.unit_economics_calculator_enabled and (
+        is_staff or settings.unit_economics_calculator_client_enabled
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=404,
+            detail="unit economics calculator not found",
+        )
 
 
 def _require_logistics_access_or_404(

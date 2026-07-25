@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -9,10 +12,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
+from pydantic import ValidationError
 from sqlalchemy import event, select, text
 
 from wb_unit_economics.logistics_analysis import (
@@ -36,7 +42,11 @@ from wb_unit_economics.wb_goods_return import normalize_goods_return_source_row
 from wb_unit_economics.wb_return_claims import normalize_claim_source_row
 from wb_unit_economics.web import dashboard_payload, integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
-from wb_unit_economics.web.app import create_app
+from wb_unit_economics.web.app import (
+    UnitEconomicsCalculateRequest,
+    _unit_economics_calculation_payload,
+    create_app,
+)
 from wb_unit_economics.web.dashboard_payload import (
     analysis_period_text,
     document_reconciliation_rows,
@@ -1449,6 +1459,401 @@ def login_as(client: TestClient, email: str, password: str) -> None:
         json={"email": email, "password": password},
     )
     assert response.status_code == 200
+
+
+@asynccontextmanager
+async def calculator_asgi_client(
+    client: TestClient,
+    *,
+    email: str = "admin@example.com",
+    password: str = "secret",
+) -> AsyncIterator[httpx.AsyncClient]:
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as asgi_client:
+        response = await asgi_client.post(
+            "/api/auth/login",
+            json={"email": email, "password": password},
+        )
+        assert response.status_code == 200
+        yield asgi_client
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"rowId": "unit-1", "vatRate": 22},
+        {"rowId": "unit-1", "overrides": {"incomeTaxRate": 0.13}},
+        {"rowId": "unit-1", "scheme": "DBS"},
+    ),
+)
+def test_unit_economics_calculator_rejects_invalid_or_undeclared_inputs(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        UnitEconomicsCalculateRequest.model_validate(payload)
+
+
+def test_unit_economics_calculator_builds_read_only_payload_without_http(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        before = [
+            (
+                row.row_uid,
+                row.revenue,
+                row.profit_before_tax,
+                tuple(row.source_snapshot_hashes),
+            )
+            for row in db.scalars(
+                select(repository.ReportUnitRow).where(
+                    repository.ReportUnitRow.report_run_id == report.id
+                )
+            )
+        ]
+        context = repository.unit_economics_calculator_context(
+            db,
+            report,
+            row_id="unit-1",
+            period_start=date(2026, 4, 1),
+            period_end=date(2026, 4, 30),
+        )
+        payload = _unit_economics_calculation_payload(
+            context,
+            UnitEconomicsCalculateRequest.model_validate(
+                {
+                    "rowId": "unit-1",
+                    "periodStart": "2026-04-01",
+                    "periodEnd": "2026-04-30",
+                    "mode": "target_price",
+                    "targetMargin": 0.2,
+                    "sppRate": 0.1,
+                    "overrides": {"unitCost": 5000},
+                }
+            ),
+        )
+        unattainable = _unit_economics_calculation_payload(
+            context,
+            UnitEconomicsCalculateRequest.model_validate(
+                {
+                    "rowId": "unit-1",
+                    "mode": "target_price",
+                    "targetMargin": 0.98,
+                    "sppRate": 0.1,
+                    "overrides": {"unitCost": 5000},
+                }
+            ),
+        )
+        after = [
+            (
+                row.row_uid,
+                row.revenue,
+                row.profit_before_tax,
+                tuple(row.source_snapshot_hashes),
+            )
+            for row in db.scalars(
+                select(repository.ReportUnitRow).where(
+                    repository.ReportUnitRow.report_run_id == report.id
+                )
+            )
+        ]
+        assert not db.new
+        assert not db.dirty
+        assert not db.deleted
+
+    assert payload["resultKind"] == "estimate"
+    assert payload["calculationStatus"] == "ready"
+    assert payload["targetPrice"] is not None
+    assert payload["scenario"] is not None
+    assert abs(payload["scenario"]["margin"] - 0.2) <= 0.0001
+    assert payload["breakEvenPrice"] is not None
+    assert unattainable["calculationStatus"] == "unattainable"
+    assert unattainable["targetPrice"] is None
+    assert unattainable["breakEvenPrice"] is not None
+    assert after == before
+
+
+def test_unit_economics_calculator_endpoint_enforces_flag_and_tenant_without_http(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    endpoint = next(
+        route.endpoint
+        for route in client.app.routes
+        if getattr(route, "path", "")
+        == "/api/reports/{report_id}/unit-economics/calculate"
+        and "POST" in getattr(route, "methods", set())
+    )
+    request = UnitEconomicsCalculateRequest.model_validate(
+        {
+            "rowId": "unit-1",
+            "periodStart": "2026-04-01",
+            "periodEnd": "2026-04-30",
+            "mode": "scenario",
+            "priceBeforeSpp": 10000,
+            "sppRate": 0.1,
+            "overrides": {"unitCost": 5000},
+        }
+    )
+    with client.app.state.session_factory() as db:
+        admin = db.query(repository.User).filter_by(email="admin@example.com").one()
+        with pytest.raises(HTTPException) as disabled_error:
+            endpoint(
+                report_id="report-1",
+                payload=request,
+                current=admin,
+                db=db,
+            )
+        assert disabled_error.value.status_code == 404
+
+        client.app.state.settings.unit_economics_calculator_enabled = True
+        payload = endpoint(
+            report_id="report-1",
+            payload=request,
+            current=admin,
+            db=db,
+        )
+        assert payload["calculationStatus"] == "ready"
+
+        repository.ensure_tenant(db, "foreign-tenant", "Foreign tenant")
+        foreign_user = repository.upsert_user(
+            db,
+            email="foreign-calculator@example.com",
+            password="secret",
+            tenant_id="foreign-tenant",
+            role="admin",
+        )
+        db.commit()
+        with pytest.raises(HTTPException) as tenant_error:
+            endpoint(
+                report_id="report-1",
+                payload=request,
+                current=foreign_user,
+                db=db,
+            )
+        assert tenant_error.value.status_code == 404
+
+
+def test_unit_economics_calculator_is_staff_flagged_and_read_only(
+    tmp_path: Path,
+) -> None:
+    disabled_path = tmp_path / "disabled"
+    enabled_path = tmp_path / "enabled"
+    disabled_path.mkdir()
+    enabled_path.mkdir()
+    disabled = make_client(disabled_path)
+    path = "/api/reports/report-1/unit-economics/calculate"
+    request = {
+        "rowId": "unit-1",
+        "periodStart": "2026-04-01",
+        "periodEnd": "2026-04-30",
+        "mode": "scenario",
+        "priceBeforeSpp": 10000,
+        "sppRate": 0.1,
+        "overrides": {"unitCost": 5000},
+    }
+
+    async def disabled_request() -> int:
+        async with calculator_asgi_client(disabled) as client:
+            return (await client.post(path, json=request)).status_code
+
+    assert asyncio.run(disabled_request()) == 404
+
+    enabled = make_client(
+        enabled_path,
+        settings_overrides={"unit_economics_calculator_enabled": True},
+    )
+    login(enabled)
+    with enabled.app.state.session_factory() as db:
+        before = [
+            (
+                row.row_uid,
+                row.revenue,
+                row.profit_before_tax,
+                tuple(row.source_snapshot_hashes),
+            )
+            for row in db.scalars(
+                select(repository.ReportUnitRow).where(
+                    repository.ReportUnitRow.report_run_id == "report-1"
+                )
+            )
+        ]
+
+    async def enabled_requests() -> tuple[httpx.Response, httpx.Response]:
+        async with calculator_asgi_client(enabled) as client:
+            response = await client.post(path, json=request)
+            me_response = await client.get("/api/me")
+            return response, me_response
+
+    response, me_response = asyncio.run(enabled_requests())
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resultKind"] == "estimate"
+    assert payload["calculationStatus"] == "ready"
+    assert payload["fact"]["rowId"] == "unit-1"
+    assert payload["scenario"]["priceAfterSpp"] == 9000
+    assert payload["scenario"]["profitBeforeTax"] is not None
+    assert payload["scenario"]["profitAfterTaxes"] is None
+    assert payload["taxStatus"] == "missing"
+    assert payload["changedInputs"] == ["priceBeforeSpp", "sppRate", "unitCost"]
+    assert payload["breakEvenPrice"] is not None
+    assert me_response.json()["unitEconomicsCalculatorEnabled"] is True
+
+    with enabled.app.state.session_factory() as db:
+        after = [
+            (
+                row.row_uid,
+                row.revenue,
+                row.profit_before_tax,
+                tuple(row.source_snapshot_hashes),
+            )
+            for row in db.scalars(
+                select(repository.ReportUnitRow).where(
+                    repository.ReportUnitRow.report_run_id == "report-1"
+                )
+            )
+        ]
+    assert after == before
+
+
+def test_unit_economics_calculator_reports_missing_cost_and_bad_scope(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"unit_economics_calculator_enabled": True},
+    )
+    path = "/api/reports/report-1/unit-economics/calculate"
+
+    async def requests() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        async with calculator_asgi_client(client) as asgi_client:
+            missing = await asgi_client.post(
+                path,
+                json={
+                    "rowId": "unit-2",
+                    "periodStart": "2026-06-01",
+                    "periodEnd": "2026-06-17",
+                    "mode": "scenario",
+                },
+            )
+            wrong_row = await asgi_client.post(
+                path,
+                json={
+                    "rowId": "does-not-exist",
+                    "periodStart": "2026-04-01",
+                    "periodEnd": "2026-04-30",
+                },
+            )
+            wrong_period = await asgi_client.post(
+                path,
+                json={
+                    "rowId": "unit-1",
+                    "periodStart": "2025-01-01",
+                    "periodEnd": "2026-04-30",
+                },
+            )
+            return missing, wrong_row, wrong_period
+
+    missing, wrong_row, wrong_period = asyncio.run(requests())
+    assert missing.status_code == 200
+    assert missing.json()["calculationStatus"] == "missing_inputs"
+    assert "unitCost" in missing.json()["missingInputs"]
+    assert wrong_row.status_code == 404
+    assert wrong_period.status_code == 422
+
+
+def test_unit_economics_calculator_client_flag_and_target_price(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "unit_economics_calculator_enabled": True,
+            "unit_economics_calculator_client_enabled": False,
+        },
+    )
+    with client.app.state.session_factory() as db:
+        repository.upsert_user(
+            db,
+            email="calculator-client@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="client",
+        )
+        db.commit()
+    path = "/api/reports/report-1/unit-economics/calculate"
+    request = {
+        "rowId": "unit-1",
+        "periodStart": "2026-04-01",
+        "periodEnd": "2026-04-30",
+        "mode": "target_price",
+        "targetMargin": 0.2,
+        "sppRate": 0.1,
+        "overrides": {"unitCost": 5000},
+    }
+
+    async def client_requests() -> tuple[int, bool]:
+        async with calculator_asgi_client(
+            client,
+            email="calculator-client@example.com",
+        ) as asgi_client:
+            response = await asgi_client.post(path, json=request)
+            me_response = await asgi_client.get("/api/me")
+            return (
+                response.status_code,
+                me_response.json()["unitEconomicsCalculatorEnabled"],
+            )
+
+    status_code, enabled_for_client = asyncio.run(client_requests())
+    assert status_code == 404
+    assert enabled_for_client is False
+
+    client.app.state.settings.unit_economics_calculator_client_enabled = True
+
+    async def enabled_client_requests() -> tuple[httpx.Response, httpx.Response]:
+        async with calculator_asgi_client(
+            client,
+            email="calculator-client@example.com",
+        ) as asgi_client:
+            response = await asgi_client.post(path, json=request)
+            me_response = await asgi_client.get("/api/me")
+            return response, me_response
+
+    response, me_response = asyncio.run(enabled_client_requests())
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["calculationStatus"] == "ready"
+    assert payload["targetPrice"] is not None
+    assert abs(payload["scenario"]["margin"] - 0.2) <= 0.0001
+    assert me_response.json()["unitEconomicsCalculatorEnabled"] is True
+
+
+def test_unit_economics_calculator_rejects_ozon_report(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"unit_economics_calculator_enabled": True},
+    )
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        report.lineage_type = repository.OZON_DRAFT_LINEAGE_TYPE
+        db.commit()
+
+    async def request() -> httpx.Response:
+        async with calculator_asgi_client(client) as asgi_client:
+            return await asgi_client.post(
+                "/api/reports/report-1/unit-economics/calculate",
+                json={"rowId": "unit-1"},
+            )
+
+    response = asyncio.run(request())
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "unsupported_marketplace"
 
 
 def _ensure_logistics_dimensions(
@@ -5988,10 +6393,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260725-logistics-financial-link-v1"
+        "20260725-margin-calculator-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260725-logistics-financial-link-v1"
+        "20260725-margin-calculator-v1"
     )
 
     page = client.get("/")
@@ -6144,8 +6549,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260725-logistics-financial-link-v1" in cabinet.text
-    assert "app.js?v=20260725-logistics-financial-link-v1" in cabinet.text
+    assert "styles.css?v=20260725-margin-calculator-v1" in cabinet.text
+    assert "app.js?v=20260725-margin-calculator-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6529,7 +6934,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260725-logistics-financial-link-v1" in cabinet.text
+    assert "20260725-margin-calculator-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(

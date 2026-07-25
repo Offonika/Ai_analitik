@@ -33,6 +33,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, aliased
 
 from wb_unit_economics.calculation import (
+    METHODOLOGY_VERSION,
+    VAT_INPUT_SERVICE_INCLUDED_RATIO,
+    money,
+    ratio,
     tax_profile_is_configured,
     tax_profile_is_confirmed,
     tax_profile_is_osno,
@@ -23682,6 +23686,317 @@ def _report_row_sort_expressions() -> dict[str, Any]:
         "documentReport": sortable_text(ReportUnitRow.document_report),
         "wbReportId": sortable_text(ReportUnitRow.wb_report_id),
         "wbReportDate": sortable_text(ReportUnitRow.wb_report_date),
+    }
+
+
+def unit_economics_calculator_context(
+    db: Session,
+    report: ReportRun,
+    *,
+    row_id: str,
+    period_start: date,
+    period_end: date,
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+) -> dict[str, Any]:
+    if report.lineage_type == OZON_DRAFT_LINEAGE_TYPE:
+        raise ValueError("unsupported_marketplace")
+    anchor = db.scalar(
+        select(ReportUnitRow).where(
+            ReportUnitRow.report_run_id == report.id,
+            ReportUnitRow.row_uid == row_id,
+        )
+    )
+    if anchor is None:
+        raise LookupError("report row not found")
+
+    effective_cabinet = wb_cabinet_id.strip() or anchor.wb_cabinet_id or anchor.cabinet
+    effective_company = (
+        client_company_id.strip()
+        or anchor.client_company_id
+        or anchor.organization
+    )
+    effective_scheme = scheme.strip() or anchor.scheme
+    conditions: list[Any] = [ReportUnitRow.report_run_id == report.id]
+    period_condition = _row_period_condition(report, period_start, period_end)
+    if period_condition is not None:
+        conditions.append(period_condition)
+    if effective_cabinet:
+        conditions.append(
+            or_(
+                ReportUnitRow.wb_cabinet_id == effective_cabinet,
+                ReportUnitRow.cabinet == effective_cabinet,
+            )
+        )
+    if effective_company:
+        conditions.append(
+            or_(
+                ReportUnitRow.client_company_id == effective_company,
+                ReportUnitRow.organization == effective_company,
+            )
+        )
+    if effective_scheme:
+        conditions.append(ReportUnitRow.scheme == effective_scheme)
+
+    identity_field = "row_uid"
+    identity_value = anchor.row_uid
+    if anchor.nm_id.strip():
+        identity_field = "nm_id"
+        identity_value = anchor.nm_id.strip()
+        conditions.append(ReportUnitRow.nm_id == identity_value)
+    elif anchor.article_wb.strip():
+        identity_field = "article_wb"
+        identity_value = anchor.article_wb.strip()
+        conditions.append(ReportUnitRow.article_wb == identity_value)
+    elif anchor.barcode.strip():
+        identity_field = "barcode"
+        identity_value = anchor.barcode.strip()
+        conditions.append(ReportUnitRow.barcode == identity_value)
+    else:
+        conditions.append(ReportUnitRow.row_uid == anchor.row_uid)
+
+    rows = list(
+        db.scalars(
+            select(ReportUnitRow)
+            .where(*conditions)
+            .order_by(ReportUnitRow.id.asc())
+        )
+    )
+    if not rows or all(row.row_uid != anchor.row_uid for row in rows):
+        raise LookupError("report row not found in calculator scope")
+
+    def total(field: str) -> Decimal:
+        return sum(
+            (Decimal(getattr(row, field) or 0) for row in rows),
+            Decimal("0"),
+        )
+
+    net_qty = total("net_qty")
+    revenue_before_spp = money(total("revenue_before_spp"))
+    spp_amount = money(total("spp"))
+    revenue_after_spp = money(total("revenue"))
+    pnl_revenue = money(
+        sum(
+            (
+                Decimal(row.revenue_without_vat or 0)
+                if row.pnl_vat_mode == PNL_VAT_MODE_WITHOUT_VAT_FOR_OSNO
+                else Decimal(row.revenue or 0)
+                for row in rows
+            ),
+            Decimal("0"),
+        )
+    )
+    cost = money(total("cost"))
+    commission = money(total("commission"))
+    logistics = money(total("logistics"))
+    storage = money(total("storage"))
+    acceptance = money(total("acceptance"))
+    promotion = money(total("promotion"))
+    penalties = money(total("penalties"))
+    acquiring = money(total("acquiring"))
+    profit_before_tax = money(total("profit_before_tax"))
+    profit_after_taxes = money(total("profit"))
+    vat_output = money(total("vat_output"))
+    vat_input = money(total("vat_input"))
+    vat_payable = money(total("vat_payable"))
+
+    def per_unit(value: Decimal) -> Decimal | None:
+        return money(value / net_qty) if net_qty > 0 else None
+
+    spp_statuses = {str(row.spp_status or "").strip() for row in rows}
+    spp_missing = any(
+        marker in status.casefold()
+        for status in spp_statuses
+        for marker in ("не передается", "missing", "не найден")
+    )
+    cost_markers = " ".join(
+        f"{row.cost_match_status} {row.status} {row.status_reason}" for row in rows
+    ).casefold()
+    cost_missing = any(
+        marker in cost_markers
+        for marker in (
+            "missing_cost",
+            "себестоимость не",
+            "нет себестоимости",
+            "cost missing",
+        )
+    ) or (all(row.unit_cost is None for row in rows) and cost == 0)
+    unit_cost = None if cost_missing else per_unit(cost)
+    spp_rate = (
+        None
+        if spp_missing or revenue_before_spp <= 0
+        else ratio(spp_amount, revenue_before_spp)
+    )
+    price_before_spp = per_unit(revenue_before_spp)
+    price_after_spp = per_unit(revenue_after_spp)
+    commission_rate = (
+        ratio(commission, revenue_after_spp) if revenue_after_spp > 0 else None
+    )
+    acquiring_rate = (
+        ratio(acquiring, revenue_after_spp) if revenue_after_spp > 0 else None
+    )
+
+    company = db.get(ClientCompany, anchor.client_company_id)
+    report_refresh_run = _latest_financial_onec_refresh_run(db, report)
+    tax_profile, tax_profile_state = resolve_company_tax_profile(
+        db,
+        company=company,
+        calculation_date=period_end,
+        refresh_run=report_refresh_run,
+    )
+    tax_profile_supported = bool(
+        tax_profile is not None and tax_profile_is_confirmed(tax_profile)
+    )
+    tax_status = (
+        "ready"
+        if tax_profile_supported
+        and tax_profile_state.get("status") in {"ready", "override"}
+        else "missing"
+    )
+    service_gross = (
+        commission + logistics + storage + acceptance + promotion + acquiring
+    )
+    service_input_vat = (
+        money(service_gross * VAT_INPUT_SERVICE_INCLUDED_RATIO)
+        if tax_profile is not None and tax_profile_is_osno(tax_profile)
+        else Decimal("0")
+    )
+    product_input_vat_per_unit = (
+        per_unit(max(vat_input - service_input_vat, Decimal("0")))
+        or Decimal("0")
+    )
+    vat_input_completeness_values = {
+        str(row.vat_input_completeness or "").strip().casefold() for row in rows
+    }
+    vat_input_available = not any(
+        value in {"", "missing"} or "missing" in value
+        for value in vat_input_completeness_values
+    )
+    vat_input_priority = {
+        "confirmed": 0,
+        "management_assumption": 10,
+        "partial": 20,
+        "missing": 30,
+        "mismatch": 40,
+        "": 30,
+    }
+    vat_input_completeness = max(
+        vat_input_completeness_values or {"missing"},
+        key=lambda value: vat_input_priority.get(value, 20),
+    )
+    if tax_status == "ready" and (
+        (tax_profile is not None and tax_profile_is_osno(tax_profile))
+        or vat_input_completeness != "confirmed"
+    ):
+        tax_status = "review"
+
+    quality_text = " ".join(
+        f"{row.status} {row.status_reason} {row.cost_match_status}" for row in rows
+    ).casefold()
+    if net_qty <= 0:
+        data_status = "blocked"
+    elif "partial" in quality_text or "неполн" in quality_text:
+        data_status = "partial"
+    elif any(
+        marker in quality_text
+        for marker in ("ambiguous", "missing", "не найден", "провер")
+    ):
+        data_status = "needs_review"
+    else:
+        data_status = "ready"
+
+    def decimal_value(value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+    fact = {
+        "rowId": anchor.row_uid,
+        "product": anchor.product,
+        "nmId": anchor.nm_id,
+        "articleWb": anchor.article_wb,
+        "article1c": anchor.article_1c,
+        "barcode": anchor.barcode,
+        "scheme": effective_scheme,
+        "rowCount": len(rows),
+        "netQty": decimal_value(net_qty),
+        "priceBeforeSpp": decimal_value(price_before_spp),
+        "sppRate": decimal_value(spp_rate),
+        "priceAfterSpp": decimal_value(price_after_spp),
+        "pnlRevenue": decimal_value(per_unit(pnl_revenue)),
+        "unitCost": decimal_value(unit_cost),
+        "commission": decimal_value(per_unit(commission)),
+        "commissionRate": decimal_value(commission_rate),
+        "logistics": decimal_value(per_unit(logistics)),
+        "storage": decimal_value(per_unit(storage)),
+        "acceptance": decimal_value(per_unit(acceptance)),
+        "promotion": decimal_value(per_unit(promotion)),
+        "penalties": decimal_value(per_unit(penalties)),
+        "acquiring": decimal_value(per_unit(acquiring)),
+        "acquiringRate": decimal_value(acquiring_rate),
+        "profitBeforeTax": decimal_value(per_unit(profit_before_tax)),
+        "margin": decimal_value(ratio(profit_before_tax, pnl_revenue)),
+        "vatOutput": decimal_value(per_unit(vat_output)),
+        "vatInput": decimal_value(per_unit(vat_input)),
+        "vatPayable": decimal_value(per_unit(vat_payable)),
+        "profitAfterTaxes": decimal_value(per_unit(profit_after_taxes)),
+        "marginAfterTaxes": decimal_value(ratio(profit_after_taxes, pnl_revenue)),
+        "status": anchor.status,
+        "statusReason": anchor.status_reason,
+        "sppStatus": "; ".join(sorted(value for value in spp_statuses if value)),
+    }
+    defaults = {
+        "price_before_spp": price_before_spp,
+        "spp_rate": spp_rate,
+        "unit_cost": unit_cost,
+        "commission_rate": commission_rate,
+        "acquiring_rate": acquiring_rate,
+        "logistics_per_unit": per_unit(logistics),
+        "storage_per_unit": per_unit(storage),
+        "acceptance_per_unit": per_unit(acceptance),
+        "promotion_per_unit": per_unit(promotion),
+        "penalties_per_unit": per_unit(penalties),
+    }
+    safe_tax_profile = {
+        "status": tax_status,
+        "taxSystem": tax_profile.tax_system if tax_profile is not None else None,
+        "vatRate": (
+            decimal_value(tax_profile.vat_rate) if tax_profile is not None else None
+        ),
+        "vatMode": (
+            tax_profile.vat_mode.value if tax_profile is not None else None
+        ),
+        "revenueTaxRate": (
+            decimal_value(tax_profile.revenue_tax_rate)
+            if tax_profile is not None
+            else None
+        ),
+        "incomeTaxKind": (
+            tax_profile.income_tax_kind if tax_profile is not None else None
+        ),
+        "source": tax_profile_state.get("source", "missing"),
+        "message": tax_profile_state.get("message", ""),
+    }
+    return {
+        "fact": fact,
+        "defaults": defaults,
+        "taxProfile": safe_tax_profile,
+        "taxStatus": tax_status,
+        "dataStatus": data_status,
+        "sourcePeriod": {
+            "periodStart": period_start.isoformat(),
+            "periodEnd": period_end.isoformat(),
+            "wbCabinetId": effective_cabinet,
+            "clientCompanyId": effective_company,
+            "scheme": effective_scheme,
+            "identityField": identity_field,
+            "identityValue": identity_value,
+        },
+        "methodologyVersion": report.methodology_version or METHODOLOGY_VERSION,
+        "netQty": net_qty,
+        "productInputVatPerUnit": product_input_vat_per_unit,
+        "vatInputAvailable": vat_input_available,
+        "vatInputCompleteness": vat_input_completeness,
+        "_taxProfile": tax_profile if tax_profile_supported else None,
     }
 
 

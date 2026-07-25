@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260725-logistics-financial-link-v1"
+      content="20260725-margin-calculator-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="/static/icons/chart-bar.svg" type="image/svg+xml" />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260725-logistics-financial-link-v1"
+      href="/static/styles.css?v=20260725-margin-calculator-v1"
     />
     <link
       rel="stylesheet"
@@ -3060,6 +3060,136 @@
       </div>
 
       <div
+        id="margin-calculator-overlay"
+        class="widget-overlay margin-calculator-overlay"
+        aria-labelledby="margin-calculator-title"
+        aria-modal="true"
+        role="dialog"
+        hidden
+      >
+        <section class="panel widget-shell margin-calculator-widget">
+          <div class="panel-header widget-header">
+            <div>
+              <p class="eyebrow">Сценарный расчёт · <span class="estimate-label">Оценка</span></p>
+              <h2 id="margin-calculator-title">Калькулятор маржинальности WB</h2>
+              <p id="margin-calculator-subtitle" class="muted">
+                Факт остаётся неизменным. Сценарий ничего не записывает в WB или 1С.
+              </p>
+            </div>
+            <button
+              id="margin-calculator-close"
+              type="button"
+              class="secondary-button"
+              aria-label="Закрыть калькулятор маржинальности"
+            >
+              Закрыть
+            </button>
+          </div>
+          <div class="margin-calculator-body">
+            <section class="margin-calculator-fact" aria-labelledby="margin-fact-title">
+              <div class="margin-section-heading">
+                <div>
+                  <p class="eyebrow">Фактические данные</p>
+                  <h3 id="margin-fact-title">Факт</h3>
+                </div>
+                <span id="margin-calculator-data-status" class="table-badge neutral">Загрузка</span>
+              </div>
+              <div id="margin-calculator-fact-grid" class="margin-result-grid"></div>
+              <p id="margin-calculator-source" class="muted margin-calculator-source"></p>
+            </section>
+
+            <form id="margin-calculator-form" class="margin-calculator-form">
+              <div class="margin-section-heading">
+                <div>
+                  <p class="eyebrow">Изменяемые допущения</p>
+                  <h3>Параметры</h3>
+                </div>
+              </div>
+              <div class="margin-mode-switch">
+                <label>
+                  Режим
+                  <select id="margin-calculator-mode" name="mode">
+                    <option value="scenario">Что если</option>
+                    <option value="target_price">Цена под целевую маржу</option>
+                  </select>
+                </label>
+                <label id="margin-target-field" hidden>
+                  Целевая маржа, %
+                  <input
+                    id="margin-target-margin"
+                    name="targetMargin"
+                    type="number"
+                    min="-99"
+                    max="99"
+                    step="0.01"
+                    value="25"
+                  />
+                </label>
+              </div>
+              <div class="margin-input-grid">
+                <label>
+                  Цена до СПП, ₽
+                  <input id="margin-price-before-spp" type="number" min="0.01" step="0.01" required />
+                </label>
+                <label>
+                  СПП, %
+                  <input id="margin-spp-rate" type="number" min="0" max="99" step="0.01" required />
+                </label>
+                <label>
+                  Себестоимость на единицу, ₽
+                  <input id="margin-unit-cost" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Комиссия, %
+                  <input id="margin-commission-rate" type="number" min="0" max="99" step="0.01" required />
+                </label>
+                <label>
+                  Эквайринг, %
+                  <input id="margin-acquiring-rate" type="number" min="0" max="99" step="0.01" required />
+                </label>
+                <label>
+                  Логистика на единицу, ₽
+                  <input id="margin-logistics" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Хранение на единицу, ₽
+                  <input id="margin-storage" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Приёмка на единицу, ₽
+                  <input id="margin-acceptance" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Продвижение на единицу, ₽
+                  <input id="margin-promotion" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Штрафы на единицу, ₽
+                  <input id="margin-penalties" type="number" min="0" step="0.01" required />
+                </label>
+              </div>
+              <div class="margin-calculator-actions">
+                <p id="margin-calculator-status" class="muted" role="status"></p>
+                <button id="margin-calculator-submit" type="submit">Рассчитать</button>
+              </div>
+            </form>
+
+            <section class="margin-calculator-scenario" aria-labelledby="margin-scenario-title">
+              <div class="margin-section-heading">
+                <div>
+                  <p class="eyebrow">Расчётный результат · <span class="estimate-label">Оценка</span></p>
+                  <h3 id="margin-scenario-title">Сценарий</h3>
+                </div>
+              </div>
+              <div id="margin-calculator-scenario-grid" class="margin-result-grid"></div>
+              <div id="margin-calculator-waterfall" class="margin-waterfall"></div>
+              <ul id="margin-calculator-assumptions" class="margin-assumptions"></ul>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <div
         id="drilldown-widget-overlay"
         class="widget-overlay drilldown-widget-overlay"
         aria-labelledby="drilldown-title"
@@ -3160,9 +3290,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260725-logistics-financial-link-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260725-logistics-financial-link-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260725-logistics-financial-link-v1" defer></script>
-    <script src="/static/app.js?v=20260725-logistics-financial-link-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260725-margin-calculator-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260725-margin-calculator-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260725-margin-calculator-v1" defer></script>
+    <script src="/static/app.js?v=20260725-margin-calculator-v1" defer></script>
   </body>
 </html>
