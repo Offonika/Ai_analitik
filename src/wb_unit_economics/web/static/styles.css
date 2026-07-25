@@ -2866,6 +2866,185 @@ button.action-insight-card {
   box-shadow: 0 24px 70px color-mix(in srgb, var(--text), transparent 72%);
 }
 
+.margin-calculator-widget {
+  width: min(1320px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: auto;
+}
+
+.margin-calculator-body {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.8fr) minmax(340px, 1fr) minmax(290px, 1fr);
+  gap: 18px;
+  padding-top: 8px;
+}
+
+.margin-calculator-body > section,
+.margin-calculator-form {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+}
+
+.margin-section-heading,
+.margin-calculator-actions,
+.margin-mode-switch {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.margin-section-heading h3,
+.margin-section-heading p {
+  margin: 0;
+}
+
+.estimate-label {
+  color: var(--review);
+  font-weight: 850;
+}
+
+.margin-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.margin-result-card {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--soft, #f6f7f8);
+}
+
+.margin-result-card span,
+.margin-waterfall-row span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.margin-result-card strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.margin-calculator-source {
+  margin: 14px 0 0;
+  line-height: 1.45;
+}
+
+.margin-calculator-form,
+.margin-input-grid,
+.margin-mode-switch label {
+  display: grid;
+  gap: 12px;
+}
+
+.margin-input-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.margin-input-grid label,
+.margin-mode-switch label {
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.margin-input-grid input,
+.margin-mode-switch input,
+.margin-mode-switch select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-weight: 700;
+}
+
+.margin-input-grid input.is-changed,
+.margin-mode-switch input.is-changed {
+  border-color: var(--review);
+  background: var(--review-bg, #fff8e8);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--review), transparent 78%);
+}
+
+.margin-calculator-actions {
+  align-items: center;
+  margin-top: 4px;
+}
+
+.margin-calculator-actions p {
+  margin: 0;
+}
+
+.margin-waterfall {
+  display: grid;
+  gap: 0;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.margin-waterfall-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.margin-waterfall-row:last-child {
+  border-bottom: 0;
+}
+
+.margin-waterfall-row strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.margin-assumptions {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.product-cell-content {
+  display: grid;
+  gap: 8px;
+}
+
+.margin-calculator-open {
+  width: fit-content;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--brand), transparent 60%);
+  background: var(--brand-bg);
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.report-rows-table th:first-child,
+.report-rows-table td:first-child {
+  min-width: 250px;
+  max-width: 320px;
+}
+
 .ai-widget {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
@@ -5581,6 +5760,26 @@ td {
 
   .widget-shell {
     max-height: calc(100vh - 20px);
+  }
+
+  .margin-calculator-widget {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .margin-calculator-body {
+    grid-template-columns: 1fr;
+  }
+
+  .margin-input-grid,
+  .margin-result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .margin-mode-switch,
+  .margin-calculator-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .ai-widget {

@@ -129,7 +129,8 @@ updated_at: "2026-07-25"
 | `GET` | `/api/reports/{report_id}/scenario` | `report_scenario_api_reports__report_id__scenario_get` | Report Scenario |
 | `GET` | `/api/reports/{report_id}/sku/{sku}` | `sku_card_api_reports__report_id__sku__sku__get` | Sku Card |
 | `GET` | `/api/reports/{report_id}/summary` | `report_summary_api_reports__report_id__summary_get` | Report Summary |
+| `POST` | `/api/reports/{report_id}/unit-economics/calculate` | `calculate_report_unit_economics_api_reports__report_id__unit_economics_calculate_post` | Calculate Report Unit Economics |
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **111**.
+Всего маршрутов: **112**.
