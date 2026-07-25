@@ -46,9 +46,10 @@ accepted
 
 Код `C-1` собран 25 июля 2026 года за двумя выключенными по умолчанию
 feature flags. Unit/static и прямые endpoint/repository/payload проверки
-пройдены;
-включение на test, browser-smoke и production rollout не выполнялись и требуют
-отдельного датированного evidence по runbook.
+пройдены. Staff-only test rollout выполнен 25 июля 2026 года: master-флаг
+включён отдельным versioned drop-in, client-флаг остался выключен. Local/public
+health и safety smoke пройдены; authenticated browser-smoke на контрольных
+товарах и production rollout не выполнялись.
 
 Тарифный калькулятор по спеку идёт после фактического MVP и опирается на тарифы
 и габариты второй очереди (`WP-5 Факторы`,
@@ -420,6 +421,11 @@ Rollback отключает метод `calculate` и блок калькуля�
 
 # Changelog
 
+- 2026-07-25 — выполнен staff-only test rollout release
+  `runtime-b6683d0-margin-calculator-staff-test-20260725`; client-флаг
+  калькулятора и production остались без изменений. Health, build parity,
+  protected endpoint, runtime drift и неизменность production подтверждены;
+  authenticated browser-smoke остаётся следующим шагом приёмки.
 - 2026-07-25 — код `C-1` собран за выключенными staff/client flags: общий
   waterfall отчёта и калькулятора, Decimal solver, tenant-scoped API context,
   модальное окно факт/параметры/сценарий, явные статусы и read-only проверки.

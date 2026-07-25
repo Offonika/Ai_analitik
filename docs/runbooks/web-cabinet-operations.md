@@ -847,6 +847,47 @@ Rollback: установить оба флага `false` и перезапуст
 скрываются как 404/невидимый UI; компенсация не требуется, потому что сценарии
 не сохраняются и отчёт/внешние системы не меняются.
 
+### Operational evidence C-1 staff-only test — 25 июля 2026 года
+
+Из точного commit `b6683d0cd5c66983cecbe4885efae0875c3ab083` собран
+immutable release
+`runtime-b6683d0-margin-calculator-staff-test-20260725`; manifest подтверждает
+`sourceDirty=false` и content SHA-256
+`f4a13230c0b37579ca3d68e8deded02053e5c3991ddfbb3146dd01457e877703`.
+Test symlink атомарно переключён с
+`runtime-main-13a28af-logistics-financial-link-v1-20260725`, установлен
+versioned staff-only drop-in и перезапущен только
+`shumeiko-web-test.service`.
+
+После переключения:
+
+- local и public test `/api/health` вернули `status=ok`,
+  `runtimeEnvironment=test` и совпадающие
+  `backendBuildId=staticBuildId=20260725-margin-calculator-v1`;
+- systemd ExecStart подтвердил
+  `SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_ENABLED=true` и
+  `SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=false`;
+- публичные `/cabinet` и `/static/app.js` содержат новый build и действие
+  `Рассчитать маржу`;
+- local/public POST калькулятора без авторизации вернул 401, `/api/reports`
+  без авторизации — 401, `/.env` — 404;
+- штатный `shumeiko-web-test-health.service` завершился с `Result=success`;
+- `scripts/check_runtime_contour_drift.py` не нашёл расхождений;
+- production остался на
+  `runtime-main-880a214-cost-quality-split-20260724`, PID `3466421` не
+  изменился, production health сохранил `status=ok`.
+
+Authenticated browser-smoke и сверка контрольных товаров не объявляются
+выполненными: их проводит staff через test UI. До этой приёмки client-флаг
+калькулятора и production rollout запрещены.
+
+Rollback C-1: удалить только
+`/etc/systemd/system/shumeiko-web-test.service.d/zzzz-unit-economics-calculator-staff-test.conf`,
+атомарно вернуть test symlink на
+`runtime-main-13a28af-logistics-financial-link-v1-20260725`, выполнить
+`systemctl daemon-reload`, перезапустить только `shumeiko-web-test.service` и
+повторить local/public health и safety smoke.
+
 ## Staff-ready анализ логистики
 
 Code defaults остаются выключенными:
