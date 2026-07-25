@@ -206,7 +206,7 @@ documents:
     status: "accepted"
     audience: ["engineering", "consultant"]
     source_of_truth: false
-    summary: "Accepted C-1 собран в коде за выключенными flags: read-only калькулятор маржинальности WB с факт/сценарием и подбором цены; test/production rollout не выполнен, тарифный калькулятор логистики остаётся следующей очередью."
+    summary: "Accepted C-1: read-only калькулятор маржинальности WB опубликован staff-only на test, client-флаг выключен; authenticated browser acceptance и production rollout не выполнены, тарифный калькулятор логистики остаётся следующей очередью."
     read_when: "Проектируются калькуляторы маржинальности или логистики WB: сценарный расчёт, целевая цена, методы calculate, метка Оценка, сравнение факт/сценарий или зависимость от тарифов."
     search_terms: ["калькулятор маржинальности", "целевая цена", "калькулятор логистики", "маржинальный доход", "сценарный расчёт", "unit economics calculate", "оценка"]
   - path: "docs/specs/client-analytical-report-implementation.md"
