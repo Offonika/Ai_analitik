@@ -3164,14 +3164,14 @@
               </div>
               <div class="margin-mode-switch">
                 <label>
-                  Режим
+                  <span class="margin-field-label">Режим</span>
                   <select id="margin-calculator-mode" name="mode">
                     <option value="scenario">Что если</option>
                     <option value="target_price">Цена под целевую маржу</option>
                   </select>
                 </label>
                 <label id="margin-target-field" hidden>
-                  Целевая маржа, %
+                  <span class="margin-field-label">Целевая маржа, %</span>
                   <input
                     id="margin-target-margin"
                     name="targetMargin"
@@ -3183,45 +3183,49 @@
                   />
                 </label>
               </div>
+              <p class="margin-calculator-hint">
+                Фактические значения уже подставлены. Измените только то, что
+                хотите проверить.
+              </p>
               <div class="margin-input-grid">
                 <label>
-                  Цена до СПП, ₽
+                  <span class="margin-field-label">Цена до СПП, ₽</span>
                   <input id="margin-price-before-spp" type="number" min="0.01" step="0.01" required />
                 </label>
                 <label>
-                  СПП, %
+                  <span class="margin-field-label">СПП, %</span>
                   <input id="margin-spp-rate" type="number" min="0" max="99" step="0.01" required />
                 </label>
                 <label>
-                  Себестоимость на единицу, ₽
-                  <input id="margin-unit-cost" type="number" min="0" step="0.01" required />
-                </label>
-                <label>
-                  Комиссия, %
+                  <span class="margin-field-label">Комиссия WB, %</span>
                   <input id="margin-commission-rate" type="number" min="0" max="99" step="0.01" required />
                 </label>
                 <label>
-                  Эквайринг, %
+                  <span class="margin-field-label">Эквайринг, %</span>
                   <input id="margin-acquiring-rate" type="number" min="0" max="99" step="0.01" required />
                 </label>
                 <label>
-                  Логистика на единицу, ₽
+                  <span class="margin-field-label">Себестоимость, ₽/шт.</span>
+                  <input id="margin-unit-cost" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  <span class="margin-field-label">Логистика, ₽/шт.</span>
                   <input id="margin-logistics" type="number" min="0" step="0.01" required />
                 </label>
                 <label>
-                  Хранение на единицу, ₽
+                  <span class="margin-field-label">Хранение, ₽/шт.</span>
                   <input id="margin-storage" type="number" min="0" step="0.01" required />
                 </label>
                 <label>
-                  Приёмка на единицу, ₽
+                  <span class="margin-field-label">Приёмка, ₽/шт.</span>
                   <input id="margin-acceptance" type="number" min="0" step="0.01" required />
                 </label>
                 <label>
-                  Продвижение на единицу, ₽
+                  <span class="margin-field-label">Продвижение, ₽/шт.</span>
                   <input id="margin-promotion" type="number" min="0" step="0.01" required />
                 </label>
                 <label>
-                  Штрафы на единицу, ₽
+                  <span class="margin-field-label">Штрафы, ₽/шт.</span>
                   <input id="margin-penalties" type="number" min="0" step="0.01" required />
                 </label>
               </div>

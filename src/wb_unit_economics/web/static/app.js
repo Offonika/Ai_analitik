@@ -18091,8 +18091,16 @@ function openMarginCalculator(item) {
   ].filter(Boolean).join(" · ");
   els.marginCalculatorStatus.textContent = "Загружаем фактические параметры…";
   els.marginCalculatorDataStatus.textContent = "Загрузка";
-  els.marginCalculatorFactGrid.replaceChildren();
-  els.marginCalculatorScenarioGrid.replaceChildren();
+  renderMarginCalculatorEmptyState(
+    els.marginCalculatorFactGrid,
+    "Загружаем текущие значения",
+    "Цена, себестоимость и расходы подставятся автоматически.",
+  );
+  renderMarginCalculatorEmptyState(
+    els.marginCalculatorScenarioGrid,
+    "Готовим сценарий",
+    "Результат появится после загрузки факта.",
+  );
   els.marginCalculatorWaterfall.replaceChildren();
   els.marginCalculatorAssumptions.replaceChildren();
   openWidgetOverlay(els.marginCalculatorOverlay);
@@ -18112,6 +18120,7 @@ function syncMarginCalculatorMode() {
   const targetMode = els.marginCalculatorMode.value === "target_price";
   els.marginTargetField.hidden = !targetMode;
   els.marginTargetMargin.required = targetMode;
+  els.marginCalculatorForm.classList.toggle("is-target-mode", targetMode);
 }
 
 function marginCalculatorPeriod() {
@@ -18283,6 +18292,20 @@ async function calculateMarginScenario(options = {}) {
     if (requestId !== state.marginCalculatorRequestId) {
       return;
     }
+    if (initial) {
+      els.marginCalculatorDataStatus.textContent = "Не загрузилось";
+      els.marginCalculatorDataStatus.className = "table-badge status-blocked";
+      renderMarginCalculatorEmptyState(
+        els.marginCalculatorFactGrid,
+        "Не удалось загрузить факт",
+        "Закройте окно, обновите страницу и попробуйте ещё раз.",
+      );
+      renderMarginCalculatorEmptyState(
+        els.marginCalculatorScenarioGrid,
+        "Сценарий недоступен",
+        "Сначала должны загрузиться фактические значения.",
+      );
+    }
     els.marginCalculatorStatus.textContent =
       error.message || "Не удалось рассчитать сценарий.";
   } finally {
@@ -18360,7 +18383,11 @@ function renderMarginCalculator(payload) {
   ].join(" · ");
 
   if (!payload.scenario) {
-    els.marginCalculatorScenarioGrid.replaceChildren();
+    renderMarginCalculatorEmptyState(
+      els.marginCalculatorScenarioGrid,
+      "Сценарий пока недоступен",
+      "Проверьте обязательные параметры и статус данных.",
+    );
     els.marginCalculatorWaterfall.replaceChildren();
   } else {
     renderMarginMetricGrid(els.marginCalculatorScenarioGrid, [
@@ -18418,6 +18445,17 @@ function renderMarginCalculator(payload) {
   els.marginCalculatorStatus.textContent =
     statusMessages[payload.calculationStatus] || "Расчёт завершён.";
   markChangedMarginInputs();
+}
+
+function renderMarginCalculatorEmptyState(target, title, description) {
+  const stateNode = document.createElement("div");
+  stateNode.className = "margin-empty-state";
+  const titleNode = document.createElement("strong");
+  titleNode.textContent = title;
+  const descriptionNode = document.createElement("span");
+  descriptionNode.textContent = description;
+  stateNode.append(titleNode, descriptionNode);
+  target.replaceChildren(stateNode);
 }
 
 function renderMarginMetricGrid(target, metrics) {
