@@ -23,23 +23,24 @@ accepted-спецификацию. При расхождении следова�
 не подтверждают фактическое состояние test или production.
 
 На test развернут immutable release
-`runtime-main-2332a34-mapping-alias-fallback-20260725`, build
-`20260724-logistics-tax-integration-v1`, schema
+`runtime-main-13a28af-logistics-financial-link-v1-20260725`, build
+`20260725-logistics-financial-link-v1`, schema
 `2026_07_23_logistics_return_reasons_context_v1`. Health имеет `status=ok`.
 Установлен staff-only R-5 drop-in; R-6 client drop-in отсутствует. Effective
 test flags подтверждают `client login=false`, master F-1…F-5 `true`, client
-F-1…F-5 `false`. Базовый logistics context текущего опубликованного отчёта
-имеет `ready`, contexts F-1…F-5 — явный `partial`; активный source refresh
-отсутствует. Client-role логистику видеть не должен.
+F-1…F-5 `false`. Новый неопубликованный immutable draft построен по методике
+`wb-logistics-v6`: базовый logistics context имеет `ready`, contexts F-1…F-5 —
+явный `partial`; активный source refresh отсутствует. Client-role логистику
+видеть не должен.
 
-Текущий test Excel зарегистрирован со статусом `ready`, а зарегистрированные
-артефакты существуют на диске. Реальные report IDs, source hashes, объёмы,
-пути к артефактам и клиентские строки в Git не фиксируются: их повторно
-получают из локальных runtime/БД во время acceptance. Live-диагностика
-financial link установила два разных класса: неполные граничные недели ошибочно
-получали `missing_profit_link`, а исторический кластер совпадает по
-product/week/cabinet/company и расходится только по схеме
-`not_applicable` против нормализованной схемы финансового отчёта.
+Excel нового draft зарегистрирован со статусом `ready` и существует на диске;
+прежний published/current report не переписывался. Реальные report IDs, source
+hashes, объёмы, пути к артефактам и клиентские строки в Git не фиксируются: их
+повторно получают из локальных runtime/БД во время acceptance. На новом draft
+обе неполные границы имеют `partial_week`, апрельский scheme-only кластер
+связывается exact alias `not_applicable → fbo`, а live-фильтр
+`missing_profit_link` возвращает пустой срез. Настоящий missing link продолжает
+fail-closed покрываться regression-тестами.
 
 Production остаётся на
 `runtime-main-880a214-cost-quality-split-20260724`, build
@@ -55,12 +56,12 @@ Production остаётся на
 Продолжи работу в /opt/shumeyko-partners-wb-unit-economics по WB-логистике v6.
 Сначала запусти compact route для scope `logistics-cost-analysis` и проверь
 операционное состояние в этом runbook. Test фактически staff-only: client login
-и client flags F-1…F-5 выключены, master flags включены. Исправление должно
-отделить partial boundary week от настоящего missing_profit_link, применять
-только exact alias not_applicable -> FBO для финансовой связи и фильтровать
-затронутые товары внутри логистики. Реальные identifiers/hashes/данные в Git не
-переносить. Новый immutable report и test rollout выполнять только после CI;
-client enable и production logistics без отдельного решения не выполнять.
+и client flags F-1…F-5 выключены, master flags включены. Исправление
+partial-week, exact alias not_applicable -> FBO и products-фильтр уже влиты,
+развернуты на test и прошли staff API/browser acceptance на новом
+неопубликованном draft. Реальные identifiers/hashes/данные в Git не переносить.
+Client enable, публикацию draft и production logistics без отдельных решений
+не выполнять.
 ```
 
 # Текущее состояние
@@ -72,24 +73,21 @@ client enable и production logistics без отдельного решения
   влито через PR №50. Test runtime собран из точного merge-коммита PR №50 с
   `sourceDirty=false`.
 - Test runtime переключён на
-  `runtime-main-2332a34-mapping-alias-fallback-20260725`.
+  `runtime-main-13a28af-logistics-financial-link-v1-20260725`.
 - Test health подтверждает `runtimeEnvironment=test`, совпадающие backend/static
-  build `20260724-logistics-tax-integration-v1`, schema
+  build `20260725-logistics-financial-link-v1`, schema
   `2026_07_23_logistics_return_reasons_context_v1` и `status=ok`.
 - На test установлен только tracked R-5 staff-only drop-in: client login
   выключен, master flags F-1…F-5 включены, client flags F-1…F-5 выключены.
   Code defaults не считаются environment evidence.
-- Текущий опубликованный test-report имеет базовый logistics context `ready` и
-  contexts F-1…F-5 `partial`; активный source refresh отсутствует. Client-role
-  логистику не видит.
-- Financial-link диагностика текущего test-report выявила ложный
-  `missing_profit_link` на неполных границах и отдельный scheme-only разрыв
-  `not_applicable` против FBO в финансовом отчёте. Идентификаторы, объёмы и
-  реальные строки в runbook не сохраняются.
-- Новый immutable draft создан из сохраненных verified snapshots без повторного
-  внешнего чтения после локальной runtime-ошибки. Measurement context имеет
-  `partial`, source и mart reconciliation пройдены, blocking reasons пусты.
-  Справочные удержания не включены в финансовые KPI до однозначной сверки.
+- Новый неопубликованный test-draft имеет базовый logistics context `ready`,
+  contexts F-1…F-5 `partial`, зарегистрированный готовый Excel и отдельную
+  immutable lineage. Прежний published/current report не менялся; активный
+  source refresh отсутствует. Client-role логистику не видит.
+- Live-acceptance нового draft подтвердил `partial_week` на обеих границах,
+  exact апрельскую связь `not_applicable → fbo`, nullable финансовые KPI на
+  неполных границах и пустой live-срез `missing_profit_link`. Идентификаторы,
+  объёмы и реальные строки в runbook не сохраняются.
 - Staff read-only API и интерфейс F-4 были приняты до исторического client
   rollout. После фактического rollback client-role снова получает 404 и не
   выполняет logistics requests; старые контексты staff-интерфейса честно
@@ -843,32 +841,63 @@ deployment и без write-операций во внешние системы:
 После исправлений полный набор завершён результатом `723 passed`; пять
 предупреждений относятся к deprecation в Starlette/ChatKit dependencies.
 
+# Operational evidence v6 financial link на test — 25 июля 2026 года
+
+Исправление влито через PR №78; отдельный cache-busting build — через PR №79.
+На обоих PR и на итоговом merge-коммите `main` обязательные jobs `quality` и
+`tests` завершились успешно. Из точного merge-коммита `13a28af` собран
+immutable release
+`runtime-main-13a28af-logistics-financial-link-v1-20260725`; manifest
+подтверждает `sourceDirty=false`. Атомарно переключён и перезапущен только test.
+Первый health oneshot попал в короткую гонку до открытия порта; повторный
+штатный health, локальный и публичный `/api/health` вернули `status=ok`,
+test environment, совпадающий build
+`20260725-logistics-financial-link-v1` и прежнюю schema.
+
+Dry-run full refresh завершился явным `needs_review` mapping gate без внешнего
+чтения. Первая фактическая попытка fail-closed остановилась до external read,
+поскольку test enqueue не должен запускать production worker unit. Следующий
+foreground run успешно сохранил read-only snapshots, но не создал report:
+rebuild был ошибочно запущен из immutable runtime и получил безопасный
+`PermissionError` на относительный writable-каталог `data`. Новый run выполнен
+из `/data/shumeyko/test/worker`, автоматически использовал совместимый
+checkpoint и создал отдельный immutable draft с итоговым `needs_review`.
+Для завершения ресурсоёмкого rebuild только у transient test unit временно
+подняты `MemoryHigh/MemoryMax` до `4G/5G`; постоянные unit-файлы не менялись.
+
+Обезличенный DB/API/browser audit подтвердил:
+
+- draft не опубликован и отличен от прежнего published/current report;
+- Excel зарегистрирован со статусом `ready` и существует в test-root;
+- базовый logistics context `ready`, F-1…F-5 имеют явный `partial`;
+- обе неполные границы имеют `partial_week`, nullable financial KPI и не
+  получают `restore_profit_link`;
+- все апрельские полные недели не имеют `missing_profit_link`, а строки
+  `not_applicable` получают exact FBO financial link;
+- live products-фильтр `missing_profit_link` возвращает пустой срез;
+  настоящий missing link остаётся fail-closed в regression-покрытии;
+- staff API, F-1…F-5 и browser-smoke 1440×900/390×844 прошли без overflow,
+  console/page/network errors или stale/zero fallback;
+- client login возвращает 401, а client session получает 404 для логистики и
+  F-1…F-5; client flags не включались;
+- временные acceptance users деактивированы, пароли сброшены, sessions
+  удалены; active source refresh отсутствует;
+- production runtime, service, report, flags и внешние интеграции не менялись.
+
+Реальные report/source identifiers, source hashes, объёмы, суммы, пути к
+артефактам, client rows, credentials и screenshots в Git не переносились.
+
 # Следующий этап
 
-Обновление 2026-07-25: test фактически возвращён в staff-only режим. Текущий
-исправительный пакет повышает базовую методику до `wb-logistics-v6`, отделяет
-partial boundary week от настоящего financial-link дефекта и вводит только
-exact scheme-alias `not_applicable → fbo`. Общий операционный чеклист факторов —
-`docs/runbooks/wb-logistics-factors-probe.md`.
-
-1. Завершить spec/code/tests для partial-week, scheme-only financial link и
-   products-фильтра `missing_profit_link`.
-2. Прогнать Ruff, релевантные тесты и пять документационных валидаторов.
-3. Создать PR и дождаться фактического завершения обоих blocking jobs:
-   `quality` и `tests`; отсутствующий или зависший job не считать успешным.
-4. Только после CI собрать новый immutable runtime из merge-коммита, применить
-   его только на test и создать новый report run; существующий immutable report
-   на месте не переписывать.
-5. Повторить staff API/browser acceptance: полные недели, обе неполные границы,
-   настоящий missing link, действие фильтра, desktop/mobile и отсутствие
-   stale/zero fallback.
-6. Реальные report IDs, source hashes, объёмы и client rows держать только в
-   локальной БД/runtime; в Git/Markdown фиксировать лишь обезличенный результат
-   проверок.
-7. Client rollout на test и любой logistics rollout на production выполнять
-   только как отдельные решения. Append-only публикацию не собирать ручным
-   копированием строк; для неё требуется отдельное accepted изменение
-   контракта.
+1. Новый v6 draft остаётся staff-only и неопубликованным. Публикация требует
+   отдельного решения с явным принятием его `needs_review` source states.
+2. Client rollout на test выполнять только отдельным решением; текущий
+   staff-only drop-in и все client-флаги сохраняются.
+3. Любой logistics rollout на production выполнять отдельно; production report
+   по-прежнему не требует logistics contexts.
+4. Append-only публикацию не собирать ручным копированием строк. Если
+   требование ещё актуально, сначала принять отдельное изменение
+   спецификации/контракта.
 
 # Что не входит в текущий этап
 
