@@ -888,6 +888,39 @@ Rollback C-1: удалить только
 `systemctl daemon-reload`, перезапустить только `shumeiko-web-test.service` и
 повторить local/public health и safety smoke.
 
+### Corrective rollout C-1: factual prefill — 25 июля 2026 года
+
+После staff-проверки исправлена совместимость с историческими русскоязычными
+значениями схемы продаж. UI передаёт фильтр схемы только для канонических
+`FBO`/`FBS`; при legacy-значении backend использует схему безопасно выбранной
+строки. Поэтому первоначальный read-only POST больше не завершается 422, блок
+`Факт` выходит из состояния загрузки, а текущие цена, СПП, себестоимость и
+расходы автоматически подставляются в редактируемые сценарные поля.
+
+Из точного commit `9fb3ad0558a544294c438faf80619ab1b3e733ef` собран
+immutable release
+`runtime-9fb3ad0-margin-calculator-prefill-v2-20260725`; manifest подтверждает
+`sourceDirty=false` и content SHA-256
+`80ae2831e9c7e9980e84ed0280984610cc9fd04d4489b31464d8c0a9b0a00cf9`.
+Атомарно переключён и перезапущен только test.
+
+После corrective rollout:
+
+- local и public test `/api/health` вернули `status=ok`,
+  `runtimeEnvironment=test` и совпадающие
+  `backendBuildId=staticBuildId=20260725-margin-calculator-v2`;
+- публичный `/static/app.js` содержит нормализацию схемы и вызов
+  автоматической подстановки фактических значений;
+- systemd ExecStart сохранил staff-only конфигурацию:
+  master-флаг включён, client-флаг выключен;
+- штатный `shumeiko-web-test-health.service` завершился с `Result=success`;
+- production остался на
+  `runtime-main-880a214-cost-quality-split-20260724`, PID `3466421` не
+  изменился.
+
+Authenticated проверка конкретного товара остаётся действием staff через test
+UI. Production и client-флаг corrective rollout не затрагивал.
+
 ## Staff-ready анализ логистики
 
 Code defaults остаются выключенными:
