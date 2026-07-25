@@ -5988,10 +5988,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260724-logistics-tax-integration-v1"
+        "20260725-logistics-financial-link-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260724-logistics-tax-integration-v1"
+        "20260725-logistics-financial-link-v1"
     )
 
     page = client.get("/")
@@ -6144,8 +6144,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260724-logistics-tax-integration-v1" in cabinet.text
-    assert "app.js?v=20260724-logistics-tax-integration-v1" in cabinet.text
+    assert "styles.css?v=20260725-logistics-financial-link-v1" in cabinet.text
+    assert "app.js?v=20260725-logistics-financial-link-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -6529,7 +6529,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260724-logistics-tax-integration-v1" in cabinet.text
+    assert "20260725-logistics-financial-link-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
