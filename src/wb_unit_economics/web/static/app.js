@@ -79,6 +79,7 @@ const state = {
   logisticsProducts: [],
   logisticsProductsTotal: 0,
   logisticsProductsOffset: 0,
+  logisticsProductsExpanded: false,
   logisticsProductsSortBy: "logisticsTotal",
   logisticsProductsSortDirection: "desc",
   logisticsProductsDataQualityStatus: "",
@@ -123,6 +124,7 @@ const state = {
   logisticsOrdersRequestId: 0,
   logisticsSelectedProductRef: "",
   logisticsSelectedProductLabel: "",
+  logisticsFactorDetailRequestId: 0,
   logisticsBusy: false,
   workspace: "overview",
   checkView: "summary",
@@ -897,6 +899,26 @@ function init() {
     els.logisticsProductFilter.focus();
   });
   els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
+  bindLogisticsFactorDisclosure(
+    els.logisticsDimensionsSection,
+    loadLogisticsDimensions,
+  );
+  bindLogisticsFactorDisclosure(
+    els.logisticsMeasurementsSection,
+    loadLogisticsMeasurements,
+  );
+  bindLogisticsFactorDisclosure(
+    els.logisticsReturnReasonsSection,
+    loadLogisticsReturnReasons,
+  );
+  bindLogisticsFactorDisclosure(
+    els.logisticsTariffsSection,
+    loadLogisticsTariffs,
+  );
+  bindLogisticsFactorDisclosure(
+    els.logisticsRoutesSection,
+    loadLogisticsRoutes,
+  );
   els.logisticsProductsPrev?.addEventListener("click", () => {
     if (state.logisticsProductsOffset <= 0) {
       return;
@@ -908,6 +930,11 @@ function init() {
     loadLogisticsAnalysis({ force: true });
   });
   els.logisticsProductsNext?.addEventListener("click", () => {
+    if (!state.logisticsProductsExpanded) {
+      state.logisticsProductsExpanded = true;
+      renderLogisticsProducts(state.logisticsProducts);
+      return;
+    }
     if (
       state.logisticsProductsOffset + state.logisticsProducts.length >=
       state.logisticsProductsTotal
@@ -1370,6 +1397,17 @@ function setRemoteTableSortState(table, sortKey, direction) {
   } else {
     window.SortableTables.clearSortState(table);
   }
+}
+
+function bindLogisticsFactorDisclosure(section, loader) {
+  if (!(section instanceof HTMLDetailsElement)) {
+    return;
+  }
+  section.addEventListener("toggle", () => {
+    if (section.open) {
+      loader({ force: true, view: "grouped" });
+    }
+  });
 }
 
 function syncRemoteTableSortState() {
@@ -5847,6 +5885,7 @@ function logisticsFilterParams(extra = {}) {
 
 function resetLogisticsSlicePagination() {
   state.logisticsProductsOffset = 0;
+  state.logisticsProductsExpanded = false;
   state.logisticsDimensionsOffset = 0;
   state.logisticsMeasurementsOffset = 0;
   state.logisticsTariffsOffset = 0;
@@ -5970,19 +6009,19 @@ async function loadLogisticsAnalysis(options = {}) {
     renderLogisticsWorkspace();
     await Promise.all([
       logisticsFactorsAvailable()
-        ? loadLogisticsDimensions({ force: sliceChanged })
+        ? loadLogisticsDimensions({ force: sliceChanged, view: "summary" })
         : Promise.resolve(resetLogisticsDimensions({ hide: true })),
       logisticsMeasurementsAvailable()
-        ? loadLogisticsMeasurements({ force: sliceChanged })
+        ? loadLogisticsMeasurements({ force: sliceChanged, view: "summary" })
         : Promise.resolve(resetLogisticsMeasurements({ hide: true })),
       logisticsTariffsAvailable()
-        ? loadLogisticsTariffs({ force: sliceChanged })
+        ? loadLogisticsTariffs({ force: sliceChanged, view: "summary" })
         : Promise.resolve(resetLogisticsTariffs({ hide: true })),
       logisticsRoutesAvailable()
-        ? loadLogisticsRoutes({ force: sliceChanged })
+        ? loadLogisticsRoutes({ force: sliceChanged, view: "summary" })
         : Promise.resolve(resetLogisticsRoutes({ hide: true })),
       logisticsReturnReasonsAvailable()
-        ? loadLogisticsReturnReasons({ force: sliceChanged })
+        ? loadLogisticsReturnReasons({ force: sliceChanged, view: "summary" })
         : Promise.resolve(resetLogisticsReturnReasons({ hide: true })),
     ]);
   } catch (error) {
@@ -6021,11 +6060,14 @@ async function loadLogisticsDimensions(options = {}) {
     return;
   }
   const reportId = state.reportId;
+  const view = options.view
+    || (els.logisticsDimensionsSection.open ? "grouped" : "summary");
   const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsDimensionsSortBy,
     sortOrder: state.logisticsDimensionsSortDirection,
     offset: state.logisticsDimensionsOffset,
     limit: LOGISTICS_PAGE_SIZE,
+    view,
   });
   const requestKey = `${reportId}?${params}`;
   if (!options.force && requestKey === state.logisticsDimensionsRequestKey) {
@@ -6076,11 +6118,14 @@ async function loadLogisticsMeasurements(options = {}) {
     return;
   }
   const reportId = state.reportId;
+  const view = options.view
+    || (els.logisticsMeasurementsSection.open ? "grouped" : "summary");
   const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsMeasurementsSortBy,
     sortOrder: state.logisticsMeasurementsSortDirection,
     offset: state.logisticsMeasurementsOffset,
     limit: LOGISTICS_PAGE_SIZE,
+    view,
   });
   const requestKey = `${reportId}?${params}`;
   if (!options.force && requestKey === state.logisticsMeasurementsRequestKey) {
@@ -6131,11 +6176,14 @@ async function loadLogisticsTariffs(options = {}) {
     return;
   }
   const reportId = state.reportId;
+  const view = options.view
+    || (els.logisticsTariffsSection.open ? "grouped" : "summary");
   const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsTariffsSortBy,
     sortOrder: state.logisticsTariffsSortDirection,
     offset: state.logisticsTariffsOffset,
     limit: LOGISTICS_PAGE_SIZE,
+    view,
   });
   const requestKey = `${reportId}?${params}`;
   if (!options.force && requestKey === state.logisticsTariffsRequestKey) {
@@ -6186,11 +6234,14 @@ async function loadLogisticsRoutes(options = {}) {
     return;
   }
   const reportId = state.reportId;
+  const view = options.view
+    || (els.logisticsRoutesSection.open ? "grouped" : "summary");
   const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsRoutesSortBy,
     sortOrder: state.logisticsRoutesSortDirection,
     offset: state.logisticsRoutesOffset,
     limit: LOGISTICS_PAGE_SIZE,
+    view,
   });
   const requestKey = `${reportId}?${params}`;
   if (!options.force && requestKey === state.logisticsRoutesRequestKey) {
@@ -6241,11 +6292,14 @@ async function loadLogisticsReturnReasons(options = {}) {
     return;
   }
   const reportId = state.reportId;
+  const view = options.view
+    || (els.logisticsReturnReasonsSection.open ? "grouped" : "summary");
   const params = logisticsAnalysisFilterParams({
     sortBy: state.logisticsReturnReasonsSortBy,
     sortOrder: state.logisticsReturnReasonsSortDirection,
     offset: state.logisticsReturnReasonsOffset,
     limit: LOGISTICS_PAGE_SIZE,
+    view,
   });
   const requestKey = `${reportId}?${params}`;
   if (
@@ -6336,6 +6390,7 @@ function resetLogisticsReportState() {
   state.logisticsProducts = [];
   state.logisticsProductsTotal = 0;
   state.logisticsProductsOffset = 0;
+  state.logisticsProductsExpanded = false;
   state.logisticsProductsDataQualityStatus = "";
   state.logisticsDimensionsOffset = 0;
   state.logisticsMeasurementsOffset = 0;
@@ -6349,6 +6404,7 @@ function resetLogisticsReportState() {
   state.logisticsRequestKey = "";
   state.logisticsRequestId += 1;
   state.logisticsOrdersRequestId += 1;
+  state.logisticsFactorDetailRequestId += 1;
   state.logisticsSelectedProductRef = "";
   state.logisticsSelectedProductLabel = "";
   state.logisticsBusy = false;
@@ -6362,6 +6418,7 @@ function resetLogisticsDimensions(options = {}) {
   if (!els.logisticsDimensionsSection) {
     return;
   }
+  els.logisticsDimensionsSection.open = false;
   els.logisticsDimensionsSection.hidden = Boolean(options.hide);
   els.logisticsDimensionsStatus.textContent = "Данные ещё не загружены.";
   els.logisticsDimensionsStatus.dataset.status = "empty";
@@ -6384,6 +6441,7 @@ function resetLogisticsMeasurements(options = {}) {
   if (!els.logisticsMeasurementsSection) {
     return;
   }
+  els.logisticsMeasurementsSection.open = false;
   els.logisticsMeasurementsSection.hidden = Boolean(options.hide);
   els.logisticsMeasurementsStatus.textContent = "Данные ещё не загружены.";
   els.logisticsMeasurementsStatus.dataset.status = "empty";
@@ -6406,6 +6464,7 @@ function resetLogisticsTariffs(options = {}) {
   if (!els.logisticsTariffsSection) {
     return;
   }
+  els.logisticsTariffsSection.open = false;
   els.logisticsTariffsSection.hidden = Boolean(options.hide);
   els.logisticsTariffsStatus.textContent = "Данные ещё не загружены.";
   els.logisticsTariffsStatus.dataset.status = "empty";
@@ -6428,6 +6487,7 @@ function resetLogisticsRoutes(options = {}) {
   if (!els.logisticsRoutesSection) {
     return;
   }
+  els.logisticsRoutesSection.open = false;
   els.logisticsRoutesSection.hidden = Boolean(options.hide);
   els.logisticsRoutesStatus.textContent = "Данные ещё не загружены.";
   els.logisticsRoutesStatus.dataset.status = "empty";
@@ -6450,6 +6510,7 @@ function resetLogisticsReturnReasons(options = {}) {
   if (!els.logisticsReturnReasonsSection) {
     return;
   }
+  els.logisticsReturnReasonsSection.open = false;
   els.logisticsReturnReasonsSection.hidden = Boolean(options.hide);
   els.logisticsReturnReasonsStatus.textContent = "Данные ещё не загружены.";
   els.logisticsReturnReasonsStatus.dataset.status = "empty";
@@ -6553,7 +6614,11 @@ function renderLogisticsWorkspace() {
       status === "empty"
         ? "Измените или сбросьте фильтры. Пустой срез не подменяется нулевыми KPI."
         : status === "needs_rebuild"
-        ? "В отчёте есть юнит-экономика, но нет проверенных order/SKU mart. Нужна новая ревизия на снимке WB; отсутствующие суммы не подменяются нулями."
+        ? (
+          "В отчёте есть юнит-экономика, но нет проверенной витрины "
+          + "заказов и товаров. Нужна новая ревизия на снимке WB; "
+          + "отсутствующие суммы не подменяются нулями."
+        )
         : "Обязательная сверка источника не пройдена. После исправления данных создайте новую ревизию отчёта.";
     if (status === "empty") {
       els.logisticsStateAction.hidden = false;
@@ -6567,7 +6632,7 @@ function renderLogisticsWorkspace() {
       els.logisticsComponents,
       status === "needs_rebuild"
         ? "Старый отчёт не достраивается незаметно. Сначала создайте новую ревизию."
-        : "Компоненты не показываются до прохождения gate.",
+        : "Компоненты не показываются до завершения обязательной сверки.",
     );
     renderLogisticsEmpty(els.logisticsDynamics, "Нет проверенной динамики.");
     renderLogisticsRecommendations(asArray(summary.recommendations));
@@ -6619,7 +6684,7 @@ function renderLogisticsWorkspace() {
       signedMoney(kpis.logisticsTotal),
       `${number(kpis.orderCount)} цепочек · ${signedMoney(kpis.logisticsPerOrder)} на заказ`,
       "",
-      "Сумма deliveryService в выбранном срезе.",
+      "Сумма услуг доставки из финансового отчёта WB.",
     ],
     [
       "Доля в выручке",
@@ -6869,7 +6934,23 @@ function renderLogisticsDynamics(rows) {
 }
 
 function renderLogisticsRecommendations(items) {
-  if (!items.length) {
+  const uniqueItems = [];
+  const seen = new Set();
+  items
+    .slice()
+    .sort(
+      (left, right) =>
+        Number(left.priority || 100) - Number(right.priority || 100),
+    )
+    .forEach((item) => {
+      const key = item.actionTarget || item.code || item.title;
+      if (!key || seen.has(key) || uniqueItems.length >= 3) {
+        return;
+      }
+      seen.add(key);
+      uniqueItems.push(item);
+    });
+  if (!uniqueItems.length) {
     const item = document.createElement("li");
     item.className = "logistics-recommendation is-empty";
     item.textContent = "В выбранном срезе нет рекомендаций по рассчитанным фактам.";
@@ -6877,7 +6958,7 @@ function renderLogisticsRecommendations(items) {
     return;
   }
   els.logisticsRecommendations.replaceChildren(
-    ...items.map((recommendation) => {
+    ...uniqueItems.map((recommendation) => {
       const item = document.createElement("li");
       item.className = "logistics-recommendation";
       const priority = document.createElement("span");
@@ -6904,6 +6985,7 @@ function renderLogisticsRecommendations(items) {
         fact: "Факт",
         limitation: "Ограничение",
         data_quality: "Качество данных",
+        data_unavailable: "Ограничение источника",
       };
       const evidenceType = evidenceLabels[recommendation.evidenceType]
         || "Основание";
@@ -6941,6 +7023,17 @@ function renderLogisticsRecommendations(items) {
   );
 }
 
+function logisticsCombinedRecommendations() {
+  return [
+    ...asArray(state.logisticsSummary?.recommendations),
+    ...asArray(state.logisticsDimensions?.recommendations),
+    ...asArray(state.logisticsMeasurements?.recommendations),
+    ...asArray(state.logisticsReturnReasons?.recommendations),
+    ...asArray(state.logisticsTariffs?.recommendations),
+    ...asArray(state.logisticsRoutes?.recommendations),
+  ];
+}
+
 function logisticsRecommendationField(labelText, valueText, className = "") {
   const field = document.createElement("div");
   field.className = `logistics-recommendation-field ${className}`.trim();
@@ -6965,6 +7058,28 @@ function runLogisticsRecommendationAction(recommendation) {
     selectTableScenario("wb-expenses", { updateLocation: true, focus: true });
     return;
   }
+  if (String(recommendation.actionTarget || "").startsWith("#logistics-")) {
+    const section = document.querySelector(recommendation.actionTarget);
+    if (section instanceof HTMLDetailsElement) {
+      section.open = true;
+      const loaders = {
+        "#logistics-dimensions": loadLogisticsDimensions,
+        "#logistics-measurements": loadLogisticsMeasurements,
+        "#logistics-return-reasons": loadLogisticsReturnReasons,
+        "#logistics-tariffs": loadLogisticsTariffs,
+        "#logistics-routes": loadLogisticsRoutes,
+      };
+      loaders[recommendation.actionTarget]?.({
+        force: true,
+        view: "grouped",
+      });
+      window.requestAnimationFrame(() => {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+        section.querySelector("summary strong")?.focus({ preventScroll: true });
+      });
+    }
+    return;
+  }
   const product = recommendation.evidence?.product || "";
   if (product) {
     els.logisticsProductFilter.value = product;
@@ -6974,6 +7089,259 @@ function runLogisticsRecommendationAction(recommendation) {
   }
   document.querySelector("[aria-labelledby='logistics-products-title']")
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function setLogisticsFactorHeadline(section, text) {
+  const headline = section?.querySelector("[data-logistics-headline]");
+  if (headline) {
+    headline.textContent = text || "";
+  }
+}
+
+function logisticsDimensionsText(length, width, height) {
+  const values = [length, width, height];
+  if (values.every((value) => value === null || value === undefined)) {
+    return "Габариты не получены из текущей карточки WB";
+  }
+  return values
+    .map((value) => value === null || value === undefined ? "—" : number(value))
+    .join(" × ");
+}
+
+function logisticsSchemeLabel(value) {
+  return LOGISTICS_SCHEME_OPTIONS.find((item) => item.value === value)?.label
+    || "Схема не указана";
+}
+
+function formatMoscowDateTime(value) {
+  if (!value) {
+    return "Время не указано";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    dateStyle: "short",
+    timeStyle: "medium",
+  }).format(parsed);
+}
+
+function logisticsFactorGroupCard(kind, item, options) {
+  const card = document.createElement("article");
+  card.className = "logistics-factor-group";
+  card.setAttribute("role", "listitem");
+
+  const heading = document.createElement("div");
+  heading.className = "logistics-factor-group-heading";
+  const identity = document.createElement("span");
+  const title = document.createElement("strong");
+  const meta = document.createElement("small");
+  title.textContent = options.title;
+  meta.textContent = options.meta || "";
+  identity.append(title, meta);
+  const count = document.createElement("span");
+  count.className = "logistics-factor-count";
+  count.textContent = options.count;
+  heading.append(identity, count);
+
+  const facts = document.createElement("div");
+  facts.className = "logistics-factor-group-facts";
+  options.facts.filter(Boolean).forEach((value) => {
+    const fact = document.createElement("span");
+    fact.textContent = value;
+    facts.append(fact);
+  });
+
+  const status = document.createElement("div");
+  status.className = "logistics-factor-group-status";
+  const statusTitle = document.createElement("strong");
+  const statusMessage = document.createElement("span");
+  statusTitle.textContent = options.statusTitle
+    || item.statusTitle
+    || "Статус не подтверждён";
+  statusMessage.textContent = options.statusMessage
+    || item.statusMessage
+    || "";
+  status.append(statusTitle, statusMessage);
+
+  card.append(heading, facts, status);
+  if (item.hasDetails !== false) {
+    const detailId = `logistics-${kind}-group-${item.groupOffset}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button logistics-factor-detail-toggle";
+    button.textContent = options.buttonLabel || "Показать детали";
+    button.dataset.collapsedLabel = button.textContent;
+    button.dataset.expandedLabel = options.hideButtonLabel || "Скрыть детали";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", detailId);
+    const detail = document.createElement("div");
+    detail.id = detailId;
+    detail.className = "logistics-factor-group-detail";
+    detail.hidden = true;
+    button.addEventListener("click", () => {
+      loadLogisticsFactorGroupDetails(kind, item, button, detail);
+    });
+    card.append(button, detail);
+  }
+  return card;
+}
+
+function logisticsFactorDetailParams(kind, groupOffset) {
+  const sorting = {
+    dimensions: [
+      state.logisticsDimensionsSortBy,
+      state.logisticsDimensionsSortDirection,
+    ],
+    measurements: [
+      state.logisticsMeasurementsSortBy,
+      state.logisticsMeasurementsSortDirection,
+    ],
+    "return-reasons": [
+      state.logisticsReturnReasonsSortBy,
+      state.logisticsReturnReasonsSortDirection,
+    ],
+    tariffs: [
+      state.logisticsTariffsSortBy,
+      state.logisticsTariffsSortDirection,
+    ],
+    routes: [
+      state.logisticsRoutesSortBy,
+      state.logisticsRoutesSortDirection,
+    ],
+  }[kind];
+  return logisticsAnalysisFilterParams({
+    sortBy: sorting[0],
+    sortOrder: sorting[1],
+    view: "grouped",
+    groupOffset: groupOffset,
+    limit: LOGISTICS_PAGE_SIZE,
+  });
+}
+
+async function loadLogisticsFactorGroupDetails(kind, item, button, target) {
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  if (expanded) {
+    button.setAttribute("aria-expanded", "false");
+    button.textContent = button.dataset.collapsedLabel || "Показать детали";
+    target.hidden = true;
+    return;
+  }
+  button.setAttribute("aria-expanded", "true");
+  button.textContent = button.dataset.expandedLabel || "Скрыть детали";
+  target.hidden = false;
+  if (target.dataset.loaded === "true") {
+    return;
+  }
+  renderLogisticsEmpty(target, "Загружаем безопасные детали…");
+  const reportId = state.reportId;
+  const requestId = ++state.logisticsFactorDetailRequestId;
+  try {
+    const params = logisticsFactorDetailParams(kind, item.groupOffset);
+    const payload = await api(
+      `/api/reports/${encodeURIComponent(reportId)}/logistics/${kind}?${params}`,
+    );
+    if (
+      state.reportId !== reportId
+      || state.logisticsFactorDetailRequestId !== requestId
+      || !target.isConnected
+    ) {
+      return;
+    }
+    target.dataset.loaded = "true";
+    renderLogisticsFactorGroupDetail(kind, target, asArray(payload.rows));
+  } catch (error) {
+    if (state.logisticsFactorDetailRequestId === requestId) {
+      renderLogisticsEmpty(target, "Не удалось загрузить детали группы.");
+    }
+  }
+}
+
+function logisticsFactorDetailRow(titleText, values) {
+  const row = document.createElement("article");
+  row.className = "logistics-factor-detail-row";
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  const list = document.createElement("div");
+  values.filter(Boolean).forEach((value) => {
+    const item = document.createElement("span");
+    item.textContent = value;
+    list.append(item);
+  });
+  row.append(title, list);
+  return row;
+}
+
+function renderLogisticsFactorGroupDetail(kind, target, rows) {
+  if (!rows.length) {
+    renderLogisticsEmpty(target, "Для этой группы нет доступных деталей.");
+    return;
+  }
+  const cards = rows.map((item) => {
+    if (kind === "dimensions") {
+      return logisticsFactorDetailRow(`Срез ${number(item.scopeNumber)}`, [
+        logisticsSchemeLabel(item.scheme),
+        logisticsDimensionsText(
+          item.lengthCm,
+          item.widthCm,
+          item.heightCm,
+        ),
+        item.weightBruttoKg == null
+          ? "Вес не получен из текущей карточки WB"
+          : `Вес брутто: ${number(item.weightBruttoKg)} кг`,
+        item.statusTitle,
+      ]);
+    }
+    if (kind === "measurements") {
+      return logisticsFactorDetailRow(
+        `${item.eventKindLabel} · ${formatMoscowDateTime(item.eventAt)}`,
+        [
+          logisticsDimensionsText(
+            item.measuredLengthCm,
+            item.measuredWidthCm,
+            item.measuredHeightCm,
+          ),
+          item.declaredStatusText,
+          item.moneyStatusText,
+          item.eventStatusTitle || item.statusTitle,
+          item.financialLinkStatusTitle,
+        ],
+      );
+    }
+    if (kind === "return-reasons") {
+      return logisticsFactorDetailRow(
+        `Возврат ${number(item.returnNumber)} · ${formatCompactDate(item.eventDate)}`,
+        [
+          item.reasonText,
+          item.sourceLabel,
+          item.claimStatusText,
+          item.statusTitle,
+        ],
+      );
+    }
+    if (kind === "tariffs") {
+      return logisticsFactorDetailRow(
+        item.warehouse || "Склад не указан",
+        [
+          item.tariffTypeLabel,
+          item.deliveryCoefficientPct == null
+            ? ""
+            : `Коэффициент доставки: ${logisticsPercent(item.deliveryCoefficientPct)}`,
+          item.storageCoefficientPct == null
+            ? ""
+            : `Коэффициент хранения: ${logisticsPercent(item.storageCoefficientPct)}`,
+          item.statusTitle,
+        ],
+      );
+    }
+    return logisticsFactorDetailRow(
+      `${item.warehouseLabel} → ${item.destinationLabel}`,
+      [item.statusTitle, item.statusMessage],
+    );
+  });
+  target.replaceChildren(...cards);
 }
 
 function renderLogisticsDimensions() {
@@ -6987,7 +7355,7 @@ function renderLogisticsDimensions() {
     els.logisticsDimensionsStatus.textContent =
       "Габариты временно недоступны. Основная логистика продолжает работать.";
     els.logisticsDimensionsStatus.dataset.status = "error";
-    renderLogisticsDimensionCoverage({});
+    renderLogisticsDimensionCoverage({}, 0);
     renderLogisticsDimensionRecommendations([]);
     renderLogisticsDimensionRows([], "Не удалось загрузить факторный срез.");
     return;
@@ -7005,14 +7373,27 @@ function renderLogisticsDimensions() {
     : "";
   els.logisticsDimensionsStatus.textContent = `${statusCopy}${snapshot}`;
   els.logisticsDimensionsStatus.dataset.status = status || "empty";
-  renderLogisticsDimensionCoverage(payload.coverage || {});
+  setLogisticsFactorHeadline(
+    els.logisticsDimensionsSection,
+    payload.headline
+      || "Текущее состояние карточки — не исторический замер и не штраф.",
+  );
+  renderLogisticsDimensionCoverage(
+    payload.coverage || {},
+    Number(payload.total || 0),
+  );
   renderLogisticsDimensionRecommendations(asArray(payload.recommendations));
+  renderLogisticsRecommendations(logisticsCombinedRecommendations());
   const emptyText = {
     empty: "В выбранном периоде и фильтрах нет товаров.",
-    needs_rebuild: "Старый отчёт не содержит контекст габаритов F‑1.",
+    needs_rebuild: "Старый отчёт не содержит проверенную витрину габаритов.",
     blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
-  }[status] || "Нет строк габаритов для выбранного среза.";
-  renderLogisticsDimensionRows(asArray(payload.rows), emptyText);
+  }[status] || "Нет карточек для выбранного среза.";
+  const items = payload.view === "grouped" ? asArray(payload.rows) : [];
+  renderLogisticsDimensionRows(
+    items,
+    payload.view === "summary" ? "Раскройте блок, чтобы увидеть карточки." : emptyText,
+  );
   renderLogisticsPagination(
     els.logisticsDimensionsPagination,
     els.logisticsDimensionsPrev,
@@ -7020,20 +7401,20 @@ function renderLogisticsDimensions() {
     els.logisticsDimensionsNext,
     {
       offset: state.logisticsDimensionsOffset,
-      itemCount: asArray(payload.rows).length,
+      itemCount: items.length,
       total: Number(payload.total || 0),
     },
   );
 }
 
-function renderLogisticsDimensionCoverage(coverage) {
+function renderLogisticsDimensionCoverage(coverage, groupCount) {
   const cards = [
-    ["Товаров", coverage.total],
+    ["Карточек WB", groupCount],
     ["С габаритами", coverage.withDimensions],
     ["Без габаритов", coverage.missingDimensions],
-    ["Невалидные", coverage.invalidDimensions],
-    ["Конфликты", coverage.conflictingDimensions],
-    ["Сигнал WB", coverage.signalCount],
+    ["Требуют проверки", Number(coverage.invalidDimensions || 0)
+      + Number(coverage.conflictingDimensions || 0)
+      + Number(coverage.signalCount || 0)],
     ["Покрытие", coverage.coveragePct],
   ];
   els.logisticsDimensionsCoverage.replaceChildren(
@@ -7073,48 +7454,37 @@ function renderLogisticsDimensionRecommendations(items) {
 
 function renderLogisticsDimensionRows(items, emptyText) {
   if (!items.length) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 5;
-    cell.className = "muted";
-    cell.textContent = emptyText;
-    row.append(cell);
-    els.logisticsDimensionsRows.replaceChildren(row);
+    renderLogisticsEmpty(els.logisticsDimensionsRows, emptyText);
     return;
   }
   els.logisticsDimensionsRows.replaceChildren(
     ...items.map((item) => {
-      const row = document.createElement("tr");
-      const dimensions = [item.lengthCm, item.widthCm, item.heightCm]
-        .map((value) => value === null || value === undefined ? "—" : number(value))
-        .join(" × ");
-      const signal = item.dimensionsValid === false
-        ? "Проверить упаковку и карточку"
-        : normalize(item.coverageStatus) === "ready"
-          ? "Сигналов нет"
-          : "Проверить источник";
-      const cells = [
-        ["Товар", item.product || item.vendorCode || "—"],
-        ["Размеры, см", dimensions],
-        ["Объём, л", item.volumeL == null ? "—" : number(item.volumeL)],
-        [
-          "Вес брутто, кг",
-          item.weightBruttoKg == null ? "—" : number(item.weightBruttoKg),
+      const dimensions = item.dimensionsDiffer
+        ? "Размеры различаются"
+        : logisticsDimensionsText(
+          item.lengthCm,
+          item.widthCm,
+          item.heightCm,
+        );
+      const scopeCount = Number(item.scopeCount || 0);
+      return logisticsFactorGroupCard("dimensions", item, {
+        title: item.product || "Товар",
+        meta: item.vendorCode
+          ? `Артикул продавца: ${item.vendorCode}`
+          : "Артикул продавца не указан",
+        count: scopeCount > 1
+          ? `Используется в ${number(scopeCount)} срезах`
+          : "Одна карточка WB",
+        facts: [
+          dimensions,
+          item.weightBruttoKg == null
+            ? "Вес не получен из текущей карточки WB"
+            : `Вес брутто: ${number(item.weightBruttoKg)} кг`,
+          item.volumeL == null ? "" : `Объём: ${number(item.volumeL)} л`,
         ],
-        ["Сигнал карточки", signal],
-      ].map(([label, value]) => {
-        const cell = logisticsTableCell(value);
-        cell.dataset.label = label;
-        return cell;
+        buttonLabel: "Показать срезы",
+        hideButtonLabel: "Скрыть срезы",
       });
-      const badge = document.createElement("span");
-      badge.className = signal === "Сигналов нет"
-        ? "logistics-quality-badge"
-        : "logistics-quality-badge is-warning";
-      badge.textContent = signal;
-      cells[4].replaceChildren(badge);
-      row.append(...cells);
-      return row;
     }),
   );
 }
@@ -7148,15 +7518,48 @@ function renderLogisticsMeasurements() {
     : "";
   els.logisticsMeasurementsStatus.textContent = `${statusCopy}${snapshot}`;
   els.logisticsMeasurementsStatus.dataset.status = status || "empty";
+  setLogisticsFactorHeadline(
+    els.logisticsMeasurementsSection,
+    payload.headline || "Контрольные замеры WB получены.",
+  );
   renderLogisticsMeasurementCoverage(payload.coverage || {});
   renderLogisticsMeasurementRecommendations(asArray(payload.recommendations));
+  renderLogisticsRecommendations(logisticsCombinedRecommendations());
+  const availability = payload.columnAvailability || {};
+  const missingExplanations = [];
+  if (availability.declaredValues === false) {
+    missingExplanations.push(
+      "Заявленные размеры не переданы в событиях WB.",
+    );
+  }
+  if (availability.moneyValues === false) {
+    missingExplanations.push(
+      "Сведения об удержаниях в событиях отсутствуют.",
+    );
+  }
+  const warning = els.logisticsMeasurementsSection.querySelector(
+    ".logistics-factor-warning",
+  );
+  if (warning) {
+    warning.textContent = missingExplanations.length
+      ? missingExplanations.join(" ")
+      : (
+        payload.accountingTreatment?.message
+        || "Сведения об удержаниях показаны справочно."
+      );
+  }
   const emptyText = {
     empty: "В выбранном периоде и фильтрах нет событий контрольных замеров.",
     partial: "Событий в срезе нет, но источник собран не полностью.",
-    needs_rebuild: "Старый отчёт не содержит контекст замеров F‑4.",
+    needs_rebuild: "Старый отчёт не содержит проверенную витрину замеров.",
     blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
   }[status] || "Нет событий замеров для выбранного среза.";
-  renderLogisticsMeasurementRows(asArray(payload.rows), emptyText);
+  const items = payload.view === "grouped" ? asArray(payload.rows) : [];
+  renderLogisticsMeasurementRows(
+    items,
+    payload.view === "summary" ? "Раскройте блок, чтобы увидеть замеры." : emptyText,
+    availability,
+  );
   renderLogisticsPagination(
     els.logisticsMeasurementsPagination,
     els.logisticsMeasurementsPrev,
@@ -7164,7 +7567,7 @@ function renderLogisticsMeasurements() {
     els.logisticsMeasurementsNext,
     {
       offset: state.logisticsMeasurementsOffset,
-      itemCount: asArray(payload.rows).length,
+      itemCount: items.length,
       total: Number(payload.total || 0),
     },
   );
@@ -7225,74 +7628,50 @@ function renderLogisticsMeasurementRecommendations(items) {
   );
 }
 
-function renderLogisticsMeasurementRows(items, emptyText) {
+function renderLogisticsMeasurementRows(items, emptyText, availability = {}) {
   if (!items.length) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 7;
-    cell.className = "muted";
-    cell.textContent = emptyText;
-    row.append(cell);
-    els.logisticsMeasurementsRows.replaceChildren(row);
+    renderLogisticsEmpty(els.logisticsMeasurementsRows, emptyText);
     return;
   }
   els.logisticsMeasurementsRows.replaceChildren(
     ...items.map((item) => {
-      const row = document.createElement("tr");
-      const measured = [
-        item.measuredLengthCm,
-        item.measuredWidthCm,
-        item.measuredHeightCm,
-      ].map((value) => value == null ? "—" : number(value)).join(" × ");
-      const declared = [
-        item.declaredLengthCm,
-        item.declaredWidthCm,
-        item.declaredHeightCm,
-      ].map((value) => value == null ? "—" : number(value)).join(" × ");
-      const volume = item.measuredVolumeL == null
-        ? "—"
-        : `${number(item.measuredVolumeL)} л`;
-      const ratio = item.volumeRatioPercent == null
-        ? ""
-        : ` · ${logisticsPercent(item.volumeRatioPercent)}`;
-      const excess = item.volumeExcessPercent == null
-        ? ""
-        : ` · превышение ${logisticsPercent(item.volumeExcessPercent)}`;
-      const amounts = [
-        `Удержание ${item.penaltyAmount == null ? "—" : money(item.penaltyAmount)}`,
-        `Отмена ${item.reversalAmount == null ? "—" : money(item.reversalAmount)}`,
-        `Чистое ${item.netPenaltyAmount == null ? "—" : money(item.netPenaltyAmount)}`,
-      ].join(" · ");
-      const ready = normalize(item.coverageStatus) === "ready";
-      const status = !ready
-        ? "Проверить источник или связку"
-        : item.measurementValid === false
-          ? "Сигнал записи WB"
-          : "Факт Analytics";
-      const cells = [
-        [
-          "Дата события",
-          formatCompactDate(item.penaltyEffectiveAt || item.measurementAt),
+      const measured = item.dimensionsDiffer
+        ? "Размеры различаются"
+        : logisticsDimensionsText(
+          item.measuredLengthCm,
+          item.measuredWidthCm,
+          item.measuredHeightCm,
+        );
+      return logisticsFactorGroupCard("measurements", item, {
+        title: item.product || "Товар",
+        meta: [
+          item.vendorCode ? `Артикул продавца: ${item.vendorCode}` : "",
+          item.eventDate ? formatCompactDate(item.eventDate) : "Дата не указана",
+        ].filter(Boolean).join(" · "),
+        count: `Замеров: ${number(item.itemCount || 0)}`,
+        facts: [
+          measured,
+          item.measuredVolumeL == null
+            ? ""
+            : `Объём замера: ${number(item.measuredVolumeL)} л`,
+          availability.declaredValues === false
+            ? ""
+            : item.declaredValuesMissing
+              ? "Заявленные размеры не переданы в событии WB"
+              : "Заявленные размеры переданы",
+          availability.moneyValues === false
+            ? ""
+            : item.moneyValuesMissing
+              ? "Сведения об удержании отсутствуют"
+              : "Сведения об удержании есть",
         ],
-        ["Товар", item.product || item.productRef || "Связка не найдена"],
-        ["Замер WB, см", measured],
-        ["Заявлено, см", declared],
-        ["Объём", `${volume}${ratio}${excess}`],
-        ["Справочные суммы", amounts],
-        ["Статус", status],
-      ].map(([label, value]) => {
-        const cell = logisticsTableCell(value);
-        cell.dataset.label = label;
-        return cell;
+        buttonLabel: "Показать события",
+        hideButtonLabel: "Скрыть события",
+        statusTitle: item.eventStatusTitle || item.statusTitle,
+        statusMessage: item.financialLinkStatusTitle
+          ? `Финансовая связь: ${item.financialLinkStatusTitle}. ${item.financialLinkStatusMessage || ""}`
+          : item.statusMessage,
       });
-      const badge = document.createElement("span");
-      badge.className = ready && item.measurementValid !== false
-        ? "logistics-quality-badge"
-        : "logistics-quality-badge is-warning";
-      badge.textContent = status;
-      cells[6].replaceChildren(badge);
-      row.append(...cells);
-      return row;
     }),
   );
 }
@@ -7326,14 +7705,23 @@ function renderLogisticsTariffs() {
     : "";
   els.logisticsTariffsStatus.textContent = `${statusCopy}${snapshot}`;
   els.logisticsTariffsStatus.dataset.status = status || "empty";
+  setLogisticsFactorHeadline(
+    els.logisticsTariffsSection,
+    payload.headline || "Покрытие тарифных недель пока не рассчитано.",
+  );
   renderLogisticsTariffCoverage(payload.coverage || {});
   renderLogisticsTariffRecommendations(asArray(payload.recommendations));
+  renderLogisticsRecommendations(logisticsCombinedRecommendations());
   const emptyText = {
     empty: "В выбранном периоде и фильтрах нет тарифных недель.",
-    needs_rebuild: "Старый отчёт не содержит контекст тарифов F‑2.",
+    needs_rebuild: "Старый отчёт не содержит проверенную витрину тарифов.",
     blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
-  }[status] || "Нет строк тарифов для выбранного среза.";
-  renderLogisticsTariffRows(asArray(payload.rows), emptyText);
+  }[status] || "Нет тарифных недель для выбранного среза.";
+  const items = payload.view === "grouped" ? asArray(payload.rows) : [];
+  renderLogisticsTariffRows(
+    items,
+    payload.view === "summary" ? "Раскройте блок, чтобы увидеть недели." : emptyText,
+  );
   renderLogisticsPagination(
     els.logisticsTariffsPagination,
     els.logisticsTariffsPrev,
@@ -7341,7 +7729,7 @@ function renderLogisticsTariffs() {
     els.logisticsTariffsNext,
     {
       offset: state.logisticsTariffsOffset,
-      itemCount: asArray(payload.rows).length,
+      itemCount: items.length,
       total: Number(payload.total || 0),
     },
   );
@@ -7393,54 +7781,23 @@ function renderLogisticsTariffRecommendations(items) {
 
 function renderLogisticsTariffRows(items, emptyText) {
   if (!items.length) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 6;
-    cell.className = "muted";
-    cell.textContent = emptyText;
-    row.append(cell);
-    els.logisticsTariffsRows.replaceChildren(row);
+    renderLogisticsEmpty(els.logisticsTariffsRows, emptyText);
     return;
   }
   els.logisticsTariffsRows.replaceChildren(
-    ...items.map((item) => {
-      const row = document.createElement("tr");
-      const evidence = {
-        fact: "Факт",
-        estimate: "Оценка",
-        data_unavailable: "Данные недоступны",
-      }[normalize(item.evidenceType)] || "Проверить";
-      const cells = [
-        ["Неделя", formatCompactDate(item.requestedDate)],
-        ["Склад", item.warehouse || "—"],
-        ["Тип", normalize(item.tariffType) === "pallet" ? "Монопаллета" : "Короб"],
-        [
-          "Доставка",
-          item.deliveryCoefficientPct == null
-            ? "—"
-            : logisticsPercent(item.deliveryCoefficientPct),
-        ],
-        [
-          "Хранение",
-          item.storageCoefficientPct == null
-            ? "—"
-            : logisticsPercent(item.storageCoefficientPct),
-        ],
-        ["Основание", evidence],
-      ].map(([label, value]) => {
-        const cell = logisticsTableCell(value);
-        cell.dataset.label = label;
-        return cell;
-      });
-      const badge = document.createElement("span");
-      badge.className = evidence === "Факт"
-        ? "logistics-quality-badge"
-        : "logistics-quality-badge is-warning";
-      badge.textContent = evidence;
-      cells[5].replaceChildren(badge);
-      row.append(...cells);
-      return row;
-    }),
+    ...items.map((item) => logisticsFactorGroupCard("tariffs", item, {
+      title: `Неделя с ${formatCompactDate(item.weekStart)}`,
+      meta: item.tariffTypeLabel || "Тип тарифа не указан",
+      count: `${number(item.itemCount || 0)} тарифных точек`,
+      facts: [
+        item.warehouseLabel,
+        item.warehouseCount > 1
+          ? `Складов: ${number(item.warehouseCount)}`
+          : "",
+      ],
+      buttonLabel: "Показать склады",
+      hideButtonLabel: "Скрыть склады",
+    })),
   );
 }
 
@@ -7473,14 +7830,29 @@ function renderLogisticsRoutes() {
     : "";
   els.logisticsRoutesStatus.textContent = `${statusCopy}${snapshot}`;
   els.logisticsRoutesStatus.dataset.status = status || "empty";
+  setLogisticsFactorHeadline(
+    els.logisticsRoutesSection,
+    [
+      payload.headline,
+      payload.warehouseSummary,
+      payload.destinationSummary,
+    ].filter(Boolean).join(" · "),
+  );
   renderLogisticsRouteCoverage(payload.coverage || {});
   renderLogisticsRouteRecommendations(asArray(payload.recommendations));
+  renderLogisticsRecommendations(logisticsCombinedRecommendations());
   const emptyText = {
     empty: "В выбранном периоде и фильтрах нет маршрутных цепочек.",
-    needs_rebuild: "Старый отчёт не содержит контекст маршрутов F‑3.",
+    needs_rebuild: "Старый отчёт не содержит проверенную витрину маршрутов.",
     blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
   }[status] || "Нет маршрутов для выбранного среза.";
-  renderLogisticsRouteRows(asArray(payload.rows), emptyText);
+  const items = payload.view === "grouped" ? asArray(payload.rows) : [];
+  renderLogisticsRouteRows(
+    items,
+    payload.view === "summary"
+      ? "Раскройте блок, чтобы увидеть агрегированные направления."
+      : emptyText,
+  );
   renderLogisticsPagination(
     els.logisticsRoutesPagination,
     els.logisticsRoutesPrev,
@@ -7488,7 +7860,7 @@ function renderLogisticsRoutes() {
     els.logisticsRoutesNext,
     {
       offset: state.logisticsRoutesOffset,
-      itemCount: asArray(payload.rows).length,
+      itemCount: items.length,
       total: Number(payload.total || 0),
     },
   );
@@ -7540,49 +7912,21 @@ function renderLogisticsRouteRecommendations(items) {
 
 function renderLogisticsRouteRows(items, emptyText) {
   if (!items.length) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 6;
-    cell.className = "muted";
-    cell.textContent = emptyText;
-    row.append(cell);
-    els.logisticsRoutesRows.replaceChildren(row);
+    renderLogisticsEmpty(els.logisticsRoutesRows, emptyText);
     return;
   }
   els.logisticsRoutesRows.replaceChildren(
-    ...items.map((item) => {
-      const row = document.createElement("tr");
-      const ready = normalize(item.evidenceType) === "fact";
-      const evidence = ready ? "Факт" : "Данные недоступны";
-      const cells = [
-        ["Склад", item.warehouse || "Данные недоступны"],
-        ["Направление", item.destination || "Данные недоступны"],
-        ["Логистика", money(item.logisticsTotal || 0)],
-        [
-          "Цепочки",
-          `${number(item.chainCount || 0)}${item.lowSample ? " · мало данных" : ""}`,
-        ],
-        [
-          "Box недели",
-          item.weekCoefficient == null
-            ? "—"
-            : logisticsPercent(item.weekCoefficient),
-        ],
-        ["Основание", evidence],
-      ].map(([label, value]) => {
-        const cell = logisticsTableCell(value);
-        cell.dataset.label = label;
-        return cell;
-      });
-      const badge = document.createElement("span");
-      badge.className = ready
-        ? "logistics-quality-badge"
-        : "logistics-quality-badge is-warning";
-      badge.textContent = evidence;
-      cells[5].replaceChildren(badge);
-      row.append(...cells);
-      return row;
-    }),
+    ...items.map((item) => logisticsFactorGroupCard("routes", item, {
+      title: item.warehouseLabel || "Склад не подтверждён",
+      meta: item.destinationLabel || "Направление не подтверждено",
+      count: `Цепочек: ${number(item.itemCount || 0)}`,
+      facts: [
+        item.lowSample ? "Мало данных для устойчивого вывода" : "",
+        normalize(item.coefficientStatus) === "mixed"
+          ? "Несколько коэффициентов недели"
+          : "",
+      ],
+    })),
   );
 }
 
@@ -7616,15 +7960,27 @@ function renderLogisticsReturnReasons() {
   }[status] || "Причины ещё не загружены";
   els.logisticsReturnReasonsStatus.textContent = statusCopy;
   els.logisticsReturnReasonsStatus.dataset.status = status || "empty";
+  setLogisticsFactorHeadline(
+    els.logisticsReturnReasonsSection,
+    payload.headline || (
+      "Возвраты найдены, но подтверждённых причин нет; "
+      + "выводы о причинах делать нельзя."
+    ),
+  );
   renderLogisticsReturnReasonCoverage(payload.coverage || {});
   renderLogisticsReturnReasonSources(payload.sourceCoverage || {});
   renderLogisticsReturnReasonRecommendations(asArray(payload.recommendations));
+  renderLogisticsRecommendations(logisticsCombinedRecommendations());
   const emptyText = {
     empty: "В выбранном периоде и фильтрах нет возвратов.",
-    needs_rebuild: "Старый отчёт не содержит контекст причин возвратов R‑4.",
+    needs_rebuild: "Старый отчёт не содержит витрину причин возвратов.",
     blocked: "Строки скрыты: целостность или область снимка не подтверждена.",
-  }[status] || "Нет строк причин возвратов для выбранного среза.";
-  renderLogisticsReturnReasonRows(asArray(payload.rows), emptyText);
+  }[status] || "Нет возвратов для выбранного среза.";
+  const items = payload.view === "grouped" ? asArray(payload.rows) : [];
+  renderLogisticsReturnReasonRows(
+    items,
+    payload.view === "summary" ? "Раскройте блок, чтобы увидеть возвраты." : emptyText,
+  );
   renderLogisticsPagination(
     els.logisticsReturnReasonsPagination,
     els.logisticsReturnReasonsPrev,
@@ -7632,7 +7988,7 @@ function renderLogisticsReturnReasons() {
     els.logisticsReturnReasonsNext,
     {
       offset: state.logisticsReturnReasonsOffset,
-      itemCount: asArray(payload.rows).length,
+      itemCount: items.length,
       total: Number(payload.total || 0),
     },
   );
@@ -7655,7 +8011,7 @@ function renderLogisticsReturnReasonCoverage(coverage) {
     },
     {
       kind: "unavailable",
-      label: "Причина недоступна",
+      label: "Без подтверждённой причины",
       value: unavailablePct,
       count: coverage.reasonUnavailable,
     },
@@ -7688,20 +8044,20 @@ function renderLogisticsReturnReasonSources(sourceCoverage) {
   const goods = sourceCoverage.goodsReturn || {};
   const claims = sourceCoverage.claims || {};
   const goodsStatus = {
-    ready: "Причина подтверждается только exact-связью",
+    ready: "Причина подтверждается только точной связью",
     partial: "Часть причин недоступна; непроверенные связи не используются",
-    unavailable: "Причины из goods-return недоступны",
+    unavailable: "Источник причин возвратов недоступен",
     blocked: "Источник не прошёл проверку целостности",
   }[normalize(goods.status)] || "Статус источника не подтверждён";
   const goodsWindow = logisticsReturnReasonWindow(goods);
   const claimsWindow = logisticsReturnReasonWindow(claims);
   const pairs = [
     [
-      "Источник: goods-return",
+      "Заявки на возврат WB",
       `${goodsStatus}${goodsWindow}`,
     ],
     [
-      "Источник: claims",
+      "Заявки и комментарии покупателей WB",
       `${claims.message || "Данные заявок временно недоступны"}${claimsWindow}. Расчёт логистики продолжается`,
     ],
   ];
@@ -7753,66 +8109,28 @@ function renderLogisticsReturnReasonRecommendations(items) {
 
 function renderLogisticsReturnReasonRows(items, emptyText) {
   if (!items.length) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 4;
-    cell.className = "muted";
-    cell.textContent = emptyText;
-    row.append(cell);
-    els.logisticsReturnReasonsRows.replaceChildren(row);
+    renderLogisticsEmpty(els.logisticsReturnReasonsRows, emptyText);
     return;
   }
   els.logisticsReturnReasonsRows.replaceChildren(
-    ...items.map((item) => {
-      const row = document.createElement("tr");
-      const product = logisticsTableCell("");
-      product.dataset.label = "Товар / дата возврата";
-      const productWrap = document.createElement("span");
-      const productName = document.createElement("strong");
-      const productMeta = document.createElement("small");
-      productWrap.className = "logistics-return-reasons-product";
-      productName.textContent = item.product || item.vendorCode || "Товар";
-      productMeta.textContent = [
-        formatCompactDate(item.eventDate),
-        item.vendorCode || "",
-      ].filter(Boolean).join(" · ");
-      productWrap.append(productName, productMeta);
-      product.replaceChildren(productWrap);
-
-      const reason = logisticsTableCell(
-        item.reasonCategory || "Причина недоступна",
-      );
-      reason.dataset.label = "Категория причины";
-
-      const evidence = logisticsTableCell("");
-      evidence.dataset.label = "Основание";
-      const evidenceWrap = document.createElement("span");
-      const badge = document.createElement("span");
-      const match = document.createElement("small");
-      const isFact = normalize(item.evidenceType) === "fact";
-      const evidenceText = isFact ? "Факт" : "Данные недоступны";
-      evidenceWrap.className = "logistics-return-reasons-evidence";
-      badge.className = isFact
-        ? "logistics-quality-badge"
-        : "logistics-quality-badge is-warning";
-      badge.textContent = evidenceText;
-      match.textContent = {
-        ready: "Точная связь",
-        unmatched: "Связка не найдена",
-        conflicting: "Конфликт связки",
-        outside_source_window: "Вне окна источника",
-        data_unavailable: "Покрытие неизвестно",
-      }[normalize(item.matchStatus)] || "Покрытие неизвестно";
-      evidenceWrap.append(badge, match);
-      evidence.replaceChildren(evidenceWrap);
-
-      const claim = logisticsTableCell(
-        logisticsReturnReasonClaimText(item),
-      );
-      claim.dataset.label = "Заявка / комментарий";
-      row.append(product, reason, evidence, claim);
-      return row;
-    }),
+    ...items.map((item) => logisticsFactorGroupCard(
+      "return-reasons",
+      item,
+      {
+        title: item.product || "Товар",
+        meta: [
+          item.vendorCode ? `Артикул продавца: ${item.vendorCode}` : "",
+          item.eventDate ? formatCompactDate(item.eventDate) : "",
+        ].filter(Boolean).join(" · "),
+        count: `Возвратов: ${number(item.itemCount || 0)}`,
+        facts: [
+          item.reasonSummary || "Подтверждённая причина не получена",
+          item.sourceLabel,
+        ],
+        buttonLabel: "Показать операции",
+        hideButtonLabel: "Скрыть операции",
+      },
+    )),
   );
 }
 
@@ -7830,28 +8148,46 @@ function logisticsReturnReasonClaimText(item) {
 
 function renderLogisticsProducts(items) {
   const total = state.logisticsProductsTotal;
+  const visibleItems = state.logisticsProductsExpanded
+    ? items
+    : items.slice(0, 10);
   const missingProfitLinkFilterActive =
     state.logisticsProductsDataQualityStatus === "missing_profit_link";
   if (els.logisticsProductsFilterStatus) {
     els.logisticsProductsFilterStatus.hidden = !missingProfitLinkFilterActive;
   }
-  const start = items.length ? state.logisticsProductsOffset + 1 : 0;
-  const end = items.length ? state.logisticsProductsOffset + items.length : 0;
-  els.logisticsProductsCount.textContent = items.length
-    ? `${number(start)}–${number(end)} из ${number(total)}`
+  const start = visibleItems.length ? state.logisticsProductsOffset + 1 : 0;
+  const end = visibleItems.length
+    ? state.logisticsProductsOffset + visibleItems.length
+    : 0;
+  els.logisticsProductsCount.textContent = visibleItems.length
+    ? state.logisticsProductsExpanded
+      ? `${number(start)}–${number(end)} из ${number(total)}`
+      : `${number(visibleItems.length)} приоритетных из ${number(total)}`
     : "";
-  renderLogisticsPagination(
-    els.logisticsProductsPagination,
-    els.logisticsProductsPrev,
-    els.logisticsProductsPage,
-    els.logisticsProductsNext,
-    {
-      offset: state.logisticsProductsOffset,
-      itemCount: items.length,
-      total,
-    },
-  );
-  if (!items.length) {
+  if (!state.logisticsProductsExpanded) {
+    els.logisticsProductsPagination.hidden = total <= visibleItems.length;
+    els.logisticsProductsPrev.hidden = true;
+    els.logisticsProductsPage.textContent = "Сначала показаны позиции с наибольшим влиянием";
+    els.logisticsProductsNext.hidden = false;
+    els.logisticsProductsNext.disabled = total <= visibleItems.length;
+    els.logisticsProductsNext.textContent = "Показать все";
+  } else {
+    els.logisticsProductsPrev.hidden = false;
+    els.logisticsProductsNext.textContent = "Далее";
+    renderLogisticsPagination(
+      els.logisticsProductsPagination,
+      els.logisticsProductsPrev,
+      els.logisticsProductsPage,
+      els.logisticsProductsNext,
+      {
+        offset: state.logisticsProductsOffset,
+        itemCount: visibleItems.length,
+        total,
+      },
+    );
+  }
+  if (!visibleItems.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = 8;
@@ -7864,21 +8200,35 @@ function renderLogisticsProducts(items) {
     return;
   }
   els.logisticsProductsRows.replaceChildren(
-    ...items.map((item) => {
+    ...visibleItems.map((item) => {
       const row = document.createElement("tr");
       const product = logisticsTableCell(item.product || item.vendorCode || "—");
+      product.dataset.label = "Товар";
       const article = document.createElement("small");
-      article.textContent = item.nmId ? `nmId ${item.nmId}` : item.sku || "";
+      article.textContent = [
+        item.vendorCode
+          ? `Артикул продавца: ${item.vendorCode}`
+          : "",
+        item.nmId ? `Артикул WB: ${item.nmId}` : "",
+      ].filter(Boolean).join(" · ");
       product.append(article);
-      row.append(
-        product,
-        logisticsTableCell(signedMoney(item.logisticsTotal), "numeric"),
-        logisticsTableCell(logisticsPercent(item.logisticsSharePct), "numeric"),
-        logisticsTableCell(number(item.orderCount), "numeric"),
-        logisticsTableCell(number(item.returnQuantity), "numeric"),
-        logisticsTableCell(logisticsProfitEffectText(item.profitEffectAmount), "numeric"),
-      );
+      const values = [
+        ["Логистика", signedMoney(item.logisticsTotal)],
+        ["Доля", logisticsPercent(item.logisticsSharePct)],
+        ["Заказы", number(item.orderCount)],
+        ["Возвраты", number(item.returnQuantity)],
+        [
+          "Влияние на прибыль",
+          logisticsProfitEffectText(item.profitEffectAmount),
+        ],
+      ].map(([label, value]) => {
+        const cell = logisticsTableCell(value, "numeric");
+        cell.dataset.label = label;
+        return cell;
+      });
+      row.append(product, ...values);
       const quality = logisticsTableCell("");
+      quality.dataset.label = "Качество";
       const badge = document.createElement("span");
       const qualityNeedsReview = normalize(item.dataQualityStatus) !== "ready"
         || normalize(item.classificationStatus) !== "ready";
@@ -7895,6 +8245,7 @@ function renderLogisticsProducts(items) {
       quality.append(badge);
       row.append(quality);
       const action = logisticsTableCell("");
+      action.dataset.label = "Действие";
       if (isStaffUser()) {
         const button = document.createElement("button");
         button.type = "button";
@@ -16772,7 +17123,7 @@ function applyRowsFilterMode(mode) {
   setRowsFilterHidden(els.filterLossClass, ozonMode);
   els.filterQuery.placeholder = ozonMode
     ? "Товар, артикул продавца, SKU, штрихкод, 1C"
-    : "Товар, артикул, баркод, nmId";
+    : "Товар, артикул, штрихкод или артикул WB";
   if (ozonMode) {
     setOptions(els.filterStatus, OZON_UNIT_STATUS_OPTIONS, "Все статусы Ozon");
   } else {
@@ -16877,7 +17228,7 @@ const WB_REPORT_ROW_HEADERS = [
   ["Артикул WB", "articleWb"],
   ["Артикул 1С", "article1c"],
   ["Баркод", "barcode"],
-  ["nmId", "nmId"],
+  ["nmId", "Артикул WB"],
   ["Кабинет", "cabinet"],
   ["Организация", "organization"],
   ["Схема", "scheme"],

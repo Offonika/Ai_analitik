@@ -108,7 +108,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260726-logistics-visual-polish-v1"
+WEB_BUILD_ID = "20260726-logistics-management-v2"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -157,6 +157,24 @@ def _logistics_period(
             },
         )
     return effective_start, effective_end
+
+
+def _validate_logistics_factor_view(
+    view: str,
+    group_offset: int | None,
+) -> None:
+    if view not in repository.LOGISTICS_FACTOR_VIEWS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неподдерживаемый режим представления",
+        )
+    if group_offset is not None and (
+        view != "grouped" or group_offset < 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректное смещение группы",
+        )
 
 
 def _calculator_period(
@@ -2933,6 +2951,8 @@ def create_app(
         sortOrder: str = "asc",
         offset: int = 0,
         limit: int = 250,
+        view: str = "raw",
+        groupOffset: int | None = None,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_logistics_factors_access_or_404(
@@ -2945,6 +2965,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported sortBy")
         if sortOrder not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="unsupported sortOrder")
+        _validate_logistics_factor_view(view, groupOffset)
         return repository.report_logistics_dimensions_payload(
             db,
             report,
@@ -2958,6 +2979,8 @@ def create_app(
             sort_order=sortOrder,
             offset=max(offset, 0),
             limit=min(max(limit, 1), 1000),
+            view=view,
+            group_offset=groupOffset,
         )
 
     @app.get(
@@ -2979,6 +3002,8 @@ def create_app(
         sortOrder: str = "asc",
         offset: int = 0,
         limit: int = 250,
+        view: str = "raw",
+        groupOffset: int | None = None,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_logistics_tariffs_access_or_404(
@@ -2993,6 +3018,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported sortOrder")
         if tariffType.casefold() not in {"", "box", "pallet"}:
             raise HTTPException(status_code=400, detail="unsupported tariffType")
+        _validate_logistics_factor_view(view, groupOffset)
         return repository.report_logistics_tariffs_payload(
             db,
             report,
@@ -3007,6 +3033,8 @@ def create_app(
             sort_order=sortOrder,
             offset=max(offset, 0),
             limit=min(max(limit, 1), 1000),
+            view=view,
+            group_offset=groupOffset,
         )
 
     @app.get(
@@ -3029,6 +3057,8 @@ def create_app(
         sortOrder: str = "desc",
         offset: int = 0,
         limit: int = 250,
+        view: str = "raw",
+        groupOffset: int | None = None,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_logistics_measurements_access_or_404(
@@ -3048,6 +3078,7 @@ def create_app(
             "merged",
         }:
             raise HTTPException(status_code=400, detail="unsupported eventKind")
+        _validate_logistics_factor_view(view, groupOffset)
         return repository.report_logistics_measurements_payload(
             db,
             report,
@@ -3063,6 +3094,8 @@ def create_app(
             sort_order=sortOrder,
             offset=max(offset, 0),
             limit=min(max(limit, 1), 1000),
+            view=view,
+            group_offset=groupOffset,
         )
 
     @app.get(
@@ -3086,6 +3119,8 @@ def create_app(
         sortOrder: str = "desc",
         offset: int = 0,
         limit: int = 250,
+        view: str = "raw",
+        groupOffset: int | None = None,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_logistics_return_reasons_access_or_404(
@@ -3098,6 +3133,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported sortBy")
         if sortOrder not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="unsupported sortOrder")
+        _validate_logistics_factor_view(view, groupOffset)
         return repository.report_logistics_return_reasons_payload(
             db,
             report,
@@ -3114,6 +3150,8 @@ def create_app(
             sort_order=sortOrder,
             offset=max(offset, 0),
             limit=min(max(limit, 1), 1000),
+            view=view,
+            group_offset=groupOffset,
         )
 
     @app.get(
@@ -3136,6 +3174,8 @@ def create_app(
         sortOrder: str = "desc",
         offset: int = 0,
         limit: int = 250,
+        view: str = "raw",
+        groupOffset: int | None = None,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
         _require_logistics_routes_access_or_404(
@@ -3148,6 +3188,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="unsupported sortBy")
         if sortOrder not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="unsupported sortOrder")
+        _validate_logistics_factor_view(view, groupOffset)
         return repository.report_logistics_routes_payload(
             db,
             report,
@@ -3163,6 +3204,8 @@ def create_app(
             sort_order=sortOrder,
             offset=max(offset, 0),
             limit=min(max(limit, 1), 1000),
+            view=view,
+            group_offset=groupOffset,
         )
 
     @app.get(

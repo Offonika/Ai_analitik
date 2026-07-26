@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260726-logistics-visual-polish-v1"
+      content="20260726-logistics-management-v2"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="/static/icons/chart-bar.svg" type="image/svg+xml" />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260726-logistics-visual-polish-v1"
+      href="/static/styles.css?v=20260726-logistics-management-v2"
     />
     <link
       rel="stylesheet"
@@ -453,8 +453,8 @@
           </section>
 
           <section class="panel logistics-priority-panel" aria-labelledby="logistics-recommendations-title">
-            <p class="eyebrow">Что проверить в первую очередь</p>
-            <h3 id="logistics-recommendations-title">Приоритетные зоны по фактам</h3>
+            <p class="eyebrow">Приоритетные действия</p>
+            <h3 id="logistics-recommendations-title">Что проверить сначала</h3>
             <ul id="logistics-recommendations" class="logistics-recommendations"></ul>
             <p class="logistics-overlap-note">Суммы в зонах не складываются: один товар может одновременно попадать в несколько проверок.</p>
           </section>
@@ -468,7 +468,7 @@
 
           <details class="logistics-technical-details">
             <summary>Техническое покрытие</summary>
-            <p>Покрытие ключей: <strong id="logistics-trust-keys">—</strong>. Основание: сверенный read-only снимок WB.</p>
+            <p>Покрытие ключей: <strong id="logistics-trust-keys">—</strong>. Основание: сверенный снимок WB только для чтения.</p>
           </details>
 
           <form
@@ -494,7 +494,7 @@
                 <input
                   id="logistics-product-filter"
                   type="search"
-                  placeholder="Название, артикул или SKU"
+                  placeholder="Название, артикул продавца или WB"
                   autocomplete="off"
                 />
                 <button
@@ -539,337 +539,10 @@
           </div>
 
           <section
-            id="logistics-dimensions"
-            class="panel logistics-dimensions-panel"
-            aria-labelledby="logistics-dimensions-title"
-            hidden
+            id="logistics-products-panel"
+            class="panel"
+            aria-labelledby="logistics-products-title"
           >
-            <div class="logistics-section-heading">
-              <div>
-                <p class="eyebrow">Факторы стоимости</p>
-                <h3 id="logistics-dimensions-title">Габариты в карточке WB</h3>
-                <p class="muted logistics-dimensions-note">
-                  Текущее состояние карточки на дату снимка WB — не исторический
-                  замер и не подтверждённый штраф.
-                </p>
-              </div>
-              <span id="logistics-dimensions-status" class="logistics-data-status"></span>
-            </div>
-            <div
-              id="logistics-dimensions-coverage"
-              class="logistics-dimensions-coverage"
-              aria-label="Покрытие габаритов"
-            ></div>
-            <ul
-              id="logistics-dimensions-recommendations"
-              class="logistics-factor-recommendations"
-            ></ul>
-            <div class="table-wrap logistics-dimensions-table-wrap">
-              <table
-                id="logistics-dimensions-table"
-                class="logistics-table logistics-dimensions-table"
-                data-sort-mode="remote"
-              >
-                <thead>
-                  <tr>
-                    <th scope="col" data-sort-key="product">Товар</th>
-                    <th scope="col" data-sort-disabled="true">Размеры, см</th>
-                    <th scope="col" data-sort-key="volumeL">Объём, л</th>
-                    <th scope="col" data-sort-key="weightBruttoKg">Вес брутто, кг</th>
-                    <th scope="col" data-sort-key="coverageStatus">Сигнал карточки</th>
-                  </tr>
-                </thead>
-                <tbody id="logistics-dimensions-rows"></tbody>
-              </table>
-            </div>
-            <div
-              id="logistics-dimensions-pagination"
-              class="logistics-pagination"
-              aria-label="Страницы габаритов товаров"
-              hidden
-            >
-              <button id="logistics-dimensions-prev" type="button" class="secondary-button">
-                Назад
-              </button>
-              <span id="logistics-dimensions-page" class="muted"></span>
-              <button id="logistics-dimensions-next" type="button" class="secondary-button">
-                Далее
-              </button>
-            </div>
-          </section>
-
-          <section
-            id="logistics-measurements"
-            class="panel logistics-tariffs-panel logistics-measurements-panel"
-            aria-labelledby="logistics-measurements-title"
-            hidden
-          >
-            <div class="logistics-section-heading">
-              <div>
-                <p class="eyebrow">Факторы стоимости</p>
-                <h3 id="logistics-measurements-title">Контрольные замеры и удержания WB</h3>
-                <p class="muted logistics-tariffs-note">
-                  Исторические события Analytics на дату замера. Отсутствие события
-                  у товара не означает пропуск данных.
-                </p>
-              </div>
-              <span id="logistics-measurements-status" class="logistics-data-status"></span>
-            </div>
-            <div
-              id="logistics-measurements-coverage"
-              class="logistics-tariffs-coverage"
-              aria-label="Покрытие контрольных замеров"
-            ></div>
-            <p class="logistics-tariffs-warning">
-              Удержание, отмена и чистая сумма показаны справочно. До точной
-              финансовой сверки они не прибавляются к расходам или прибыли отчёта.
-            </p>
-            <ul
-              id="logistics-measurements-recommendations"
-              class="logistics-factor-recommendations"
-            ></ul>
-            <div class="table-wrap logistics-tariffs-table-wrap">
-              <table
-                id="logistics-measurements-table"
-                class="logistics-table logistics-tariffs-table logistics-measurements-table"
-                data-sort-mode="remote"
-              >
-                <thead>
-                  <tr>
-                    <th scope="col" data-sort-key="eventDate">Дата</th>
-                    <th scope="col" data-sort-key="product">Товар</th>
-                    <th scope="col" data-sort-disabled="true">Замер WB, см</th>
-                    <th scope="col" data-sort-disabled="true">Заявлено, см</th>
-                    <th scope="col" data-sort-key="volumeRatioPercent">Объём</th>
-                    <th scope="col" data-sort-key="penaltyAmount">Удержание</th>
-                    <th scope="col" data-sort-key="coverageStatus">Статус</th>
-                  </tr>
-                </thead>
-                <tbody id="logistics-measurements-rows"></tbody>
-              </table>
-            </div>
-            <div
-              id="logistics-measurements-pagination"
-              class="logistics-pagination"
-              aria-label="Страницы контрольных замеров"
-              hidden
-            >
-              <button id="logistics-measurements-prev" type="button" class="secondary-button">
-                Назад
-              </button>
-              <span id="logistics-measurements-page" class="muted"></span>
-              <button id="logistics-measurements-next" type="button" class="secondary-button">
-                Далее
-              </button>
-            </div>
-          </section>
-
-          <section
-            id="logistics-tariffs"
-            class="panel logistics-tariffs-panel"
-            aria-labelledby="logistics-tariffs-title"
-            hidden
-          >
-            <div class="logistics-section-heading">
-              <div>
-                <p class="eyebrow">Факторы стоимости</p>
-                <h3 id="logistics-tariffs-title">Тарифы и коэффициенты WB</h3>
-                <p class="muted logistics-tariffs-note">
-                  Архивный тариф — факт только для запрошенной недели. Текущий
-                  тариф отмечается как оценка и не меняет денежный итог.
-                </p>
-              </div>
-              <span id="logistics-tariffs-status" class="logistics-data-status"></span>
-            </div>
-            <div
-              id="logistics-tariffs-coverage"
-              class="logistics-tariffs-coverage"
-              aria-label="Покрытие тарифов"
-            ></div>
-            <p class="logistics-tariffs-warning">
-              Коэффициенты уже учтены WB в ставках и не умножаются на итог
-              отчёта повторно.
-            </p>
-            <ul
-              id="logistics-tariffs-recommendations"
-              class="logistics-factor-recommendations"
-            ></ul>
-            <div class="table-wrap logistics-tariffs-table-wrap">
-              <table
-                id="logistics-tariffs-table"
-                class="logistics-table logistics-tariffs-table"
-                data-sort-mode="remote"
-              >
-                <thead>
-                  <tr>
-                    <th scope="col" data-sort-key="requestedDate">Неделя</th>
-                    <th scope="col" data-sort-key="warehouse">Склад</th>
-                    <th scope="col" data-sort-disabled="true">Тип</th>
-                    <th scope="col" data-sort-key="deliveryCoefficient">Доставка</th>
-                    <th scope="col" data-sort-key="storageCoefficient">Хранение</th>
-                    <th scope="col" data-sort-key="coverageStatus">Основание</th>
-                  </tr>
-                </thead>
-                <tbody id="logistics-tariffs-rows"></tbody>
-              </table>
-            </div>
-            <div
-              id="logistics-tariffs-pagination"
-              class="logistics-pagination"
-              aria-label="Страницы тарифов"
-              hidden
-            >
-              <button id="logistics-tariffs-prev" type="button" class="secondary-button">
-                Назад
-              </button>
-              <span id="logistics-tariffs-page" class="muted"></span>
-              <button id="logistics-tariffs-next" type="button" class="secondary-button">
-                Далее
-              </button>
-            </div>
-          </section>
-
-          <section
-            id="logistics-routes"
-            class="panel logistics-tariffs-panel logistics-routes-panel"
-            aria-labelledby="logistics-routes-title"
-            hidden
-          >
-            <div class="logistics-section-heading">
-              <div>
-                <p class="eyebrow">Факторы стоимости</p>
-                <h3 id="logistics-routes-title">Склады и направления</h3>
-                <p class="muted logistics-tariffs-note">
-                  Маршрут подтверждается только точной связкой Statistics с
-                  цепочкой. Недоступные и конфликтующие значения не выбираются случайно.
-                </p>
-              </div>
-              <span id="logistics-routes-status" class="logistics-data-status"></span>
-            </div>
-            <div
-              id="logistics-routes-coverage"
-              class="logistics-tariffs-coverage"
-              aria-label="Покрытие маршрутов"
-            ></div>
-            <p class="logistics-tariffs-warning">
-              Суммы — фактическая логистика пересекающихся маршрутных срезов,
-              а не резерв экономии и не слагаемые других факторов.
-            </p>
-            <ul
-              id="logistics-routes-recommendations"
-              class="logistics-factor-recommendations"
-            ></ul>
-            <div class="table-wrap logistics-tariffs-table-wrap">
-              <table
-                id="logistics-routes-table"
-                class="logistics-table logistics-tariffs-table logistics-routes-table"
-                data-sort-mode="remote"
-              >
-                <thead>
-                  <tr>
-                    <th scope="col" data-sort-key="warehouse">Склад</th>
-                    <th scope="col" data-sort-key="destination">Направление</th>
-                    <th scope="col" data-sort-key="logisticsTotal">Логистика</th>
-                    <th scope="col" data-sort-key="chainCount">Цепочки</th>
-                    <th scope="col" data-sort-disabled="true">Box недели</th>
-                    <th scope="col" data-sort-key="coverageStatus">Основание</th>
-                  </tr>
-                </thead>
-                <tbody id="logistics-routes-rows"></tbody>
-              </table>
-            </div>
-            <div
-              id="logistics-routes-pagination"
-              class="logistics-pagination"
-              aria-label="Страницы маршрутов"
-              hidden
-            >
-              <button id="logistics-routes-prev" type="button" class="secondary-button">
-                Назад
-              </button>
-              <span id="logistics-routes-page" class="muted"></span>
-              <button id="logistics-routes-next" type="button" class="secondary-button">
-                Далее
-              </button>
-            </div>
-          </section>
-
-          <details
-            id="logistics-return-reasons"
-            class="panel logistics-return-reasons-panel"
-            hidden
-            open
-          >
-            <summary class="logistics-return-reasons-summary">
-              <span>
-                <span class="eyebrow">Факторы стоимости</span>
-                <strong id="logistics-return-reasons-title">Причины возвратов</strong>
-                <small>Сначала покрытие, затем только подтверждённые факты и явные ограничения.</small>
-              </span>
-              <span
-                id="logistics-return-reasons-status"
-                class="logistics-data-status"
-                role="status"
-              ></span>
-            </summary>
-            <div class="logistics-return-reasons-body">
-              <div
-                id="logistics-return-reasons-coverage"
-                class="logistics-return-reasons-coverage"
-                aria-label="Покрытие причин возвратов"
-              ></div>
-              <div
-                id="logistics-return-reasons-sources"
-                class="logistics-return-reasons-sources"
-                aria-label="Состояние источников причин возвратов"
-              ></div>
-              <div class="table-wrap logistics-tariffs-table-wrap">
-                <table
-                  id="logistics-return-reasons-table"
-                  class="logistics-table logistics-tariffs-table logistics-return-reasons-table"
-                  data-sort-mode="remote"
-                >
-                  <thead>
-                    <tr>
-                      <th scope="col" data-sort-key="eventDate">Товар / дата возврата</th>
-                      <th scope="col" data-sort-key="reasonCategory">Категория причины</th>
-                      <th scope="col" data-sort-key="evidenceType">Основание</th>
-                      <th scope="col" data-sort-key="matchStatus">Заявка / комментарий</th>
-                    </tr>
-                  </thead>
-                  <tbody id="logistics-return-reasons-rows"></tbody>
-                </table>
-              </div>
-              <div
-                id="logistics-return-reasons-pagination"
-                class="logistics-pagination"
-                aria-label="Страницы причин возвратов"
-                hidden
-              >
-                <button
-                  id="logistics-return-reasons-prev"
-                  type="button"
-                  class="secondary-button"
-                >
-                  Назад
-                </button>
-                <span id="logistics-return-reasons-page" class="muted"></span>
-                <button
-                  id="logistics-return-reasons-next"
-                  type="button"
-                  class="secondary-button"
-                >
-                  Далее
-                </button>
-              </div>
-              <ul
-                id="logistics-return-reasons-recommendations"
-                class="logistics-factor-recommendations logistics-return-reasons-recommendations"
-              ></ul>
-            </div>
-          </details>
-
-          <section class="panel" aria-labelledby="logistics-products-title">
             <div class="logistics-section-heading">
               <div>
                 <p class="eyebrow">Рейтинг товаров</p>
@@ -927,6 +600,163 @@
                 Далее
               </button>
             </div>
+          </section>
+
+          <section class="logistics-factor-stack" aria-labelledby="logistics-factors-title">
+            <div class="logistics-factor-stack-heading">
+              <p class="eyebrow">Факторы стоимости</p>
+              <h3 id="logistics-factors-title">Что стоит проверить подробнее</h3>
+              <p class="muted">
+                Блоки закрыты по умолчанию. Сначала показан итог, а товары и
+                события — только после раскрытия.
+              </p>
+            </div>
+
+            <details
+              id="logistics-dimensions"
+              class="panel logistics-factor-disclosure"
+              hidden
+            >
+              <summary class="logistics-factor-summary">
+                <span>
+                  <span class="eyebrow">Карточки товаров</span>
+                  <strong id="logistics-dimensions-title" tabindex="-1">Габариты в карточке WB</strong>
+                  <small>Одна строка — одна карточка WB, даже если она используется в нескольких срезах.</small>
+                </span>
+                <span id="logistics-dimensions-status" class="logistics-data-status" role="status"></span>
+              </summary>
+              <div class="logistics-factor-body">
+                <p class="logistics-factor-headline" data-logistics-headline>
+                  Текущее состояние карточки — не исторический замер и не подтверждённый штраф.
+                </p>
+                <div id="logistics-dimensions-coverage" class="logistics-factor-coverage" aria-label="Покрытие габаритов"></div>
+                <ul id="logistics-dimensions-recommendations" class="logistics-factor-recommendations" hidden></ul>
+                <div id="logistics-dimensions-rows" class="logistics-factor-groups" role="list"></div>
+                <div id="logistics-dimensions-pagination" class="logistics-pagination" aria-label="Страницы карточек товаров" hidden>
+                  <button id="logistics-dimensions-prev" type="button" class="secondary-button">Назад</button>
+                  <span id="logistics-dimensions-page" class="muted"></span>
+                  <button id="logistics-dimensions-next" type="button" class="secondary-button">Далее</button>
+                </div>
+              </div>
+            </details>
+
+            <details
+              id="logistics-measurements"
+              class="panel logistics-factor-disclosure"
+              hidden
+            >
+              <summary class="logistics-factor-summary">
+                <span>
+                  <span class="eyebrow">События WB</span>
+                  <strong id="logistics-measurements-title" tabindex="-1">Контрольные замеры WB</strong>
+                  <small>Замеры сгруппированы по варианту товара и московской дате события.</small>
+                </span>
+                <span id="logistics-measurements-status" class="logistics-data-status" role="status"></span>
+              </summary>
+              <div class="logistics-factor-body">
+                <p class="logistics-factor-headline" data-logistics-headline>
+                  Сам замер и его финансовая связка оцениваются раздельно.
+                </p>
+                <div id="logistics-measurements-coverage" class="logistics-factor-coverage" aria-label="Покрытие контрольных замеров"></div>
+                <p class="logistics-factor-warning">
+                  Сведения об удержании показаны справочно и не прибавляются к расходам повторно.
+                </p>
+                <ul id="logistics-measurements-recommendations" class="logistics-factor-recommendations" hidden></ul>
+                <div id="logistics-measurements-rows" class="logistics-factor-groups" role="list"></div>
+                <div id="logistics-measurements-pagination" class="logistics-pagination" aria-label="Страницы групп замеров" hidden>
+                  <button id="logistics-measurements-prev" type="button" class="secondary-button">Назад</button>
+                  <span id="logistics-measurements-page" class="muted"></span>
+                  <button id="logistics-measurements-next" type="button" class="secondary-button">Далее</button>
+                </div>
+              </div>
+            </details>
+
+            <details
+              id="logistics-tariffs"
+              class="panel logistics-factor-disclosure"
+              hidden
+            >
+              <summary class="logistics-factor-summary">
+                <span>
+                  <span class="eyebrow">Покрытие недель</span>
+                  <strong id="logistics-tariffs-title" tabindex="-1">Тарифы и коэффициенты WB</strong>
+                  <small>Архивный тариф — факт недели; текущий тариф всегда отмечен как оценка.</small>
+                </span>
+                <span id="logistics-tariffs-status" class="logistics-data-status" role="status"></span>
+              </summary>
+              <div class="logistics-factor-body">
+                <p class="logistics-factor-headline" data-logistics-headline></p>
+                <div id="logistics-tariffs-coverage" class="logistics-factor-coverage" aria-label="Покрытие тарифов"></div>
+                <p class="logistics-factor-warning">
+                  Коэффициенты уже учтены WB в ставках и не умножаются на итог повторно.
+                </p>
+                <ul id="logistics-tariffs-recommendations" class="logistics-factor-recommendations" hidden></ul>
+                <div id="logistics-tariffs-rows" class="logistics-factor-groups" role="list"></div>
+                <div id="logistics-tariffs-pagination" class="logistics-pagination" aria-label="Страницы тарифных недель" hidden>
+                  <button id="logistics-tariffs-prev" type="button" class="secondary-button">Назад</button>
+                  <span id="logistics-tariffs-page" class="muted"></span>
+                  <button id="logistics-tariffs-next" type="button" class="secondary-button">Далее</button>
+                </div>
+              </div>
+            </details>
+
+            <details
+              id="logistics-routes"
+              class="panel logistics-factor-disclosure"
+              hidden
+            >
+              <summary class="logistics-factor-summary">
+                <span>
+                  <span class="eyebrow">Распределение цепочек</span>
+                  <strong id="logistics-routes-title" tabindex="-1">Склады и направления</strong>
+                  <small>Показан агрегированный итог; неподтверждённые значения не выбираются случайно.</small>
+                </span>
+                <span id="logistics-routes-status" class="logistics-data-status" role="status"></span>
+              </summary>
+              <div class="logistics-factor-body">
+                <p class="logistics-factor-headline" data-logistics-headline></p>
+                <div id="logistics-routes-coverage" class="logistics-factor-coverage" aria-label="Покрытие складов и направлений"></div>
+                <p class="logistics-factor-warning">
+                  Этот блок описывает распределение затрат, а не обещание экономии.
+                </p>
+                <ul id="logistics-routes-recommendations" class="logistics-factor-recommendations" hidden></ul>
+                <div id="logistics-routes-rows" class="logistics-factor-groups" role="list"></div>
+                <div id="logistics-routes-pagination" class="logistics-pagination" aria-label="Страницы направлений" hidden>
+                  <button id="logistics-routes-prev" type="button" class="secondary-button">Назад</button>
+                  <span id="logistics-routes-page" class="muted"></span>
+                  <button id="logistics-routes-next" type="button" class="secondary-button">Далее</button>
+                </div>
+              </div>
+            </details>
+
+            <details
+              id="logistics-return-reasons"
+              class="panel logistics-factor-disclosure"
+              hidden
+            >
+              <summary class="logistics-factor-summary">
+                <span>
+                  <span class="eyebrow">Покрытие источников</span>
+                  <strong id="logistics-return-reasons-title" tabindex="-1">Причины возвратов</strong>
+                  <small>Возвраты сгруппированы по варианту товара и дате.</small>
+                </span>
+                <span id="logistics-return-reasons-status" class="logistics-data-status" role="status"></span>
+              </summary>
+              <div class="logistics-factor-body">
+                <p class="logistics-factor-headline is-warning" data-logistics-headline>
+                  Возвраты найдены, но подтверждённых причин нет; выводы о причинах делать нельзя.
+                </p>
+                <div id="logistics-return-reasons-coverage" class="logistics-factor-coverage" aria-label="Покрытие причин возвратов"></div>
+                <div id="logistics-return-reasons-sources" class="logistics-return-reasons-sources" aria-label="Состояние источников причин возвратов"></div>
+                <ul id="logistics-return-reasons-recommendations" class="logistics-factor-recommendations" hidden></ul>
+                <div id="logistics-return-reasons-rows" class="logistics-factor-groups" role="list"></div>
+                <div id="logistics-return-reasons-pagination" class="logistics-pagination" aria-label="Страницы групп возвратов" hidden>
+                  <button id="logistics-return-reasons-prev" type="button" class="secondary-button">Назад</button>
+                  <span id="logistics-return-reasons-page" class="muted"></span>
+                  <button id="logistics-return-reasons-next" type="button" class="secondary-button">Далее</button>
+                </div>
+              </div>
+            </details>
           </section>
 
           <section
@@ -2191,7 +2021,7 @@
                   id="filter-query"
                   name="query"
                   type="search"
-                  placeholder="Товар, артикул, баркод, nmId"
+                  placeholder="Товар, артикул, штрихкод или артикул WB"
                   autocomplete="off"
                 />
               </label>
@@ -2249,7 +2079,7 @@
                     <th>Артикул WB</th>
                     <th>Артикул 1С</th>
                     <th>Баркод</th>
-                    <th>nmId</th>
+                    <th>Артикул WB</th>
                     <th>Кабинет</th>
                     <th>Организация</th>
                     <th>Схема</th>
@@ -3387,9 +3217,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260726-logistics-visual-polish-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260726-logistics-visual-polish-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260726-logistics-visual-polish-v1" defer></script>
-    <script src="/static/app.js?v=20260726-logistics-visual-polish-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260726-logistics-management-v2" defer></script>
+    <script src="/static/month-close-report.js?v=20260726-logistics-management-v2" defer></script>
+    <script src="/static/tax-load-report.js?v=20260726-logistics-management-v2" defer></script>
+    <script src="/static/app.js?v=20260726-logistics-management-v2" defer></script>
   </body>
 </html>

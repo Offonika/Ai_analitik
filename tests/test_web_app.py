@@ -45,6 +45,7 @@ from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.app import (
     UnitEconomicsCalculateRequest,
     _unit_economics_calculation_payload,
+    _validate_logistics_factor_view,
     create_app,
 )
 from wb_unit_economics.web.dashboard_payload import (
@@ -3552,6 +3553,487 @@ def test_logistics_routes_role_and_flag_matrix(tmp_path: Path) -> None:
     assert client.get("/api/me").json()["logisticsRoutesEnabled"] is True
 
 
+def test_logistics_factor_view_validation_is_additive() -> None:
+    for view in ("raw", "summary", "grouped"):
+        _validate_logistics_factor_view(view, None)
+    _validate_logistics_factor_view("grouped", 0)
+
+    with pytest.raises(HTTPException) as unsupported_view:
+        _validate_logistics_factor_view("technical", None)
+    assert unsupported_view.value.status_code == 400
+
+    with pytest.raises(HTTPException) as raw_group_offset:
+        _validate_logistics_factor_view("raw", 0)
+    assert raw_group_offset.value.status_code == 400
+
+    with pytest.raises(HTTPException) as negative_group_offset:
+        _validate_logistics_factor_view("grouped", -1)
+    assert negative_group_offset.value.status_code == 400
+
+
+def test_logistics_factor_openapi_exposes_grouped_query_contract(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    paths = client.app.openapi()["paths"]
+
+    for factor in (
+        "dimensions",
+        "measurements",
+        "tariffs",
+        "routes",
+        "return-reasons",
+    ):
+        operation = paths[
+            f"/api/reports/{{report_id}}/logistics/{factor}"
+        ]["get"]
+        parameters = {
+            parameter["name"]: parameter
+            for parameter in operation["parameters"]
+        }
+        assert parameters["view"]["in"] == "query"
+        assert parameters["view"]["schema"]["default"] == "raw"
+        assert parameters["groupOffset"]["in"] == "query"
+
+
+def test_logistics_dimensions_group_exact_cards_before_pagination(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report, product_count=2)
+        repository.replace_report_logistics_analysis(db, report, result)
+        rows = build_dimension_rows(
+            result.sku_rows,
+            [
+                {
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "nm_id": nm_id,
+                    "length_cm": 30,
+                    "width_cm": 20,
+                    "height_cm": 10,
+                    "weight_brutto_kg": 2,
+                }
+                for nm_id in ("101", "102")
+            ],
+        )
+        repository.replace_report_logistics_dimension_analysis(
+            db,
+            report,
+            context=_dimension_context(report, rows),
+            rows=rows,
+        )
+        persisted = list(
+            db.scalars(
+                select(repository.ReportLogisticsDimensionRow)
+                .where(
+                    repository.ReportLogisticsDimensionRow.report_run_id
+                    == report.id
+                )
+                .order_by(repository.ReportLogisticsDimensionRow.nm_id)
+            )
+        )
+        assert len(persisted) == 2
+        persisted[1].product = persisted[0].product
+        duplicate_values = {
+            column.name: getattr(persisted[0], column.name)
+            for column in repository.ReportLogisticsDimensionRow.__table__.columns
+            if column.name != "id"
+        }
+        duplicate_values.update(
+            {
+                "row_uid": "synthetic-dimension-second-scope",
+                "scheme": "fbs",
+                "source_hash_digest": "synthetic-dimension-source",
+            }
+        )
+        db.add(repository.ReportLogisticsDimensionRow(**duplicate_values))
+        db.flush()
+
+        default_raw = repository.report_logistics_dimensions_payload(db, report)
+        explicit_raw = repository.report_logistics_dimensions_payload(
+            db,
+            report,
+            view="raw",
+        )
+        summary = repository.report_logistics_dimensions_payload(
+            db,
+            report,
+            view="summary",
+            limit=1,
+        )
+        first_page = repository.report_logistics_dimensions_payload(
+            db,
+            report,
+            view="grouped",
+            limit=1,
+        )
+        second_page = repository.report_logistics_dimensions_payload(
+            db,
+            report,
+            view="grouped",
+            offset=1,
+            limit=1,
+        )
+        detail = repository.report_logistics_dimensions_payload(
+            db,
+            report,
+            view="grouped",
+            group_offset=0,
+        )
+
+    assert default_raw == explicit_raw
+    assert default_raw["total"] == 3
+    assert default_raw["reportId"] == report.id
+    assert "wbCabinetId" in default_raw["filterContext"]
+    assert summary["rows"] == []
+    assert "reportId" not in summary
+    assert "wbCabinetId" not in summary["filterContext"]
+    assert "clientCompanyId" not in summary["filterContext"]
+    assert summary["total"] == 2
+    assert summary["rawTotal"] == 3
+    assert summary["coverage"]["total"] == 2
+    assert summary["coverage"]["withDimensions"] == 2
+    assert len(first_page["rows"]) == 1
+    assert len(second_page["rows"]) == 1
+    assert first_page["rows"][0]["groupOffset"] == 0
+    assert second_page["rows"][0]["groupOffset"] == 1
+    assert (
+        first_page["rows"][0]["product"]
+        == second_page["rows"][0]["product"]
+    )
+    assert (
+        first_page["rows"][0]["vendorCode"]
+        != second_page["rows"][0]["vendorCode"]
+    )
+    assert detail["group"]["itemCount"] == 2
+    assert detail["group"]["scopeCount"] == 2
+    assert len(detail["rows"]) == 2
+    serialized = str(first_page) + str(detail)
+    for forbidden in ("nmId", "source_hash", "sourceHash", "row_uid"):
+        assert forbidden not in serialized
+
+
+def test_logistics_measurements_group_events_and_split_link_status(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report)
+        repository.replace_report_logistics_analysis(db, report, result)
+        rows = build_measurement_rows(
+            result.sku_rows,
+            [],
+            [
+                {
+                    "tenant_id": report.tenant_id,
+                    "client_id": report.client_id,
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "dim_id": "synthetic-measurement-first",
+                    "nm_id": "101",
+                    "volume": "2",
+                    "width": "10",
+                    "length": "20",
+                    "height": "10",
+                    "dt": "2026-04-07T07:00:00Z",
+                    "source_hash": "synthetic-measurement-source-first",
+                },
+                {
+                    "tenant_id": report.tenant_id,
+                    "client_id": report.client_id,
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "dim_id": "synthetic-measurement-second",
+                    "nm_id": "101",
+                    "volume": "3",
+                    "width": "10",
+                    "length": "30",
+                    "height": "10",
+                    "dt": "2026-04-07T08:00:00Z",
+                    "source_hash": "synthetic-measurement-source-second",
+                },
+            ],
+        )
+        repository.replace_report_logistics_measurement_analysis(
+            db,
+            report,
+            context=_measurement_context(report, rows, data_status="partial"),
+            rows=rows,
+        )
+        ambiguous = (
+            db.query(repository.ReportLogisticsMeasurementRow)
+            .filter_by(
+                report_run_id=report.id,
+                dim_id="synthetic-measurement-second",
+            )
+            .one()
+        )
+        ambiguous.coverage_status = "ambiguous_product_scope"
+        ambiguous.client_company_id = None
+        ambiguous.scheme = None
+        db.flush()
+
+        default_raw = repository.report_logistics_measurements_payload(db, report)
+        explicit_raw = repository.report_logistics_measurements_payload(
+            db,
+            report,
+            view="raw",
+        )
+        grouped = repository.report_logistics_measurements_payload(
+            db,
+            report,
+            view="grouped",
+        )
+        detail = repository.report_logistics_measurements_payload(
+            db,
+            report,
+            view="grouped",
+            group_offset=0,
+        )
+
+    assert default_raw == explicit_raw
+    assert "reportId" not in grouped
+    assert "wbCabinetId" not in grouped["filterContext"]
+    assert "clientCompanyId" not in grouped["filterContext"]
+    assert grouped["total"] == 1
+    assert grouped["rawTotal"] == 2
+    group = grouped["rows"][0]
+    assert group["itemCount"] == 2
+    assert group["dimensionsDiffer"] is True
+    assert group["eventStatusTitle"] == "Подтверждённый замер WB"
+    assert (
+        group["financialLinkStatusTitle"]
+        == "Замер найден; организация или схема не определена однозначно"
+    )
+    assert grouped["columnAvailability"] == {
+        "declaredValues": False,
+        "moneyValues": False,
+    }
+    assert len(detail["rows"]) == 2
+    assert all(item["eventAt"] for item in detail["rows"])
+    assert all(
+        item["moneyStatusText"]
+        == "Сведения об удержании в этом событии отсутствуют"
+        for item in detail["rows"]
+    )
+    serialized = str(grouped) + str(detail)
+    for forbidden in (
+        "synthetic-measurement-first",
+        "synthetic-measurement-second",
+        "penaltyAmount",
+        "source_hash",
+        "nmId",
+    ):
+        assert forbidden not in serialized
+
+
+def test_logistics_return_reasons_group_canonical_returns_by_product_and_date(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        logistics_result, return_reason_result = _return_reason_fixture_result(
+            report
+        )
+        repository.replace_report_logistics_analysis(
+            db,
+            report,
+            logistics_result,
+        )
+        repository.replace_report_logistics_return_reason_analysis(
+            db,
+            report,
+            return_reason_result,
+        )
+        original = db.query(repository.ReportLogisticsReturnReasonRow).one()
+        original.reason_category = None
+        original.reason_source = "unavailable"
+        original.evidence_type = "data_unavailable"
+        original.match_status = "source_unavailable"
+        original.claim_available = None
+        original.has_user_comment = None
+        duplicate_values = {
+            column.name: getattr(original, column.name)
+            for column in repository.ReportLogisticsReturnReasonRow.__table__.columns
+            if column.name != "id"
+        }
+        duplicate_values.update(
+            {
+                "row_uid": "synthetic-return-second-row",
+                "chain_key": "synthetic-return-second-chain",
+                "row_hash": "synthetic-return-second-hash",
+            }
+        )
+        db.add(repository.ReportLogisticsReturnReasonRow(**duplicate_values))
+        context = db.get(
+            repository.ReportLogisticsReturnReasonContext,
+            report.id,
+        )
+        assert context is not None
+        context.return_reason_row_count = 2
+        db.flush()
+
+        default_raw = repository.report_logistics_return_reasons_payload(
+            db,
+            report,
+        )
+        explicit_raw = repository.report_logistics_return_reasons_payload(
+            db,
+            report,
+            view="raw",
+        )
+        grouped = repository.report_logistics_return_reasons_payload(
+            db,
+            report,
+            view="grouped",
+        )
+        detail = repository.report_logistics_return_reasons_payload(
+            db,
+            report,
+            view="grouped",
+            group_offset=0,
+        )
+
+    assert default_raw == explicit_raw
+    assert "reportId" not in grouped
+    assert "wbCabinetId" not in grouped["filterContext"]
+    assert "clientCompanyId" not in grouped["filterContext"]
+    assert grouped["total"] == 1
+    assert grouped["rawTotal"] == 2
+    assert grouped["rows"][0]["itemCount"] == 2
+    assert grouped["rows"][0]["sourceLabel"] == "Причина не подтверждена"
+    assert (
+        grouped["headline"]
+        == "Возвраты найдены, но подтверждённых причин нет; "
+        "выводы о причинах делать нельзя."
+    )
+    assert len(detail["rows"]) == 2
+    assert all(
+        item["reasonText"] == "Подтверждённая причина не получена"
+        for item in detail["rows"]
+    )
+    serialized = str(grouped) + str(detail)
+    for forbidden in (
+        "chainRef",
+        "chain_key",
+        "row_hash",
+        "productRef",
+        "goods_return_source_hash_digest",
+    ):
+        assert forbidden not in serialized
+
+
+def test_logistics_tariff_and_route_summary_grouped_payloads_are_safe(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path, publish_report=False)
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        _ensure_logistics_dimensions(db, report)
+        result = _logistics_fixture_result(report, product_count=2)
+        repository.replace_report_logistics_analysis(db, report, result)
+        tariff_rows = build_tariff_rows(
+            result.sku_rows,
+            [
+                {
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "requested_date": "2026-04-06",
+                    "tariff_type": "box",
+                    "warehouse_name": warehouse,
+                    "box_delivery_coef_expr": "125",
+                    "box_storage_coef_expr": "115",
+                    "source_hash": f"synthetic-tariff-{index}",
+                }
+                for index, warehouse in enumerate(("Склад А", "Склад Б"), 1)
+            ],
+            factor_snapshot_date=date(2026, 7, 21),
+        )
+        repository.replace_report_logistics_tariff_analysis(
+            db,
+            report,
+            context=_tariff_context(report, tariff_rows, data_status="partial"),
+            rows=tariff_rows,
+        )
+        route_rows = build_route_rows(
+            result.order_rows,
+            [
+                {
+                    "tenant_id": report.tenant_id,
+                    "client_id": report.client_id,
+                    "wb_cabinet_id": "cabinet-logistics",
+                    "srid": "synthetic-route-event",
+                    "nm_id": "101",
+                    "warehouse_name": "Склад А",
+                    "country_name": "Страна",
+                    "region_name": "Направление А",
+                    "source_hash": "synthetic-route-source",
+                }
+            ],
+        )
+        repository.replace_report_logistics_route_analysis(
+            db,
+            report,
+            context=_route_context(report, route_rows, data_status="partial"),
+            rows=route_rows,
+        )
+        db.flush()
+
+        tariff_summary = repository.report_logistics_tariffs_payload(
+            db,
+            report,
+            view="summary",
+        )
+        tariff_grouped = repository.report_logistics_tariffs_payload(
+            db,
+            report,
+            view="grouped",
+        )
+        route_summary = repository.report_logistics_routes_payload(
+            db,
+            report,
+            view="summary",
+        )
+        route_grouped = repository.report_logistics_routes_payload(
+            db,
+            report,
+            view="grouped",
+        )
+
+    assert tariff_summary["rows"] == []
+    assert "reportId" not in tariff_summary
+    assert "wbCabinetId" not in tariff_summary["filterContext"]
+    assert "clientCompanyId" not in tariff_summary["filterContext"]
+    assert tariff_summary["total"] >= 1
+    assert tariff_grouped["rows"]
+    assert all("statusTitle" in item for item in tariff_grouped["rows"])
+    assert route_summary["rows"] == []
+    assert "reportId" not in route_summary
+    assert "wbCabinetId" not in route_summary["filterContext"]
+    assert "clientCompanyId" not in route_summary["filterContext"]
+    assert "linkedLogistics" not in route_summary["coverage"]
+    assert "unlinkedLogistics" not in route_summary["coverage"]
+    assert route_grouped["rows"]
+    serialized = str(tariff_grouped) + str(route_grouped)
+    for forbidden in (
+        "deliveryBaseRub",
+        "storageBaseRub",
+        "logisticsTotal",
+        "chainKey",
+        "source_hash",
+        "synthetic-route-event",
+    ):
+        assert forbidden not in serialized
+
+
 def test_logistics_api_is_feature_gated_and_old_report_needs_rebuild(
     tmp_path: Path,
 ) -> None:
@@ -3626,16 +4108,16 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert 'id="logistics-measurements-coverage"' in cabinet.text
     assert 'id="logistics-measurements-rows"' in cabinet.text
     assert 'id="logistics-measurements-pagination"' in cabinet.text
-    assert "Контрольные замеры и удержания WB" in cabinet.text
+    assert "Контрольные замеры WB" in cabinet.text
     assert "не прибавляются к расходам" in cabinet.text
     assert ".logistics-dimensions-table {" in styles.text
     assert "table-layout: fixed;" in styles.text
     assert ".logistics-dimensions-table th:nth-child(5)" in styles.text
+    assert cabinet.text.index('aria-labelledby="logistics-products-title"') < (
+        cabinet.text.index('id="logistics-dimensions"')
+    )
     assert cabinet.text.index('id="logistics-dimensions"') < cabinet.text.index(
         'id="logistics-measurements"'
-    )
-    assert cabinet.text.index('id="logistics-measurements"') < cabinet.text.index(
-        'aria-labelledby="logistics-products-title"'
     )
     assert 'id="logistics-orders-rows"' in cabinet.text
     assert 'id="logistics-orders-pagination"' in cabinet.text
@@ -6504,10 +6986,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260726-logistics-visual-polish-v1"
+        "20260726-logistics-management-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260726-logistics-visual-polish-v1"
+        "20260726-logistics-management-v2"
     )
 
     page = client.get("/")
@@ -6660,8 +7142,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260726-logistics-visual-polish-v1" in cabinet.text
-    assert "app.js?v=20260726-logistics-visual-polish-v1" in cabinet.text
+    assert "styles.css?v=20260726-logistics-management-v2" in cabinet.text
+    assert "app.js?v=20260726-logistics-management-v2" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7009,43 +7491,88 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.status_code == 200
     assert "/api/reports" in app_js.text
     assert "/summary" in app_js.text
+    assert (
+        'loadLogisticsDimensions({ force: sliceChanged, view: "summary" })'
+        in app_js.text
+    )
     assert "/logistics/tariffs" in app_js.text
     assert "logisticsTariffsAvailable" in app_js.text
     assert 'id="logistics-tariffs"' in cabinet.text
     assert "Тарифы и коэффициенты WB" in cabinet.text
+    assert (
+        'loadLogisticsTariffs({ force: sliceChanged, view: "summary" })'
+        in app_js.text
+    )
     assert "/logistics/measurements" in app_js.text
     assert "logisticsMeasurementsAvailable" in app_js.text
-    assert "loadLogisticsMeasurements({ force: sliceChanged })" in app_js.text
+    assert (
+        'loadLogisticsMeasurements({ force: sliceChanged, view: "summary" })'
+        in app_js.text
+    )
     assert "resetLogisticsMeasurements({ hide: true })" in app_js.text
     assert 'id="logistics-measurements"' in cabinet.text
-    assert "Контрольные замеры и удержания WB" in cabinet.text
+    assert "Контрольные замеры WB" in cabinet.text
     assert "/logistics/routes" in app_js.text
     assert "logisticsRoutesAvailable" in app_js.text
+    assert (
+        'loadLogisticsRoutes({ force: sliceChanged, view: "summary" })'
+        in app_js.text
+    )
     assert 'id="logistics-routes"' in cabinet.text
     assert "Склады и направления" in cabinet.text
+    assert cabinet.text.index('id="logistics-products-title"') < cabinet.text.index(
+        'id="logistics-dimensions"'
+    )
+    assert cabinet.text.index('id="logistics-dimensions"') < cabinet.text.index(
+        'id="logistics-measurements"'
+    )
     assert cabinet.text.index('id="logistics-measurements"') < cabinet.text.index(
         'id="logistics-tariffs"'
     )
     assert cabinet.text.index('id="logistics-tariffs"') < cabinet.text.index(
         'id="logistics-routes"'
     )
-    assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
-        'id="logistics-products-title"'
-    )
     assert "/logistics/return-reasons" in app_js.text
     assert "logisticsReturnReasonsAvailable" in app_js.text
-    assert "loadLogisticsReturnReasons({ force: sliceChanged })" in app_js.text
+    assert (
+        'loadLogisticsReturnReasons({ force: sliceChanged, view: "summary" })'
+        in app_js.text
+    )
     assert "resetLogisticsReturnReasons({ hide: true })" in app_js.text
     assert 'id="logistics-return-reasons"' in cabinet.text
     assert "Причины возвратов" in cabinet.text
     assert "Покрытие неизвестно" in app_js.text
+    assert (
+        "Возвраты найдены, но подтверждённых причин нет; "
+        "выводы о причинах делать нельзя."
+    ) in cabinet.text
     assert cabinet.text.index('id="logistics-routes"') < cabinet.text.index(
         'id="logistics-return-reasons"'
     )
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
-    ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260726-logistics-visual-polish-v1" in cabinet.text
+    ) < cabinet.text.index('id="logistics-orders-section"')
+    assert "20260726-logistics-management-v2" in cabinet.text
+    assert "Что проверить сначала" in cabinet.text
+    assert "Артикул WB" in app_js.text
+    assert "Возвратов:" in app_js.text
+    assert "Замеров:" in app_js.text
+    assert "Используется в" in app_js.text
+    assert "eventStatusTitle" in app_js.text
+    assert "financialLinkStatusTitle" in app_js.text
+    assert 'view: "grouped"' in app_js.text
+    assert "groupOffset" in app_js.text
+    assert "section.querySelector(\"summary strong\")?.focus" in app_js.text
+    assert 'class="panel logistics-factor-disclosure"' in cabinet.text
+    assert 'class="panel logistics-factor-disclosure" open' not in cabinet.text
+    assert 'class="logistics-factor-warning"' in cabinet.text
+    assert ".logistics-factor-summary strong:focus-visible" in styles.text
+    sticky_rule = styles.text.split(
+        ".logistics-workspace .logistics-table th {", 1
+    )[1].split("}", 1)[0]
+    assert "position: static" in sticky_rule
+    assert "#logistics-products-table thead" in styles.text
+    assert "#logistics-products-table td::before" in styles.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
