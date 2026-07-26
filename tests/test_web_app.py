@@ -13780,7 +13780,7 @@ def test_analytical_report_artifact_requires_auth_and_downloads(
         "wb-logistics-insight-v1"
     )
     assert payload["files"]["docx"]["url"].endswith("/analytical-report.docx")
-    assert payload["contractVersion"] == "client-analytical-report.v4"
+    assert payload["contractVersion"] == "client-analytical-report.v5"
     assert payload["scope"] == "last_closed_week"
     assert payload["periodStart"] == "2026-06-08"
     assert payload["periodEnd"] == "2026-06-14"
