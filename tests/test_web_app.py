@@ -4173,7 +4173,7 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "Сведения об удержании отсутствуют" in script.text
     assert "item.eventStatusTitle || item.statusTitle" in script.text
     assert "item.financialLinkStatusTitle" in script.text
-    assert "Справочные суммы" in script.text
+    assert "item.moneyStatusText" in script.text
     assert "state.logisticsMeasurementsOffset = 0;" in script.text
     assert "state.logisticsMeasurementsRequestId += 1;" in script.text
     assert "Основная логистика продолжает работать" in script.text
