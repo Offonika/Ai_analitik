@@ -19592,7 +19592,7 @@ def _logistics_recommendations(
                 "title": "Проверить возвратную логистику",
                 "message": (
                     "Начните с товара с наибольшей возвратной частью. "
-                    "Причина недоступна в Finance."
+                    "Причина недоступна в финансовом отчёте WB."
                 ),
                 "valueType": "fact",
                 "impactAmount": reverse_leader["logisticsReverse"],

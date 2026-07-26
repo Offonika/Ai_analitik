@@ -4900,7 +4900,8 @@ def test_logistics_recommendation_uses_full_slice_not_by_total_top_ten(
     assert recommendation["evidence"]["product"] == "Product 11"
     assert recommendation["evidenceType"] == "limitation"
     assert recommendation["actionTarget"] == "products"
-    assert "Причина недоступна в Finance" in recommendation["message"]
+    assert "Причина недоступна в финансовом отчёте WB" in recommendation["message"]
+    assert "Finance" not in recommendation["message"]
 
 
 def test_logistics_api_scopes_sku_fallback_and_recomputes_slice_coverage(
