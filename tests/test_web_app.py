@@ -4169,7 +4169,10 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     assert "function loadLogisticsMeasurements" in script.text
     assert "function resetLogisticsMeasurements" in script.text
     assert "Замеры временно недоступны. Основная логистика" in script.text
-    assert "Сигнал записи WB" in script.text
+    assert "Заявленные размеры не переданы в событии WB" in script.text
+    assert "Сведения об удержании отсутствуют" in script.text
+    assert "item.eventStatusTitle || item.statusTitle" in script.text
+    assert "item.financialLinkStatusTitle" in script.text
     assert "Справочные суммы" in script.text
     assert "state.logisticsMeasurementsOffset = 0;" in script.text
     assert "state.logisticsMeasurementsRequestId += 1;" in script.text
@@ -8449,7 +8452,14 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
         "@media (max-width: 1179px) and (min-width: 761px)",
         1,
     )[1].split("@media (max-width: 920px)", 1)[0]
-    mobile_rules = css.text.rsplit("@media (max-width: 760px)", 1)[1]
+    mobile_grid_position = css.text.rfind(".money-strip .primary-kpi-grid {")
+    mobile_media_position = css.text.rfind(
+        "@media (max-width: 760px)",
+        0,
+        mobile_grid_position,
+    )
+    mobile_rules = css.text[mobile_media_position:]
+    mobile_primary_grid_rule = css.text[mobile_grid_position:].split("}", 1)[0]
 
     assert "min-height: 142px" in primary_card_rule
     assert "min-height: 36px" in primary_label_rule
@@ -8463,8 +8473,11 @@ def test_primary_kpi_contract_contains_ten_ordered_after_tax_cards(
     assert "word-break: normal" in primary_value_rule
     assert "font-variant-numeric: tabular-nums" in primary_value_rule
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in tablet_rules
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in mobile_rules
-    assert "gap: 8px" in mobile_rules
+    assert (
+        "grid-template-columns: repeat(2, minmax(0, 1fr))"
+        in mobile_primary_grid_rule
+    )
+    assert "gap: 8px" in mobile_primary_grid_rule
     assert ".money-strip {\n    padding-inline: 8px" in mobile_rules
     assert "font-size: 19px" in mobile_rules
     assert 'font-family: "Arial Narrow", Arial, sans-serif' in mobile_rules
