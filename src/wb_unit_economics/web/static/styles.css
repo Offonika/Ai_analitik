@@ -5011,6 +5011,10 @@ body.widget-open {
   scrollbar-gutter: stable both-edges;
 }
 
+#logistics-products-panel > .table-wrap {
+  contain: layout paint;
+}
+
 table {
   width: max-content;
   border-collapse: separate;

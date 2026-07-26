@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260726-logistics-management-v2"
+        "20260726-logistics-management-v3"
     )
     assert health.json()["staticBuildId"] == (
-        "20260726-logistics-management-v2"
+        "20260726-logistics-management-v3"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260726-logistics-management-v2" in cabinet.text
-    assert "app.js?v=20260726-logistics-management-v2" in cabinet.text
+    assert "styles.css?v=20260726-logistics-management-v3" in cabinet.text
+    assert "app.js?v=20260726-logistics-management-v3" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7556,7 +7556,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260726-logistics-management-v2" in cabinet.text
+    assert "20260726-logistics-management-v3" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
@@ -7577,6 +7577,10 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "position: static" in sticky_rule
     assert "#logistics-products-table thead" in styles.text
     assert "#logistics-products-table td::before" in styles.text
+    products_table_wrap_rule = styles.text.split(
+        "#logistics-products-panel > .table-wrap {", 1
+    )[1].split("}", 1)[0]
+    assert "contain: layout paint" in products_table_wrap_rule
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
