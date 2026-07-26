@@ -13,7 +13,7 @@ from calendar import monthrange
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
@@ -262,6 +262,14 @@ PUBLICATION_REQUIRED_ONEC_COLLECTION_IDS = {"commissioner_reports"}
 MANDATORY_OK_STATUSES = {"loaded", "empty_expected"}
 OPTIONAL_OK_STATUSES = {"loaded", "empty_expected"}
 REVIEW_STATUSES = {"needs_review", "stale", "partial_source"}
+ONEC_METADATA_RETRYABLE_ERRORS = {
+    "ConnectError",
+    "ConnectTimeout",
+    "PoolTimeout",
+    "ReadTimeout",
+    "RemoteProtocolError",
+}
+ONEC_METADATA_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 WB_FINANCE_REFRESH_ROLES = {"finance_reports", "full_readonly"}
 WB_STOCK_HISTORY_REFRESH_ROLES = {
     "finance_reports",
@@ -731,6 +739,7 @@ class SourceRefreshService:
         dashboard_payload_builder: Callable[[Path], dict[str, Any]] = (
             build_dashboard_payload
         ),
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.settings = settings
         self._wb_finance_exporter = wb_finance_exporter
@@ -759,6 +768,7 @@ class SourceRefreshService:
         self._onec_metadata_checker = onec_metadata_checker or check_onec_odata_metadata
         self._workbook_builder = workbook_builder
         self._dashboard_payload_builder = dashboard_payload_builder
+        self._sleep = sleep
 
     def run(
         self,
@@ -4084,7 +4094,41 @@ class SourceRefreshService:
         refresh_run: SourceRefreshRun,
         onec_settings: OnecODataSettings,
     ) -> OnecODataMetadataCheckResult:
-        result = self._onec_metadata_checker(onec_settings)
+        timeout_seconds = min(
+            max(
+                float(self.settings.source_refresh_onec_metadata_timeout_seconds),
+                1.0,
+            ),
+            300.0,
+        )
+        max_attempts = min(
+            max(int(self.settings.source_refresh_onec_metadata_max_attempts), 1),
+            5,
+        )
+        retry_delay_seconds = min(
+            max(
+                float(
+                    self.settings.source_refresh_onec_metadata_retry_delay_seconds
+                ),
+                0.0,
+            ),
+            30.0,
+        )
+        check_settings = replace(
+            onec_settings,
+            timeout_seconds=timeout_seconds,
+        )
+        attempt_count = 0
+        result = OnecODataMetadataCheckResult(ok=False, error="unknown_error")
+        for attempt_count in range(1, max_attempts + 1):
+            result = self._onec_metadata_checker(check_settings)
+            retryable = (
+                result.error in ONEC_METADATA_RETRYABLE_ERRORS
+                or result.status_code in ONEC_METADATA_RETRYABLE_STATUS_CODES
+            )
+            if result.ok or not retryable or attempt_count == max_attempts:
+                break
+            self._sleep(retry_delay_seconds)
         checked_at = security.utcnow().isoformat()
         status = "loaded" if result.ok else "failed"
         message = (
@@ -4105,6 +4149,8 @@ class SourceRefreshService:
                 "statusCode": result.status_code,
                 "metadataValid": result.ok,
                 "checkedAt": checked_at,
+                "attemptCount": attempt_count,
+                "timeoutSeconds": timeout_seconds,
             },
         )
         if refresh_run.credential_source == "tenant":

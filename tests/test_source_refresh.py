@@ -17,6 +17,7 @@ from sqlalchemy.exc import OperationalError
 from wb_unit_economics.contracts import MarketplaceFinanceDailyFact
 from wb_unit_economics.onec_odata import (
     OnecODataMetadataCheckResult,
+    OnecODataSettings,
     OnecSampleExportResult,
 )
 from wb_unit_economics.ozon import OzonPageResult
@@ -3683,9 +3684,123 @@ def test_source_refresh_fails_fast_on_onec_metadata_before_marketplace_reads(
     assert metadata_collection.required is True
     assert metadata_collection.status == "failed"
     assert metadata_collection.payload["metadataValid"] is False
+    assert metadata_collection.payload["attemptCount"] == 1
+    assert metadata_collection.payload["timeoutSeconds"] == 60
     assert integration.status == "configured"
     assert integration_payload["runtimeStatus"] == "check_failed"
     assert integration_payload["lastRuntimeCheck"]["httpStatus"] == 404
+
+
+def test_source_refresh_retries_transient_onec_metadata_timeout(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_onec_metadata_timeout_seconds = 45
+    settings.source_refresh_onec_metadata_max_attempts = 3
+    settings.source_refresh_onec_metadata_retry_delay_seconds = 0.25
+    checks: list[float] = []
+    sleeps: list[float] = []
+
+    def metadata_checker(
+        onec_settings: OnecODataSettings,
+    ) -> OnecODataMetadataCheckResult:
+        checks.append(onec_settings.timeout_seconds)
+        if len(checks) == 1:
+            return OnecODataMetadataCheckResult(ok=False, error="ReadTimeout")
+        return OnecODataMetadataCheckResult(
+            ok=True,
+            status_code=200,
+            content_type="application/xml",
+        )
+
+    service = SourceRefreshService(
+        settings,
+        onec_metadata_checker=metadata_checker,
+        sleep=sleeps.append,
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="metadata-retry",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 9),
+            user=user,
+            source_report=report,
+        )
+        result = service._record_onec_metadata_check(
+            db,
+            refresh_run,
+            integrations.onec_odata_settings_from_secret(_onec_secret()),
+        )
+        metadata_collection = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="onec_odata_metadata")
+            .one()
+        )
+
+    assert result.ok is True
+    assert checks == [45, 45]
+    assert sleeps == [0.25]
+    assert metadata_collection.status == "loaded"
+    assert metadata_collection.payload["attemptCount"] == 2
+    assert metadata_collection.payload["timeoutSeconds"] == 45
+
+
+def test_source_refresh_bounds_transient_onec_metadata_retries(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_onec_metadata_max_attempts = 2
+    settings.source_refresh_onec_metadata_retry_delay_seconds = 0
+    checks: list[str] = []
+    service = SourceRefreshService(
+        settings,
+        onec_metadata_checker=lambda _settings: (
+            checks.append("check")
+            or OnecODataMetadataCheckResult(ok=False, status_code=503, error="HTTP 503")
+        ),
+        sleep=lambda _seconds: None,
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="daily",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="metadata-retry-exhausted",
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 9),
+            user=user,
+            source_report=report,
+        )
+        result = service._record_onec_metadata_check(
+            db,
+            refresh_run,
+            integrations.onec_odata_settings_from_secret(_onec_secret()),
+        )
+        metadata_collection = (
+            db.query(SourceRefreshCollection)
+            .filter_by(source_type="onec_odata_metadata")
+            .one()
+        )
+
+    assert result.ok is False
+    assert checks == ["check", "check"]
+    assert metadata_collection.status == "failed"
+    assert metadata_collection.payload["attemptCount"] == 2
 
 
 def test_failed_snapshot_cleanup_keeps_latest_and_published_snapshot(

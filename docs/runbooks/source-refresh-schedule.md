@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-23"
+updated_at: "2026-07-26"
 ---
 
 # Назначение
@@ -295,6 +295,13 @@ protection: ошибка чтения lineage завершает запуск б
   `blocked_active_refresh` и без аварийного exit code процесса.
 - Если обязательный источник WB/1C/mapping падает, статус `failed`, предыдущий
   отчет остается текущим рабочим артефактом.
+- Временные `ReadTimeout`/transport errors проверки 1С `$metadata` повторяются
+  не более трех раз с отдельным timeout `60` секунд и короткой паузой. Ошибки
+  доступа, `404` и невалидный XML не повторяются. Значения можно изменить
+  bounded-настройками
+  `SHUMEYKO_SOURCE_REFRESH_ONEC_METADATA_TIMEOUT_SECONDS`,
+  `SHUMEYKO_SOURCE_REFRESH_ONEC_METADATA_MAX_ATTEMPTS` и
+  `SHUMEYKO_SOURCE_REFRESH_ONEC_METADATA_RETRY_DELAY_SECONDS`.
 - Если опциональный источник падает, новый отчет может быть создан со статусом
   `needs_review`.
 - Если параллельно уже идет refresh того же `tenant+mode`, или `daily` стартует

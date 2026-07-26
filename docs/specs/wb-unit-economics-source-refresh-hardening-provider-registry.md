@@ -61,7 +61,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-23"
+updated_at: "2026-07-26"
 ---
 
 # Implementation Status
@@ -136,6 +136,17 @@ CLI `run_source_refresh.py` завершает управляемые blocked st
 WB/Ozon. Результат сохраняется как обязательная коллекция
 `onec_odata_metadata` и как безопасный `lastRuntimeCheck` интеграции без URL,
 логина, пароля и response body.
+
+Проверка `$metadata` использует отдельные bounded-настройки source refresh:
+`SHUMEYKO_SOURCE_REFRESH_ONEC_METADATA_TIMEOUT_SECONDS`,
+`SHUMEYKO_SOURCE_REFRESH_ONEC_METADATA_MAX_ATTEMPTS` и
+`SHUMEYKO_SOURCE_REFRESH_ONEC_METADATA_RETRY_DELAY_SECONDS`. Повтор разрешен
+только для временных транспортных ошибок (`ReadTimeout`, `ConnectTimeout`,
+`ConnectError`, `RemoteProtocolError`, `PoolTimeout`) и HTTP
+`408/429/500/502/503/504`. Ошибки доступа, `404`, невалидный XML и валидный
+ответ без `EntityContainer` завершают проверку после первой попытки. Итоговая
+коллекция хранит только безопасные `attemptCount` и `timeoutSeconds`; URL,
+credentials и response body не сохраняются.
 
 Ручной `lastCheck` и автоматический `lastRuntimeCheck` — разные сигналы. UI
 показывает более новый из них: успешная ручная проверка не должна скрывать
@@ -571,6 +582,10 @@ mutual-settlement сохраняет документные строки, а buy
 
 - Low-disk guard не вызывает WB/1C exporters.
 - Недоступная или невалидная 1С `$metadata` не вызывает WB/Ozon exporters.
+- Временный timeout 1С `$metadata` повторяется в пределах bounded attempt/time
+  budget и не создает промежуточные failed-коллекции; успешная повторная
+  попытка продолжает тот же immutable run.
+- `401/403/404` и невалидная 1С `$metadata` не повторяются.
 - Runtime-status 1С показывает более новый автоматический сбой отдельно от
   последней ручной проверки.
 - `/api/health` показывает `degraded` при свежем завершенном failed refresh,
@@ -655,6 +670,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-26: закреплены bounded retry и отдельный timeout для временных сбоев
+  обязательной проверки 1С OData metadata без ослабления fail-closed ошибок
+  доступа и валидации.
 - 2026-07-21: accounting evidence reader привязан к паре
   `refresh_run_id + collection_id`, чтобы использовать существующий индекс и
   не упираться в statement timeout на накопленной snapshot-таблице.
