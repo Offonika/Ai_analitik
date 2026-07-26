@@ -3650,6 +3650,34 @@ def test_logistics_api_returns_reconciled_safe_staff_payload(tmp_path: Path) -> 
     )
     assert 'id="logistics-scheme-filter"' in cabinet.text
     assert 'id="logistics-product-filter"' in cabinet.text
+    assert 'id="logistics-product-filter-clear"' in cabinet.text
+    assert "Очистить поиск товара" in cabinet.text
+    assert "Схема продаж" in cabinet.text
+    assert "Поиск товара" in cabinet.text
+    assert "На что ушёл расход" in cabinet.text
+    assert "Расходы по неделям" in cabinet.text
+    assert "Прямая и обратная часть" not in cabinet.text
+    assert "Затраты и доля в выручке" not in cabinet.text
+    assert "function syncLogisticsProductFilterClear" in script.text
+    assert "function resetLogisticsSlicePagination" in script.text
+    assert 'list.className = "logistics-component-list"' in script.text
+    assert 'list.className = "logistics-column-chart"' in script.text
+    assert 'bar.style.height = `${barWidth(value, maxValue)}%`' in script.text
+    assert ".logistics-search-clear" in styles.text
+    assert ".logistics-component-list" in styles.text
+    assert ".logistics-column-chart" in styles.text
+    assert client.get("/static/icons/x.svg").status_code == 200
+    logistics_cell_rule = styles.text.split(".logistics-table th,", 1)[1].split(
+        "}", 1
+    )[0]
+    assert "min-width: 0" in logistics_cell_rule
+    assert "overflow-wrap: anywhere" in logistics_cell_rule
+    assert "white-space: normal" in logistics_cell_rule
+    assert "word-break: normal" in logistics_cell_rule
+    tariff_cell_rule = styles.text.split(".logistics-tariffs-table th,", 1)[
+        1
+    ].split("}", 1)[0]
+    assert "overflow-wrap: anywhere" in tariff_cell_rule
     # Разрез по организации совпадает с выбором кабинета WB наверху
     # (1 организация = 1 кабинет), поэтому отдельный контрол не выводится.
     assert 'id="logistics-organization-filter"' not in cabinet.text
@@ -6476,10 +6504,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260726-client-report-download-russian-v1"
+        "20260726-logistics-visual-polish-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260726-client-report-download-russian-v1"
+        "20260726-logistics-visual-polish-v1"
     )
 
     page = client.get("/")
@@ -6632,8 +6660,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260726-client-report-download-russian-v1" in cabinet.text
-    assert "app.js?v=20260726-client-report-download-russian-v1" in cabinet.text
+    assert "styles.css?v=20260726-logistics-visual-polish-v1" in cabinet.text
+    assert "app.js?v=20260726-logistics-visual-polish-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7017,7 +7045,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260726-client-report-download-russian-v1" in cabinet.text
+    assert "20260726-logistics-visual-polish-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(

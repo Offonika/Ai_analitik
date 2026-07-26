@@ -44,7 +44,7 @@ code_anchors:
   - path: src/wb_unit_economics/web/settings.py
     symbols: ["logistics_analysis_enabled: bool", "logistics_analysis_client_enabled: bool", "logistics_tariffs_enabled: bool", "logistics_tariffs_client_enabled: bool", "logistics_routes_enabled: bool", "logistics_routes_client_enabled: bool", "logistics_return_reasons_enabled: bool", "logistics_return_reasons_client_enabled: bool"]
   - path: src/wb_unit_economics/web/static/app.js
-    symbols: ["function loadLogisticsAnalysis", "function renderLogisticsWorkspace", "function renderLogisticsInsight", "function loadLogisticsReturnReasons", "function renderLogisticsReturnReasons", "function logisticsReturnReasonsAvailable"]
+    symbols: ["function loadLogisticsAnalysis", "function renderLogisticsWorkspace", "function renderLogisticsInsight", "function renderLogisticsComponents", "function renderLogisticsDynamics", "function syncLogisticsProductFilterClear", "function loadLogisticsReturnReasons", "function renderLogisticsReturnReasons", "function logisticsReturnReasonsAvailable"]
 test_anchors:
   - path: tests/test_return_reason_analysis.py
     symbols: ["def test_builds_exact_safe_return_reason_row", "def test_denied_claims_is_partial_not_blocking_and_keeps_reason_fact", "def test_multiple_return_segments_collapse_to_latest_finance_date"]
@@ -68,7 +68,7 @@ test_anchors:
     symbols: ["def test_r5_test_drop_in_keeps_return_reasons_staff_only", "def test_r6_test_drop_in_enables_all_logistics_for_client_role"]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation, workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts, workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 rollout_required: true
-updated_at: "2026-07-25"
+updated_at: "2026-07-26"
 ---
 
 # Статус документа
@@ -777,6 +777,23 @@ factor API. При отсутствии полной недели эти зап�
 `client_company_id` на уровне API; если у организации появится второй кабинет,
 контрол возвращается отдельным additive-изменением.
 
+Фильтры оформляются как одна компактная панель: поиск имеет понятную русскую
+подсказку, значок поиска и отдельную доступную кнопку очистки, которая
+сбрасывает товарный запрос и повторно применяет срез. Нативный неоформленный
+значок очистки поля пользователю не показывается.
+
+`Состав подтверждённого расхода` выводит итог, суммы и доли четырёх
+компонентов отдельными подписанными строками. Независимые горизонтальные
+полосы, которые ошибочно выглядят как четыре несвязанных рейтинга, не
+используются. Недельная динамика выводится вертикальными столбцами: высота
+кодирует сумму логистики, рядом остаются точная сумма, неделя и доля в выручке.
+При большом количестве недель график прокручивается внутри карточки и не
+растягивает страницу.
+
+Текст во всех таблицах логистики переносится внутри собственной ячейки.
+Длинные склады, направления, товары, основания и статусы не могут перекрывать
+соседнюю колонку; на мобильном сохраняется подписанный карточный вид.
+
 Согласованный визуальный target, по которому проверяется frontend-реализация:
 [`docs/design/wb-logistics-v4-analytics-target.html`](../design/wb-logistics-v4-analytics-target.html).
 Он использует синтетические значения, текущие цветовые токены и компоненты и
@@ -1259,6 +1276,12 @@ rollout и rollback не изменяются.
    `orderUid` обязателен.
 
 # Changelog
+
+- 2026-07-26 — принят визуальный контракт фильтров и двух аналитических
+  карточек: поиск получил отдельную кнопку очистки, состав расхода показывает
+  подписанные суммы и доли без независимых полос, недельная динамика —
+  вертикальные столбцы. Для всех таблиц логистики закреплён безопасный перенос
+  длинного текста внутри ячейки без наложения на соседние колонки.
 
 - 2026-07-25 — принят presentation-layer контракт
   `wb-logistics-insight-v1`: накопленные KPI считаются только по полным неделям

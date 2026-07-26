@@ -202,6 +202,9 @@ const els = {
   logisticsFilterForm: document.querySelector("#logistics-filter-form"),
   logisticsSchemeFilter: document.querySelector("#logistics-scheme-filter"),
   logisticsProductFilter: document.querySelector("#logistics-product-filter"),
+  logisticsProductFilterClear: document.querySelector(
+    "#logistics-product-filter-clear",
+  ),
   logisticsKpiGrid: document.querySelector("#logistics-kpi-grid"),
   logisticsRequestedPeriod: document.querySelector("#logistics-requested-period"),
   logisticsAnalysisPeriod: document.querySelector("#logistics-analysis-period"),
@@ -879,13 +882,19 @@ function init() {
   });
   els.logisticsFilterForm?.addEventListener("submit", (event) => {
     event.preventDefault();
-    state.logisticsProductsOffset = 0;
-    state.logisticsDimensionsOffset = 0;
-    state.logisticsMeasurementsOffset = 0;
-    state.logisticsTariffsOffset = 0;
-    state.logisticsRoutesOffset = 0;
-    state.logisticsReturnReasonsOffset = 0;
+    resetLogisticsSlicePagination();
     loadLogisticsAnalysis({ force: true });
+  });
+  els.logisticsProductFilter?.addEventListener(
+    "input",
+    syncLogisticsProductFilterClear,
+  );
+  els.logisticsProductFilterClear?.addEventListener("click", () => {
+    els.logisticsProductFilter.value = "";
+    syncLogisticsProductFilterClear();
+    resetLogisticsSlicePagination();
+    loadLogisticsAnalysis({ force: true });
+    els.logisticsProductFilter.focus();
   });
   els.logisticsStateAction?.addEventListener("click", onLogisticsStateAction);
   els.logisticsProductsPrev?.addEventListener("click", () => {
@@ -5836,6 +5845,23 @@ function logisticsFilterParams(extra = {}) {
   return params.toString();
 }
 
+function resetLogisticsSlicePagination() {
+  state.logisticsProductsOffset = 0;
+  state.logisticsDimensionsOffset = 0;
+  state.logisticsMeasurementsOffset = 0;
+  state.logisticsTariffsOffset = 0;
+  state.logisticsRoutesOffset = 0;
+  state.logisticsReturnReasonsOffset = 0;
+}
+
+function syncLogisticsProductFilterClear() {
+  if (!els.logisticsProductFilterClear || !els.logisticsProductFilter) {
+    return;
+  }
+  els.logisticsProductFilterClear.hidden =
+    !els.logisticsProductFilter.value.trim();
+}
+
 function logisticsAnalysisPeriod(summary = state.logisticsSummary) {
   const period = summary?.periodContext?.analysisPeriod;
   if (!period?.periodStart || !period?.periodEnd) {
@@ -6461,8 +6487,9 @@ function onLogisticsStateAction() {
   if (els.logisticsStateAction.dataset.action === "reset-filters") {
     els.logisticsSchemeFilter.value = "";
     els.logisticsProductFilter.value = "";
+    syncLogisticsProductFilterClear();
     state.logisticsProductsDataQualityStatus = "";
-    state.logisticsProductsOffset = 0;
+    resetLogisticsSlicePagination();
   }
   loadLogisticsAnalysis({ force: true });
 }
@@ -6725,36 +6752,69 @@ function renderLogisticsEmpty(target, text) {
 
 function renderLogisticsComponents(components) {
   const rows = [
-    ["Прямая", Number(components.forward || 0), "Доставка к покупателю"],
-    ["Обратная", Number(components.reverse || 0), "Возвратная часть"],
-    ["Корректировки", Number(components.adjustment || 0), "Подтверждённые перерасчёты"],
-    ["Не распределено", Number(components.unclassified || 0), "Входит в общий расход"],
+    {
+      key: "forward",
+      label: "Прямая логистика",
+      value: Number(components.forward || 0),
+      caption: "Доставка товара к покупателю",
+    },
+    {
+      key: "reverse",
+      label: "Обратная логистика",
+      value: Number(components.reverse || 0),
+      caption: "Возврат товара от покупателя",
+    },
+    {
+      key: "adjustment",
+      label: "Корректировки",
+      value: Number(components.adjustment || 0),
+      caption: "Подтверждённые перерасчёты WB",
+    },
+    {
+      key: "unclassified",
+      label: "Не распределено",
+      value: Number(components.unclassified || 0),
+      caption: "Учтено в итоге без подтверждённой категории",
+    },
   ];
-  const maxValue = maxAbsValue(rows.map((row) => row[1]));
+  const total = rows.reduce((value, row) => value + row.value, 0);
+  const summary = document.createElement("div");
+  summary.className = "logistics-component-summary";
+  const summaryCopy = document.createElement("span");
+  summaryCopy.textContent = "Итого подтверждено";
+  const summaryAmount = document.createElement("strong");
+  summaryAmount.textContent = signedMoney(total);
+  summary.append(summaryCopy, summaryAmount);
+
   const list = document.createElement("div");
-  list.className = "logistics-bar-list";
-  rows.forEach(([label, value, caption]) => {
-    const item = document.createElement("div");
-    item.className = "logistics-bar-row";
-    const header = document.createElement("div");
-    header.className = "logistics-bar-header";
-    const name = document.createElement("span");
+  list.className = "logistics-component-list";
+  rows.forEach(({ key, label, value, caption }) => {
+    const item = document.createElement("article");
+    item.className = `logistics-component-row is-${key}`;
+    const copy = document.createElement("div");
+    copy.className = "logistics-component-copy";
+    const name = document.createElement("strong");
     name.textContent = label;
-    const amount = document.createElement("strong");
-    amount.textContent = signedMoney(value);
-    header.append(name, amount);
-    const track = document.createElement("div");
-    track.className = "logistics-track";
-    const bar = document.createElement("span");
-    bar.className = value < 0 ? "logistics-bar is-negative" : "logistics-bar";
-    bar.style.width = `${barWidth(value, maxValue)}%`;
-    track.append(bar);
     const meta = document.createElement("small");
     meta.textContent = caption;
-    item.append(header, track, meta);
+    copy.append(name, meta);
+
+    const metrics = document.createElement("div");
+    metrics.className = "logistics-component-metrics";
+    const amount = document.createElement("strong");
+    amount.textContent = signedMoney(value);
+    const share = document.createElement("span");
+    const shareValue = total === 0 ? null : (value / total) * 100;
+    share.textContent = shareValue === null
+      ? "доля не рассчитана"
+      : value < 0
+        ? `уменьшает итог на ${logisticsPercent(Math.abs(shareValue))}`
+        : `доля ${logisticsPercent(shareValue)}`;
+    metrics.append(amount, share);
+    item.append(copy, metrics);
     list.append(item);
   });
-  els.logisticsComponents.replaceChildren(list);
+  els.logisticsComponents.replaceChildren(summary, list);
 }
 
 function renderLogisticsDynamics(rows) {
@@ -6763,32 +6823,49 @@ function renderLogisticsDynamics(rows) {
     return;
   }
   const maxValue = maxAbsValue(rows.map((row) => row.logisticsTotal));
+  const viewport = document.createElement("div");
+  viewport.className = "logistics-column-viewport";
+  viewport.tabIndex = 0;
+  viewport.setAttribute(
+    "aria-label",
+    "Недельная динамика логистических расходов. При необходимости прокрутите по горизонтали.",
+  );
   const list = document.createElement("div");
-  list.className = "logistics-bar-list";
+  list.className = "logistics-column-chart";
+  list.setAttribute("role", "list");
   rows.forEach((row) => {
-    const item = document.createElement("div");
-    item.className = "logistics-bar-row";
-    const header = document.createElement("div");
-    header.className = "logistics-bar-header";
-    const label = document.createElement("span");
-    label.textContent = `Неделя ${formatCompactDate(row.periodStart)}`;
+    const value = Number(row.logisticsTotal || 0);
+    const item = document.createElement("article");
+    item.className = value < 0
+      ? "logistics-column-item is-negative"
+      : "logistics-column-item";
+    item.setAttribute("role", "listitem");
+    item.setAttribute(
+      "aria-label",
+      `Неделя ${formatCompactDate(row.periodStart)}: ${signedMoney(value)}, доля в выручке ${logisticsPercent(row.logisticsSharePct)}`,
+    );
     const amount = document.createElement("strong");
-    amount.textContent = signedMoney(row.logisticsTotal);
-    header.append(label, amount);
-    const track = document.createElement("div");
-    track.className = "logistics-track";
+    amount.className = "logistics-column-amount";
+    amount.textContent = logisticsCompactMoney(value);
+    amount.title = signedMoney(value);
+    const plot = document.createElement("div");
+    plot.className = "logistics-column-plot";
     const bar = document.createElement("span");
-    bar.className = Number(row.logisticsTotal || 0) < 0
-      ? "logistics-bar is-negative"
-      : "logistics-bar";
-    bar.style.width = `${barWidth(row.logisticsTotal, maxValue)}%`;
-    track.append(bar);
-    const meta = document.createElement("small");
-    meta.textContent = `Доля в выручке ${logisticsPercent(row.logisticsSharePct)}`;
-    item.append(header, track, meta);
+    bar.className = "logistics-column";
+    bar.style.height = `${barWidth(value, maxValue)}%`;
+    plot.append(bar);
+    const period = document.createElement("time");
+    period.className = "logistics-column-period";
+    period.dateTime = row.periodStart || "";
+    period.textContent = logisticsCompactDate(row.periodStart);
+    const share = document.createElement("small");
+    share.className = "logistics-column-share";
+    share.textContent = `Доля ${logisticsPercent(row.logisticsSharePct)}`;
+    item.append(amount, plot, period, share);
     list.append(item);
   });
-  els.logisticsDynamics.replaceChildren(list);
+  viewport.append(list);
+  els.logisticsDynamics.replaceChildren(viewport);
 }
 
 function renderLogisticsRecommendations(items) {
@@ -6891,7 +6968,8 @@ function runLogisticsRecommendationAction(recommendation) {
   const product = recommendation.evidence?.product || "";
   if (product) {
     els.logisticsProductFilter.value = product;
-    state.logisticsProductsOffset = 0;
+    syncLogisticsProductFilterClear();
+    resetLogisticsSlicePagination();
     loadLogisticsAnalysis({ force: true });
   }
   document.querySelector("[aria-labelledby='logistics-products-title']")
@@ -8042,6 +8120,30 @@ function logisticsPercent(value) {
     return "—";
   }
   return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(Number(value))}%`;
+}
+
+function logisticsCompactMoney(value) {
+  const numericValue = Number(value || 0);
+  const absolute = Math.abs(numericValue);
+  const sign = numericValue < 0 ? "−" : "";
+  if (absolute >= 1000000) {
+    const formatted = new Intl.NumberFormat("ru-RU", {
+      maximumFractionDigits: 1,
+    }).format(absolute / 1000000);
+    return `${sign}${formatted} млн ₽`;
+  }
+  if (absolute >= 1000) {
+    const formatted = new Intl.NumberFormat("ru-RU", {
+      maximumFractionDigits: 0,
+    }).format(absolute / 1000);
+    return `${sign}${formatted} тыс. ₽`;
+  }
+  return signedMoney(numericValue);
+}
+
+function logisticsCompactDate(value) {
+  const parts = String(value || "").split("-");
+  return parts.length === 3 ? `${parts[2]}.${parts[1]}` : "—";
 }
 
 function renderFilters(options) {
@@ -18796,6 +18898,7 @@ function resetClientScopedState(options = {}) {
   els.rowsFilterForm.reset();
   els.onecReconciliationFilterForm.reset();
   els.logisticsFilterForm?.reset();
+  syncLogisticsProductFilterClear();
   resetLogisticsWorkspace();
   syncRemoteTableSortState();
   syncRowsPresetButtons();

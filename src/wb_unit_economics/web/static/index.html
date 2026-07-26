@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260726-client-report-download-russian-v1"
+      content="20260726-logistics-visual-polish-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="/static/icons/chart-bar.svg" type="image/svg+xml" />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260726-client-report-download-russian-v1"
+      href="/static/styles.css?v=20260726-logistics-visual-polish-v1"
     />
     <link
       rel="stylesheet"
@@ -471,34 +471,69 @@
             <p>Покрытие ключей: <strong id="logistics-trust-keys">—</strong>. Основание: сверенный read-only снимок WB.</p>
           </details>
 
-          <form id="logistics-filter-form" class="panel logistics-filters">
-            <label>
-              Схема
+          <form
+            id="logistics-filter-form"
+            class="panel logistics-filters"
+            aria-label="Фильтры логистики"
+          >
+            <div class="logistics-filter-field is-scheme">
+              <label for="logistics-scheme-filter">Схема продаж</label>
               <select id="logistics-scheme-filter">
                 <option value="">Все схемы</option>
               </select>
-            </label>
-            <label>
-              Товар или артикул
-              <input
-                id="logistics-product-filter"
-                type="search"
-                placeholder="Название, nmId, SKU"
-                autocomplete="off"
-              />
-            </label>
-            <button type="submit" class="secondary-button">Показать</button>
+              <small>Можно оставить все схемы продаж.</small>
+            </div>
+            <div class="logistics-filter-field is-search">
+              <label for="logistics-product-filter">Поиск товара</label>
+              <div class="logistics-search-control">
+                <img
+                  src="/static/icons/magnifying-glass.svg"
+                  alt=""
+                  aria-hidden="true"
+                />
+                <input
+                  id="logistics-product-filter"
+                  type="search"
+                  placeholder="Название, артикул или SKU"
+                  autocomplete="off"
+                />
+                <button
+                  id="logistics-product-filter-clear"
+                  type="button"
+                  class="logistics-search-clear"
+                  aria-label="Очистить поиск товара"
+                  title="Очистить поиск"
+                  hidden
+                >
+                  <img src="/static/icons/x.svg" alt="" aria-hidden="true" />
+                </button>
+              </div>
+              <small>Можно ввести часть названия или точный артикул.</small>
+            </div>
+            <button type="submit" class="logistics-filter-submit">Показать результаты</button>
           </form>
 
           <div class="logistics-grid-two">
-            <section class="panel" aria-labelledby="logistics-components-title">
+            <section
+              class="panel logistics-analysis-card logistics-components-panel"
+              aria-labelledby="logistics-components-title"
+            >
               <p class="eyebrow">Состав подтверждённого расхода</p>
-              <h3 id="logistics-components-title">Прямая и обратная часть</h3>
+              <h3 id="logistics-components-title">На что ушёл расход</h3>
+              <p class="muted logistics-analysis-card-note">
+                Суммы и доли основных частей за закрытый период.
+              </p>
               <div id="logistics-components" class="logistics-components"></div>
             </section>
-            <section class="panel" aria-labelledby="logistics-dynamics-title">
-              <p class="eyebrow">Динамика</p>
-              <h3 id="logistics-dynamics-title">Затраты и доля в выручке</h3>
+            <section
+              class="panel logistics-analysis-card logistics-dynamics-panel"
+              aria-labelledby="logistics-dynamics-title"
+            >
+              <p class="eyebrow">Динамика закрытого периода</p>
+              <h3 id="logistics-dynamics-title">Расходы по неделям</h3>
+              <p class="muted logistics-analysis-card-note">
+                Высота столбца показывает сумму, подпись — долю в выручке.
+              </p>
               <div id="logistics-dynamics" class="logistics-dynamics"></div>
             </section>
           </div>
@@ -3352,9 +3387,9 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260726-client-report-download-russian-v1" defer></script>
-    <script src="/static/month-close-report.js?v=20260726-client-report-download-russian-v1" defer></script>
-    <script src="/static/tax-load-report.js?v=20260726-client-report-download-russian-v1" defer></script>
-    <script src="/static/app.js?v=20260726-client-report-download-russian-v1" defer></script>
+    <script src="/static/report-scenarios.js?v=20260726-logistics-visual-polish-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260726-logistics-visual-polish-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260726-logistics-visual-polish-v1" defer></script>
+    <script src="/static/app.js?v=20260726-logistics-visual-polish-v1" defer></script>
   </body>
 </html>
