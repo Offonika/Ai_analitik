@@ -106,7 +106,7 @@ def build_client_analytical_report(
     render_markdown_docx(
         markdown,
         docx_path,
-        logo_path=logo_path if logo_path.exists() else None,
+        logo_path=_optional_readable_file(logo_path),
         branded=branded,
         landscape=False,
         cover_subtitle=str(model.meta.get("reportPeriod") or model.meta.get("period")),
@@ -121,6 +121,13 @@ def build_client_analytical_report(
         pdf_message=pdf_message,
         source_sha256=source_hash,
     )
+
+
+def _optional_readable_file(path: Path) -> Path | None:
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
 
 
 def build_client_analytical_markdown(

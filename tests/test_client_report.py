@@ -443,6 +443,36 @@ def test_client_report_docx_preserves_source_and_content(
     assert "Логистика WB: затраты, влияние и проблемные зоны" in markdown
 
 
+def test_client_report_inaccessible_optional_logo_does_not_block_docx(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    logo_path = tmp_path / "restricted" / "logo.png"
+    original_is_file = Path.is_file
+
+    def fake_is_file(path: Path) -> bool:
+        if path == logo_path:
+            raise PermissionError("logo directory is not readable")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    monkeypatch.setattr(
+        "wb_unit_economics.client_report.convert_client_docx_to_pdf",
+        lambda _path: (None, "unavailable", "test"),
+    )
+
+    artifacts = build_client_analytical_report(
+        summary=report_payload(),
+        output_dir=tmp_path / "output",
+        basename="report-without-logo",
+        logo_path=logo_path,
+        branded=True,
+    )
+
+    assert artifacts.markdown_path.is_file()
+    assert artifacts.docx_path.is_file()
+
+
 def test_client_report_html_comes_from_same_markdown_and_escapes_values() -> None:
     markdown = build_client_analytical_markdown(report_payload())
     rendered = render_client_report_html(markdown)
