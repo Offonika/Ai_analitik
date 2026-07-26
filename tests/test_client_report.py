@@ -326,7 +326,9 @@ def test_client_report_uses_same_logistics_insight_without_zero_substitution() -
     assert "Текущая незакрытая неделя — только оперативный факт" in markdown
     assert "Недоступны до закрытия полной недели" in markdown
     assert "F‑1…F‑5" in markdown
-    assert "F-1 · Габариты | partial" in markdown
+    assert "F-1 · Габариты | Подтверждено частично" in markdown
+    assert "Статус «Подтверждено частично»" in markdown
+    assert " | partial | " not in markdown
     assert markdown.index("## Логистика WB") < markdown.index(
         "## Динамика: результат по месяцам"
     )

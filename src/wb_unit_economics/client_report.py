@@ -926,8 +926,8 @@ def _append_logistics_section(lines: list[str], model: ClientReportModel) -> Non
                 "### Что известно о причинах: F‑1…F‑5",
                 "",
                 (
-                    "Статус `partial` означает ограниченное подтверждение и не "
-                    "создаёт расчёт экономии."
+                    "Статус «Подтверждено частично» означает ограниченное "
+                    "подтверждение и не создаёт расчёт экономии."
                 ),
                 "",
                 _markdown_table(
@@ -936,7 +936,7 @@ def _append_logistics_section(lines: list[str], model: ClientReportModel) -> Non
                         [
                             f"{item.get('code') or '—'} · "
                             f"{item.get('label') or 'Не указан'}",
-                            item.get("status") or "missing",
+                            _logistics_factor_status_label(item.get("status")),
                             item.get("message") or "Контекст отсутствует",
                         ]
                         for item in factor_states
@@ -1181,6 +1181,16 @@ def _logistics_quality_label(value: Any) -> str:
         "partial": "Частично",
         "missing_profit_link": "Нет финансовой связи",
     }.get(status, status or "Не указан")
+
+
+def _logistics_factor_status_label(value: Any) -> str:
+    status = str(value or "").strip()
+    return {
+        "ready": "Подтверждено",
+        "partial": "Подтверждено частично",
+        "blocked": "Проверка не пройдена",
+        "missing": "Данные отсутствуют",
+    }.get(status, "Статус не указан")
 
 
 def _iso_period_label(value: Mapping[str, Any]) -> str:

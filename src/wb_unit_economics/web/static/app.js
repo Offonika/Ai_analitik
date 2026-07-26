@@ -2222,7 +2222,7 @@ function renderWorkspaceHeader() {
     }
     setTopbarNotice(
       reportTitle,
-      `Предварительный staff-only отчёт · ${state.periodMonth} · ${status}.`,
+      `Предварительный внутренний отчёт · ${state.periodMonth} · ${status}.`,
       issueCount ? "is-warning" : "is-info",
     );
     return;
@@ -2466,7 +2466,13 @@ function clientReportScopeKey(request = null) {
     periodStart: els.clientReportPeriodStart?.value || "",
     periodEnd: els.clientReportPeriodEnd?.value || "",
   };
-  return [value.scope, value.periodStart || "", value.periodEnd || ""].join(":");
+  const scope = value.scope || "last_closed_week";
+  const customPeriod = scope === "custom";
+  return [
+    scope,
+    customPeriod ? value.periodStart || "" : "",
+    customPeriod ? value.periodEnd || "" : "",
+  ].join(":");
 }
 
 function syncClientReportPeriodControls() {
@@ -3242,7 +3248,7 @@ function renderReportWizardSettings() {
   els.reportWizardModeHint.textContent =
     mode === "ozon-only"
       ? "Загрузится служебная витрина Ozon + 1С. Клиентский отчёт и Excel не публикуются."
-      : "Система прочитает WB и 1С и создаст внутренний staff draft. Текущий отчёт изменится только после финансовой приёмки.";
+      : "Система прочитает WB и 1С и создаст предварительный внутренний отчёт. Текущий отчёт изменится только после финансовой проверки.";
   els.reportWizardPeriodFields.hidden = !customPeriod;
   els.reportWizardPeriodHint.hidden = customPeriod;
   if (!customPeriod) {
@@ -3280,7 +3286,7 @@ function renderReportWizardSettings() {
       ? `Запустить диагностику Ozon за ${periodLabel}`
       : "Период диагностики загружается…"
     : completePeriod
-      ? `Создать staff draft Excel за ${periodLabel}`
+      ? `Создать предварительный Excel за ${periodLabel}`
       : "Период отчёта загружается…";
   els.reportWizardCheck.textContent = completePeriod
     ? `Проверить источники за ${periodLabel}`
@@ -3329,8 +3335,8 @@ function renderReportWizardResult() {
         ? `Диагностика Ozon за ${periodLabel} создана с замечаниями`
         : `Диагностика Ozon за ${periodLabel} готова`
       : needsReview
-        ? `Staff draft Excel за ${periodLabel} создан с замечаниями`
-        : `Staff draft Excel за ${periodLabel} готов`;
+        ? `Предварительный Excel за ${periodLabel} создан с замечаниями`
+        : `Предварительный Excel за ${periodLabel} готов`;
   els.reportWizardResultCopy.textContent = published
     ? "Финансовая приёмка зафиксирована. Этот отчёт теперь текущий для клиента."
     : needsReview
@@ -9436,7 +9442,7 @@ function renderSourceRefreshControl(refresh, latestAttempt = null) {
       isOzonOnly
         ? "Диагностика"
         : createsReport
-          ? "Staff draft"
+          ? "Предварительный отчёт"
           : "Загрузка источников",
       refresh.newReportRunId ||
         (isOzonOnly
@@ -17485,7 +17491,7 @@ function sourcePeriodText(item) {
 function sourceRefreshModeText(mode) {
   const value = normalize(mode);
   return {
-    daily: "hourly — только источники",
+    daily: "ежечасно — только обновление источников",
     incremental: "последние 28 дней",
     full: "полный",
     "onec-only": "только 1С",

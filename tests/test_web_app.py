@@ -6476,10 +6476,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260725-logistics-closed-period-insight-v1"
+        "20260726-client-report-download-russian-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260725-logistics-closed-period-insight-v1"
+        "20260726-client-report-download-russian-v1"
     )
 
     page = client.get("/")
@@ -6556,7 +6556,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'id="report-wizard-check"' in cabinet.text
     assert 'id="report-wizard-reset"' in cabinet.text
     assert (
-        "Hourly-загрузка обновляет источники, но не меняет этот"
+        "Ежечасное обновление источников не меняет этот опубликованный"
         in cabinet.text
     )
     assert "Проверить источники без создания" in cabinet.text
@@ -6632,8 +6632,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260725-logistics-closed-period-insight-v1" in cabinet.text
-    assert "app.js?v=20260725-logistics-closed-period-insight-v1" in cabinet.text
+    assert "styles.css?v=20260726-client-report-download-russian-v1" in cabinet.text
+    assert "app.js?v=20260726-client-report-download-russian-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7017,7 +7017,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-products-title"')
-    assert "20260725-logistics-closed-period-insight-v1" in cabinet.text
+    assert "20260726-client-report-download-russian-v1" in cabinet.text
     assert ".logistics-tariffs-table" in styles.text
     assert ".logistics-return-reasons-coverage" in styles.text
     measurement_cell_rule = styles.text.split(
@@ -7062,9 +7062,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
         'const scope = els.clientReportScope.value || "last_closed_week"'
         in app_js.text
     )
+    assert 'const customPeriod = scope === "custom"' in app_js.text
+    assert 'customPeriod ? value.periodStart || "" : ""' in app_js.text
+    assert 'customPeriod ? value.periodEnd || "" : ""' in app_js.text
     assert "Последняя закрытая неделя в текущем отчёте" in cabinet.text
     assert "Проверить источники без создания" in cabinet.text
-    assert "Создать staff draft Excel за ${periodLabel}" in app_js.text
+    assert "Создать предварительный Excel за ${periodLabel}" in app_js.text
     assert "els.reportWizardPeriodHint.hidden = customPeriod" in app_js.text
     assert "По настройкам клиента" not in cabinet.text
     assert "по настройкам клиента" not in app_js.text
@@ -7094,7 +7097,12 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "Данные в отчете" in app_js.text
     assert "Последнее обновление данных" in app_js.text
     assert "sourceRefreshModeText" in app_js.text
-    assert 'daily: "hourly — только источники"' in app_js.text
+    assert 'daily: "ежечасно — только обновление источников"' in app_js.text
+    assert "Hourly" not in cabinet.text
+    assert "staff draft" not in cabinet.text.lower()
+    assert "staff-only" not in cabinet.text.lower()
+    assert "staff draft" not in app_js.text.lower()
+    assert "staff-only" not in app_js.text.lower()
     assert 'incremental: "последние 28 дней"' in app_js.text
     assert "sourceRefreshAutoOpenRunId" in app_js.text
     assert 'mode: "incremental"' in app_js.text
