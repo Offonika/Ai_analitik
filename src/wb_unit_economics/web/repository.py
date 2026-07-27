@@ -65,12 +65,16 @@ from wb_unit_economics.logistics_analysis import (
     CHAIN_KEY_VERSION,
     LOGISTICS_CLASSIFIER_VERSION,
     LOGISTICS_FACTORS_METHODOLOGY_VERSION,
+    LOGISTICS_INSIGHT_VERSION,
     LOGISTICS_MEASUREMENTS_METHODOLOGY_VERSION,
     LOGISTICS_METHODOLOGY_VERSION,
     LOGISTICS_ROUTES_METHODOLOGY_VERSION,
     LOGISTICS_TARIFFS_METHODOLOGY_VERSION,
     LOW_SAMPLE_THRESHOLD,
     LogisticsAnalysisResult,
+    LogisticsPeriodMode,
+    LogisticsPeriodResolution,
+    resolve_logistics_period,
 )
 from wb_unit_economics.ozon_mart import (
     _onec_commissioner_revenue_by_item,
@@ -14164,6 +14168,222 @@ def _validate_logistics_return_reason_rows_scope(
             raise ValueError("return-reason row cabinet/company scope mismatch")
 
 
+LOGISTICS_FACTOR_VIEWS = frozenset({"raw", "summary", "grouped"})
+
+
+def _logistics_factor_response_meta(
+    meta: Mapping[str, Any],
+    *,
+    view: str,
+) -> dict[str, Any]:
+    result = dict(meta)
+    if view == "raw":
+        return result
+    result.pop("reportId", None)
+    filter_context = dict(result.get("filterContext") or {})
+    filter_context.pop("wbCabinetId", None)
+    filter_context.pop("clientCompanyId", None)
+    result["filterContext"] = filter_context
+    return result
+
+
+def _group_text(values: Iterable[Any], *, fallback: str = "") -> str:
+    normalized = sorted(
+        {str(value).strip() for value in values if str(value or "").strip()}
+    )
+    return normalized[0] if len(normalized) == 1 else fallback
+
+
+def _sort_group_payloads(
+    groups: list[dict[str, Any]],
+    *,
+    sort_by: str,
+    sort_order: str,
+    fields: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    field = fields[sort_by]
+    present = [item for item in groups if item.get(field) is not None]
+    missing = [item for item in groups if item.get(field) is None]
+    present.sort(
+        key=lambda item: (
+            str(item.get(field) or "").casefold()
+            if isinstance(item.get(field), str)
+            else item.get(field),
+            str(item.get("product") or "").casefold(),
+            str(item.get("vendorCode") or "").casefold(),
+        ),
+        reverse=sort_order == "desc",
+    )
+    missing.sort(
+        key=lambda item: (
+            str(item.get("product") or "").casefold(),
+            str(item.get("vendorCode") or "").casefold(),
+        )
+    )
+    return present + missing
+
+
+def _dimension_status(
+    rows: Sequence[ReportLogisticsDimensionRow],
+) -> tuple[str, str, str]:
+    statuses = {row.coverage_status for row in rows}
+    if "conflicting_dimensions" in statuses:
+        return (
+            "conflicting_dimensions",
+            "Габариты в источнике конфликтуют",
+            "Система не выбирает одно из разных значений случайным образом.",
+        )
+    if statuses & {"invalid_dimensions", "identity_conflict"}:
+        return (
+            "invalid_dimensions",
+            "В карточке получены некорректные габариты",
+            "Значения не подставлены нулями и требуют проверки источника.",
+        )
+    if "missing_dimensions" in statuses:
+        return (
+            "missing_dimensions",
+            "Габариты не получены из текущей карточки WB",
+            "Это относится к конкретной карточке, а не ко всему кабинету.",
+        )
+    if any(row.dimensions_valid is False for row in rows):
+        return (
+            "card_signal",
+            "Возможное расхождение габаритов. Штраф не подтверждён.",
+            "WB передал сигнал проверки текущей карточки.",
+        )
+    if all(row.weight_brutto_kg is None for row in rows):
+        return (
+            "missing_weight",
+            "Вес не получен из текущей карточки WB",
+            (
+                "Размеры и вес оцениваются отдельно; отсутствие веса "
+                "не означает пустой кабинет."
+            ),
+        )
+    return ("ready", "Данные карточки получены", "Сигналов проверки нет.")
+
+
+def _dimension_groups(
+    rows: Sequence[ReportLogisticsDimensionRow],
+) -> tuple[list[dict[str, Any]], list[list[ReportLogisticsDimensionRow]]]:
+    buckets: dict[
+        tuple[str, str],
+        list[ReportLogisticsDimensionRow],
+    ] = defaultdict(list)
+    for row in rows:
+        product_identity = row.nm_id.strip() or f"product:{row.product_ref}"
+        buckets[(row.wb_cabinet_id, product_identity)].append(row)
+
+    groups: list[dict[str, Any]] = []
+    members: list[list[ReportLogisticsDimensionRow]] = []
+    for bucket_rows in buckets.values():
+        bucket_rows = sorted(bucket_rows, key=lambda row: row.id)
+        signatures = {
+            (
+                row.length_cm,
+                row.width_cm,
+                row.height_cm,
+                row.volume_l,
+                row.weight_brutto_kg,
+            )
+            for row in bucket_rows
+        }
+        signature = next(iter(signatures)) if len(signatures) == 1 else (None,) * 5
+        status_code, status_title, status_message = _dimension_status(bucket_rows)
+        scopes = {
+            (row.client_company_id, row.scheme)
+            for row in bucket_rows
+        }
+        groups.append(
+            {
+                "product": _group_text(
+                    (row.product for row in bucket_rows),
+                    fallback="Товар",
+                ),
+                "vendorCode": _group_text(row.vendor_code for row in bucket_rows),
+                "itemCount": len(bucket_rows),
+                "scopeCount": len(scopes),
+                "lengthCm": signature[0],
+                "widthCm": signature[1],
+                "heightCm": signature[2],
+                "volumeL": signature[3],
+                "weightBruttoKg": signature[4],
+                "dimensionsDiffer": len(signatures) > 1,
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+                "hasDetails": len(bucket_rows) > 1,
+            }
+        )
+        members.append(bucket_rows)
+    return groups, members
+
+
+def _dimension_group_details(
+    rows: Sequence[ReportLogisticsDimensionRow],
+) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        status_code, status_title, status_message = _dimension_status([row])
+        details.append(
+            {
+                "scopeNumber": index,
+                "product": row.product or row.vendor_code or "Товар",
+                "vendorCode": row.vendor_code or None,
+                "scheme": row.scheme or None,
+                "lengthCm": row.length_cm,
+                "widthCm": row.width_cm,
+                "heightCm": row.height_cm,
+                "volumeL": row.volume_l,
+                "weightBruttoKg": row.weight_brutto_kg,
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+            }
+        )
+    return details
+
+
+def _dimension_group_coverage(
+    groups: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    total = len(groups)
+    ready_codes = {"ready", "card_signal", "missing_weight"}
+    with_dimensions = sum(
+        str(group.get("statusCode") or "") in ready_codes
+        for group in groups
+    )
+    missing = sum(
+        group.get("statusCode") == "missing_dimensions"
+        for group in groups
+    )
+    invalid = sum(
+        group.get("statusCode") == "invalid_dimensions"
+        for group in groups
+    )
+    conflicting = sum(
+        group.get("statusCode") == "conflicting_dimensions"
+        for group in groups
+    )
+    signals = sum(
+        group.get("statusCode") == "card_signal"
+        for group in groups
+    )
+    return {
+        "total": total,
+        "withDimensions": with_dimensions,
+        "missingDimensions": missing,
+        "invalidDimensions": invalid,
+        "conflictingDimensions": conflicting,
+        "signalCount": signals,
+        "coveragePct": (
+            Decimal(with_dimensions) * Decimal("100") / Decimal(total)
+            if total
+            else None
+        ),
+    }
+
+
 def report_logistics_dimensions_payload(
     db: Session,
     report: ReportRun,
@@ -14178,6 +14398,8 @@ def report_logistics_dimensions_payload(
     sort_order: str = "asc",
     offset: int = 0,
     limit: int = 250,
+    view: str = "raw",
+    group_offset: int | None = None,
 ) -> dict[str, Any]:
     logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
     context = db.get(ReportLogisticsDimensionContext, report.id)
@@ -14218,8 +14440,10 @@ def report_logistics_dimensions_payload(
             else None
         ),
         "valueType": "fact",
+        "view": view,
         "filterContext": filter_context,
     }
+    meta = _logistics_factor_response_meta(meta, view=view)
     empty_payload = {
         **meta,
         "coverage": _empty_logistics_dimension_coverage(),
@@ -14352,6 +14576,7 @@ def report_logistics_dimensions_payload(
                 "dataStatus": context.data_status,
                 "sliceStatus": "empty",
                 "coverage": coverage,
+                "rawTotal": 0,
             }
         )
     sort_fields = {
@@ -14388,8 +14613,8 @@ def report_logistics_dimensions_payload(
                 "priority": 30,
                 "title": "Проверить упаковку и карточку товара",
                 "message": (
-                    "WB отметил часть карточек сигналом isValid=false. "
-                    "Это ограничение данных, а не подтверждённый штраф."
+                    "WB передал для части карточек сигнал возможного "
+                    "расхождения габаритов. Штраф не подтверждён."
                 ),
                 "impactAmount": None,
                 "evidenceType": "limitation",
@@ -14406,14 +14631,113 @@ def report_logistics_dimensions_payload(
                 "priority": 40,
                 "title": "Проверить данные габаритов",
                 "message": (
-                    "Для части товаров габариты отсутствуют, невалидны или "
-                    "конфликтуют; значения не подставлены нулями."
+                    "Для части карточек габариты не получены, содержат "
+                    "некорректные значения или конфликтуют; нули не подставлены."
                 ),
                 "impactAmount": None,
                 "evidenceType": "data_unavailable",
                 "actionTarget": "#logistics-dimensions",
                 "actionLabel": "Проверить источник",
                 "evidence": {"productCount": unavailable},
+            }
+        )
+    if view in {"summary", "grouped"}:
+        source_rows = list(
+            db.scalars(
+                select(ReportLogisticsDimensionRow)
+                .where(*conditions)
+                .order_by(ReportLogisticsDimensionRow.id.asc())
+            )
+        )
+        grouped_rows, grouped_members = _dimension_groups(source_rows)
+        paired = list(zip(grouped_rows, grouped_members, strict=True))
+        sorted_groups = _sort_group_payloads(
+            [item[0] for item in paired],
+            sort_by=sort_by,
+            sort_order=sort_order,
+            fields={
+                "product": "product",
+                "volumeL": "volumeL",
+                "weightBruttoKg": "weightBruttoKg",
+                "coverageStatus": "statusCode",
+            },
+        )
+        members_by_identity = {id(group): members for group, members in paired}
+        total_groups = len(sorted_groups)
+        grouped_coverage = _dimension_group_coverage(sorted_groups)
+        headline = (
+            "Часть карточек требует проверки."
+            if signals or unavailable
+            else "Данные карточек получены без сигналов проверки."
+        )
+        if view == "summary":
+            return _logistics_json_safe(
+                {
+                    **meta,
+                    "dataStatus": context.data_status,
+                    "sliceStatus": slice_status,
+                    "coverage": grouped_coverage,
+                    "headline": headline,
+                    "rows": [],
+                    "total": total_groups,
+                    "rawTotal": total,
+                    "offset": 0,
+                    "limit": limit,
+                    "recommendations": recommendations,
+                }
+            )
+        if group_offset is not None:
+            if group_offset < 0 or group_offset >= total_groups:
+                return _logistics_json_safe(
+                    {
+                        **meta,
+                        "dataStatus": context.data_status,
+                        "sliceStatus": "empty",
+                        "coverage": grouped_coverage,
+                        "headline": headline,
+                        "group": None,
+                        "rows": [],
+                        "total": 0,
+                        "rawTotal": total,
+                        "offset": 0,
+                        "limit": limit,
+                        "recommendations": recommendations,
+                    }
+                )
+            group = sorted_groups[group_offset]
+            return _logistics_json_safe(
+                {
+                    **meta,
+                    "dataStatus": context.data_status,
+                    "sliceStatus": slice_status,
+                    "coverage": grouped_coverage,
+                    "headline": headline,
+                    "group": {**group, "groupOffset": group_offset},
+                    "rows": _dimension_group_details(members_by_identity[id(group)]),
+                    "total": group["itemCount"],
+                    "rawTotal": total,
+                    "offset": 0,
+                    "limit": limit,
+                    "recommendations": recommendations,
+                }
+            )
+        page = sorted_groups[offset : offset + limit]
+        return _logistics_json_safe(
+            {
+                **meta,
+                "dataStatus": context.data_status,
+                "sliceStatus": slice_status,
+                "coverage": grouped_coverage,
+                "headline": headline,
+                "rows": [
+                    {**group, "groupOffset": offset + index}
+                    for index, group in enumerate(page)
+                ],
+                "total": total_groups,
+                "rawTotal": total,
+                "offset": offset,
+                "limit": limit,
+                "recommendations": recommendations,
             }
         )
     return _logistics_json_safe(
@@ -14545,6 +14869,148 @@ def _validate_logistics_dimension_rows_scope(
             )
 
 
+def _return_reason_source_label(value: str) -> str:
+    return {
+        "goods_return": "Заявки на возврат WB",
+        "claims": "Заявки и комментарии покупателей WB",
+        "finance": "Финансовый отчёт WB",
+        "unavailable": "Причина не подтверждена",
+    }.get(value, "Источник причины не подтверждён")
+
+
+def _return_reason_status(
+    rows: Sequence[ReportLogisticsReturnReasonRow],
+) -> tuple[str, str, str]:
+    if any(
+        row.evidence_type == "fact" and bool(row.reason_category)
+        for row in rows
+    ):
+        return (
+            "confirmed_reason",
+            "Есть подтверждённая причина",
+            "Вывод основан только на причине, связанной с возвратом точно.",
+        )
+    return (
+        "reason_unconfirmed",
+        "Причина возврата не подтверждена",
+        (
+            "Возврат найден, но подтверждённой причины нет; "
+            "выводы о причинах делать нельзя."
+        ),
+    )
+
+
+def _return_reason_groups(
+    rows: Sequence[ReportLogisticsReturnReasonRow],
+) -> tuple[
+    list[dict[str, Any]],
+    list[list[ReportLogisticsReturnReasonRow]],
+]:
+    unique_rows: list[ReportLogisticsReturnReasonRow] = []
+    seen_chain_keys: set[str] = set()
+    for row in sorted(rows, key=lambda item: item.id):
+        if row.chain_key in seen_chain_keys:
+            continue
+        seen_chain_keys.add(row.chain_key)
+        unique_rows.append(row)
+
+    buckets: dict[
+        tuple[str, date],
+        list[ReportLogisticsReturnReasonRow],
+    ] = defaultdict(list)
+    for row in unique_rows:
+        product_identity = row.product_ref.strip() or (
+            f"{row.wb_cabinet_id}:{row.vendor_code}:{row.product}"
+        )
+        buckets[(product_identity, row.event_date)].append(row)
+
+    groups: list[dict[str, Any]] = []
+    members: list[list[ReportLogisticsReturnReasonRow]] = []
+    for (_, event_date), bucket_rows in buckets.items():
+        confirmed_reasons = sorted(
+            {
+                str(row.reason_category).strip()
+                for row in bucket_rows
+                if row.evidence_type == "fact"
+                and str(row.reason_category or "").strip()
+            }
+        )
+        status_code, status_title, status_message = _return_reason_status(
+            bucket_rows
+        )
+        reason_summary = (
+            confirmed_reasons[0]
+            if len(confirmed_reasons) == 1
+            else "Несколько подтверждённых причин"
+            if confirmed_reasons
+            else None
+        )
+        groups.append(
+            {
+                "product": _group_text(
+                    (row.product for row in bucket_rows),
+                    fallback="Товар",
+                ),
+                "vendorCode": _group_text(
+                    row.vendor_code for row in bucket_rows
+                ),
+                "eventDate": event_date.isoformat(),
+                "itemCount": len(bucket_rows),
+                "reasonSummary": reason_summary,
+                "sourceLabel": _group_text(
+                    (
+                        _return_reason_source_label(row.reason_source)
+                        for row in bucket_rows
+                    ),
+                    fallback="Несколько источников WB",
+                ),
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+                "hasDetails": True,
+            }
+        )
+        members.append(bucket_rows)
+    return groups, members
+
+
+def _return_reason_group_details(
+    rows: Sequence[ReportLogisticsReturnReasonRow],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        status_code, status_title, status_message = _return_reason_status([row])
+        if row.claim_available is True:
+            claim_text = (
+                "Заявка и комментарий покупателя найдены"
+                if row.has_user_comment is True
+                else "Заявка найдена, комментария покупателя нет"
+            )
+        elif row.claim_available is False:
+            claim_text = "Заявка покупателя не подтверждена"
+        else:
+            claim_text = "Источник заявок и комментариев недоступен"
+        result.append(
+            {
+                "returnNumber": index,
+                "eventDate": row.event_date.isoformat(),
+                "product": row.product or row.vendor_code or "Товар",
+                "vendorCode": row.vendor_code or None,
+                "reasonText": (
+                    row.reason_category
+                    if row.evidence_type == "fact" and row.reason_category
+                    else "Подтверждённая причина не получена"
+                ),
+                "sourceLabel": _return_reason_source_label(row.reason_source),
+                "claimStatusText": claim_text,
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+            }
+        )
+    return result
+
+
 def report_logistics_return_reasons_payload(
     db: Session,
     report: ReportRun,
@@ -14562,6 +15028,8 @@ def report_logistics_return_reasons_payload(
     sort_order: str = "desc",
     offset: int = 0,
     limit: int = 250,
+    view: str = "raw",
+    group_offset: int | None = None,
 ) -> dict[str, Any]:
     logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
     context = db.get(ReportLogisticsReturnReasonContext, report.id)
@@ -14600,8 +15068,10 @@ def report_logistics_return_reasons_payload(
             else report.generated_at.isoformat()
         ),
         "sourceCoverage": source_coverage,
+        "view": view,
         "filterContext": filter_context,
     }
+    meta = _logistics_factor_response_meta(meta, view=view)
     empty_payload = {
         **meta,
         "coverage": _empty_logistics_return_reason_coverage(),
@@ -14825,6 +15295,102 @@ def report_logistics_return_reasons_payload(
         if context.data_status == "partial" or reason_unavailable or claim_unknown
         else "ready"
     )
+    if view in {"summary", "grouped"}:
+        source_rows = list(
+            db.scalars(
+                select(ReportLogisticsReturnReasonRow)
+                .where(*conditions)
+                .order_by(ReportLogisticsReturnReasonRow.id.asc())
+            )
+        )
+        grouped_rows, grouped_members = _return_reason_groups(source_rows)
+        paired = list(zip(grouped_rows, grouped_members, strict=True))
+        sorted_groups = _sort_group_payloads(
+            [item[0] for item in paired],
+            sort_by=sort_by,
+            sort_order=sort_order,
+            fields={
+                "eventDate": "eventDate",
+                "product": "product",
+                "reasonCategory": "reasonSummary",
+                "evidenceType": "statusCode",
+                "matchStatus": "statusCode",
+            },
+        )
+        members_by_identity = {
+            id(group): group_members
+            for group, group_members in paired
+        }
+        total_groups = len(sorted_groups)
+        headline = (
+            "Возвраты найдены, но подтверждённых причин нет; "
+            "выводы о причинах делать нельзя."
+            if reason_available == 0
+            else (
+                "Причины подтверждены только для части возвратов; "
+                "остальные операции нельзя использовать для выводов."
+            )
+            if reason_unavailable
+            else "Подтверждённые причины получены для всех возвратов в срезе."
+        )
+        common = {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "headline": headline,
+            "rawTotal": total,
+            "recommendations": recommendations,
+        }
+        if view == "summary":
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "rows": [],
+                    "total": total_groups,
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        if group_offset is not None:
+            if group_offset < 0 or group_offset >= total_groups:
+                return _logistics_json_safe(
+                    {
+                        **common,
+                        "sliceStatus": "empty",
+                        "group": None,
+                        "rows": [],
+                        "total": 0,
+                        "offset": 0,
+                        "limit": limit,
+                    }
+                )
+            group = sorted_groups[group_offset]
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "group": {**group, "groupOffset": group_offset},
+                    "rows": _return_reason_group_details(
+                        members_by_identity[id(group)]
+                    ),
+                    "total": group["itemCount"],
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        page = sorted_groups[offset : offset + limit]
+        return _logistics_json_safe(
+            {
+                **common,
+                "rows": [
+                    {**group, "groupOffset": offset + index}
+                    for index, group in enumerate(page)
+                ],
+                "total": total_groups,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
     return _logistics_json_safe(
         {
             **meta,
@@ -15010,6 +15576,304 @@ def _logistics_return_reason_recommendations(
     return recommendations
 
 
+def _measurement_event_at(row: ReportLogisticsMeasurementRow) -> datetime | None:
+    return row.penalty_effective_at or row.measurement_at
+
+
+def _measurement_event_date(row: ReportLogisticsMeasurementRow) -> date | None:
+    event_at = _measurement_event_at(row)
+    if event_at is None:
+        return None
+    if event_at.tzinfo is None:
+        event_at = event_at.replace(tzinfo=UTC)
+    return event_at.astimezone(ZoneInfo("Europe/Moscow")).date()
+
+
+def _measurement_status(
+    rows: Sequence[ReportLogisticsMeasurementRow],
+) -> tuple[str, str, str]:
+    event_status = _measurement_event_status(rows)
+    if event_status[0] != "confirmed_measurement":
+        return event_status
+    financial_status = _measurement_financial_link_status(rows)
+    if financial_status[0] != "financial_link_ready":
+        return financial_status
+    return event_status
+
+
+def _measurement_event_status(
+    rows: Sequence[ReportLogisticsMeasurementRow],
+) -> tuple[str, str, str]:
+    statuses = {row.coverage_status for row in rows}
+    if "conflicting_measurement" in statuses:
+        return (
+            "conflicting_measurement",
+            "Данные замеров конфликтуют",
+            "Система не выбирает одно из разных значений случайным образом.",
+        )
+    if "invalid_measurement" in statuses:
+        return (
+            "invalid_measurement",
+            "В событии WB получены некорректные значения",
+            "Доступные значения сохранены, остальные не подставлены нулями.",
+        )
+    if any(row.is_valid is False for row in rows):
+        return (
+            "measurement_signal",
+            "WB передал сигнал проверки события",
+            "Это не новое удержание и не подтверждённая причина расхода.",
+        )
+    return (
+        "confirmed_measurement",
+        "Подтверждённый замер WB",
+        "Событие получено из отчёта WB о контрольных замерах.",
+    )
+
+
+def _measurement_financial_link_status(
+    rows: Sequence[ReportLogisticsMeasurementRow],
+) -> tuple[str, str, str]:
+    statuses = {row.coverage_status for row in rows}
+    if "ambiguous_product_scope" in statuses:
+        return (
+            "ambiguous_product_scope",
+            "Замер найден; организация или схема не определена однозначно",
+            (
+                "Сам замер остаётся подтверждённым фактом WB "
+                "без финансового распределения."
+            ),
+        )
+    if "unmatched_product" in statuses:
+        return (
+            "unmatched_product",
+            "Связь замера с товаром отчёта не установлена",
+            "Событие не распределяется по товарам или финансовым показателям.",
+        )
+    if any(not row.client_company_id or not row.scheme for row in rows):
+        return (
+            "financial_link_unavailable",
+            "Финансовая область события не подтверждена",
+            "Организация или схема отчёта для события не определена.",
+        )
+    return (
+        "financial_link_ready",
+        "Финансовая область определена",
+        "Организация и схема отчёта связаны с событием однозначно.",
+    )
+
+
+def _measurement_article_map(
+    db: Session,
+    report_id: str,
+) -> dict[tuple[str, str], str]:
+    result: dict[tuple[str, str], set[str]] = defaultdict(set)
+    rows = db.execute(
+        select(
+            ReportLogisticsSkuRow.wb_cabinet_id,
+            ReportLogisticsSkuRow.nm_id,
+            ReportLogisticsSkuRow.vendor_code,
+        ).where(ReportLogisticsSkuRow.report_run_id == report_id)
+    )
+    for cabinet_id, nm_id, vendor_code in rows:
+        value = str(vendor_code or "").strip()
+        if value:
+            result[(str(cabinet_id), str(nm_id))].add(value)
+    return {
+        key: next(iter(values))
+        for key, values in result.items()
+        if len(values) == 1
+    }
+
+
+def _measurement_groups(
+    rows: Sequence[ReportLogisticsMeasurementRow],
+    *,
+    article_map: Mapping[tuple[str, str], str],
+) -> tuple[list[dict[str, Any]], list[list[ReportLogisticsMeasurementRow]]]:
+    buckets: dict[
+        tuple[str, str, date | None],
+        list[ReportLogisticsMeasurementRow],
+    ] = defaultdict(list)
+    for row in rows:
+        buckets[
+            (row.wb_cabinet_id, row.nm_id, _measurement_event_date(row))
+        ].append(row)
+
+    groups: list[dict[str, Any]] = []
+    members: list[list[ReportLogisticsMeasurementRow]] = []
+    for key, bucket_rows in buckets.items():
+        bucket_rows = sorted(
+            bucket_rows,
+            key=lambda row: (
+                _measurement_event_at(row)
+                or datetime.min.replace(tzinfo=UTC),
+                row.id,
+            ),
+        )
+        measured_signatures = {
+            (
+                row.measured_length_cm,
+                row.measured_width_cm,
+                row.measured_height_cm,
+                row.measured_volume_l,
+            )
+            for row in bucket_rows
+            if any(
+                value is not None
+                for value in (
+                    row.measured_length_cm,
+                    row.measured_width_cm,
+                    row.measured_height_cm,
+                    row.measured_volume_l,
+                )
+            )
+        }
+        measured = (
+            next(iter(measured_signatures))
+            if len(measured_signatures) == 1
+            else (None, None, None, None)
+        )
+        status_code, status_title, status_message = _measurement_status(bucket_rows)
+        event_status = _measurement_event_status(bucket_rows)
+        financial_status = _measurement_financial_link_status(bucket_rows)
+        declared_missing = all(
+            row.declared_length_cm is None
+            and row.declared_width_cm is None
+            and row.declared_height_cm is None
+            and row.declared_volume_l is None
+            for row in bucket_rows
+        )
+        money_missing = all(
+            row.penalty_amount is None
+            and row.reversal_amount is None
+            and row.net_penalty_amount is None
+            for row in bucket_rows
+        )
+        groups.append(
+            {
+                "product": _group_text(
+                    (row.product for row in bucket_rows),
+                    fallback="Товар",
+                ),
+                "vendorCode": article_map.get((key[0], key[1])) or None,
+                "eventDate": key[2].isoformat() if key[2] else None,
+                "itemCount": len(bucket_rows),
+                "measuredLengthCm": measured[0],
+                "measuredWidthCm": measured[1],
+                "measuredHeightCm": measured[2],
+                "measuredVolumeL": measured[3],
+                "dimensionsDiffer": len(measured_signatures) > 1,
+                "declaredValuesMissing": declared_missing,
+                "moneyValuesMissing": money_missing,
+                "hasPenalty": any(
+                    row.penalty_amount is not None and row.penalty_amount > 0
+                    for row in bucket_rows
+                ),
+                "hasReversal": any(
+                    row.reversal_amount is not None and row.reversal_amount > 0
+                    for row in bucket_rows
+                ),
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+                "eventStatusCode": event_status[0],
+                "eventStatusTitle": event_status[1],
+                "eventStatusMessage": event_status[2],
+                "financialLinkStatusCode": financial_status[0],
+                "financialLinkStatusTitle": financial_status[1],
+                "financialLinkStatusMessage": financial_status[2],
+                "hasDetails": True,
+                "_sortVolumeRatio": max(
+                    (
+                        row.volume_ratio_percent
+                        for row in bucket_rows
+                        if row.volume_ratio_percent is not None
+                    ),
+                    default=None,
+                ),
+                "_sortPenalty": max(
+                    (
+                        row.penalty_amount
+                        for row in bucket_rows
+                        if row.penalty_amount is not None
+                    ),
+                    default=None,
+                ),
+                "_sortNetPenalty": max(
+                    (
+                        row.net_penalty_amount
+                        for row in bucket_rows
+                        if row.net_penalty_amount is not None
+                    ),
+                    default=None,
+                ),
+            }
+        )
+        members.append(bucket_rows)
+    return groups, members
+
+
+def _measurement_event_kind_label(value: str) -> str:
+    return {
+        "warehouse_measurement": "Контрольный замер WB",
+        "measurement_penalty": "Замер со сведениями об удержании",
+        "merged": "Замер и сведения об удержании",
+    }.get(value, "Событие контрольного замера WB")
+
+
+def _measurement_group_details(
+    rows: Sequence[ReportLogisticsMeasurementRow],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        status_code, status_title, status_message = _measurement_status([row])
+        event_status = _measurement_event_status([row])
+        financial_status = _measurement_financial_link_status([row])
+        result.append(
+            {
+                "eventAt": _measurement_event_at(row),
+                "eventKindLabel": _measurement_event_kind_label(row.event_kind),
+                "product": row.product or "Товар",
+                "measuredLengthCm": row.measured_length_cm,
+                "measuredWidthCm": row.measured_width_cm,
+                "measuredHeightCm": row.measured_height_cm,
+                "measuredVolumeL": row.measured_volume_l,
+                "declaredLengthCm": row.declared_length_cm,
+                "declaredWidthCm": row.declared_width_cm,
+                "declaredHeightCm": row.declared_height_cm,
+                "declaredVolumeL": row.declared_volume_l,
+                "declaredStatusText": (
+                    "Заявленные размеры не переданы в событии WB"
+                    if row.declared_length_cm is None
+                    and row.declared_width_cm is None
+                    and row.declared_height_cm is None
+                    and row.declared_volume_l is None
+                    else "Заявленные размеры переданы в событии WB"
+                ),
+                "moneyStatusText": (
+                    "Сведения об удержании в этом событии отсутствуют"
+                    if row.penalty_amount is None
+                    and row.reversal_amount is None
+                    and row.net_penalty_amount is None
+                    else (
+                        "В событии есть сведения об удержании; суммы доступны "
+                        "только в служебной детализации"
+                    )
+                ),
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+                "eventStatusCode": event_status[0],
+                "eventStatusTitle": event_status[1],
+                "eventStatusMessage": event_status[2],
+                "financialLinkStatusCode": financial_status[0],
+                "financialLinkStatusTitle": financial_status[1],
+                "financialLinkStatusMessage": financial_status[2],
+            }
+        )
+    return result
+
+
 LOGISTICS_MEASUREMENT_SORT_KEYS = {
     "eventDate",
     "product",
@@ -15036,6 +15900,8 @@ def report_logistics_measurements_payload(
     sort_order: str = "desc",
     offset: int = 0,
     limit: int = 250,
+    view: str = "raw",
+    group_offset: int | None = None,
 ) -> dict[str, Any]:
     logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
     context = db.get(ReportLogisticsMeasurementContext, report.id)
@@ -15094,8 +15960,10 @@ def report_logistics_measurements_payload(
             else None
         ),
         "filterContext": filter_context,
+        "view": view,
         "accountingTreatment": _logistics_measurement_accounting_treatment(),
     }
+    meta = _logistics_factor_response_meta(meta, view=view)
     empty_payload = {
         **meta,
         "coverage": _empty_logistics_measurement_coverage(context),
@@ -15158,6 +16026,19 @@ def report_logistics_measurements_payload(
                 func.coalesce(ReportLogisticsMeasurementRow.product_ref, "").like(
                     pattern, escape="\\"
                 ),
+                select(1)
+                .where(
+                    ReportLogisticsSkuRow.report_run_id == report.id,
+                    ReportLogisticsSkuRow.wb_cabinet_id
+                    == ReportLogisticsMeasurementRow.wb_cabinet_id,
+                    ReportLogisticsSkuRow.nm_id
+                    == ReportLogisticsMeasurementRow.nm_id,
+                    ReportLogisticsSkuRow.vendor_code.like(
+                        pattern,
+                        escape="\\",
+                    ),
+                )
+                .exists(),
             )
         )
     if event_kind:
@@ -15358,6 +16239,110 @@ def report_logistics_measurements_payload(
         if context.data_status == "partial" or problem_events
         else "ready"
     )
+    if view in {"summary", "grouped"}:
+        source_rows = list(
+            db.scalars(
+                select(ReportLogisticsMeasurementRow)
+                .where(*conditions)
+                .order_by(ReportLogisticsMeasurementRow.id.asc())
+            )
+        )
+        grouped_rows, grouped_members = _measurement_groups(
+            source_rows,
+            article_map=_measurement_article_map(db, report.id),
+        )
+        paired = list(zip(grouped_rows, grouped_members, strict=True))
+        sorted_groups = _sort_group_payloads(
+            [item[0] for item in paired],
+            sort_by=sort_by,
+            sort_order=sort_order,
+            fields={
+                "eventDate": "eventDate",
+                "product": "product",
+                "volumeRatioPercent": "_sortVolumeRatio",
+                "penaltyAmount": "_sortPenalty",
+                "netPenaltyAmount": "_sortNetPenalty",
+                "coverageStatus": "statusCode",
+            },
+        )
+        members_by_identity = {id(group): members for group, members in paired}
+        for group in sorted_groups:
+            group.pop("_sortVolumeRatio", None)
+            group.pop("_sortPenalty", None)
+            group.pop("_sortNetPenalty", None)
+        total_groups = len(sorted_groups)
+        headline = (
+            "Замеры WB получены, но часть событий требует проверки связи или значений."
+            if problem_events
+            else "Контрольные замеры WB получены."
+        )
+        column_availability = {
+            "declaredValues": any(
+                not group["declaredValuesMissing"] for group in sorted_groups
+            ),
+            "moneyValues": any(
+                not group["moneyValuesMissing"] for group in sorted_groups
+            ),
+        }
+        common = {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "headline": headline,
+            "rawTotal": total,
+            "columnAvailability": column_availability,
+            "recommendations": recommendations,
+        }
+        if view == "summary":
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "rows": [],
+                    "total": total_groups,
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        if group_offset is not None:
+            if group_offset < 0 or group_offset >= total_groups:
+                return _logistics_json_safe(
+                    {
+                        **common,
+                        "sliceStatus": "empty",
+                        "group": None,
+                        "rows": [],
+                        "total": 0,
+                        "offset": 0,
+                        "limit": limit,
+                    }
+                )
+            group = sorted_groups[group_offset]
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "group": {**group, "groupOffset": group_offset},
+                    "rows": _measurement_group_details(
+                        members_by_identity[id(group)]
+                    ),
+                    "total": group["itemCount"],
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        page = sorted_groups[offset : offset + limit]
+        return _logistics_json_safe(
+            {
+                **common,
+                "rows": [
+                    {**group, "groupOffset": offset + index}
+                    for index, group in enumerate(page)
+                ],
+                "total": total_groups,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
     return _logistics_json_safe(
         {
             **meta,
@@ -15456,8 +16441,9 @@ def _logistics_measurement_accounting_treatment() -> dict[str, Any]:
         "status": "unreconciled",
         "includedInFinancialKpi": False,
         "message": (
-            "Суммы являются фактом Analytics, но до точной финансовой сверки "
-            "не прибавляются к прибыли/убытку и не заменяют общий штраф Finance."
+            "Сведения получены из отчёта WB о контрольных замерах, но до "
+            "точной финансовой сверки не прибавляются к прибыли или убытку "
+            "и не заменяют общий штраф финансового отчёта WB."
         ),
     }
 
@@ -15512,8 +16498,9 @@ def _logistics_measurement_recommendations(
                 "priority": 20,
                 "title": "Проверить упаковку и заявленные габариты",
                 "message": (
-                    "Analytics вернул удержания за контрольные замеры; суммы "
-                    "показаны справочно без повторного финансового учёта."
+                    "Отчёт WB о контрольных замерах содержит сведения "
+                    "об удержаниях; они показаны справочно без повторного "
+                    "финансового учёта."
                 ),
                 "impactAmount": None,
                 "evidenceType": "fact",
@@ -15557,6 +16544,130 @@ def _logistics_measurement_recommendations(
     return result
 
 
+def _tariff_type_label(value: str) -> str:
+    return "Монопаллета" if value == "pallet" else "Короб"
+
+
+def _tariff_group_status(
+    rows: Sequence[ReportLogisticsTariffRow],
+) -> tuple[str, str, str]:
+    ready_facts = [
+        row
+        for row in rows
+        if row.evidence_type == "fact" and row.coverage_status == "ready"
+    ]
+    if ready_facts:
+        return (
+            "historical_fact",
+            "Архивный тариф подтверждён",
+            "Тариф относится к указанной исторической неделе.",
+        )
+    ready_estimates = [
+        row
+        for row in rows
+        if row.evidence_type == "estimate"
+        and row.coverage_status == "ready"
+    ]
+    if ready_estimates:
+        return (
+            "current_estimate",
+            "Текущий тариф — оценка",
+            (
+                "Архивный тариф недели недоступен. Текущий тариф "
+                "не используется как исторический факт."
+            ),
+        )
+    return (
+        "tariff_unavailable",
+        "Тариф недели не подтверждён",
+        "Отсутствующие или конфликтующие значения не подставлены нулями.",
+    )
+
+
+def _tariff_groups(
+    rows: Sequence[ReportLogisticsTariffRow],
+) -> tuple[list[dict[str, Any]], list[list[ReportLogisticsTariffRow]]]:
+    buckets: dict[
+        tuple[date, str],
+        list[ReportLogisticsTariffRow],
+    ] = defaultdict(list)
+    for row in rows:
+        buckets[(row.financial_week_start, row.tariff_type)].append(row)
+
+    groups: list[dict[str, Any]] = []
+    members: list[list[ReportLogisticsTariffRow]] = []
+    for (week_start, tariff_type), bucket_rows in buckets.items():
+        warehouses = sorted(
+            {
+                str(row.warehouse).strip()
+                for row in bucket_rows
+                if str(row.warehouse or "").strip()
+            }
+        )
+        status_code, status_title, status_message = _tariff_group_status(
+            bucket_rows
+        )
+        groups.append(
+            {
+                "weekStart": week_start.isoformat(),
+                "tariffTypeLabel": _tariff_type_label(tariff_type),
+                "warehouseLabel": (
+                    warehouses[0]
+                    if len(warehouses) == 1
+                    else "Несколько складов"
+                    if warehouses
+                    else "Склад не указан"
+                ),
+                "warehouseCount": len(warehouses),
+                "itemCount": len(bucket_rows),
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+                "hasDetails": True,
+                "_sortDelivery": max(
+                    (
+                        row.delivery_coefficient_pct
+                        for row in bucket_rows
+                        if row.delivery_coefficient_pct is not None
+                    ),
+                    default=None,
+                ),
+                "_sortStorage": max(
+                    (
+                        row.storage_coefficient_pct
+                        for row in bucket_rows
+                        if row.storage_coefficient_pct is not None
+                    ),
+                    default=None,
+                ),
+            }
+        )
+        members.append(bucket_rows)
+    return groups, members
+
+
+def _tariff_group_details(
+    rows: Sequence[ReportLogisticsTariffRow],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        status_code, status_title, status_message = _tariff_group_status([row])
+        result.append(
+            {
+                "weekStart": row.financial_week_start.isoformat(),
+                "warehouse": row.warehouse or "Склад не указан",
+                "geoName": row.geo_name or None,
+                "tariffTypeLabel": _tariff_type_label(row.tariff_type),
+                "deliveryCoefficientPct": row.delivery_coefficient_pct,
+                "storageCoefficientPct": row.storage_coefficient_pct,
+                "statusCode": status_code,
+                "statusTitle": status_title,
+                "statusMessage": status_message,
+            }
+        )
+    return result
+
+
 LOGISTICS_TARIFF_SORT_KEYS = {
     "requestedDate",
     "warehouse",
@@ -15581,6 +16692,8 @@ def report_logistics_tariffs_payload(
     sort_order: str = "asc",
     offset: int = 0,
     limit: int = 250,
+    view: str = "raw",
+    group_offset: int | None = None,
 ) -> dict[str, Any]:
     logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
     context = db.get(ReportLogisticsTariffContext, report.id)
@@ -15628,8 +16741,10 @@ def report_logistics_tariffs_payload(
         ),
         "valueType": "fact_or_estimate",
         "financialEffect": None,
+        "view": view,
         "filterContext": filter_context,
     }
+    meta = _logistics_factor_response_meta(meta, view=view)
     empty_payload = {
         **meta,
         "coverage": _empty_logistics_tariff_coverage(),
@@ -15881,6 +16996,104 @@ def report_logistics_tariffs_payload(
                 "evidence": {"pointCount": data_issues},
             }
         )
+    if view in {"summary", "grouped"}:
+        source_rows = list(
+            db.scalars(
+                select(ReportLogisticsTariffRow)
+                .where(*conditions)
+                .order_by(ReportLogisticsTariffRow.id.asc())
+            )
+        )
+        grouped_rows, grouped_members = _tariff_groups(source_rows)
+        paired = list(zip(grouped_rows, grouped_members, strict=True))
+        sorted_groups = _sort_group_payloads(
+            [item[0] for item in paired],
+            sort_by=sort_by,
+            sort_order=sort_order,
+            fields={
+                "requestedDate": "weekStart",
+                "warehouse": "warehouseLabel",
+                "deliveryCoefficient": "_sortDelivery",
+                "storageCoefficient": "_sortStorage",
+                "coverageStatus": "statusCode",
+            },
+        )
+        members_by_identity = {
+            id(group): group_members
+            for group, group_members in paired
+        }
+        for group in sorted_groups:
+            group.pop("_sortDelivery", None)
+            group.pop("_sortStorage", None)
+        headline = (
+            "Для всех тарифных точек подтверждён архивный тариф."
+            if factual == expected
+            else (
+                "Для части недель показан текущий тариф как оценка; "
+                "он не заменяет исторический тариф."
+            )
+            if estimated
+            else "Часть тарифных недель не подтверждена."
+        )
+        common = {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": coverage,
+            "headline": headline,
+            "rawTotal": total,
+            "recommendations": recommendations,
+        }
+        total_groups = len(sorted_groups)
+        if view == "summary":
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "rows": [],
+                    "total": total_groups,
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        if group_offset is not None:
+            if group_offset < 0 or group_offset >= total_groups:
+                return _logistics_json_safe(
+                    {
+                        **common,
+                        "sliceStatus": "empty",
+                        "group": None,
+                        "rows": [],
+                        "total": 0,
+                        "offset": 0,
+                        "limit": limit,
+                    }
+                )
+            group = sorted_groups[group_offset]
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "group": {**group, "groupOffset": group_offset},
+                    "rows": _tariff_group_details(
+                        members_by_identity[id(group)]
+                    ),
+                    "total": group["itemCount"],
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        page = sorted_groups[offset : offset + limit]
+        return _logistics_json_safe(
+            {
+                **common,
+                "rows": [
+                    {**group, "groupOffset": offset + index}
+                    for index, group in enumerate(page)
+                ],
+                "total": total_groups,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
     return _logistics_json_safe(
         {
             **meta,
@@ -16033,6 +17246,8 @@ def report_logistics_routes_payload(
     sort_order: str = "desc",
     offset: int = 0,
     limit: int = 250,
+    view: str = "raw",
+    group_offset: int | None = None,
 ) -> dict[str, Any]:
     logistics_context = db.get(ReportLogisticsAnalysisContext, report.id)
     context = db.get(ReportLogisticsRouteContext, report.id)
@@ -16081,8 +17296,10 @@ def report_logistics_routes_payload(
         ),
         "valueType": "fact_or_data_unavailable",
         "financialEffect": None,
+        "view": view,
         "filterContext": filter_context,
     }
+    meta = _logistics_factor_response_meta(meta, view=view)
     empty_coverage = {
         "totalChains": 0,
         "matchedChains": 0,
@@ -16271,11 +17488,21 @@ def report_logistics_routes_payload(
     }
     sort_column = sort_fields[sort_by]
     direction = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    page_offset = (
+        group_offset
+        if view == "grouped" and group_offset is not None
+        else offset
+    )
+    page_limit = (
+        1
+        if view == "grouped" and group_offset is not None
+        else limit
+    )
     page = db.execute(
         select(grouped)
         .order_by(direction, grouped.c.warehouse.asc(), grouped.c.destination.asc())
-        .offset(offset)
-        .limit(limit)
+        .offset(page_offset)
+        .limit(page_limit)
     ).mappings()
     rows: list[dict[str, Any]] = []
     for row in page:
@@ -16355,6 +17582,120 @@ def report_logistics_routes_payload(
         if context.data_status == "partial" or missing_chains or conflicting_chains
         else "ready"
     )
+    if view in {"summary", "grouped"}:
+        safe_coverage = {
+            key: value
+            for key, value in coverage.items()
+            if key not in {"linkedLogistics", "unlinkedLogistics"}
+        }
+        warehouse_summary = (
+            "Несколько складов"
+            if coverage["warehouses"] > 1
+            else "Один склад"
+            if coverage["warehouses"] == 1
+            else "Склад не подтверждён"
+        )
+        destination_summary = (
+            "Несколько направлений"
+            if coverage["destinations"] > 1
+            else "Одно направление"
+            if coverage["destinations"] == 1
+            else "Направление не подтверждено"
+        )
+        headline = (
+            "Склады и направления подтверждены для всех цепочек."
+            if matched_chains == total_chains
+            else (
+                "Часть складов или направлений не подтверждена; "
+                "значения не выбраны случайно."
+            )
+        )
+        safe_rows = [
+            {
+                "warehouseLabel": (
+                    row["warehouse"] or "Склад не подтверждён"
+                ),
+                "destinationLabel": (
+                    row["destination"] or "Направление не подтверждено"
+                ),
+                "itemCount": row["chainCount"],
+                "lowSample": row["lowSample"],
+                "coefficientStatus": row["coefficientStatus"],
+                "statusCode": row["coverageStatus"],
+                "statusTitle": (
+                    "Маршрут подтверждён"
+                    if row["coverageStatus"] == "ready"
+                    else "Маршрут не подтверждён"
+                ),
+                "statusMessage": (
+                    "Склад и направление связаны с цепочками точно."
+                    if row["coverageStatus"] == "ready"
+                    else (
+                        "Склад или направление отсутствуют либо "
+                        "конфликтуют."
+                    )
+                ),
+                "hasDetails": False,
+            }
+            for row in rows
+        ]
+        common = {
+            **meta,
+            "dataStatus": context.data_status,
+            "sliceStatus": slice_status,
+            "coverage": safe_coverage,
+            "headline": headline,
+            "warehouseSummary": warehouse_summary,
+            "destinationSummary": destination_summary,
+            "rawTotal": total_chains,
+            "recommendations": recommendations,
+        }
+        if view == "summary":
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "rows": [],
+                    "total": total,
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        if group_offset is not None:
+            if not safe_rows:
+                return _logistics_json_safe(
+                    {
+                        **common,
+                        "sliceStatus": "empty",
+                        "group": None,
+                        "rows": [],
+                        "total": 0,
+                        "offset": 0,
+                        "limit": limit,
+                    }
+                )
+            group = safe_rows[0]
+            return _logistics_json_safe(
+                {
+                    **common,
+                    "group": {**group, "groupOffset": group_offset},
+                    "rows": [group],
+                    "total": group["itemCount"],
+                    "offset": 0,
+                    "limit": limit,
+                }
+            )
+        return _logistics_json_safe(
+            {
+                **common,
+                "rows": [
+                    {**group, "groupOffset": offset + index}
+                    for index, group in enumerate(safe_rows)
+                ],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
     return _logistics_json_safe(
         {
             **meta,
@@ -16668,6 +18009,310 @@ def report_logistics_summary_payload(
             ),
         }
     )
+
+
+def report_logistics_analysis_payload(
+    db: Session,
+    report: ReportRun,
+    *,
+    period_start: date,
+    period_end: date,
+    period_mode: LogisticsPeriodMode = "exact",
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    product_query: str = "",
+) -> dict[str, Any]:
+    resolution = resolve_logistics_period(
+        period_start=period_start,
+        period_end=period_end,
+        mode=period_mode,
+    )
+    common_filters = {
+        "wb_cabinet_id": wb_cabinet_id,
+        "client_company_id": client_company_id,
+        "scheme": scheme,
+        "product_query": product_query,
+    }
+    partial_payloads: list[dict[str, Any]] = []
+    requested_summary: dict[str, Any] | None = None
+    if resolution.has_closed_period:
+        summary = report_logistics_summary_payload(
+            db,
+            report,
+            period_start=resolution.analysis_start,
+            period_end=resolution.analysis_end,
+            **common_filters,
+        )
+    else:
+        requested_summary = report_logistics_summary_payload(
+            db,
+            report,
+            period_start=resolution.requested_start,
+            period_end=resolution.requested_end,
+            **common_filters,
+        )
+        requested_slice_status = str(requested_summary.get("sliceStatus") or "")
+        summary = {
+            **requested_summary,
+            "sliceStatus": (
+                requested_slice_status
+                if requested_slice_status in {"empty", "blocked", "needs_rebuild"}
+                else "partial"
+            ),
+            "financialMetricStatus": "not_available_no_closed_week",
+            "kpis": _empty_logistics_kpis(),
+            "dynamics": [],
+            "components": _empty_logistics_components(),
+            "rankings": {
+                "byTotal": [],
+                "byRevenueShare": [],
+                "byProfitEffect": [],
+            },
+            "recommendations": [],
+        }
+
+    for partial_start, partial_end in resolution.partial_periods:
+        if (
+            requested_summary is not None
+            and partial_start == resolution.requested_start
+            and partial_end == resolution.requested_end
+        ):
+            partial_summary = requested_summary
+        else:
+            partial_summary = report_logistics_summary_payload(
+                db,
+                report,
+                period_start=partial_start,
+                period_end=partial_end,
+                **common_filters,
+            )
+        partial_payloads.append(
+            _logistics_partial_period_payload(
+                partial_summary,
+                period_start=partial_start,
+                period_end=partial_end,
+            )
+        )
+
+    factor_states = _logistics_factor_states(db, report)
+    period_context = _logistics_period_context_payload(resolution)
+    payload = {
+        **summary,
+        "periodContext": period_context,
+        "partialPeriods": partial_payloads,
+        "factorStates": factor_states,
+    }
+    payload["insight"] = build_logistics_insight(payload)
+    return _logistics_json_safe(payload)
+
+
+def build_logistics_insight(payload: Mapping[str, Any]) -> dict[str, Any]:
+    period_context = payload.get("periodContext") or {}
+    analysis_period = period_context.get("analysisPeriod")
+    financial_status = str(payload.get("financialMetricStatus") or "")
+    kpis = payload.get("kpis") or {}
+    rankings = payload.get("rankings") or {}
+    partial_periods = list(payload.get("partialPeriods") or [])
+    factor_states = list(payload.get("factorStates") or [])
+
+    if not analysis_period:
+        headline = "В выбранном периоде пока нет полной закрытой недели."
+        status = "partial"
+    elif financial_status == "ready":
+        headline = "Финансовое влияние рассчитано по полным закрытым неделям."
+        status = "ready"
+    elif financial_status == "not_available_missing_profit_link":
+        headline = "Логистика рассчитана, но финансовая связь требует проверки."
+        status = "partial"
+    else:
+        headline = "Логистика рассчитана с явными ограничениями финансовых KPI."
+        status = "partial"
+    if status == "ready" and (
+        str(payload.get("sliceStatus") or "") != "ready"
+        or any(factor.get("status") != "ready" for factor in factor_states)
+    ):
+        status = "partial"
+
+    findings: list[dict[str, Any]] = []
+    logistics_total = kpis.get("logisticsTotal")
+    if analysis_period and logistics_total is not None:
+        findings.append(
+            {
+                "code": "closed_period_logistics",
+                "title": "Логистика закрытого периода",
+                "message": "Фактический расход по полностью закрытым неделям.",
+                "amount": logistics_total,
+                "valueType": "fact",
+            }
+        )
+    profit_effect = kpis.get("profitEffectAmount")
+    if analysis_period and profit_effect is not None:
+        findings.append(
+            {
+                "code": "profit_effect",
+                "title": "Влияние на прибыль",
+                "message": (
+                    "Знаковое влияние рассчитано по тому же закрытому периоду."
+                ),
+                "amount": profit_effect,
+                "valueType": "fact",
+            }
+        )
+    top_products = list(rankings.get("byTotal") or [])
+    if top_products:
+        leader = top_products[0]
+        findings.append(
+            {
+                "code": "top_logistics_product",
+                "title": "Товар с максимальной логистикой",
+                "message": str(leader.get("product") or "Название недоступно"),
+                "amount": leader.get("logisticsTotal"),
+                "valueType": "fact",
+            }
+        )
+    for item in partial_periods[:2]:
+        partial_kpis = item.get("kpis") or {}
+        findings.append(
+            {
+                "code": "partial_period_logistics",
+                "title": "Неполная неделя",
+                "message": (
+                    f"{item.get('periodStart')} — {item.get('periodEnd')}: "
+                    "только фактическая логистика без финансовых KPI."
+                ),
+                "amount": partial_kpis.get("logisticsTotal"),
+                "valueType": "fact",
+            }
+        )
+
+    actions = [
+        {
+            key: recommendation.get(key)
+            for key in (
+                "code",
+                "priority",
+                "title",
+                "message",
+                "impactAmount",
+                "evidenceType",
+                "actionTarget",
+                "actionLabel",
+            )
+        }
+        for recommendation in list(payload.get("recommendations") or [])[:3]
+        if isinstance(recommendation, Mapping)
+    ]
+    limitations: list[str] = []
+    if partial_periods:
+        limitations.append(
+            "Неполные границы не входят в долю, прибыль и финансовые рейтинги."
+        )
+    if financial_status == "not_available_missing_profit_link":
+        limitations.append(
+            "Финансовые KPI скрыты до восстановления точной связи с отчётом."
+        )
+    if not analysis_period:
+        limitations.append(
+            "Для финансового анализа нужна хотя бы одна полная неделя "
+            "понедельник–воскресенье."
+        )
+    for factor in factor_states:
+        if factor.get("status") != "ready":
+            limitations.append(f"{factor.get('label')}: {factor.get('message')}")
+
+    return {
+        "version": LOGISTICS_INSIGHT_VERSION,
+        "status": status,
+        "headline": headline,
+        "findings": findings[:3],
+        "actions": actions,
+        "limitations": limitations,
+    }
+
+
+def _logistics_period_context_payload(
+    resolution: LogisticsPeriodResolution,
+) -> dict[str, Any]:
+    return {
+        "mode": resolution.mode,
+        "requestedPeriod": {
+            "periodStart": resolution.requested_start.isoformat(),
+            "periodEnd": resolution.requested_end.isoformat(),
+        },
+        "analysisPeriod": (
+            {
+                "periodStart": resolution.analysis_start.isoformat(),
+                "periodEnd": resolution.analysis_end.isoformat(),
+            }
+            if resolution.has_closed_period
+            else None
+        ),
+        "hasPartialPeriods": bool(resolution.partial_periods),
+    }
+
+
+def _logistics_partial_period_payload(
+    payload: Mapping[str, Any],
+    *,
+    period_start: date,
+    period_end: date,
+) -> dict[str, Any]:
+    source_kpis = payload.get("kpis") or {}
+    return {
+        "periodStart": period_start.isoformat(),
+        "periodEnd": period_end.isoformat(),
+        "dataStatus": payload.get("dataStatus"),
+        "sliceStatus": payload.get("sliceStatus"),
+        "financialMetricStatus": "not_available_partial_week",
+        "valueType": "fact",
+        "kpis": {
+            "logisticsTotal": source_kpis.get("logisticsTotal"),
+            "logisticsPerOrder": source_kpis.get("logisticsPerOrder"),
+            "logisticsPerSale": source_kpis.get("logisticsPerSale"),
+            "orderCount": source_kpis.get("orderCount"),
+            "salesQuantity": source_kpis.get("salesQuantity"),
+            "returnQuantity": source_kpis.get("returnQuantity"),
+            "revenue": None,
+            "logisticsSharePct": None,
+            "profitEffectAmount": None,
+            "profitBeforeTax": None,
+            "profitWithoutLogistics": None,
+        },
+        "components": payload.get("components") or _empty_logistics_components(),
+    }
+
+
+def _logistics_factor_states(
+    db: Session,
+    report: ReportRun,
+) -> list[dict[str, Any]]:
+    definitions = (
+        ("F-1", "Габариты", ReportLogisticsDimensionContext),
+        ("F-2", "Тарифы и коэффициенты", ReportLogisticsTariffContext),
+        ("F-3", "Склады и направления", ReportLogisticsRouteContext),
+        ("F-4", "Контрольные замеры", ReportLogisticsMeasurementContext),
+        ("F-5", "Причины возвратов", ReportLogisticsReturnReasonContext),
+    )
+    result: list[dict[str, Any]] = []
+    for code, label, model in definitions:
+        context = db.get(model, report.id)
+        status = str(context.data_status) if context is not None else "missing"
+        message = {
+            "ready": "подтвержденные данные доступны",
+            "partial": "доступна только подтвержденная часть данных",
+            "blocked": "обязательная проверка данных не пройдена",
+            "missing": "контекст отсутствует",
+        }.get(status, "статус источника требует проверки")
+        result.append(
+            {
+                "code": code,
+                "label": label,
+                "status": status,
+                "message": message,
+            }
+        )
+    return result
 
 
 def report_logistics_products_payload(
@@ -17947,7 +19592,7 @@ def _logistics_recommendations(
                 "title": "Проверить возвратную логистику",
                 "message": (
                     "Начните с товара с наибольшей возвратной частью. "
-                    "Причина недоступна в Finance."
+                    "Причина недоступна в финансовом отчёте WB."
                 ),
                 "valueType": "fact",
                 "impactAmount": reverse_leader["logisticsReverse"],
@@ -19070,7 +20715,7 @@ def report_readiness_payload(
             _readiness_reason(
                 "source_lineage_missing",
                 (
-                    "Snapshot отчёта не связан с зарегистрированными "
+                    "Снимок данных отчёта не связан с зарегистрированными "
                     "загрузками источников."
                 ),
             )
@@ -19093,7 +20738,7 @@ def report_readiness_payload(
         blocking_reasons.append(
             _readiness_reason(
                 "stock_history_lineage_missing",
-                "Расчёт упущенных продаж не связан с snapshot истории остатков WB.",
+                "Расчёт упущенных продаж не связан со снимком истории остатков WB.",
                 lost_sales_rows,
             )
         )
@@ -19121,7 +20766,7 @@ def report_readiness_payload(
             ],
             review_reasons=[],
             next_action=(
-                "Пересобрать или импортировать report run: "
+                "Пересобрать или импортировать версию отчёта: "
                 "сейчас нечего отправлять клиенту."
             ),
         )
@@ -19134,8 +20779,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_missing",
                     (
-                        "Обязательный контекст анализа логистики отсутствует; "
-                        "нужен новый report run."
+                        "Обязательный расчёт логистики отсутствует; "
+                        "нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -19146,8 +20791,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_outdated",
                     (
-                        "Контекст анализа логистики построен по устаревшей "
-                        "методике; нужен новый report run."
+                        "Расчёт логистики построен по устаревшей "
+                        "методике; нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -19158,8 +20803,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_key_outdated",
                     (
-                        "Контекст анализа логистики построен с несовместимой "
-                        "версией ключа цепочки; нужен новый report run."
+                        "Расчёт логистики построен с несовместимой "
+                        "версией ключа цепочки; нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -19170,8 +20815,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_scope_mismatch",
                     (
-                        "Контекст анализа логистики принадлежит другому "
-                        "tenant или клиенту; нужен новый report run."
+                        "Расчёт логистики принадлежит другому "
+                        "контуру или клиенту; нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -19182,8 +20827,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_invalid_status",
                     (
-                        "Контекст анализа логистики имеет неизвестный статус; "
-                        "нужен новый report run."
+                        "Расчёт логистики имеет неизвестный статус; "
+                        "нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -19221,23 +20866,26 @@ def report_readiness_payload(
         dimension_blockers = {
             "missing": (
                 "logistics_dimensions_missing",
-                "Обязательный контекст габаритов отсутствует; нужен новый report run.",
+                (
+                    "Обязательная витрина габаритов отсутствует; "
+                    "нужна новая версия отчёта."
+                ),
             ),
             "outdated_methodology": (
                 "logistics_dimensions_outdated",
-                "Контекст габаритов построен по устаревшей методике.",
+                "Расчёт габаритов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_dimensions_scope_mismatch",
-                "Контекст габаритов принадлежит другому tenant или клиенту.",
+                "Витрина габаритов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_dimensions_invalid_status",
-                "Контекст габаритов имеет неизвестный статус.",
+                "Расчёт габаритов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_dimensions_blocked",
-                "Проверка целостности snapshot габаритов не пройдена.",
+                "Проверка целостности снимка габаритов не пройдена.",
             ),
         }
         if dimension_state in dimension_blockers:
@@ -19259,7 +20907,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_dimensions_row_count_mismatch",
-                        "Количество строк витрины габаритов не совпадает с context.",
+                        (
+                            "Количество строк витрины габаритов "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -19279,23 +20930,23 @@ def report_readiness_payload(
         tariff_blockers = {
             "missing": (
                 "logistics_tariffs_missing",
-                "Обязательный контекст тарифов отсутствует; нужен новый report run.",
+                "Обязательная витрина тарифов отсутствует; нужна новая версия отчёта.",
             ),
             "outdated_methodology": (
                 "logistics_tariffs_outdated",
-                "Контекст тарифов построен по устаревшей методике.",
+                "Расчёт тарифов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_tariffs_scope_mismatch",
-                "Контекст тарифов принадлежит другому tenant или клиенту.",
+                "Витрина тарифов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_tariffs_invalid_status",
-                "Контекст тарифов имеет неизвестный статус.",
+                "Расчёт тарифов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_tariffs_blocked",
-                "Проверка целостности snapshot тарифов не пройдена.",
+                "Проверка целостности снимка тарифов не пройдена.",
             ),
         }
         if tariff_state in tariff_blockers:
@@ -19317,7 +20968,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_tariffs_row_count_mismatch",
-                        "Количество строк витрины тарифов не совпадает с context.",
+                        (
+                            "Количество строк витрины тарифов "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -19337,23 +20991,26 @@ def report_readiness_payload(
         route_blockers = {
             "missing": (
                 "logistics_routes_missing",
-                "Обязательный контекст маршрутов отсутствует; нужен новый report run.",
+                (
+                    "Обязательная витрина маршрутов отсутствует; "
+                    "нужна новая версия отчёта."
+                ),
             ),
             "outdated_methodology": (
                 "logistics_routes_outdated",
-                "Контекст маршрутов построен по устаревшей методике.",
+                "Расчёт маршрутов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_routes_scope_mismatch",
-                "Контекст маршрутов принадлежит другому tenant или клиенту.",
+                "Витрина маршрутов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_routes_invalid_status",
-                "Контекст маршрутов имеет неизвестный статус.",
+                "Расчёт маршрутов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_routes_blocked",
-                "Проверка целостности snapshot маршрутов не пройдена.",
+                "Проверка целостности снимка маршрутов не пройдена.",
             ),
         }
         if route_state in route_blockers:
@@ -19385,7 +21042,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_routes_row_count_mismatch",
-                        "Количество строк витрины маршрутов не совпадает с context.",
+                        (
+                            "Количество строк витрины маршрутов "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -19397,7 +21057,7 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_routes_total_mismatch",
-                        "Сумма витрины маршрутов не совпадает с context.",
+                        "Сумма витрины маршрутов не совпадает с контрольным итогом.",
                         nonOverridable=True,
                     )
                 )
@@ -19419,23 +21079,23 @@ def report_readiness_payload(
         measurement_blockers = {
             "missing": (
                 "logistics_measurements_missing",
-                "Обязательный контекст замеров отсутствует; нужен новый report run.",
+                "Обязательная витрина замеров отсутствует; нужна новая версия отчёта.",
             ),
             "outdated_methodology": (
                 "logistics_measurements_outdated",
-                "Контекст замеров построен по устаревшей методике.",
+                "Расчёт замеров построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_measurements_scope_mismatch",
-                "Контекст замеров принадлежит другому tenant или клиенту.",
+                "Витрина замеров принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_measurements_invalid_status",
-                "Контекст замеров имеет неизвестный статус.",
+                "Расчёт замеров имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_measurements_blocked",
-                "Проверка целостности snapshot замеров не пройдена.",
+                "Проверка целостности снимка замеров не пройдена.",
             ),
         }
         if measurement_state in measurement_blockers:
@@ -19459,7 +21119,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_measurements_row_count_mismatch",
-                        "Количество событий витрины замеров не совпадает с context.",
+                        (
+                            "Количество событий витрины замеров "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -19486,25 +21149,25 @@ def report_readiness_payload(
             "missing": (
                 "logistics_return_reasons_missing",
                 (
-                    "Обязательный контекст причин возвратов отсутствует; "
-                    "нужен новый report run."
+                    "Обязательная витрина причин возвратов отсутствует; "
+                    "нужна новая версия отчёта."
                 ),
             ),
             "outdated_methodology": (
                 "logistics_return_reasons_outdated",
-                "Контекст причин возвратов построен по устаревшей методике.",
+                "Расчёт причин возвратов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_return_reasons_scope_mismatch",
-                "Контекст причин возвратов принадлежит другому tenant или клиенту.",
+                "Витрина причин возвратов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_return_reasons_invalid_status",
-                "Контекст причин возвратов имеет неизвестный статус.",
+                "Расчёт причин возвратов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_return_reasons_blocked",
-                "Проверка целостности snapshot причин возвратов не пройдена.",
+                "Проверка целостности снимка причин возвратов не пройдена.",
             ),
         }
         if return_reason_state in return_reason_blockers:
@@ -19533,7 +21196,7 @@ def report_readiness_payload(
                         "logistics_return_reasons_row_count_mismatch",
                         (
                             "Количество строк витрины причин возвратов "
-                            "не совпадает с context."
+                            "не совпадает с контрольным итогом."
                         ),
                         nonOverridable=True,
                     )
@@ -19572,7 +21235,7 @@ def report_readiness_payload(
         blocking_reasons.append(
             _readiness_reason(
                 "report_status_blocked",
-                "Report run помечен как неуспешный.",
+                "Текущая версия отчёта помечена как неуспешная.",
             )
         )
         score -= 40
@@ -19580,7 +21243,7 @@ def report_readiness_payload(
         review_reasons.append(
             _readiness_reason(
                 "report_status_review",
-                "Статус report run требует ручной проверки.",
+                "Статус текущей версии отчёта требует ручной проверки.",
             )
         )
         score -= 10
@@ -19857,7 +21520,7 @@ def report_readiness_payload(
             review_reasons.append(
                 _readiness_reason(
                     "client_draft_missing",
-                    "Клиентский AI-черновик еще не подготовлен.",
+                    "Черновик клиентского вывода ещё не подготовлен.",
                 )
             )
             score -= 10
@@ -19865,7 +21528,7 @@ def report_readiness_payload(
             blocking_reasons.append(
                 _readiness_reason(
                     "client_draft_forbidden_text",
-                    "Клиентский AI-черновик содержит внутренние labels.",
+                    "Черновик клиентского вывода содержит служебные пометки.",
                 )
             )
             score = min(score, 40)
@@ -19873,7 +21536,7 @@ def report_readiness_payload(
             review_reasons.append(
                 _readiness_reason(
                     "client_draft_not_ready",
-                    "Клиентский AI-черновик еще не помечен готовым.",
+                    "Черновик клиентского вывода ещё не помечен готовым.",
                 )
             )
             score -= 10
@@ -23236,9 +24899,9 @@ def _readiness_next_action(
     elif review_reasons:
         first_code = as_text(review_reasons[0].get("code"))
     actions = {
-        "no_rows": "Пересобрать или импортировать report run.",
-        "report_status_blocked": "Проверить ошибку report run и пересобрать отчет.",
-        "source_load_failed": "Проверить загрузку источников и пересобрать report run.",
+        "no_rows": "Пересобрать или импортировать версию отчёта.",
+        "report_status_blocked": "Проверить ошибку и пересобрать отчёт.",
+        "source_load_failed": "Проверить загрузку источников и пересобрать отчёт.",
         "source_load_review_required": (
             "Проверить обязательный источник и подтвердить результат."
         ),
@@ -23281,7 +24944,7 @@ def _readiness_next_action(
             "Пересчитать прибыли и убытки по единой методике ОСНО без НДС."
         ),
         "profit_semantics_mismatch": (
-            "Устранить расхождение profit и profitBeforeTax до НДФЛ."
+            "Устранить расхождение показателей прибыли до НДФЛ."
         ),
         "vat_input_unconfirmed": "Подтвердить входящий НДС документами 1С.",
         "vat_input_management_assumption": (
@@ -23307,12 +24970,12 @@ def _readiness_next_action(
         "document_reconciliation_unresolved": (
             "Расшифровать документные расхождения WB-1С."
         ),
-        "client_draft_missing": "Подготовить клиентский AI-черновик.",
+        "client_draft_missing": "Подготовить черновик клиентского вывода.",
         "client_draft_not_ready": (
-            "Проверить и пометить клиентский AI-черновик готовым."
+            "Проверить и пометить черновик клиентского вывода готовым."
         ),
         "client_draft_forbidden_text": (
-            "Пересобрать клиентский черновик без внутренних labels."
+            "Пересобрать клиентский вывод без служебных пометок."
         ),
     }
     return actions.get(first_code, "Проверить причины перед отправкой клиенту.")
@@ -23395,8 +25058,7 @@ def _financial_integrity_blockers(
                 _readiness_reason(
                     "profit_semantics_mismatch",
                     (
-                        "Прибыль до налогов расходится между полями "
-                        "profit и profitBeforeTax."
+                        "Показатели прибыли до налогов расходятся между собой."
                     ),
                     profit_mismatch,
                 )
@@ -26719,6 +28381,19 @@ def create_ai_thread(
     return thread
 
 
+def update_ai_thread_scope(thread: AiThread, scope: Mapping[str, Any]) -> None:
+    normalized_scope = dict(scope)
+    thread.scope = normalized_scope
+    thread.scope_hash = hashlib.sha256(
+        json.dumps(
+            normalized_scope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def list_ai_threads(
     db: Session,
     *,
@@ -27246,20 +28921,67 @@ def management_report_summary_text(summary: dict[str, Any]) -> str:
     def money(value: Any) -> str:
         return "не рассчитано" if value is None else f"{float(value):,.0f} ₽"
 
+    def count(value: Any) -> str:
+        return "не рассчитано" if value is None else str(int(value))
+
     margin = kpis.get("margin")
     margin_text = "не рассчитано" if margin is None else f"{float(margin):.1%}"
     limitations = client_draft_limitations(summary)
-    return (
+    text = (
         f"Период: {summary['meta']['period']}\n"
         f"Выручка после СПП: {money(kpis.get('revenue'))}\n"
         f"Прибыль до налогов: {money(kpis.get('profit'))}\n"
         f"Управленческая прибыль WB: {money(kpis.get('profitBeforeTax'))}\n"
         f"Маржинальность до налогов: {margin_text}\n"
-        f"Убыточных строк: {int(kpis.get('lossRows') or 0)}\n"
-        f"Строк в расчете: {int(kpis.get('rowCount') or 0)}\n"
+        f"Убыточных строк: {count(kpis.get('lossRows'))}\n"
+        f"Строк в расчете: {count(kpis.get('rowCount'))}\n"
         f"Качество данных: {json.dumps(quality, ensure_ascii=False)}\n"
         f"Ограничения: {'; '.join(limitations)}"
     )
+    logistics = summary.get("logisticsAnalysis")
+    if not isinstance(logistics, Mapping):
+        return text
+    insight = logistics.get("insight") or {}
+    period_context = logistics.get("periodContext") or {}
+    analysis_period = period_context.get("analysisPeriod") or {}
+    logistics_lines = [
+        "",
+        "Логистика WB:",
+        (
+            "Период закрытых недель: "
+            + (
+                f"{analysis_period.get('periodStart')}.."
+                f"{analysis_period.get('periodEnd')}"
+                if analysis_period
+                else "нет полной недели"
+            )
+        ),
+        f"Главный вывод: {insight.get('headline') or 'не сформирован'}",
+    ]
+    for finding in (insight.get("findings") or [])[:5]:
+        if not isinstance(finding, Mapping):
+            continue
+        amount = finding.get("amount")
+        amount_text = f" ({money(amount)})" if amount is not None else ""
+        logistics_lines.append(
+            f"Факт: {finding.get('title') or 'Логистика'} — "
+            f"{finding.get('message') or 'описание недоступно'}{amount_text}"
+        )
+    for action in (insight.get("actions") or [])[:3]:
+        if isinstance(action, Mapping):
+            logistics_lines.append(
+                f"Проверить: {action.get('title') or action.get('message') or 'данные'}"
+            )
+    for limitation in (insight.get("limitations") or [])[:8]:
+        if limitation:
+            logistics_lines.append(f"Ограничение логистики: {limitation}")
+    for factor in (logistics.get("factorStates") or [])[:5]:
+        if isinstance(factor, Mapping):
+            logistics_lines.append(
+                f"{factor.get('code')}: {factor.get('label')} — "
+                f"{factor.get('status')}; {factor.get('message')}"
+            )
+    return "\n".join([text, *logistics_lines])
 
 
 def _next_client_draft_revision(db: Session, report: ReportRun) -> int:

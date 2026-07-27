@@ -105,6 +105,11 @@ change. `scripts/validate_specs.py` verifies paths, headings and symbols.
   `scripts/`, `sql/`, `src/` and `tests/` layout unless a spec changes it.
 - Update canonical docs in the same change as behavior, contract, setup or
   acceptance changes. Keep client docs free of internal secrets/debug details.
+- All reader-facing UI, generated reports, downloads, statuses, hints and
+  errors use clear Russian wording. Internal role, enum and schedule tokens
+  such as `staff`, `draft`, `partial`, `ready` and `hourly` may remain in code,
+  APIs and engineering docs, but must not be shown to a user without an
+  understandable Russian translation.
 - Put irreversible architecture decisions in `docs/decisions/` and operational
   procedures in `docs/runbooks/`.
 - Preserve unrelated user changes in a dirty worktree. Explain any new

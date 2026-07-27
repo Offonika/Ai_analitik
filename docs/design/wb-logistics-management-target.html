@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Визуальный эталон — управленческая логистика WB</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f7f8;
+        --surface: #ffffff;
+        --text: #17243a;
+        --muted: #66768a;
+        --line: #d5e1e5;
+        --brand: #0d6870;
+        --brand-bg: #e7f3f2;
+        --review: #805500;
+        --review-bg: #fff4d9;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { width: min(1180px, 100%); margin: 0 auto; padding: 28px 22px 60px; }
+      h1, h2, h3, p { margin-top: 0; }
+      h1 { margin-bottom: 6px; font-size: clamp(28px, 4vw, 40px); }
+      h2 { margin-bottom: 14px; font-size: 22px; }
+      .muted { color: var(--muted); }
+      .prototype {
+        padding: 8px 16px;
+        border-bottom: 1px solid #e5cc83;
+        background: var(--review-bg);
+        color: #684708;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .panel, details {
+        margin-top: 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+      }
+      .panel { padding: 18px; }
+      .kpis, .money, .actions { display: grid; gap: 10px; }
+      .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .kpis span, .actions li {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fbfdfd;
+      }
+      .kpis small, .kpis strong { display: block; }
+      .kpis small { color: var(--muted); }
+      .kpis strong { margin-top: 5px; }
+      .actions { grid-template-columns: 1fr 1fr; padding: 0; list-style: none; }
+      .actions li:first-child { border-left: 4px solid var(--brand); }
+      .actions li:last-child { border-left: 4px solid #c18112; }
+      .money { grid-template-columns: 1fr 1fr; }
+      .money article { padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+      .ranking { width: 100%; border-collapse: collapse; }
+      th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; }
+      th { color: var(--muted); font-size: 12px; }
+      .article { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+      .factors { margin-top: 20px; }
+      details { overflow: clip; }
+      summary {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        padding: 16px 18px;
+        cursor: pointer;
+        list-style: none;
+      }
+      summary::-webkit-details-marker { display: none; }
+      summary strong, summary small { display: block; }
+      summary small { margin-top: 4px; color: var(--muted); }
+      .status {
+        align-self: center;
+        padding: 6px 9px;
+        border-radius: 999px;
+        background: var(--review-bg);
+        color: var(--review);
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .factor-body { padding: 0 18px 18px; }
+      .group {
+        display: grid;
+        grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(120px, 0.7fr));
+        gap: 10px;
+        padding: 12px 0;
+        border-top: 1px solid var(--line);
+        align-items: center;
+      }
+      .group > span { min-width: 0; overflow-wrap: anywhere; }
+      .limitation {
+        margin: 0 0 12px;
+        padding: 10px 12px;
+        border-left: 3px solid #bd7b0b;
+        border-radius: 8px;
+        background: var(--review-bg);
+      }
+      button {
+        padding: 8px 11px;
+        border: 1px solid #9ab9bd;
+        border-radius: 8px;
+        background: #fff;
+        color: var(--brand);
+        font: inherit;
+        font-weight: 750;
+      }
+      @media (max-width: 760px) {
+        main { padding: 20px 12px 44px; }
+        .kpis, .money, .actions { grid-template-columns: 1fr 1fr; }
+        .ranking thead { display: none; }
+        .ranking, .ranking tbody { display: grid; gap: 10px; }
+        .ranking tr { display: grid; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+        .ranking td { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+        .ranking td::before { content: attr(data-label); color: var(--muted); font-size: 12px; }
+        .group { grid-template-columns: 1fr; }
+        summary { grid-template-columns: 1fr; }
+        .status { justify-self: start; }
+      }
+      @media (max-width: 480px) {
+        .kpis, .money, .actions { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype">Синтетический визуальный эталон · без клиентских данных, внутренних идентификаторов, хешей источников и реальных сумм</div>
+    <main>
+      <p class="muted">Аналитика и таблицы → Логистика · закрытый период</p>
+      <h1>Логистика WB: расходы и зоны проверки</h1>
+      <p class="muted">Сначала управленческий вывод, затем подтверждающие детали.</p>
+
+      <section class="panel" aria-labelledby="period-title">
+        <h2 id="period-title">Итог закрытого периода</h2>
+        <div class="kpis">
+          <span><small>Расход на логистику</small><strong>Фактический итог</strong></span>
+          <span><small>Доля в выручке</small><strong>Подтверждена</strong></span>
+          <span><small>Товаров в срезе</small><strong>Доступно</strong></span>
+          <span><small>Полнота данных</small><strong>Требует проверки</strong></span>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="actions-title">
+        <h2 id="actions-title">Что проверить сначала</h2>
+        <ul class="actions">
+          <li><strong>Подтверждённый факт</strong><br /><span class="muted">Открывает конкретный товар или фактор.</span></li>
+          <li><strong>Ограничение данных</strong><br /><span class="muted">Объясняет, какой вывод пока делать нельзя.</span></li>
+        </ul>
+      </section>
+
+      <section class="money" aria-label="Деньги и динамика">
+        <article><h3>На что ушёл расход</h3><p class="muted">Подписанные части и доли без конкурирующих горизонтальных полос.</p></article>
+        <article><h3>Расходы по неделям</h3><p class="muted">Вертикальные столбцы, точные суммы и доля в выручке.</p></article>
+      </section>
+
+      <section class="panel" aria-labelledby="products-title">
+        <h2 id="products-title">Товары с наибольшим влиянием</h2>
+        <table class="ranking">
+          <thead><tr><th>Товар</th><th>Расход</th><th>Доля</th><th>Действие</th></tr></thead>
+          <tbody>
+            <tr>
+              <td data-label="Товар"><strong>Синтетический товар A</strong><span class="article">Артикул продавца: DEMO-A</span></td>
+              <td data-label="Расход">Факт</td><td data-label="Доля">Доступна</td><td data-label="Действие"><button type="button">Показать цепочки</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="factors" aria-labelledby="factors-title">
+        <h2 id="factors-title">Факторы и качество данных</h2>
+        <details>
+          <summary><span><strong>Габариты в карточке WB</strong><small>Карточки сгруппированы независимо от организаций и схем.</small></span><span class="status">Есть сигнал WB</span></summary>
+          <div class="factor-body">
+            <p class="limitation">Возможное расхождение габаритов. Штраф не подтверждён.</p>
+            <div class="group"><span><strong>Синтетический товар B</strong><span class="article">Артикул продавца: DEMO-B</span></span><span>28 × 20 × 6 см</span><span>Используется в 3 срезах</span><button type="button">Показать детали</button></div>
+          </div>
+        </details>
+        <details>
+          <summary><span><strong>Контрольные замеры WB</strong><small>Одна группа на вариант товара и дату.</small></span><span class="status">Связка неоднозначна</span></summary>
+          <div class="factor-body">
+            <p class="limitation">Замер найден; организация или схема не определена однозначно. Заявленные размеры в событии WB не переданы.</p>
+            <div class="group"><span><strong>Синтетический товар C</strong><span class="article">Артикул продавца: DEMO-C</span></span><span>Замеров: 2</span><span>Размеры различаются</span><button type="button">Показать события</button></div>
+          </div>
+        </details>
+        <details>
+          <summary><span><strong>Тарифы и коэффициенты WB</strong><small>Исторический факт отделён от текущей оценки.</small></span><span class="status">Справочно</span></summary>
+        </details>
+        <details>
+          <summary><span><strong>Склады и направления</strong><small>Смешанные значения подписаны явно.</small></span><span class="status">Частичное покрытие</span></summary>
+        </details>
+        <details>
+          <summary><span><strong>Причины возвратов</strong><small>Возвраты найдены, но подтверждённых причин нет; выводы о причинах делать нельзя.</small></span><span class="status">Причины не подтверждены</span></summary>
+        </details>
+      </section>
+    </main>
+  </body>
+</html>

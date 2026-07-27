@@ -157,6 +157,128 @@ def report_payload(*, tax_calculated: bool = True) -> dict:
     }
 
 
+def logistics_analysis_payload() -> dict:
+    return {
+        "financialMetricStatus": "ready",
+        "kpis": {
+            "logisticsTotal": 12500,
+            "logisticsSharePct": 8.33,
+            "profitEffectAmount": -12500,
+            "logisticsPerOrder": 125,
+            "logisticsPerSale": 83.33,
+            "orderCount": 100,
+            "salesQuantity": 150,
+            "returnQuantity": 15,
+            "revenue": 150000,
+        },
+        "components": {
+            "forward": 8500,
+            "reverse": 3000,
+            "adjustment": 500,
+            "unclassified": 500,
+        },
+        "dynamics": [
+            {
+                "periodStart": "2026-07-06",
+                "logisticsTotal": 6000,
+                "revenue": 70000,
+                "logisticsSharePct": 8.57,
+            },
+            {
+                "periodStart": "2026-07-13",
+                "logisticsTotal": 6500,
+                "revenue": 80000,
+                "logisticsSharePct": 8.13,
+            },
+        ],
+        "rankings": {
+            "byTotal": [
+                {
+                    "productRef": "product-a",
+                    "product": "Товар с высокой логистикой",
+                    "logisticsTotal": 7000,
+                    "logisticsReverse": 2400,
+                    "logisticsSharePct": 10,
+                    "profitEffectAmount": -7000,
+                    "dataQualityStatus": "ready",
+                }
+            ],
+            "byRevenueShare": [
+                {
+                    "productRef": "product-b",
+                    "product": "Товар с высокой долей",
+                    "logisticsTotal": 3500,
+                    "logisticsReverse": 300,
+                    "logisticsSharePct": 18,
+                    "profitEffectAmount": -3500,
+                    "dataQualityStatus": "partial",
+                }
+            ],
+            "byProfitEffect": [
+                {
+                    "productRef": "product-a",
+                    "product": "Товар с высокой логистикой",
+                    "logisticsTotal": 7000,
+                    "logisticsReverse": 2400,
+                    "logisticsSharePct": 10,
+                    "profitEffectAmount": -7000,
+                    "dataQualityStatus": "ready",
+                }
+            ],
+        },
+        "periodContext": {
+            "requestedPeriod": {
+                "periodStart": "2026-07-01",
+                "periodEnd": "2026-07-24",
+            },
+            "analysisPeriod": {
+                "periodStart": "2026-07-06",
+                "periodEnd": "2026-07-19",
+            },
+        },
+        "partialPeriods": [
+            {
+                "periodStart": "2026-07-20",
+                "periodEnd": "2026-07-24",
+                "financialMetricStatus": "not_available_partial_week",
+                "kpis": {
+                    "logisticsTotal": 1200,
+                    "orderCount": 14,
+                    "revenue": None,
+                    "profitEffectAmount": None,
+                },
+            }
+        ],
+        "factorStates": [
+            {
+                "code": "F-1",
+                "label": "Габариты",
+                "status": "partial",
+                "message": "доступна только подтвержденная часть данных",
+            }
+        ],
+        "insight": {
+            "version": "wb-logistics-insight-v1",
+            "headline": "Финансовое влияние рассчитано по закрытым неделям.",
+            "findings": [
+                {
+                    "title": "Логистика закрытого периода",
+                    "message": "Фактический расход.",
+                    "amount": 12500,
+                }
+            ],
+            "actions": [
+                {
+                    "priority": 1,
+                    "title": "Проверить обратную логистику",
+                    "message": "Сверить подтвержденные цепочки.",
+                }
+            ],
+            "limitations": ["Неполная неделя не входит в долю и влияние на прибыль."],
+        },
+    }
+
+
 def test_client_report_is_answer_first_and_uses_onec_tax_settings() -> None:
     markdown = build_client_analytical_markdown(report_payload())
 
@@ -180,6 +302,84 @@ def test_client_report_is_answer_first_and_uses_onec_tax_settings() -> None:
     assert "**На этой неделе — разобрать логистику.**" in markdown
     assert "прибыль вырастет" not in markdown
     assert CLIENT_REPORT_CONTRACT_VERSION in markdown
+
+
+def test_client_report_uses_same_logistics_insight_without_zero_substitution() -> None:
+    payload = report_payload()
+    payload["logisticsAnalysis"] = logistics_analysis_payload()
+
+    markdown = build_client_analytical_markdown(payload)
+
+    assert "## Логистика WB: затраты, влияние и проблемные зоны" in markdown
+    assert "**Логистика.** За закрытый период" in markdown
+    assert "### Финансовый итог закрытого периода" in markdown
+    assert "| Доля логистики в выручке | 8,33% |" in markdown
+    assert "### Из чего сложились логистические затраты" in markdown
+    assert "| Возвратная логистика | 3 000,00 ₽ | 24,00% |" in markdown
+    assert "### Недельная динамика затрат" in markdown
+    assert "### Какие товары проверить в первую очередь" in markdown
+    assert "Максимальная сумма, Наибольшее влияние" in markdown
+    assert "Товар с высокой долей" in markdown
+    assert "### Приоритет действий финансового директора" in markdown
+    assert "2026-07-06 — 2026-07-19" in markdown
+    assert "Финансовое влияние рассчитано по закрытым неделям." in markdown
+    assert "Текущая незакрытая неделя — только оперативный факт" in markdown
+    assert "Недоступны до закрытия полной недели" in markdown
+    assert "F‑1…F‑5" in markdown
+    assert "F-1 · Габариты | Подтверждено частично" in markdown
+    assert "Статус «Подтверждено частично»" in markdown
+    assert " | partial | " not in markdown
+    assert markdown.index("## Логистика WB") < markdown.index(
+        "## Динамика: результат по месяцам"
+    )
+    assert CLIENT_REPORT_CONTRACT_VERSION == "client-analytical-report.v5"
+
+
+def test_client_report_keeps_missing_logistics_financial_kpis_explicit() -> None:
+    payload = report_payload()
+    logistics = logistics_analysis_payload()
+    logistics["financialMetricStatus"] = "not_available_missing_profit_link"
+    logistics["kpis"]["logisticsSharePct"] = None
+    logistics["kpis"]["profitEffectAmount"] = None
+    logistics["rankings"]["byRevenueShare"] = []
+    logistics["rankings"]["byProfitEffect"] = []
+    payload["logisticsAnalysis"] = logistics
+
+    markdown = build_client_analytical_markdown(payload)
+
+    assert "| Доля логистики в выручке | Не рассчитано |" in markdown
+    assert "| Влияние на прибыль | Не рассчитано |" in markdown
+    assert "доля в выручке и влияние на прибыль требуют подтверждения связи" in markdown
+    assert "| Доля логистики в выручке | 0,00% |" not in markdown
+
+
+def test_client_report_without_closed_week_shows_only_known_operational_fact() -> None:
+    payload = report_payload()
+    logistics = logistics_analysis_payload()
+    logistics["periodContext"]["analysisPeriod"] = None
+    logistics["kpis"] = {key: None for key in logistics["kpis"]}
+    logistics["components"] = {
+        key: None for key in logistics["components"]
+    }
+    logistics["dynamics"] = []
+    logistics["rankings"] = {
+        "byTotal": [],
+        "byRevenueShare": [],
+        "byProfitEffect": [],
+    }
+    logistics["partialPeriods"][0]["kpis"]["logisticsTotal"] = None
+    logistics["insight"]["headline"] = (
+        "В выбранном периоде пока нет полной закрытой недели."
+    )
+    payload["logisticsAnalysis"] = logistics
+
+    markdown = build_client_analytical_markdown(payload)
+
+    assert "Нет полной недели для финансового анализа" in markdown
+    assert "Оперативный расход не рассчитан" in markdown
+    assert "### Финансовый итог закрытого периода" not in markdown
+    assert "### Из чего сложились логистические затраты" not in markdown
+    assert "Доступен только оперативный расход 0,00 ₽" not in markdown
 
 
 def test_client_report_does_not_replace_missing_tax_with_zero() -> None:
@@ -226,8 +426,10 @@ def test_client_report_docx_preserves_source_and_content(
         "wb_unit_economics.client_report.convert_client_docx_to_pdf",
         lambda _path: (None, "unavailable", "test"),
     )
+    payload = report_payload()
+    payload["logisticsAnalysis"] = logistics_analysis_payload()
     artifacts = build_client_analytical_report(
-        summary=report_payload(),
+        summary=payload,
         output_dir=tmp_path,
         basename="client-report",
         branded=False,
@@ -240,6 +442,37 @@ def test_client_report_docx_preserves_source_and_content(
     assert normalized_docx_tokens(artifacts.docx_path) == normalized_markdown_tokens(
         markdown
     )
+    assert "Логистика WB: затраты, влияние и проблемные зоны" in markdown
+
+
+def test_client_report_inaccessible_optional_logo_does_not_block_docx(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    logo_path = tmp_path / "restricted" / "logo.png"
+    original_is_file = Path.is_file
+
+    def fake_is_file(path: Path) -> bool:
+        if path == logo_path:
+            raise PermissionError("logo directory is not readable")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    monkeypatch.setattr(
+        "wb_unit_economics.client_report.convert_client_docx_to_pdf",
+        lambda _path: (None, "unavailable", "test"),
+    )
+
+    artifacts = build_client_analytical_report(
+        summary=report_payload(),
+        output_dir=tmp_path / "output",
+        basename="report-without-logo",
+        logo_path=logo_path,
+        branded=True,
+    )
+
+    assert artifacts.markdown_path.is_file()
+    assert artifacts.docx_path.is_file()
 
 
 def test_client_report_html_comes_from_same_markdown_and_escapes_values() -> None:

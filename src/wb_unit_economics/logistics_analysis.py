@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 LOGISTICS_METHODOLOGY_VERSION = "wb-logistics-v6"
 LOGISTICS_CLASSIFIER_VERSION = "wb-logistics-classifier-v1"
+LOGISTICS_INSIGHT_VERSION = "wb-logistics-insight-v1"
 LOGISTICS_FACTORS_METHODOLOGY_VERSION = "wb-logistics-factors-v1"
 LOGISTICS_TARIFFS_METHODOLOGY_VERSION = "wb-logistics-tariffs-v1"
 LOGISTICS_ROUTES_METHODOLOGY_VERSION = "wb-logistics-routes-v1"
@@ -21,6 +22,7 @@ RECONCILIATION_TOLERANCE = Decimal("0.01")
 LOW_SAMPLE_THRESHOLD = 10
 
 LogisticsClass = Literal["forward", "reverse", "adjustment", "unclassified"]
+LogisticsPeriodMode = Literal["exact", "closed_weeks"]
 
 _ADJUSTMENT_OPERATION_MARKERS = (
     "перерасчет",
@@ -41,6 +43,69 @@ _BLOCKING_SOURCE_ERRORS = {
     "delivery_service_missing",
     "delivery_service_invalid",
 }
+
+
+@dataclass(frozen=True)
+class LogisticsPeriodResolution:
+    mode: LogisticsPeriodMode
+    requested_start: date
+    requested_end: date
+    analysis_start: date | None
+    analysis_end: date | None
+    partial_periods: tuple[tuple[date, date], ...]
+
+    @property
+    def has_closed_period(self) -> bool:
+        return self.analysis_start is not None and self.analysis_end is not None
+
+
+def resolve_logistics_period(
+    *,
+    period_start: date,
+    period_end: date,
+    mode: LogisticsPeriodMode,
+) -> LogisticsPeriodResolution:
+    if period_start > period_end:
+        raise ValueError("logistics period start must not be after period end")
+    if mode == "exact":
+        return LogisticsPeriodResolution(
+            mode=mode,
+            requested_start=period_start,
+            requested_end=period_end,
+            analysis_start=period_start,
+            analysis_end=period_end,
+            partial_periods=(),
+        )
+    if mode != "closed_weeks":
+        raise ValueError("unsupported logistics period mode")
+
+    days_to_monday = (7 - period_start.weekday()) % 7
+    analysis_start = period_start + timedelta(days=days_to_monday)
+    days_since_sunday = (period_end.weekday() - 6) % 7
+    analysis_end = period_end - timedelta(days=days_since_sunday)
+    if analysis_start > analysis_end:
+        return LogisticsPeriodResolution(
+            mode=mode,
+            requested_start=period_start,
+            requested_end=period_end,
+            analysis_start=None,
+            analysis_end=None,
+            partial_periods=((period_start, period_end),),
+        )
+
+    partial_periods: list[tuple[date, date]] = []
+    if period_start < analysis_start:
+        partial_periods.append((period_start, analysis_start - timedelta(days=1)))
+    if analysis_end < period_end:
+        partial_periods.append((analysis_end + timedelta(days=1), period_end))
+    return LogisticsPeriodResolution(
+        mode=mode,
+        requested_start=period_start,
+        requested_end=period_end,
+        analysis_start=analysis_start,
+        analysis_end=analysis_end,
+        partial_periods=tuple(partial_periods),
+    )
 
 
 @dataclass(frozen=True)

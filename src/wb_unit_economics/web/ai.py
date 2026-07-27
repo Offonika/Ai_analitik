@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -439,29 +440,64 @@ class AiAnalyst:
             tool_name=tool_name,
             payload=self._tool_input_payload(tool_name, arguments, question),
         )
-        summary = repository.report_summary_payload(
-            db,
-            report,
-            include_staff_readiness=repository.has_role(
-                user, repository.STAFF_ROLES, report.tenant_id
-            ),
-        )
-        if self.settings.logistics_analysis_enabled and repository.has_role(
+        staff = repository.has_role(
             user,
             repository.STAFF_ROLES,
             report.tenant_id,
-        ):
-            summary["logisticsAnalysis"] = (
-                repository.report_logistics_summary_payload(db, report)
+        )
+        logistics_analysis = None
+        if self.settings.logistics_analysis_enabled and staff:
+            logistics_analysis = self._thread_logistics_analysis(
+                db,
+                thread=thread,
+                report=report,
             )
+        summary = self._thread_report_summary(
+            db,
+            thread=thread,
+            report=report,
+            include_staff_readiness=staff,
+            logistics_analysis=logistics_analysis,
+        )
+        if logistics_analysis is not None:
+            summary["logisticsAnalysis"] = logistics_analysis
+        analysis_period = self._logistics_analysis_period(logistics_analysis)
+        logistics_surface = (
+            isinstance(thread.scope, dict)
+            and thread.scope.get("analysisSurface") == "logistics"
+        )
         if tool_name == "get_report_summary":
             output = self._summary_digest(summary, question)
         elif tool_name == "search_sku":
-            output = self._search_sku(db, report, arguments.get("query") or question)
+            if logistics_surface and analysis_period is None:
+                output = self._empty_scoped_tool_output(summary, tool_name)
+            else:
+                output = self._search_sku(
+                    db,
+                    report,
+                    arguments.get("query") or question,
+                    period=analysis_period,
+                )
         elif tool_name == "get_loss_drivers":
-            output = self._loss_drivers(db, report, summary)
+            if logistics_surface and analysis_period is None:
+                output = self._empty_scoped_tool_output(summary, tool_name)
+            else:
+                output = self._loss_drivers(
+                    db,
+                    report,
+                    summary,
+                    period=analysis_period,
+                )
         elif tool_name == "get_data_quality_issues":
-            output = self._data_quality(db, report, summary)
+            if logistics_surface and analysis_period is None:
+                output = self._empty_scoped_tool_output(summary, tool_name)
+            else:
+                output = self._data_quality(
+                    db,
+                    report,
+                    summary,
+                    period=analysis_period,
+                )
         elif tool_name == "compare_periods":
             output = self._period_comparison(summary)
         elif tool_name == "draft_management_report":
@@ -545,6 +581,8 @@ class AiAnalyst:
 
     def _summary_digest(self, summary: dict[str, Any], question: str) -> dict[str, Any]:
         kpis = summary.get("kpis") or {}
+        row_count = kpis.get("rowCount")
+        loss_rows = kpis.get("lossRows")
         return {
             "question": question,
             "period": summary["meta"]["period"],
@@ -555,8 +593,8 @@ class AiAnalyst:
             "profit_before_tax": kpis.get("profitBeforeTax"),
             "margin": kpis.get("margin"),
             "margin_management": kpis.get("marginManagement"),
-            "rows": int(kpis.get("rowCount") or 0),
-            "loss_rows": int(kpis.get("lossRows") or 0),
+            "rows": int(row_count) if row_count is not None else None,
+            "loss_rows": int(loss_rows) if loss_rows is not None else None,
             "quality": summary.get("quality") or {},
             "readiness": summary.get("readiness") or {},
             "logistics_analysis": self._logistics_digest(
@@ -564,6 +602,159 @@ class AiAnalyst:
             ),
             "limitations": self._limitations(summary),
         }
+
+    def _thread_report_summary(
+        self,
+        db: Session,
+        *,
+        thread: AiThread,
+        report: ReportRun,
+        include_staff_readiness: bool,
+        logistics_analysis: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        base = repository.report_summary_payload(
+            db,
+            report,
+            include_staff_readiness=include_staff_readiness,
+        )
+        scope = thread.scope if isinstance(thread.scope, dict) else {}
+        if scope.get("analysisSurface") != "logistics":
+            return base
+        period = self._logistics_analysis_period(logistics_analysis)
+        if period is None:
+            return self._summary_without_closed_period(base, logistics_analysis)
+        period_start, period_end = period
+        page = repository.query_report_rows(
+            db,
+            report,
+            period_start=period_start,
+            period_end=period_end,
+            limit=1,
+        )
+        if int(page.get("total") or 0) == 0:
+            return self._summary_without_closed_period(base, logistics_analysis)
+        period_label = f"{period_start:%d.%m.%Y} - {period_end:%d.%m.%Y}"
+        return {
+            **base,
+            **(page.get("analytics") or {}),
+            "meta": {
+                **(base.get("meta") or {}),
+                "period": period_label,
+                "reportPeriod": period_label,
+                "periodStart": period_start.isoformat(),
+                "periodEnd": period_end.isoformat(),
+                "periodStatus": "полные закрытые недели",
+                "analysisScope": "logistics_closed_weeks",
+            },
+        }
+
+    def _summary_without_closed_period(
+        self,
+        base: dict[str, Any],
+        logistics_analysis: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        period_context = (logistics_analysis or {}).get("periodContext") or {}
+        requested = period_context.get("requestedPeriod") or {}
+        start = str(requested.get("periodStart") or "")
+        end = str(requested.get("periodEnd") or "")
+        period_label = f"{start} - {end}" if start and end else "не указан"
+        return {
+            **base,
+            "meta": {
+                **(base.get("meta") or {}),
+                "period": period_label,
+                "reportPeriod": period_label,
+                "periodStart": start or None,
+                "periodEnd": end or None,
+                "periodStatus": "нет полной закрытой недели",
+                "analysisScope": "logistics_no_closed_week",
+            },
+            "kpis": {key: None for key in (base.get("kpis") or {})},
+            "quality": {},
+            "monthly": [],
+            "expenses": [],
+            "unitRows": [],
+            "returns": [],
+            "lostSales": [],
+        }
+
+    def _logistics_analysis_period(
+        self,
+        logistics_analysis: dict[str, Any] | None,
+    ) -> tuple[date, date] | None:
+        context = (logistics_analysis or {}).get("periodContext") or {}
+        period = context.get("analysisPeriod") or {}
+        try:
+            return (
+                date.fromisoformat(str(period.get("periodStart") or "")),
+                date.fromisoformat(str(period.get("periodEnd") or "")),
+            )
+        except ValueError:
+            return None
+
+    def _empty_scoped_tool_output(
+        self,
+        summary: dict[str, Any],
+        tool_name: str,
+    ) -> dict[str, Any]:
+        common = {
+            "status": "partial",
+            "limitations": self._limitations(summary),
+        }
+        if tool_name == "search_sku":
+            return {**common, "query": "", "total": None, "items": []}
+        if tool_name == "get_loss_drivers":
+            return {
+                **common,
+                "loss_rows": None,
+                "drivers": [],
+                "top_losses": [],
+            }
+        return {
+            **common,
+            "total_rows": None,
+            "review_rows": None,
+            "quality": {},
+            "statuses": [],
+        }
+
+    def _thread_logistics_analysis(
+        self,
+        db: Session,
+        *,
+        thread: AiThread,
+        report: ReportRun,
+    ) -> dict[str, Any]:
+        scope = thread.scope if isinstance(thread.scope, dict) else {}
+        period_start = report.period_start
+        period_end = report.period_end
+        if scope.get("analysisSurface") == "logistics":
+            try:
+                candidate_start = date.fromisoformat(
+                    str(scope.get("logisticsRequestedPeriodStart") or "")
+                )
+                candidate_end = date.fromisoformat(
+                    str(scope.get("logisticsRequestedPeriodEnd") or "")
+                )
+            except ValueError:
+                candidate_start = report.period_start
+                candidate_end = report.period_end
+            if (
+                report.period_start <= candidate_start <= candidate_end
+                and candidate_end <= report.period_end
+            ):
+                period_start = candidate_start
+                period_end = candidate_end
+        return repository.report_logistics_analysis_payload(
+            db,
+            report,
+            period_start=period_start,
+            period_end=period_end,
+            period_mode="closed_weeks",
+            wb_cabinet_id=str(scope.get("logisticsWbCabinetId") or "")[:160],
+            scheme=str(scope.get("logisticsScheme") or "")[:80],
+            product_query=str(scope.get("logisticsProductQuery") or "")[:240],
+        )
 
     def _logistics_digest(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict):
@@ -625,9 +816,31 @@ class AiAnalyst:
             "methodology_version": value.get("methodologyVersion"),
             "coverage": value.get("coverage") or {},
             "report_coverage": value.get("reportCoverage"),
-            "filter_context": value.get("filterContext") or {},
+            "period_context": value.get("periodContext") or {},
             "kpis": value.get("kpis") or {},
             "components": value.get("components") or {},
+            "partial_periods": [
+                {
+                    "period_start": item.get("periodStart"),
+                    "period_end": item.get("periodEnd"),
+                    "financial_metric_status": item.get("financialMetricStatus"),
+                    "kpis": item.get("kpis") or {},
+                    "components": item.get("components") or {},
+                }
+                for item in (value.get("partialPeriods") or [])[:2]
+                if isinstance(item, dict)
+            ],
+            "insight": value.get("insight") or {},
+            "factor_states": [
+                {
+                    "code": item.get("code"),
+                    "label": item.get("label"),
+                    "status": item.get("status"),
+                    "message": item.get("message"),
+                }
+                for item in (value.get("factorStates") or [])[:5]
+                if isinstance(item, dict)
+            ],
             "top_products": top_products,
             "recommendations": recommendations,
             "boundary": (
@@ -637,11 +850,20 @@ class AiAnalyst:
             ),
         }
 
-    def _search_sku(self, db: Session, report: ReportRun, query: str) -> dict[str, Any]:
+    def _search_sku(
+        self,
+        db: Session,
+        report: ReportRun,
+        query: str,
+        *,
+        period: tuple[date, date] | None = None,
+    ) -> dict[str, Any]:
         result = repository.query_report_rows(
             db,
             report,
             query=query[:120],
+            period_start=period[0] if period else None,
+            period_end=period[1] if period else None,
             limit=8,
         )
         return {
@@ -666,9 +888,21 @@ class AiAnalyst:
         }
 
     def _loss_drivers(
-        self, db: Session, report: ReportRun, summary: dict[str, Any]
+        self,
+        db: Session,
+        report: ReportRun,
+        summary: dict[str, Any],
+        *,
+        period: tuple[date, date] | None = None,
     ) -> dict[str, Any]:
-        result = repository.query_report_rows(db, report, preset="losses", limit=25)
+        result = repository.query_report_rows(
+            db,
+            report,
+            preset="losses",
+            period_start=period[0] if period else None,
+            period_end=period[1] if period else None,
+            limit=25,
+        )
         losses = result["items"]
         driver_totals: dict[str, dict[str, Any]] = {}
         for row in losses:
@@ -699,9 +933,21 @@ class AiAnalyst:
         }
 
     def _data_quality(
-        self, db: Session, report: ReportRun, summary: dict[str, Any]
+        self,
+        db: Session,
+        report: ReportRun,
+        summary: dict[str, Any],
+        *,
+        period: tuple[date, date] | None = None,
     ) -> dict[str, Any]:
-        result = repository.query_report_rows(db, report, preset="review", limit=25)
+        result = repository.query_report_rows(
+            db,
+            report,
+            preset="review",
+            period_start=period[0] if period else None,
+            period_end=period[1] if period else None,
+            limit=25,
+        )
         rows = result["items"]
         buckets: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -759,7 +1005,9 @@ class AiAnalyst:
             f"статус: {item['status'] or 'не указан'}"
             for item in top_losses[:5]
         )
-        if not loss_lines:
+        if not loss_lines and loss_output.get("loss_rows") is None:
+            loss_lines = "- Убыточность не рассчитана: нет полной закрытой недели."
+        elif not loss_lines:
             loss_lines = "- Убыточных строк в текущем отборе нет."
         quality = tool_outputs.get("get_data_quality_issues") or {}
         quality_line = ""
@@ -789,7 +1037,9 @@ class AiAnalyst:
             f"По расчету за {summary['period']} выручка после СПП составляет "
             f"{revenue_text}, прибыль до налогов "
             f"{profit_text}, маржа {margin_text}.\n\n"
-            f"Убыточных строк: {summary['loss_rows']} из {summary['rows']}.\n"
+            f"Убыточных строк: "
+            f"{summary['loss_rows'] if summary['loss_rows'] is not None else 'н/д'} "
+            f"из {summary['rows'] if summary['rows'] is not None else 'н/д'}.\n"
             f"{loss_lines}{quality_line}{refresh_line}\n\n"
             "Ограничения: "
             f"{'; '.join(summary.get('limitations') or LIMITATIONS)}. "
@@ -1197,8 +1447,12 @@ class AiAnalyst:
 
     def _tool_done_message(self, tool_name: str, output: dict[str, Any]) -> str:
         if tool_name == "search_sku":
+            if output.get("total") is None:
+                return "Поиск SKU ограничен: нет полной закрытой недели."
             return f"Найдено строк: {int(output.get('total') or 0)}."
         if tool_name == "get_loss_drivers":
+            if output.get("loss_rows") is None:
+                return "Убыточность не рассчитана: нет полной закрытой недели."
             return f"Убыточных строк: {int(output.get('loss_rows') or 0)}."
         if tool_name == "get_data_quality_issues":
             return f"Статусов качества: {len(output.get('statuses') or [])}."

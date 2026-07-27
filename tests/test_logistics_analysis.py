@@ -18,6 +18,7 @@ from wb_unit_economics.logistics_analysis import (
     build_sku_rows,
     classify_logistics_row,
     logistics_chain_key,
+    resolve_logistics_period,
     source_row_from_payload,
 )
 
@@ -111,6 +112,34 @@ def test_chain_key_is_scoped_by_cabinet_and_product() -> None:
     assert first != other_product
     assert first != other_cabinet
     assert len(first) == 64
+
+
+def test_closed_week_period_keeps_both_partial_boundaries_separate() -> None:
+    resolution = resolve_logistics_period(
+        period_start=date(2026, 7, 8),
+        period_end=date(2026, 7, 24),
+        mode="closed_weeks",
+    )
+
+    assert resolution.analysis_start == date(2026, 7, 13)
+    assert resolution.analysis_end == date(2026, 7, 19)
+    assert resolution.partial_periods == (
+        (date(2026, 7, 8), date(2026, 7, 12)),
+        (date(2026, 7, 20), date(2026, 7, 24)),
+    )
+
+
+def test_closed_week_period_without_full_week_is_only_partial() -> None:
+    resolution = resolve_logistics_period(
+        period_start=date(2026, 7, 20),
+        period_end=date(2026, 7, 24),
+        mode="closed_weeks",
+    )
+
+    assert resolution.has_closed_period is False
+    assert resolution.analysis_start is None
+    assert resolution.analysis_end is None
+    assert resolution.partial_periods == ((date(2026, 7, 20), date(2026, 7, 24)),)
 
 
 def test_classifier_covers_four_categories_and_keeps_amount_sign() -> None:

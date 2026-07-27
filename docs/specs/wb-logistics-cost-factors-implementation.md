@@ -666,6 +666,23 @@ Additive read-only методы, зарезервированные канони
 нулевую подстановку. Пустой разрешённый срез — `sliceStatus=empty` без нулей.
 Старый отчёт без новых витрин — `needs_rebuild`.
 
+Существующий raw-контракт сохраняется как `view=raw` по умолчанию. Factor
+endpoints additive принимают:
+
+- `view=summary` — полный filtered coverage, headline и рекомендации без
+  строк;
+- `view=grouped` — server-side группы после всех фильтров и до pagination;
+- `view=grouped&groupOffset=N` — безопасные business-поля участников одной
+  группы в том же детерминированном порядке.
+
+Grouped pagination считает `total` по группам и отдельно возвращает
+`rawTotal`. Габариты группируются по точной карточке
+`(wb_cabinet_id, nm_id)`, замеры — по той же карточке и московской дате
+события. Internal IDs, hashes, raw paths и source money в новых режимах не
+возвращаются. В F-1 grouped/summary счётчики покрытия также считаются по
+карточкам, а не по повторяющимся организациям/схемам. Raw mart, methodology и
+publication immutability не меняются.
+
 Контракт F-1 `/dimensions`:
 
 - фильтры `periodStart`, `periodEnd`, `wbCabinetId`, `clientCompanyId`, `scheme`,
@@ -761,6 +778,24 @@ seller account identifiers в ответ не входят.
 Блок факторов встраивается в существующий answer-first экран логистики
 (`#tables/logistics`) как второй уровень, не создавая отдельного пункта меню и
 не меняя денежный итог первого экрана.
+
+Все factor-блоки по умолчанию свёрнуты. Summary загружается отдельно от
+grouped rows; раскрытие блока загружает группы, а раскрытие группы — безопасные
+детали. Действие из общей рекомендации раскрывает целевой блок и переводит
+фокус на его заголовок.
+
+F-1 показывает одну карточку WB независимо от числа организаций и схем отчёта,
+название и `Артикул продавца`, `Используется в N срезах` и точный статус:
+`Вес не получен из текущей карточки WB`, `Габариты не получены из текущей
+карточки WB` или `Возможное расхождение габаритов. Штраф не подтверждён`.
+
+F-4 группирует события по варианту товара и московской дате, показывает
+`Замеров: N` и не выбирает случайное значение при разных размерах. Статусы
+самого события и финансовой области разделены: подтверждённый замер остаётся
+фактом даже при неоднозначной организации/схеме. Grouped/detail возвращают
+отдельные `eventStatus*` и `financialLinkStatus*` с русскими текстами.
+Полностью пустые заявленные размеры или сведения об удержании объясняются один
+раз над списком и не создают колонку из прочерков.
 
 - Показывает габариты/вес, сигнал расхождения, подтверждённые замеры/удержания,
   коэффициенты, склады и направления только при подтверждённом источнике.
@@ -1014,6 +1049,14 @@ Design-часть подпакета считается принятой, ког
 24. Measurement context/rows атомарны, published report immutable, required
     missing/outdated/blocked context блокирует публикацию, partial — нет;
     defaults-off role/flag matrix и локальная UI error isolation соблюдены.
+25. Grouped F-1 схлопывает одну карточку между организациями/схемами, но не
+    объединяет разные варианты с одинаковым названием; coverage остаётся
+    full-slice, а pagination считает группы.
+26. Grouped F-4 сохраняет каждое событие в disclosure, группирует только по
+    карточке/московской дате и отдельно объясняет event fact, missing declared
+    values, missing money и ambiguous product scope.
+27. Summary/grouped payload не раскрывает internal IDs, hashes, raw paths или
+    source money; legacy raw payload и role/tenant gates остаются совместимы.
 
 # Test Plan
 
@@ -1037,6 +1080,11 @@ Design-часть подпакета считается принятой, ког
   `report_logistics_route_rows` из обезличенного снимка, lineage и hash;
 - API: `/dimensions` и `/routes` возвращают статусы, покрытие и факт/оценку;
   пустой срез → `empty`; старый отчёт → `needs_rebuild`;
+- API grouped: одна карточка F-1 в нескольких report scopes даёт одну группу;
+  разные `nm_id` с одинаковым названием остаются раздельными; filters
+  применяются до grouping, `total` и pagination считаются по группам;
+- API grouped F-4: несколько exact events одного товара/дня дают одну группу
+  и полный detail; ambiguous scope не скрывает подтверждённые measured fields;
 - tenant isolation: недоступность чужих tenant/cabinet во всех новых методах;
 - fixtures обезличенные; реальные идентификаторы и клиентские объёмы в тесты и
   документацию не переносятся.
@@ -1059,6 +1107,8 @@ Design-часть подпакета считается принятой, ког
 - UI F-4: load/reset при смене report/filter, ready/partial/empty/needs_rebuild/
   blocked/error, mobile cards, отсутствие трактовки суммы как нового расхода
   или потенциальной экономии;
+- UI: factor disclosures закрыты на старте, recommendation action раскрывает
+  целевой блок с keyboard focus, а пустые колонки заменены русским limitation;
 - browser: staff-only deep-link на desktop/mobile, client 404/скрытый блок,
   отсутствие overflow и console/page/network errors.
 
@@ -1161,6 +1211,13 @@ fail-soft контракт R-2 реализованы; live claims identity gate
 витрину, API или публикацию.
 
 # Changelog
+
+- 2026-07-26 — принят контракт управленческой визуализации факторов:
+  summary/grouped/raw API без изменения immutable marts, группировка F-1 по
+  карточке и F-4 по карточке/московской дате, disclosure-first UI, точные
+  русские ограничения и запрет internal IDs/hashes/source money в новых
+  режимах. Client/production rollout, refresh, report rebuild и migration не
+  входят.
 
 - 2026-07-23 — R-6 client-role rollout принят только на test. Immutable
   runtime `b4d7376`, tracked override и effective client/master flags F-1…F-5

@@ -1,98 +1,78 @@
-# Design QA: WB-логистика R-4 «Причины возвратов»
+# Проверка интерфейса WB-логистики
 
-## Comparison target
+## Артефакты
 
-- Source visual truth:
-  `/root/.codex/generated_images/019f89c8-fbc3-7b20-a429-86d4620d130f/call_B1YzSruMnBSo67bryvDQwKVI.png`.
-- Responsive target:
-  `docs/design/wb-logistics-v4-analytics-target.html`.
-- Browser-rendered implementation:
-  `http://127.0.0.1:18766/cabinet?client_id=shumeyko&report_id=report-1#tables/logistics`
-  on a local synthetic read-only fixture.
-- Desktop implementation evidence:
-  `/tmp/wb-r4-runtime-SRaPQ4/runtime-return-reasons-desktop.png`.
-- Mobile implementation evidence:
-  `/tmp/wb-r4-runtime-SRaPQ4/runtime-return-reasons-mobile.png`.
-- Desktop combined comparison:
-  `/tmp/wb-r4-runtime-SRaPQ4/comparison-selected-reference-vs-runtime-desktop.png`.
-- Mobile combined comparison:
-  `/tmp/wb-r4-runtime-SRaPQ4/comparison-target-vs-runtime-mobile.png`.
+- Исходный экран фильтров и аналитических карточек:
+  `/root/.codex/attachments/e6a23350-ce58-4183-968e-950ac7f7bc26/codex-clipboard-221120cc-0218-40c5-ab94-99812d620f4c.png`
+  (`2100 × 1010` px).
+- Исходный экран таблицы тарифов:
+  `/root/.codex/attachments/c7ce5917-f8fb-4bbb-9c1d-3b5a980243fc/codex-clipboard-30ba5a16-2ff9-41a3-8dce-c84756e78736.png`
+  (`1980 × 796` px).
+- Реализация desktop:
+  `/tmp/logistics-ui-visual-qa/desktop.png` (`1440 × 1200` px);
+  области сравнения — `desktop-overview.png` (`1280 × 644` px) и
+  `desktop-tariffs.png` (`1280 × 269` px).
+- Реализация mobile:
+  `/tmp/logistics-ui-visual-qa/mobile.png` (`390 × 2283` px).
+- Совмещённые сравнения:
+  `/tmp/logistics-ui-visual-qa/comparison-overview.png` и
+  `/tmp/logistics-ui-visual-qa/comparison-tariffs.png`
+  (`1900 × 1200` px каждое).
+- CSS viewport: desktop `1440 × 1200`, mobile `390 × 1100`;
+  `deviceScaleFactor=1`. Нормализация плотности не требовалась.
+- Состояние: синтетический staff-only срез без реальных идентификаторов,
+  клиентских строк и сумм.
 
-The selected reference is 1487 × 1058 px. The browser implementation was
-captured at 1440 × 900 CSS px and 390 × 844 CSS px with
-`deviceScaleFactor: 1`; both screenshots therefore have matching pixel and CSS
-dimensions. The focused desktop implementation section is 1112 × 404 px. The
-desktop comparison uses a crop of the selected reference around the R-4 block
-and scales both focused regions to the same 1120 px display width. The mobile
-comparison uses the responsive target and implementation at the same 390 px
-width without density conversion.
+## Полноэкранное сравнение
 
-State: staff-only synthetic draft, `sliceStatus=partial`, a confirmed
-goods-return reason, claims `access_denied`, and one safe mart row. The
-different synthetic counts between source and implementation are dynamic
-content, not a visual mismatch.
+Первая проверка выполнена по совмещённому изображению фильтров, состава
+расхода и недельной динамики. Фильтры собраны в одну панель, кнопка очистки
+поиска имеет отдельную аккуратную иконку, состав читается как части одного
+итога, а динамика использует вертикальные недельные столбцы. Desktop сохраняет
+две аналитические карточки рядом; mobile последовательно складывает их в одну
+колонку и оставляет графику внутреннюю горизонтальную прокрутку.
 
-## Full-view comparison
+## Сфокусированное сравнение
 
-- The selected coverage-first hierarchy is preserved: disclosure title,
-  three coverage states, two source rows, return details, and a recommendation
-  derived only from a confirmed reason.
-- The runtime section is placed after the enabled factor blocks and before the
-  product rating, with no new sidebar item or scenario tab.
-- The runtime keeps the existing cabinet typography, borders, radii, badges,
-  table system and semantic colors. Its additional status pill is intentional:
-  it exposes the accepted `ready`/`partial`/`empty`/`needs_rebuild`/`blocked`
-  state matrix.
-- On 390 × 844 the coverage strip stacks, source rows remain readable, and the
-  desktop table becomes labelled cards. The persistent product navigation is
-  expected existing application chrome.
+Отдельно проверена таблица тарифов с длинным синтетическим названием склада и
+длинным основанием. На desktop текст переносится внутри заданной колонки и не
+перекрывает тип, доставку, хранение или основание. Программная проверка всех
+шести ячеек первой строки не обнаружила внутреннего переполнения. На mobile
+строка преобразуется в подписанную карточку, длинные значения переносятся
+в правой части и остаются внутри границ.
 
-## Focused comparison and iteration history
+## Обязательные поверхности
 
-### Iteration 1
+- Шрифт и типографика: используются существующие семейство, веса и иерархия
+  проекта; длинный текст переносится без обрезки и наложения.
+- Ритм и компоновка: поля и кнопка выровнены, карточки имеют единые интервалы,
+  desktop-таблица сохраняет колонки, mobile-таблица становится карточной.
+- Цвета и токены: сохранена действующая палитра проекта; новые акценты
+  используют существующие смысловые цвета логистики.
+- Изображения и иконки: растровых изображений нет; поиск и очистка используют
+  существующие SVG-иконки, а не текстовые символы.
+- Тексты: пользовательские подписи даны на понятном русском языке; внутренние
+  термины и английские статусы не добавлены.
 
-- [P2] Recommendation order and emphasis drifted from the selected reference.
-  The first runtime capture placed a large amber recommendation card before
-  the return table. Fix: moved the recommendation after the table and restyled
-  it as a compact green-labelled evidence line.
-- [P2] Two pieces of copy were more technical than the selected reference.
-  Fix: aligned them to `Причина подтверждается только exact-связью` and
-  `Покрытие неизвестно`, while keeping the claims source row explicit.
+## Проверенные взаимодействия и ошибки
 
-Post-fix evidence is the desktop and mobile combined comparison listed above.
-No additional focused crop is required: the complete R-4 component and all
-table text are legible in the combined desktop comparison.
+- Отображение заполненного поиска и доступной кнопки очистки.
+- Адаптивная перестройка фильтров, аналитических карточек и тарифной таблицы.
+- Внутренняя горизонтальная прокрутка недельной динамики на узком экране.
+- Перенос длинного склада, статуса и пояснений.
+- Ошибок консоли в desktop и mobile capture нет.
 
-## Required fidelity surfaces
+## История сравнения
 
-- Fonts and typography: the implementation uses the cabinet system UI stack
-  at the same hierarchy as adjacent logistics factors. Headings, coverage
-  values, source labels, badges and mobile field labels remain readable and do
-  not truncate.
-- Spacing and layout rhythm: the three-part coverage strip, source grid, table
-  and recommendation follow the selected order. The runtime uses existing
-  10–12 px radii and cabinet spacing; there is no document, section or table
-  overflow on either viewport.
-- Colors and tokens: confirmed coverage uses the existing green fact palette,
-  unavailable coverage uses neutral blue-gray, and unknown coverage uses the
-  existing amber review palette. Meaning is repeated in text, not conveyed by
-  color alone.
-- Image quality and asset fidelity: the R-4 component contains no raster
-  imagery, logos or custom illustrations. The implementation uses the native
-  disclosure marker and existing product UI primitives; no placeholder image,
-  CSS art, emoji or handcrafted SVG was introduced.
-- Copy and content: Finance is not presented as a reason source, unavailable
-  claims explicitly say that logistics calculation continues, raw comments
-  and identifiers are absent, and only `evidenceType=fact` recommendations are
-  rendered.
-- States and interactions: disclosure collapse/reopen and remote table sorting
-  were exercised. Both desktop and mobile started open, collapsed, reopened
-  and retained the loaded data.
-- Accessibility and resilience: semantic `details/summary`, status role,
-  table headers, mobile field labels and existing sortable-table keyboard
-  behavior are preserved. At 1440 × 900 and 390 × 844 there were no console
-  errors, failed requests or horizontal overflow.
+Итерация 1: после внесённых исправлений открыты оба исходных экрана и
+browser-rendered реализация в одинаковом светлом состоянии. Действующих
+расхождений уровня P0, P1 или P2 не найдено; дополнительных исправлений после
+первого сравнения не потребовалось.
 
-No actionable P0/P1/P2 findings remain.
+## Остаточные замечания
+
+P3: на очень узком экране пользователь видит часть недельного графика и
+прокручивает его внутри карточки. Это ожидаемое поведение, явно заданное
+контрактом и доступной подписью.
 
 final result: passed
