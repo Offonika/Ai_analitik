@@ -20715,7 +20715,7 @@ def report_readiness_payload(
             _readiness_reason(
                 "source_lineage_missing",
                 (
-                    "Snapshot отчёта не связан с зарегистрированными "
+                    "Снимок данных отчёта не связан с зарегистрированными "
                     "загрузками источников."
                 ),
             )
@@ -20738,7 +20738,7 @@ def report_readiness_payload(
         blocking_reasons.append(
             _readiness_reason(
                 "stock_history_lineage_missing",
-                "Расчёт упущенных продаж не связан с snapshot истории остатков WB.",
+                "Расчёт упущенных продаж не связан со снимком истории остатков WB.",
                 lost_sales_rows,
             )
         )
@@ -20766,7 +20766,7 @@ def report_readiness_payload(
             ],
             review_reasons=[],
             next_action=(
-                "Пересобрать или импортировать report run: "
+                "Пересобрать или импортировать версию отчёта: "
                 "сейчас нечего отправлять клиенту."
             ),
         )
@@ -20779,8 +20779,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_missing",
                     (
-                        "Обязательный контекст анализа логистики отсутствует; "
-                        "нужен новый report run."
+                        "Обязательный расчёт логистики отсутствует; "
+                        "нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -20791,8 +20791,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_outdated",
                     (
-                        "Контекст анализа логистики построен по устаревшей "
-                        "методике; нужен новый report run."
+                        "Расчёт логистики построен по устаревшей "
+                        "методике; нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -20803,8 +20803,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_key_outdated",
                     (
-                        "Контекст анализа логистики построен с несовместимой "
-                        "версией ключа цепочки; нужен новый report run."
+                        "Расчёт логистики построен с несовместимой "
+                        "версией ключа цепочки; нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -20815,8 +20815,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_scope_mismatch",
                     (
-                        "Контекст анализа логистики принадлежит другому "
-                        "tenant или клиенту; нужен новый report run."
+                        "Расчёт логистики принадлежит другому "
+                        "контуру или клиенту; нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -20827,8 +20827,8 @@ def report_readiness_payload(
                 _readiness_reason(
                     "logistics_analysis_invalid_status",
                     (
-                        "Контекст анализа логистики имеет неизвестный статус; "
-                        "нужен новый report run."
+                        "Расчёт логистики имеет неизвестный статус; "
+                        "нужна новая версия отчёта."
                     ),
                     nonOverridable=True,
                 )
@@ -20866,23 +20866,26 @@ def report_readiness_payload(
         dimension_blockers = {
             "missing": (
                 "logistics_dimensions_missing",
-                "Обязательный контекст габаритов отсутствует; нужен новый report run.",
+                (
+                    "Обязательная витрина габаритов отсутствует; "
+                    "нужна новая версия отчёта."
+                ),
             ),
             "outdated_methodology": (
                 "logistics_dimensions_outdated",
-                "Контекст габаритов построен по устаревшей методике.",
+                "Расчёт габаритов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_dimensions_scope_mismatch",
-                "Контекст габаритов принадлежит другому tenant или клиенту.",
+                "Витрина габаритов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_dimensions_invalid_status",
-                "Контекст габаритов имеет неизвестный статус.",
+                "Расчёт габаритов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_dimensions_blocked",
-                "Проверка целостности snapshot габаритов не пройдена.",
+                "Проверка целостности снимка габаритов не пройдена.",
             ),
         }
         if dimension_state in dimension_blockers:
@@ -20904,7 +20907,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_dimensions_row_count_mismatch",
-                        "Количество строк витрины габаритов не совпадает с context.",
+                        (
+                            "Количество строк витрины габаритов "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -20924,23 +20930,23 @@ def report_readiness_payload(
         tariff_blockers = {
             "missing": (
                 "logistics_tariffs_missing",
-                "Обязательный контекст тарифов отсутствует; нужен новый report run.",
+                "Обязательная витрина тарифов отсутствует; нужна новая версия отчёта.",
             ),
             "outdated_methodology": (
                 "logistics_tariffs_outdated",
-                "Контекст тарифов построен по устаревшей методике.",
+                "Расчёт тарифов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_tariffs_scope_mismatch",
-                "Контекст тарифов принадлежит другому tenant или клиенту.",
+                "Витрина тарифов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_tariffs_invalid_status",
-                "Контекст тарифов имеет неизвестный статус.",
+                "Расчёт тарифов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_tariffs_blocked",
-                "Проверка целостности snapshot тарифов не пройдена.",
+                "Проверка целостности снимка тарифов не пройдена.",
             ),
         }
         if tariff_state in tariff_blockers:
@@ -20962,7 +20968,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_tariffs_row_count_mismatch",
-                        "Количество строк витрины тарифов не совпадает с context.",
+                        (
+                            "Количество строк витрины тарифов "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -20982,23 +20991,26 @@ def report_readiness_payload(
         route_blockers = {
             "missing": (
                 "logistics_routes_missing",
-                "Обязательный контекст маршрутов отсутствует; нужен новый report run.",
+                (
+                    "Обязательная витрина маршрутов отсутствует; "
+                    "нужна новая версия отчёта."
+                ),
             ),
             "outdated_methodology": (
                 "logistics_routes_outdated",
-                "Контекст маршрутов построен по устаревшей методике.",
+                "Расчёт маршрутов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_routes_scope_mismatch",
-                "Контекст маршрутов принадлежит другому tenant или клиенту.",
+                "Витрина маршрутов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_routes_invalid_status",
-                "Контекст маршрутов имеет неизвестный статус.",
+                "Расчёт маршрутов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_routes_blocked",
-                "Проверка целостности snapshot маршрутов не пройдена.",
+                "Проверка целостности снимка маршрутов не пройдена.",
             ),
         }
         if route_state in route_blockers:
@@ -21030,7 +21042,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_routes_row_count_mismatch",
-                        "Количество строк витрины маршрутов не совпадает с context.",
+                        (
+                            "Количество строк витрины маршрутов "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -21042,7 +21057,7 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_routes_total_mismatch",
-                        "Сумма витрины маршрутов не совпадает с context.",
+                        "Сумма витрины маршрутов не совпадает с контрольным итогом.",
                         nonOverridable=True,
                     )
                 )
@@ -21064,23 +21079,23 @@ def report_readiness_payload(
         measurement_blockers = {
             "missing": (
                 "logistics_measurements_missing",
-                "Обязательный контекст замеров отсутствует; нужен новый report run.",
+                "Обязательная витрина замеров отсутствует; нужна новая версия отчёта.",
             ),
             "outdated_methodology": (
                 "logistics_measurements_outdated",
-                "Контекст замеров построен по устаревшей методике.",
+                "Расчёт замеров построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_measurements_scope_mismatch",
-                "Контекст замеров принадлежит другому tenant или клиенту.",
+                "Витрина замеров принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_measurements_invalid_status",
-                "Контекст замеров имеет неизвестный статус.",
+                "Расчёт замеров имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_measurements_blocked",
-                "Проверка целостности snapshot замеров не пройдена.",
+                "Проверка целостности снимка замеров не пройдена.",
             ),
         }
         if measurement_state in measurement_blockers:
@@ -21104,7 +21119,10 @@ def report_readiness_payload(
                 blocking_reasons.append(
                     _readiness_reason(
                         "logistics_measurements_row_count_mismatch",
-                        "Количество событий витрины замеров не совпадает с context.",
+                        (
+                            "Количество событий витрины замеров "
+                            "не совпадает с контрольным итогом."
+                        ),
                         nonOverridable=True,
                     )
                 )
@@ -21131,25 +21149,25 @@ def report_readiness_payload(
             "missing": (
                 "logistics_return_reasons_missing",
                 (
-                    "Обязательный контекст причин возвратов отсутствует; "
-                    "нужен новый report run."
+                    "Обязательная витрина причин возвратов отсутствует; "
+                    "нужна новая версия отчёта."
                 ),
             ),
             "outdated_methodology": (
                 "logistics_return_reasons_outdated",
-                "Контекст причин возвратов построен по устаревшей методике.",
+                "Расчёт причин возвратов построен по устаревшей методике.",
             ),
             "scope_mismatch": (
                 "logistics_return_reasons_scope_mismatch",
-                "Контекст причин возвратов принадлежит другому tenant или клиенту.",
+                "Витрина причин возвратов принадлежит другому контуру или клиенту.",
             ),
             "invalid_status": (
                 "logistics_return_reasons_invalid_status",
-                "Контекст причин возвратов имеет неизвестный статус.",
+                "Расчёт причин возвратов имеет неизвестный статус.",
             ),
             "blocked": (
                 "logistics_return_reasons_blocked",
-                "Проверка целостности snapshot причин возвратов не пройдена.",
+                "Проверка целостности снимка причин возвратов не пройдена.",
             ),
         }
         if return_reason_state in return_reason_blockers:
@@ -21178,7 +21196,7 @@ def report_readiness_payload(
                         "logistics_return_reasons_row_count_mismatch",
                         (
                             "Количество строк витрины причин возвратов "
-                            "не совпадает с context."
+                            "не совпадает с контрольным итогом."
                         ),
                         nonOverridable=True,
                     )
@@ -21217,7 +21235,7 @@ def report_readiness_payload(
         blocking_reasons.append(
             _readiness_reason(
                 "report_status_blocked",
-                "Report run помечен как неуспешный.",
+                "Текущая версия отчёта помечена как неуспешная.",
             )
         )
         score -= 40
@@ -21225,7 +21243,7 @@ def report_readiness_payload(
         review_reasons.append(
             _readiness_reason(
                 "report_status_review",
-                "Статус report run требует ручной проверки.",
+                "Статус текущей версии отчёта требует ручной проверки.",
             )
         )
         score -= 10
@@ -21502,7 +21520,7 @@ def report_readiness_payload(
             review_reasons.append(
                 _readiness_reason(
                     "client_draft_missing",
-                    "Клиентский AI-черновик еще не подготовлен.",
+                    "Черновик клиентского вывода ещё не подготовлен.",
                 )
             )
             score -= 10
@@ -21510,7 +21528,7 @@ def report_readiness_payload(
             blocking_reasons.append(
                 _readiness_reason(
                     "client_draft_forbidden_text",
-                    "Клиентский AI-черновик содержит внутренние labels.",
+                    "Черновик клиентского вывода содержит служебные пометки.",
                 )
             )
             score = min(score, 40)
@@ -21518,7 +21536,7 @@ def report_readiness_payload(
             review_reasons.append(
                 _readiness_reason(
                     "client_draft_not_ready",
-                    "Клиентский AI-черновик еще не помечен готовым.",
+                    "Черновик клиентского вывода ещё не помечен готовым.",
                 )
             )
             score -= 10
@@ -24881,9 +24899,9 @@ def _readiness_next_action(
     elif review_reasons:
         first_code = as_text(review_reasons[0].get("code"))
     actions = {
-        "no_rows": "Пересобрать или импортировать report run.",
-        "report_status_blocked": "Проверить ошибку report run и пересобрать отчет.",
-        "source_load_failed": "Проверить загрузку источников и пересобрать report run.",
+        "no_rows": "Пересобрать или импортировать версию отчёта.",
+        "report_status_blocked": "Проверить ошибку и пересобрать отчёт.",
+        "source_load_failed": "Проверить загрузку источников и пересобрать отчёт.",
         "source_load_review_required": (
             "Проверить обязательный источник и подтвердить результат."
         ),
@@ -24926,7 +24944,7 @@ def _readiness_next_action(
             "Пересчитать прибыли и убытки по единой методике ОСНО без НДС."
         ),
         "profit_semantics_mismatch": (
-            "Устранить расхождение profit и profitBeforeTax до НДФЛ."
+            "Устранить расхождение показателей прибыли до НДФЛ."
         ),
         "vat_input_unconfirmed": "Подтвердить входящий НДС документами 1С.",
         "vat_input_management_assumption": (
@@ -24952,12 +24970,12 @@ def _readiness_next_action(
         "document_reconciliation_unresolved": (
             "Расшифровать документные расхождения WB-1С."
         ),
-        "client_draft_missing": "Подготовить клиентский AI-черновик.",
+        "client_draft_missing": "Подготовить черновик клиентского вывода.",
         "client_draft_not_ready": (
-            "Проверить и пометить клиентский AI-черновик готовым."
+            "Проверить и пометить черновик клиентского вывода готовым."
         ),
         "client_draft_forbidden_text": (
-            "Пересобрать клиентский черновик без внутренних labels."
+            "Пересобрать клиентский вывод без служебных пометок."
         ),
     }
     return actions.get(first_code, "Проверить причины перед отправкой клиенту.")
@@ -25040,8 +25058,7 @@ def _financial_integrity_blockers(
                 _readiness_reason(
                     "profit_semantics_mismatch",
                     (
-                        "Прибыль до налогов расходится между полями "
-                        "profit и profitBeforeTax."
+                        "Показатели прибыли до налогов расходятся между собой."
                     ),
                     profit_mismatch,
                 )

@@ -4576,12 +4576,12 @@ function drilldownDescriptor(preset) {
     review: {
       preset: "review",
       title: "Все строки к проверке",
-      subtitle: "Все строки со статусом, отличным от OK, с учетом выбранных фильтров.",
+      subtitle: "Все строки со статусом, отличным от ОК, с учетом выбранных фильтров.",
     },
   }[preset] || {
     preset: "review",
     title: "Все строки к проверке",
-    subtitle: "Все строки со статусом, отличным от OK, с учетом выбранных фильтров.",
+    subtitle: "Все строки со статусом, отличным от ОК, с учетом выбранных фильтров.",
   };
 }
 
@@ -4622,6 +4622,12 @@ function openWidgetOverlay(overlay) {
   overlay.hidden = false;
   state.activeWidgetOverlay = overlay;
   document.body.classList.add("widget-open");
+  window.requestAnimationFrame(() => {
+    const focusTarget = overlay.querySelector(
+      "[autofocus], [data-widget-initial-focus], h1[tabindex='-1'], h2[tabindex='-1'], button:not([disabled])",
+    );
+    focusTarget?.focus({ preventScroll: true });
+  });
 }
 
 function closeWidgetOverlay(overlay, options = {}) {
@@ -5778,11 +5784,9 @@ function renderReport() {
   );
   const blockingReasons = asArray(readiness.blockingReasons);
   const reviewReasons = asArray(readiness.reviewReasons);
-  const visibleBlockingReasons = blockingReasons.filter((reason) => !isTaskReviewed(reason));
-  const visibleReviewReasons = reviewReasons.filter((reason) => !isTaskReviewed(reason));
   renderReasons(
     els.blockingReasons,
-    visibleBlockingReasons,
+    blockingReasons,
     blockingReasons.length
       ? "Срочные задачи проверены."
       : "Блокеров нет, можно идти к проверкам ниже.",
@@ -5790,13 +5794,13 @@ function renderReport() {
   );
   renderReasons(
     els.reviewReasons,
-    visibleReviewReasons,
+    reviewReasons,
     reviewReasons.length
       ? "Проверки отмечены как разобранные."
       : "Дополнительных проверок нет.",
     "review",
   );
-  renderDoneTasks(readiness, [...blockingReasons, ...reviewReasons]);
+  renderDoneTasks(readiness);
   renderCostReview(summary);
   renderAiContext(summary);
   renderChecksNavigation(readiness);
@@ -7059,25 +7063,7 @@ function runLogisticsRecommendationAction(recommendation) {
     return;
   }
   if (String(recommendation.actionTarget || "").startsWith("#logistics-")) {
-    const section = document.querySelector(recommendation.actionTarget);
-    if (section instanceof HTMLDetailsElement) {
-      section.open = true;
-      const loaders = {
-        "#logistics-dimensions": loadLogisticsDimensions,
-        "#logistics-measurements": loadLogisticsMeasurements,
-        "#logistics-return-reasons": loadLogisticsReturnReasons,
-        "#logistics-tariffs": loadLogisticsTariffs,
-        "#logistics-routes": loadLogisticsRoutes,
-      };
-      loaders[recommendation.actionTarget]?.({
-        force: true,
-        view: "grouped",
-      });
-      window.requestAnimationFrame(() => {
-        section.scrollIntoView({ behavior: "smooth", block: "start" });
-        section.querySelector("summary strong")?.focus({ preventScroll: true });
-      });
-    }
+    openLogisticsFactorSection(recommendation.actionTarget);
     return;
   }
   const product = recommendation.evidence?.product || "";
@@ -7089,6 +7075,48 @@ function runLogisticsRecommendationAction(recommendation) {
   }
   document.querySelector("[aria-labelledby='logistics-products-title']")
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openLogisticsFactorSection(target) {
+  const section = document.querySelector(target);
+  if (!(section instanceof HTMLDetailsElement)) {
+    return false;
+  }
+  section.open = true;
+  const loaders = {
+    "#logistics-dimensions": loadLogisticsDimensions,
+    "#logistics-measurements": loadLogisticsMeasurements,
+    "#logistics-return-reasons": loadLogisticsReturnReasons,
+    "#logistics-tariffs": loadLogisticsTariffs,
+    "#logistics-routes": loadLogisticsRoutes,
+  };
+  loaders[target]?.({
+    force: true,
+    view: "grouped",
+  });
+  window.requestAnimationFrame(() => {
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+    section.querySelector("summary strong")?.focus({ preventScroll: true });
+  });
+  return true;
+}
+
+function openLogisticsReadinessTarget(target = "#logistics-workspace") {
+  selectTableScenario("logistics", {
+    updateLocation: true,
+    focus: false,
+    instant: true,
+  });
+  if (target !== "#logistics-workspace" && openLogisticsFactorSection(target)) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    const section = document.querySelector("#logistics-workspace");
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
+    section
+      ?.querySelector("#logistics-workspace-title")
+      ?.focus({ preventScroll: true });
+  });
 }
 
 function setLogisticsFactorHeadline(section, text) {
@@ -13058,7 +13086,7 @@ function renderQuality(quality, sourceLoads, readiness) {
   }
   els.qualityProgressFill.style.width = `${okPercent}%`;
   els.qualitySummaryText.textContent = total
-    ? `${number(okRows)} из ${number(total)} строк OK (${okShare}). ${
+    ? `${number(okRows)} из ${number(total)} строк ОК (${okShare}). ${
         summaryIssues.length
           ? `Сначала: ${summaryIssues.slice(0, 3).join(", ")}.`
           : "Качество данных выглядит готовым."
@@ -13205,8 +13233,8 @@ function renderCostReview(summary = {}) {
     );
   }
   renderMetrics(els.costReviewMetrics, [
-    ["Покрытие данных", `${coverage}%`, `${number(okRows)} из ${number(total)} строк OK`, coverage >= 95 ? "ready" : "review"],
-    ["Подтверждено", number(okRows), "Строки со статусом OK"],
+    ["Покрытие данных", `${coverage}%`, `${number(okRows)} из ${number(total)} строк ОК`, coverage >= 95 ? "ready" : "review"],
+    ["Подтверждено", number(okRows), "Строки со статусом ОК"],
     ["Осталось", number(count), "Без подтверждённой себестоимости", count ? "blocked" : "ready"],
   ]);
   els.costReviewNote.textContent = reviewed
@@ -16641,9 +16669,11 @@ function renderReasons(target, reasons, emptyText = "Нет задач", tone = 
   target.replaceChildren(
     ...safeReasons.map((reason, index) => {
       const item = document.createElement("li");
+      const reviewed = tone !== "blocker" && isTaskReviewed(reason);
       item.className = `reason-item task-card ${
         tone === "blocker" ? "is-blocker" : "is-review"
-      }`;
+      } ${reviewed ? "is-reviewed" : ""}`.trim();
+      item.dataset.taskKey = taskKey(reason);
       const guide = reasonGuide(reason);
       const marker = document.createElement("span");
       marker.className = "reason-marker";
@@ -16665,21 +16695,37 @@ function renderReasons(target, reasons, emptyText = "Нет задач", tone = 
       const hint = document.createElement("small");
       hint.className = "reason-hint";
       hint.textContent = guide.hint;
-      const action = document.createElement("button");
-      action.type = "button";
-      action.className = "reason-action-link";
-      action.textContent = guide.label;
-      action.addEventListener("click", () => runReasonAction(guide.action));
       const actions = document.createElement("div");
       actions.className = "task-card-actions";
-      actions.append(action);
+      if (guide.action && guide.label) {
+        const action = document.createElement("button");
+        action.type = "button";
+        action.className = "reason-action-link";
+        action.textContent = guide.label;
+        action.addEventListener("click", () =>
+          runReasonAction(guide.action, guide.target),
+        );
+        actions.append(action);
+      }
       if (tone !== "blocker") {
+        if (reviewed) {
+          const reviewedStatus = document.createElement("small");
+          reviewedStatus.className = "reason-review-status";
+          reviewedStatus.textContent = "Просмотрено, данные не исправлены.";
+          content.append(reviewedStatus);
+        }
         const markViewed = document.createElement("button");
         markViewed.type = "button";
         markViewed.className = "reason-action-link task-done-link";
-        markViewed.textContent = "Отметить просмотренным";
+        markViewed.dataset.taskReviewToggle = "true";
+        markViewed.setAttribute("aria-pressed", String(reviewed));
+        markViewed.textContent = reviewed
+          ? "Снять отметку"
+          : "Отметить просмотренным";
         markViewed.title = "Отметка не меняет данные и расчетный статус отчёта.";
-        markViewed.addEventListener("click", () => setTaskReviewed(reason, true));
+        markViewed.addEventListener("click", () =>
+          setTaskReviewed(reason, !reviewed),
+        );
         actions.append(markViewed);
       }
       content.append(hint, actions);
@@ -16689,23 +16735,14 @@ function renderReasons(target, reasons, emptyText = "Нет задач", tone = 
   );
 }
 
-function renderDoneTasks(readiness, openReasons = []) {
+function renderDoneTasks(readiness) {
   const tasks = [];
   const blockers = asArray(readiness.blockingReasons);
   const reviews = asArray(readiness.reviewReasons);
-  asArray(openReasons)
-    .filter((reason) => isTaskReviewed(reason))
-    .forEach((reason) => {
-      tasks.push({
-        title: `Просмотрено: ${reason.message || "задача по отчету"}`,
-        detail: "Локальная отметка не меняет данные. Расчетный статус изменится только после исправления источника и пересборки отчета.",
-        reason,
-      });
-    });
   if (state.reportId) {
     tasks.push({
-      title: "Excel собран",
-      detail: "Расчетный артефакт доступен в верхней панели.",
+      title: "Файл Excel собран",
+      detail: "Расчётный файл доступен в верхней панели.",
     });
   }
   if (!blockers.length) {
@@ -16739,21 +16776,13 @@ function renderDoneTasks(readiness, openReasons = []) {
       item.className = "reason-item task-card is-done";
       const marker = document.createElement("span");
       marker.className = "reason-marker";
-      marker.textContent = "OK";
+      marker.textContent = "ОК";
       const content = document.createElement("div");
       const title = document.createElement("strong");
       title.textContent = task.title;
       const detail = document.createElement("small");
       detail.textContent = task.detail;
       content.append(title, detail);
-      if (task.reason) {
-        const reopen = document.createElement("button");
-        reopen.type = "button";
-        reopen.className = "reason-action-link task-reopen-link";
-        reopen.textContent = "Вернуть в работу";
-        reopen.addEventListener("click", () => setTaskReviewed(task.reason, false));
-        content.append(reopen);
-      }
       item.append(marker, content);
       return item;
     }),
@@ -16803,12 +16832,59 @@ function setTaskReviewed(reason, reviewed) {
     return;
   }
   renderReport();
+  window.requestAnimationFrame(() => {
+    const item = [...document.querySelectorAll("[data-task-key]")].find(
+      (candidate) => candidate.dataset.taskKey === key,
+    );
+    item?.querySelector("[data-task-review-toggle]")?.focus({ preventScroll: true });
+  });
 }
 
 function reasonGuide(reason) {
   const code = normalize(reason.code);
   if (code === "cogs_reconciliation_failed") {
     return costReconciliationGuide(reason);
+  }
+  const logisticsGuides = {
+    logistics_analysis_partial: {
+      hint: "Откройте логистику и проверьте операции, которые пока не распределены по направлениям.",
+      label: "Открыть логистику",
+      action: "logistics",
+      target: "#logistics-workspace",
+    },
+    logistics_dimensions_partial: {
+      hint: "Откройте габариты и проверьте карточки WB, для которых вес или размеры не получены.",
+      label: "Открыть габариты",
+      action: "logistics",
+      target: "#logistics-dimensions",
+    },
+    logistics_measurements_partial: {
+      hint: "Откройте контрольные замеры и проверьте события с неполными или неоднозначными сведениями.",
+      label: "Открыть контрольные замеры",
+      action: "logistics",
+      target: "#logistics-measurements",
+    },
+    logistics_tariffs_partial: {
+      hint: "Откройте тарифы и проверьте недели без подтверждённого исторического тарифа WB.",
+      label: "Открыть тарифы",
+      action: "logistics",
+      target: "#logistics-tariffs",
+    },
+    logistics_routes_partial: {
+      hint: "Откройте склады и направления и проверьте неполные или конфликтующие значения.",
+      label: "Открыть склады и направления",
+      action: "logistics",
+      target: "#logistics-routes",
+    },
+    logistics_return_reasons_partial: {
+      hint: "Откройте причины возвратов и проверьте покрытие заявок и подтверждённых причин.",
+      label: "Открыть причины возвратов",
+      action: "logistics",
+      target: "#logistics-return-reasons",
+    },
+  };
+  if (logisticsGuides[code]) {
+    return logisticsGuides[code];
   }
   const guides = {
     missing_cost: {
@@ -16827,12 +16903,12 @@ function reasonGuide(reason) {
       action: "onecReconciliation",
     },
     data_quality_review: {
-      hint: "Расшифровка откроет все строки со статусом, отличным от OK.",
+      hint: "Расшифровка откроет все строки со статусом, отличным от ОК.",
       label: "Показать строки к проверке",
       action: "reviewRows",
     },
     too_many_data_quality_issues: {
-      hint: "Сначала разберите строки не OK, затем пересчитайте отчет.",
+      hint: "Сначала разберите строки со статусом не ОК, затем пересчитайте отчёт.",
       label: "Показать строки к проверке",
       action: "reviewRows",
     },
@@ -16881,12 +16957,70 @@ function reasonGuide(reason) {
       label: "Открыть отчёт для клиента",
       action: "clientOutput",
     },
-  };
-  return (
-    guides[code] || {
-      hint: "Откройте строки к проверке и разберите статусы в таблице товаров.",
+    client_draft_forbidden_text: {
+      hint: "Откройте отчёт для клиента и удалите служебные формулировки перед отправкой.",
+      label: "Открыть отчёт для клиента",
+      action: "clientOutput",
+    },
+    monthly_reconciliation_unresolved: {
+      hint: "Откройте помесячную сверку документов WB и 1С и разберите расхождения.",
+      label: "Открыть сверку 1С",
+      action: "onecReconciliation",
+    },
+    document_reconciliation_unresolved: {
+      hint: "Откройте сверку документов WB и 1С и проверьте неподтверждённые расхождения.",
+      label: "Открыть сверку 1С",
+      action: "onecReconciliation",
+    },
+    tax_profile_unconfirmed: {
+      hint: "Откройте настройки подключений и проверьте налогообложение организаций.",
+      label: "Открыть настройки",
+      action: "integrations",
+    },
+    tax_rate_basis_unconfirmed: {
+      hint: "Откройте настройки подключений и проверьте основание региональной ставки.",
+      label: "Открыть настройки",
+      action: "integrations",
+    },
+    company_cabinet_mismatch: {
+      hint: "Откройте настройки и проверьте связь организации с кабинетом WB.",
+      label: "Открыть настройки",
+      action: "integrations",
+    },
+    wb_report_type_unconfirmed: {
+      hint: "Откройте строки к проверке и уточните тип отчёта WB.",
       label: "Показать строки к проверке",
       action: "reviewRows",
+    },
+  };
+  const sourceCodes = new Set([
+    "source_lineage_missing",
+    "stock_history_lineage_missing",
+    "no_rows",
+    "report_status_blocked",
+    "report_status_review",
+    "source_lineage_failed",
+    "required_wb_expense_source_missing",
+  ]);
+  const logisticsSystemIssue =
+    code.startsWith("logistics_analysis_") ||
+    code.startsWith("logistics_dimensions_") ||
+    code.startsWith("logistics_measurements_") ||
+    code.startsWith("logistics_tariffs_") ||
+    code.startsWith("logistics_routes_") ||
+    code.startsWith("logistics_return_reasons_");
+  if (sourceCodes.has(code) || logisticsSystemIssue) {
+    return {
+      hint: "Проверьте последнее обновление источников и создание текущей версии отчёта.",
+      label: "Показать источники",
+      action: "sources",
+    };
+  }
+  return (
+    guides[code] || {
+      hint: "Для этого статуса нет отдельной безопасной расшифровки. Используйте указанное описание и не считайте проверку закрытой без исправления данных.",
+      label: "",
+      action: "",
     }
   );
 }
@@ -16907,7 +17041,7 @@ function costReconciliationGuide(reason = {}) {
   };
 }
 
-function runReasonAction(action) {
+function runReasonAction(action, target = "") {
   if (action === "missingCost") {
     openMissingCostAction();
     return;
@@ -16936,6 +17070,10 @@ function runReasonAction(action) {
     openClientOutputWidget();
     return;
   }
+  if (action === "logistics") {
+    openLogisticsReadinessTarget(target);
+    return;
+  }
   if (action === "period") {
     document.querySelector(".topbar").scrollIntoView({ behavior: "smooth", block: "start" });
     window.setTimeout(() => els.topbarPeriodStart.focus(), 180);
@@ -16961,7 +17099,6 @@ function renderRowsErrorState() {
 function renderRowsAnalyticsStatus(message, value, tone) {
   setKpiHeading();
   renderMetrics(els.kpiGrid, [["Статус", value, message, tone]]);
-  renderMetrics(els.qualityGrid, []);
   renderAnalyticsEmpty(els.actionInsightsList, message);
   renderAnalyticsEmpty(els.moneyTrendChart, message);
   renderAnalyticsEmpty(els.unitPlTable, message);
@@ -17530,7 +17667,7 @@ function renderOnecReconciliationRowsTable(target, rows, total) {
     if (!total && els.onecFilterDeltaOnly.checked) {
       cell.textContent = "Расхождений WB ↔ 1С не найдено.";
     } else if (!total && !hasActiveOnecReconciliationFilters()) {
-      cell.textContent = "Сверка с 1С не загружена в текущий report run.";
+      cell.textContent = "Сверка с 1С не загружена в текущую версию отчёта.";
     } else {
       cell.textContent = "Строки сверки не найдены. Измените фильтры.";
     }

@@ -8080,7 +8080,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "onecReconciliationFilterParams" in app_js.text
     assert "onec_reconciliation_review" in app_js.text
     assert "Отметить просмотренным" in app_js.text
-    assert "Вернуть в работу" in app_js.text
+    assert "Просмотрено, данные не исправлены." in app_js.text
+    assert "Снять отметку" in app_js.text
     assert "reasonGuide" in app_js.text
     assert "cogs_reconciliation_failed" in app_js.text
     assert "costIssueBreakdown" in app_js.text
@@ -8118,6 +8119,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert ".task-column" in css.text
     assert ".task-card" in css.text
     assert ".task-card-actions" in css.text
+    assert ".reason-item.is-reviewed" in css.text
+    assert ".reason-review-status" in css.text
     assert ".task-done-link" in css.text
     assert ".task-reopen-link" in css.text
     assert ".is-done" in css.text
@@ -8252,6 +8255,96 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "reason-columns" not in css.text
     assert ".file-picker" in css.text
     assert "overflow-wrap: anywhere" in css.text
+
+
+def test_readiness_task_actions_have_safe_destinations(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    app_js = client.get("/static/app.js")
+    index = client.get("/static/index.html")
+
+    assert app_js.status_code == 200
+    assert index.status_code == 200
+    logistics_targets = {
+        "logistics_analysis_partial": "#logistics-workspace",
+        "logistics_dimensions_partial": "#logistics-dimensions",
+        "logistics_measurements_partial": "#logistics-measurements",
+        "logistics_tariffs_partial": "#logistics-tariffs",
+        "logistics_routes_partial": "#logistics-routes",
+        "logistics_return_reasons_partial": "#logistics-return-reasons",
+    }
+    for code, target in logistics_targets.items():
+        guide_start = app_js.text.index(f"    {code}: {{")
+        guide_end = app_js.text.index("\n    },", guide_start)
+        guide = app_js.text[guide_start:guide_end]
+        assert 'action: "logistics"' in guide
+        assert f'target: "{target}"' in guide
+
+    assert "openLogisticsFactorSection(recommendation.actionTarget)" in app_js.text
+    assert (
+        'openLogisticsReadinessTarget(target = "#logistics-workspace")'
+        in app_js.text
+    )
+    assert "section.querySelector(\"summary strong\")?.focus" in app_js.text
+    assert "Для этого статуса нет отдельной безопасной расшифровки" in app_js.text
+    assert "Откройте строки к проверке и разберите статусы" not in app_js.text
+
+    rows_status_start = app_js.text.index(
+        "function renderRowsAnalyticsStatus(message, value, tone)",
+    )
+    rows_status_end = app_js.text.index("\n}", rows_status_start)
+    rows_status = app_js.text[rows_status_start:rows_status_end]
+    assert "qualityGrid" not in rows_status
+
+    done_tasks_start = app_js.text.index("function renderDoneTasks(readiness)")
+    done_tasks_end = app_js.text.index(
+        "\nfunction taskStatusStorageKey()",
+        done_tasks_start,
+    )
+    done_tasks = app_js.text[done_tasks_start:done_tasks_end]
+    assert "isTaskReviewed" not in done_tasks
+    assert 'marker.textContent = "ОК"' in done_tasks
+    assert "Просмотрено:" not in done_tasks
+
+    assert "renderReasons(\n    els.reviewReasons,\n    reviewReasons," in app_js.text
+    render_report_start = app_js.text.index("function renderReport()")
+    render_report_end = app_js.text.index(
+        "\nfunction renderTableScenarioSummary(",
+        render_report_start,
+    )
+    render_report = app_js.text[render_report_start:render_report_end]
+    assert "filter((reason) => !isTaskReviewed(reason))" not in render_report
+    assert "data-task-review-toggle" in app_js.text
+    assert "focus({ preventScroll: true })" in app_js.text
+    assert "строк OK" not in app_js.text
+    assert "Доля строк OK" not in index.text
+
+
+def test_readiness_client_copy_avoids_internal_english_terms() -> None:
+    repository_text = Path(repository.__file__).read_text(encoding="utf-8")
+    readiness_start = repository_text.index("def report_readiness_payload(")
+    readiness_end = repository_text.index("\ndef _row_payload(", readiness_start)
+    readiness_text = repository_text[readiness_start:readiness_end]
+    next_action_start = repository_text.index("def _readiness_next_action(")
+    next_action_end = repository_text.index(
+        "\ndef _source_load_ok(",
+        next_action_start,
+    )
+    client_copy = (
+        readiness_text
+        + repository_text[next_action_start:next_action_end]
+    )
+
+    for internal_term in (
+        "report run",
+        "Snapshot отчёта",
+        "snapshot истории",
+        "tenant или клиенту",
+        "не совпадает с context",
+        "AI-черновик",
+        "internal labels",
+        "profitBeforeTax",
+    ):
+        assert internal_term not in client_copy
 
 
 def test_client_logistics_deep_link_waits_for_reports_and_skips_staff_draft_api(
