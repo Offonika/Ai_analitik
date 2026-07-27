@@ -49,6 +49,9 @@ class WebSettings(BaseSettings):
     source_refresh_incremental_window_days: int = 28
     source_refresh_onec_page_size: int = 5000
     source_refresh_onec_max_pages: int = 200
+    source_refresh_onec_metadata_timeout_seconds: float = 60.0
+    source_refresh_onec_metadata_max_attempts: int = 3
+    source_refresh_onec_metadata_retry_delay_seconds: float = 2.0
     accounting_recordtype_page_size: int = 10000
     source_refresh_wb_limit: int = 100000
     source_refresh_wb_max_pages: int = 50
