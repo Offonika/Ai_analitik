@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-23"
+updated_at: "2026-07-31"
 ---
 
 # Назначение
@@ -16,7 +16,10 @@ updated_at: "2026-07-23"
 > incremental run создали только staff-черновики, завершились за `9:18` и
 > `8:45`, дали одинаковые `19 230` расчетных строк и одинаковые KPI; текущий
 > опубликованный отчет не переключался. После включения drop-ins штатный
-> production worker повторил тот же результат за `8:36`.
+> production worker повторил тот же результат за `8:36`. На 30.07.2026 weekly
+> timer установлен и активен с ближайшим запуском 04.08.2026 в `06:15 MSK`;
+> deployed daily/weekly units совпадают с версионированными шаблонами, а
+> production health после переключения расписания имеет статус `ok`.
 
 Этот runbook описывает безопасное расписание `source refresh` для web-кабинета
 Shumeyko. Расписание запускает только read-only CLI
@@ -28,7 +31,13 @@ staff draft, а публикация current выполняется отдель
 # Расписание
 
 - Daily refresh: каждый час в `*:15 MSK`, режим `daily`.
-- Weekly full refresh: понедельник в `08:15 MSK`, режим `full`.
+- Weekly full refresh: вторник в `06:15 MSK`, режим `full`.
+
+Weekly full refresh полностью перечитывает обязательные WB/1С источники,
+формирует новый immutable staff-черновик и экспортирует готовый Excel в
+production reports root. Запуск в `06:15 MSK` оставляет запас до начала
+рабочего дня. Публикация `current` остается отдельной финансовой операцией:
+до приёмки клиент продолжает видеть предыдущий опубликованный отчёт.
 
 `incremental` — ручной staff-режим между ними. Он повторно читает последние
 `28` дней WB, свежую 1C за полный отчетный период, атомарно заменяет окно daily
@@ -87,6 +96,30 @@ CLI run восстанавливается лишь после подтверж�
 кандидат на завершение при давлении памяти. Поэтому тяжёлый refresh может
 завершиться управляемой ошибкой и быть продолжен по checkpoint, но не должен
 забирать память у SSH, PostgreSQL и базовых системных служб.
+
+Worker явно запускается с
+`SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000`. Это конечный бюджет новых
+страниц на одну 1С-коллекцию: при странице `Продажи=2` он покрывает до `2000`
+верхнеуровневых `Recorder/RecordSet`. Достигнутый предел остается
+`partial_source`; worker не публикует неполный отчет и следующий run может
+продолжить сохраненный checkpoint.
+
+Критичные production paths передаются повторно через `/usr/bin/env` в
+`ExecStart` web, его corporate-proxy login-shell drop-in, scheduled
+daily/weekly services и worker:
+`ALLOWED_EXPORT_ROOT`, `DEFAULT_REPORT_WORKBOOK`, `SOURCE_REFRESH_ROOT` и disk
+guard. Это намеренно: systemd `EnvironmentFile` имеет приоритет над
+`Environment=`, а drop-in дополнительно переопределяет `ExecStart`. Старое
+значение `reports` иначе записывает Excel в release/workspace, после чего
+защищенный `/api/reports/.../export.xlsx` возвращает `export not found`.
+Секреты таким способом не дублируются.
+
+Test не использует production scheduler и не имеет automatic source-refresh
+timers. Ручной test/full canary запускается foreground/background worker из
+`/opt/shumeyko-runtime/test/current`, явно задаёт test report/source roots,
+`SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000` и
+`SHUMEYKO_SOURCE_REFRESH_WORKER_BACKEND=background`. Production worker unit и
+production EnvironmentFile для него запрещены.
 
 Секреты, токены и содержимое `.env` не переносить в unit-файлы. Для production
 refresh доступы должны приходить из encrypted tenant integrations.
@@ -173,6 +206,39 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   --mode full \
   --dry-run
 ```
+
+После отдельной настройки read-only test-интеграций ручной test/full canary
+запускается из test runtime. Внешние интеграции включаются только для этого
+ограниченного процесса; test web и automatic timers остаются выключенными:
+
+```bash
+systemd-run --wait --collect --pipe \
+  --unit=shumeiko-test-full-canary \
+  --property=User=shumeyko-test \
+  --property=Group=shumeyko-test \
+  --property=WorkingDirectory=/opt/shumeyko-runtime/test/current \
+  --property=EnvironmentFile=/etc/shumeiko-web-test.env \
+  --property=NoNewPrivileges=true \
+  --property=ReadWritePaths=/data/shumeyko/test \
+  --property='InaccessiblePaths=/data/shumeyko/source_refresh /data/shumeyko/prod/reports /var/backups/shumeiko-web' \
+  /usr/bin/env \
+  SHUMEYKO_RUNTIME_ENVIRONMENT=test \
+  SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=true \
+  SHUMEYKO_SOURCE_REFRESH_ENABLED=true \
+  SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true \
+  SHUMEYKO_SOURCE_REFRESH_WORKER_BACKEND=background \
+  SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports \
+  SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/test/reports/shumeyko_wb_excel_mvp.xlsx \
+  SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/test/source_refresh \
+  SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000 \
+  /opt/shumeyko-runtime/test/current/.venv/bin/python \
+  scripts/run_source_refresh.py --tenant shumeyko --mode full \
+  --reason 'test release canary'
+```
+
+Canary может создать только staff draft. Публикация current выполняется
+отдельно после финансовой приёмки; production database, worker и report root
+команда не использует.
 
 Проверка timers:
 

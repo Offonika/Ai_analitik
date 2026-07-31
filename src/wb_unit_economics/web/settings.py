@@ -48,7 +48,7 @@ class WebSettings(BaseSettings):
     source_refresh_incremental_enabled: bool = False
     source_refresh_incremental_window_days: int = 28
     source_refresh_onec_page_size: int = 5000
-    source_refresh_onec_max_pages: int = 200
+    source_refresh_onec_max_pages: int = 1000
     accounting_recordtype_page_size: int = 10000
     source_refresh_wb_limit: int = 100000
     source_refresh_wb_max_pages: int = 50

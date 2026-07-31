@@ -13,7 +13,7 @@ Environment=SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports
 Environment=SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/shumeyko_wb_excel_mvp.xlsx
 Environment=SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/source_refresh
 Environment=SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20
-ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode full --reason "systemd weekly full source refresh"
+ExecStart=/usr/bin/env SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/shumeyko_wb_excel_mvp.xlsx SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/source_refresh SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20 SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000 /opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh.py --tenant ${SHUMEYKO_SOURCE_REFRESH_TENANT} --mode full --reason "systemd weekly full source refresh"
 MemoryHigh=512M
 MemoryMax=1G
 MemorySwapMax=256M

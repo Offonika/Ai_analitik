@@ -61,7 +61,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-23"
+updated_at: "2026-07-31"
 ---
 
 # Implementation Status
@@ -266,6 +266,15 @@ read-only справочные snapshots. Отбор по началу отче�
 `nested_recordset_local` явно фиксируется в manifest. Размеры страниц
 подбираются по фактическому весу recorder: `Продажи=2`, `Запасы` и
 `ЗапасыНаСкладах=25`, `ДоходыИРасходы=50`, взаиморасчеты=`100`.
+Общий бюджет одного запуска 1С составляет `1000` новых страниц. Он позволяет
+обязательному регистру `Продажи` завершить один full-run после роста выше
+`400` верхнеуровневых `Recorder/RecordSet`, но остается конечным: достижение
+лимита по-прежнему дает `partial_source`, сохраняет checkpoint и блокирует
+создание отчета. Production worker и ручной test/full canary задают тот же
+бюджет явно, чтобы значение из старого environment-файла не возвращало прежний
+предел `200` страниц. Test canary дополнительно закрепляет собственные
+export/source roots и не использует production worker либо автоматический
+timer.
 
 Каждая успешно прочитанная страница немедленно сохраняется отдельным raw JSON,
 после чего атомарно обновляется collection manifest с хешем query contract,
@@ -622,6 +631,12 @@ mutual-settlement сохраняет документные строки, а buy
 - Тесты, ruff, docs validators и no-secrets validators проходят.
 - Таймаут тяжелой 1С страницы уменьшает batch без потери уже сохраненных
   страниц; следующий совместимый run продолжает с checkpoint без дублей.
+- Full-run с обязательным регистром `Продажи` размером более `400`, но не более
+  `2000` верхнеуровневых строк завершается в одном worker при страницах по `2`;
+  превышение бюджета `1000` страниц остается явным `partial_source`.
+- Ручной test/full canary использует бюджет `1000`, отдельные test report/source
+  roots и read-only test credentials; production paths, worker и timers ему
+  недоступны.
 - Аварийная остановка WB после любой страницы сохраняет manifest; следующий
   совместимый run продолжает с последнего `rrd_id` без повторной загрузки уже
   подтвержденных страниц.
@@ -655,6 +670,12 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-07-31: ручной test/full canary обязан явно повторять бюджет `1000` и
+  test-only writable roots после `EnvironmentFile`; production worker и timers
+  для test по-прежнему запрещены.
+- 2026-07-30: бюджет одного 1С refresh увеличен с `200` до `1000` страниц и
+  закреплен в production worker после фактического роста обязательного регистра
+  `Продажи` выше `400` верхнеуровневых строк; fail-closed и resume сохранены.
 - 2026-07-21: accounting evidence reader привязан к паре
   `refresh_run_id + collection_id`, чтобы использовать существующий индекс и
   не упираться в statement timeout на накопленной snapshot-таблице.

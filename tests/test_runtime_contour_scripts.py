@@ -29,6 +29,28 @@ from wb_unit_economics.web.models import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _assert_test_exec_boundaries(
+    exec_start: str, *, client_login_enabled: bool
+) -> None:
+    assert "SHUMEYKO_RUNTIME_ENVIRONMENT=test" in exec_start
+    assert "SHUMEYKO_SESSION_COOKIE_NAME=shumeyko_test_session" in exec_start
+    assert (
+        f"SHUMEYKO_CLIENT_LOGIN_ENABLED={str(client_login_enabled).lower()}"
+        in exec_start
+    )
+    assert "SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false" in exec_start
+    assert "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports" in exec_start
+    assert (
+        "SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/test/reports/none.xlsx"
+        in exec_start
+    )
+    assert (
+        "SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/test/source_refresh"
+        in exec_start
+    )
+    assert "/data/shumeyko/prod" not in exec_start
+
+
 def test_r5_test_drop_in_keeps_return_reasons_staff_only() -> None:
     drop_in = (
         ROOT
@@ -63,6 +85,7 @@ def test_r6_test_drop_in_enables_all_logistics_for_client_role() -> None:
     assert "ExecStart=" in drop_in.splitlines()
     assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in drop_in
     assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in exec_start
+    _assert_test_exec_boundaries(exec_start, client_login_enabled=True)
     for flag in (
         "SHUMEYKO_LOGISTICS_ANALYSIS",
         "SHUMEYKO_LOGISTICS_FACTORS",
@@ -96,7 +119,7 @@ def test_margin_calculator_test_drop_in_is_staff_only_and_additive() -> None:
     assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=false" in drop_in
     assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_ENABLED=true" in exec_start
     assert "SHUMEYKO_UNIT_ECONOMICS_CALCULATOR_CLIENT_ENABLED=false" in exec_start
-    assert "SHUMEYKO_CLIENT_LOGIN_ENABLED" not in exec_start
+    _assert_test_exec_boundaries(exec_start, client_login_enabled=False)
     assert "SHUMEYKO_LOGISTICS_ANALYSIS_ENABLED" not in exec_start
 
 
@@ -117,6 +140,48 @@ def test_nginx_templates_proxy_accounting_workflow_route() -> None:
     )
     assert "accounting-workflows" in production_config
     assert "proxy_pass http://127.0.0.1:8097;" in production_config
+
+
+def test_scheduled_refresh_builds_tuesday_report_in_production_roots() -> None:
+    systemd_root = ROOT / "deploy/systemd"
+    weekly_timer = (
+        systemd_root / "shumeiko-source-refresh-weekly.timer"
+    ).read_text(encoding="utf-8")
+
+    assert "Tuesday morning" in weekly_timer
+    assert "OnCalendar=Tue *-*-* 06:15:00" in weekly_timer
+
+    for unit_name in (
+        "shumeiko-source-refresh-daily.service",
+        "shumeiko-source-refresh-weekly.service",
+    ):
+        unit = (systemd_root / unit_name).read_text(encoding="utf-8")
+        exec_start = next(
+            line
+            for line in unit.splitlines()
+            if line.startswith("ExecStart=/usr/bin/env ")
+        )
+
+        assert (
+            "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports "
+            in exec_start
+        )
+        assert (
+            "SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/"
+            "shumeyko_wb_excel_mvp.xlsx "
+            in exec_start
+        )
+        assert (
+            "SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/source_refresh "
+            in exec_start
+        )
+        assert "SHUMEYKO_SOURCE_REFRESH_MIN_FREE_GB=20 " in exec_start
+        assert "SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000 " in exec_start
+
+    weekly_service = (
+        systemd_root / "shumeiko-source-refresh-weekly.service"
+    ).read_text(encoding="utf-8")
+    assert "--mode full" in weekly_service
 
 
 def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
@@ -198,10 +263,38 @@ def test_systemd_templates_bound_retention_and_require_data_mounts() -> None:
     )
     assert "SHUMEYKO_RUNTIME_ENVIRONMENT=production" in production_unit
     assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=true" in production_unit
+    assert (
+        "ExecStart=/usr/bin/env SHUMEYKO_RUNTIME_ENVIRONMENT=production "
+        in production_unit
+    )
+    assert (
+        "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports "
+        "SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/"
+        "shumeyko_wb_excel_mvp.xlsx "
+        in production_unit
+    )
+    proxy_dropin = (
+        systemd_root
+        / "shumeiko-web-prod.service.d"
+        / "corporate-proxy-login-shell.conf"
+    ).read_text(encoding="utf-8")
+    assert "ExecStart=/bin/bash -lc 'exec /usr/bin/env " in proxy_dropin
+    assert (
+        "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports "
+        "SHUMEYKO_DEFAULT_REPORT_WORKBOOK=/data/shumeyko/prod/reports/"
+        "shumeyko_wb_excel_mvp.xlsx "
+        in proxy_dropin
+    )
     assert "SHUMEYKO_RUNTIME_ENVIRONMENT=test" in test_unit
     assert "SHUMEYKO_CLIENT_LOGIN_ENABLED=false" in test_unit
     assert "SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false" in test_unit
     assert "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports" in test_unit
+    test_exec_start = next(
+        line
+        for line in test_unit.splitlines()
+        if line.startswith("ExecStart=/usr/bin/env ")
+    )
+    _assert_test_exec_boundaries(test_exec_start, client_login_enabled=False)
 
     health_helper = (ROOT / "scripts/check_web_cabinet_health.py").read_text(
         encoding="utf-8"

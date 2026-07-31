@@ -486,5 +486,17 @@ def test_worker_unit_has_memory_limit_and_failure_repair() -> None:
     assert "OOMPolicy=stop" in unit
     assert "TasksMax=256" in unit
     assert "repair_source_refresh_run.py" in unit
+    assert (
+        "ExecStart=/usr/bin/env "
+        "SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports "
+        in unit
+    )
+    assert "SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000 " in unit
     assert "RuntimeMaxSec=2h" in unit
     assert "TimeoutStopSec=60" in unit
+
+
+def test_default_onec_page_budget_covers_heavy_sales_register() -> None:
+    settings = WebSettings(_env_file=None)
+
+    assert settings.source_refresh_onec_max_pages == 1000
