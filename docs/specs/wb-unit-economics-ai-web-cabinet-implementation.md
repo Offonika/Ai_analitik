@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-25"
+updated_at: "2026-07-31"
 ---
 
 # Implementation Status
@@ -1228,6 +1228,14 @@ OpenAI key остается сервисным runtime secret; клиентск�
 - Export Excel only through the authenticated API.
 - Generate analytical report artifacts only inside the allowed reports/export
   root and serve them only through authenticated report-scoped API endpoints.
+- Production `ExecStart` must enforce the allowed export/source roots after
+  loading the secret-bearing `EnvironmentFile`; an older path from that file
+  must not override the versioned `/data` boundary or make a registered Excel
+  artifact unavailable to the authenticated export endpoint.
+- Test `ExecStart` and every test-only override must enforce the separate test
+  environment, cookie, integration master-switch and export/source roots after
+  loading the secret-bearing `EnvironmentFile`. A scoped client-login canary
+  may change only that accepted flag and must retain every other test boundary.
 - If server-side PDF conversion is unavailable, return a clear PDF status
   instead of publishing an empty or stale PDF.
 - Keep generated reports and DB files out of Git.

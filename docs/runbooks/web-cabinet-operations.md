@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-25"
+updated_at: "2026-07-31"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -94,6 +94,12 @@ rsync -a /opt/shumeyko-partners-wb-unit-economics/reports/ \
 разрешённые booleans через `ExecStart=/usr/bin/env`, потому что systemd читает
 EnvironmentFile позже `Environment=`. Точное operational state и rollback
 записаны в `docs/runbooks/wb-logistics-v4-continuation.md`.
+
+Основной test unit и каждый drop-in, переопределяющий `ExecStart`, повторяют
+test environment, отдельное cookie, выключенный master-switch внешних
+интеграций и `/data/shumeyko/test` report/source roots через `/usr/bin/env`.
+R-6 может изменить только явно принятый client-login/feature scope; production
+и workspace-relative roots в effective `ExecStart` запрещены.
 
 Если test БД принадлежит отдельной PostgreSQL-роли, перед запуском
 `scripts/create_runtime_env_files.py --apply` нужно передать ее полный URL через
@@ -527,7 +533,10 @@ curl --noproxy '*' -fsS https://analitika.offonika.ru/api/health
 Если для production одобрен корпоративный proxy, установить versioned drop-in
 `deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf`.
 Он запускает uvicorn через root login profile, где хранится proxy, не дублируя
-его URL и credentials в unit или EnvironmentFile. Применение и откат:
+его URL и credentials в unit или EnvironmentFile. Drop-in повторяет через
+`/usr/bin/env` non-secret production roots и login/runtime guards, потому что
+его `ExecStart` применяется позже основного unit и не должен возвращать старые
+значения из `EnvironmentFile`. Применение и откат:
 
 ```bash
 sudo install -D -m 0644 \
@@ -794,10 +803,12 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   с `--apply`; для нового клиента передать `--tenant-id`, `--client-id`,
   `--client-name`, повторяемые `--company` и `--cabinet`.
 
-Для systemd использовать отдельные timers: daily каждый час на 15-й минуте по
-МСК для rolling raw refresh и weekly/full утром в понедельник для создания
-нового staff draft после закрытия недельных данных WB/1С. Сырые snapshots
-остаются в `data/source_refresh` и не публикуются клиенту.
+Для production systemd использует отдельные timers: daily каждый час на 15-й
+минуте по МСК для rolling raw refresh и weekly/full во вторник в `06:15 MSK`
+для создания нового staff draft после закрытия недельных данных WB/1С. Test
+automatic timers запрещены; ручной test/full canary выполняется по
+`docs/runbooks/source-refresh-schedule.md`. Сырые snapshots не публикуются
+клиенту.
 
 Проверка первого scheduled run:
 

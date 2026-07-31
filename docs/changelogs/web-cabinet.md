@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-25"
+updated_at: "2026-07-31"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,15 @@ updated_at: "2026-07-25"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-07-31: v2.63 распространил effective `ExecStart` hardening на основной
+  test unit и test-only overrides: test environment, cookie, выключенные
+  внешние интеграции и отдельные report/source roots больше не могут быть
+  переопределены старыми значениями из `EnvironmentFile`.
+- 2026-07-30: v2.62 закрепил production export/source roots на уровне
+  effective `ExecStart` основного unit и corporate-proxy login-shell drop-in
+  после secret-bearing `EnvironmentFile`, чтобы новый Excel создавался внутри
+  разрешенного `/data` и authenticated export не возвращал `export not found`
+  из-за старого workspace-relative значения.
 - 2026-07-25: v2.61 закрепил пропорциональность backup перед публикацией:
   атомарная test-публикация готового immutable draft по умолчанию не создает
   новый полный dump, если предыдущий current сохранен и нет schema/data
