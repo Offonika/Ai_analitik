@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260801-v264-news-guide-v1"
+        "20260801-v264-news-guide-v2"
     )
     assert health.json()["staticBuildId"] == (
-        "20260801-v264-news-guide-v1"
+        "20260801-v264-news-guide-v2"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260801-v264-news-guide-v1" in cabinet.text
-    assert "app.js?v=20260801-v264-news-guide-v1" in cabinet.text
+    assert "styles.css?v=20260801-v264-news-guide-v2" in cabinet.text
+    assert "app.js?v=20260801-v264-news-guide-v2" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7412,9 +7412,16 @@ def test_release_news_and_linked_guide_assets_are_served(tmp_path: Path) -> None
         "v2.61",
     ]
     for item in payload["releases"][0]["items"]:
+        if "media" not in item:
+            continue
         media = client.get(item["media"]["src"])
         assert media.status_code == 200
         assert media.headers["content-type"] == "image/webp"
+    assert any(
+        item["title"] == "Поиск инструкции больше не сбрасывается"
+        and "media" not in item
+        for item in payload["releases"][0]["items"]
+    )
     assert 'id="news-nav-count"' in cabinet.text
     assert 'id="guide-search-input"' in cabinet.text
     assert 'id="guide-return-banner"' in cabinet.text
@@ -7426,6 +7433,7 @@ def test_release_news_and_linked_guide_assets_are_served(tmp_path: Path) -> None
     assert "function markAllReleaseNotesRead(" in app_js.text
     assert "function applyGuideSearch(" in app_js.text
     assert "function focusGuideTarget(" in app_js.text
+    assert 'state.guideTargetId = "";' in app_js.text
     assert "window.ReleaseNotesCore?.parseReleaseRoute" in app_js.text
     assert "innerHTML" not in core.text
 
@@ -7597,7 +7605,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260801-v264-news-guide-v1" in cabinet.text
+    assert "20260801-v264-news-guide-v2" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
