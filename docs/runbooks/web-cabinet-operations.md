@@ -1739,3 +1739,65 @@ ID; успешный production health unit; safety-коды `404`, `404`, `401`
 drift-check. Любая ошибка требует атомарно вернуть production pointer на
 `runtime-main-880a214-cost-quality-split-20260724`, перезапустить только
 production web service и повторить те же проверки.
+
+## Production release v2.63 — 1 августа 2026 года
+
+Product RC из PR [#86](https://github.com/Offonika/Ai_analitik/pull/86)
+собран из source commit `1515f5dce14324f892a9142bea335a149de79f7a`.
+Test qualification зафиксирована PR
+[#87](https://github.com/Offonika/Ai_analitik/pull/87), а отдельное принятое
+исключение без live full canary — PR
+[#88](https://github.com/Offonika/Ai_analitik/pull/88), merge commit
+`cb56708788ec345c3a72a53e2dca4cc868491c15`. Все три PR получили и успешно
+завершили обязательные GitHub CI jobs `quality` и `tests`.
+
+Annotated Git tag
+[`v2.63`](https://github.com/Offonika/Ai_analitik/releases/tag/v2.63) указывает
+на точный source commit deployed artifact. Финальный GitHub Release опубликован
+по тому же тегу. Immutable runtime
+`runtime-main-1515f5d-report-refresh-runtime-20260731` сохранил
+`sourceDirty=false`, archive SHA-256
+`259e19a87662a39fe051949a5bc77054ef45a48d54fbfd39cfcae493efce059e` и
+content SHA-256
+`c4a9e4d346ca0de9a6ca29899d15ce8dfdcc6ca45a018bb2bb27a258fe17c44a`.
+Перед promotion повторно проверены source archive, dependency freeze, runtime
+bootstrap, общий content hash, read-only permissions и импорт Python-пакета из
+`src` этого же release. `systemd-analyze verify` измененных unit-файлов также
+завершился успешно.
+
+Непосредственно перед переключением production оставался на
+`runtime-main-880a214-cost-quality-split-20260724`, source refresh workers не
+были активны, runtime lock был свободен, local health имел `status=ok`, а
+systemd/nginx drift-check не нашел расхождений. Read-only production preflight
+без внешних WB/1С запросов завершился `ready_with_warnings`. В соответствии с
+PR #88 владелец принял предупреждения `mapping service needs_review` и
+`legacy mapping source missing`; promotion не запускал full refresh и не
+публиковал report.
+
+В `13:10 MSK` production pointer атомарно переключен штатным
+`scripts/promote_runtime_release.py` на тот же artifact, который активен в
+test, и перезапущен только `shumeiko-web-prod.service`. Unit-файлы уже
+соответствовали release, поэтому повторная установка unit, `daemon-reload` и
+изменение nginx не выполнялись. Production/test БД, schema, report files,
+source snapshots, test pointer и report publication `current` не менялись;
+миграции, backup и внешний source refresh не запускались. Новый backup не
+требовался по правилу пропорциональности: операция имела дешевый атомарный
+runtime rollback и не изменяла данные.
+
+После restart production service остался `active` с нулем автоматических
+рестартов; штатный health unit завершился успешно. Локальный и публичный health
+вернули `status=ok`, `runtimeEnvironment=production` и одинаковый
+backend/static build ID `20260726-logistics-management-v3`, совпадающий с test
+artifact. Safety smoke вернул `404`, `404`, `401` для неизвестного route,
+`/.env` и неавторизованного `/api/reports`; `X-Robots-Tag` сохранил
+`noindex`, `nofollow`, `noarchive`. Повторный drift-check не нашел расхождений.
+Rollback-window monitoring выполнил `10/10` успешных local/public health и
+pointer checks с интервалом 30 секунд; автоматических рестартов и новых
+error-level записей не было. Rollback не потребовался.
+
+Weekly full timer активен и назначен на вторник, `06:15 MSK`. Он станет первым
+production full на новом runtime; refresh создаст только immutable staff draft,
+а публикация `current` останется отдельной операцией. Предыдущий immutable
+runtime `runtime-main-880a214-cost-quality-split-20260724` сохранен как точная
+цель rollback. Принятое исключение без live canary относится только к этому
+promotion и не переносится на будущие releases автоматически.
