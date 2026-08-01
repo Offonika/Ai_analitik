@@ -79,6 +79,20 @@ def test_user_guide_contract_rejects_undocumented_source_refresh_action() -> Non
     assert "new-refresh-action: guide description is missing" in parser.failures
 
 
+def test_user_guide_contract_requires_stable_id_and_quality_fields() -> None:
+    parser = UserGuideContractParser()
+    parser.feed(
+        '<button data-workspace-nav="new-section" '
+        'data-guide-entry="sections" data-guide-description="Описание">'
+        "Новый раздел</button>"
+    )
+
+    assert "button: data-guide-id is missing" in parser.failures
+    assert "button: guide expected result is missing" in parser.failures
+    assert "button: guide limitation is missing" in parser.failures
+    assert "button: guide troubleshooting is missing" in parser.failures
+
+
 def test_manifest_metadata_parity_validator() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/validate_docs_manifest.py"],

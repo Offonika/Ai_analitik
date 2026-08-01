@@ -58,12 +58,15 @@ def test_ci_workflow_runs_all_blocking_project_checks() -> None:
 
     required_commands = {
         "python -m ruff check scripts src tests",
+        "node --check src/wb_unit_economics/web/static/release-notes-core.js",
         "node --check src/wb_unit_economics/web/static/app.js",
+        "node --test tests/js/release-notes-core.test.cjs",
         "python scripts/validate_specs.py",
         "python scripts/validate_docs_manifest.py",
         "python scripts/validate_llm_docs.py",
         "python scripts/docs_route.py --check-generated",
         "python scripts/validate_documentation_contracts.py",
+        "python scripts/validate_release_notes.py",
         "python scripts/build_client_tz_docx.py --check",
         "python scripts/generate_web_api_reference.py --check",
         "python scripts/validate_no_secrets.py",

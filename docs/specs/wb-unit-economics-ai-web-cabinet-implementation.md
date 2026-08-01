@@ -9,8 +9,8 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: web-cabinet
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/styles.css, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
-related_tests: [tests/test_web_app.py]
+related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/release-notes-core.js, src/wb_unit_economics/web/static/release-notes.json, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/styles.css, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
+related_tests: [tests/test_web_app.py, tests/test_release_notes.py, tests/test_documentation_validators.py, tests/js/release-notes-core.test.cjs]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
 related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cabinet-runtime-contours.md]
@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-01"
 ---
 
 # Implementation Status
@@ -378,10 +378,25 @@ UI readiness behavior:
   AI остается доступным. Счетчик `Проверки` и верхнее состояние берутся из
   `issues[]` текущего scenario. Пользовательские статусы и таблицы локализованы,
   технические идентификаторы не подменяют названия сущностей;
+- начиная с v2.64 все авторизованные роли видят статический клиентский раздел
+  `Новости` с маршрутами `#news` и `#news/<version>`. История версий не содержит
+  внутренних идентификаторов, путей или данных клиентов; прочтение хранится
+  fail-soft только в namespaced `localStorage`. Каждый пункт ссылается на
+  стабильный `data-guide-id`, а `#guide/<guide-id>` открывает, фокусирует и
+  выделяет связанную карточку. Карточка объясняет действие, результат,
+  ограничение и восстановление; поиск работает только по доступным роли
+  карточкам. Визуальное изменение начиная с v2.64 сопровождается локальным
+  обезличенным WebP с alt-текстом и подписью;
+- начиная с v2.64 пользовательское изменение не считается готовым без
+  обновлённой инструкции или подтверждённого отсутствия влияния на неё,
+  заметки следующей версии и актуального обезличенного screenshot при
+  визуальном эффекте. Текст проверяет редактор или владелец процесса, а media
+  отдельно проверяется на клиентские данные, идентификаторы, credentials и
+  внутренние пути;
 - the authenticated cabinet uses one analyst workspace shell with a persistent
-  navigation rail and four page entries: `Обзор`, `Проверки`,
-  `Аналитика и таблицы` and `Инструкция`; a separate top-level `Логистика`
-  entry is forbidden. `Отчёт клиенту` remains a report action, while
+  navigation rail and five page entries: `Обзор`, `Проверки`,
+  `Аналитика и таблицы`, `Новости` and `Инструкция`; a separate top-level
+  `Логистика` entry is forbidden. `Отчёт клиенту` remains a report action, while
   `Настройки` is shown only to `consultant/admin` and opens the existing
   integrations widget rather than a new page;
 - `Аналитика и таблицы` contains one nested scenario navigation with the stable
@@ -392,7 +407,8 @@ UI readiness behavior:
 - the browser URL may expose UI-only fragments `#overview`, `#checks`,
   `#checks/cost`, `#tables`, `#tables/summary`, `#tables/products`,
   `#tables/logistics`, `#tables/returns`, `#tables/wb-expenses`,
-  `#tables/source` and `#guide`; `#tables` is an alias of
+  `#tables/source`, `#news`, `#news/<version>`, `#guide` and
+  `#guide/<guide-id>`; `#tables` is an alias of
   `#tables/summary`. These fragments do not add server routes or API contracts,
   invalid fragments fall back to `#overview`, and browser Back/Forward restores
   the visible workspace without reloading report facts. A deep-link to a
@@ -1367,6 +1383,12 @@ Large-report loading:
 - `#guide` открывает встроенную инструкцию; ее названия разделов и действий
   совпадают с текущими UI controls, а клиентская роль не видит staff-only
   карточки `Настройки` и `Добавить клиента`.
+- `#news` и `#news/v2.64` открывают безопасную историю `v2.61–v2.64`;
+  непрочитанный badge не требует popup, первый визит не считает всю старую
+  историю новой, а ошибка JSON/storage не блокирует кабинет. Ссылка
+  `#guide/<guide-id>` ведет к существующей доступной роли карточке, поддерживает
+  Back/Forward и возвращение к версии; неизвестная цель безопасно показывает
+  начало инструкции.
 - Боковая навигация содержит `Аналитика и таблицы`, не содержит отдельный пункт
   `Логистика`, а вложенная навигация сохраняет порядок `Сводка / Товары /
   Логистика / Возвраты / Расходы WB / Исходные данные` среди доступных роли
@@ -1382,6 +1404,10 @@ Large-report loading:
 - На ширине 390 px все значения глобального среза остаются доступными, вложенная
   навигация не создает page-level overflow, а после перехода фокус установлен на
   заголовке выбранного сценария.
+- На ширинах 320/390 px пять основных разделов остаются touch-доступными без
+  горизонтальной прокрутки и перекрытия badge; короткая видимая подпись не
+  сокращает полное accessible name. Фокус и подсветка инструкции учитывают
+  `prefers-reduced-motion`.
 - Бухгалтерский report kind показывает контекстную инструкцию без
   marketplace-only шагов, не дублирует заголовок общей шапкой, сохраняет
   доступное действие AI и синхронизирует badge/текст `Проверки` с `issues[]`.
@@ -1499,6 +1525,11 @@ Large-report loading:
   `data-guide-*` покрытие верхней навигации, фильтров, action menu и всех кнопок
   `source-refresh-actions`; отдельный negative test отклоняет новую кнопку
   `Данные и расчёт` без пользовательского пояснения.
+- Frontend release-news contract: schema/SemVer/date/category validation,
+  client-safe text, local WebP/alt/caption, уникальные двусторонние guide refs,
+  `#news/<version>` и `#guide/<guide-id>`, unread/read и fail-soft storage,
+  поиск по инструкции, отсутствие unsafe HTML и Node tests чистой route/state
+  логики без нового frontend framework.
 - Frontend information-architecture contract: единственный sidebar entry
   `Аналитика и таблицы`, фиксированный порядок вложенных сценариев, alias
   `#tables -> #tables/summary`, прямой `#tables/logistics`, Back/Forward,

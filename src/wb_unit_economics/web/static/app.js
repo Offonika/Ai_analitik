@@ -129,6 +129,16 @@ const state = {
   workspace: "overview",
   checkView: "summary",
   tableScenario: "summary",
+  releaseNotes: [],
+  releaseNotesLoaded: false,
+  releaseNotesLoading: false,
+  currentReleaseVersion: "",
+  lastSeenReleaseVersion: "",
+  newsUnreadAtOpen: [],
+  newsTargetVersion: "",
+  guideTargetId: "",
+  guideReturnVersion: "",
+  guideSearchQuery: "",
 };
 
 const LOGISTICS_PAGE_SIZE = 250;
@@ -183,6 +193,18 @@ const els = {
   guideActionsList: document.querySelector("#guide-actions-list"),
   guideChecksList: document.querySelector("#guide-checks-list"),
   userGuideStatus: document.querySelector("#user-guide-status"),
+  guideReturnBanner: document.querySelector("#guide-return-banner"),
+  guideReturnLink: document.querySelector("#guide-return-link"),
+  guideSearchInput: document.querySelector("#guide-search-input"),
+  guideSearchClear: document.querySelector("#guide-search-clear"),
+  guideSearchStatus: document.querySelector("#guide-search-status"),
+  newsNavCount: document.querySelector("#news-nav-count"),
+  newsCurrentVersion: document.querySelector("#news-current-version"),
+  newsCurrentDate: document.querySelector("#news-current-date"),
+  newsStatus: document.querySelector("#news-status"),
+  newsRetry: document.querySelector("#news-retry"),
+  newsMarkAllRead: document.querySelector("#news-mark-all-read"),
+  newsReleaseList: document.querySelector("#news-release-list"),
   workspaceActionsMenu: document.querySelector("#workspace-actions-menu"),
   checksNavCount: document.querySelector("#checks-nav-count"),
   clientSelect: document.querySelector("#client-select"),
@@ -831,6 +853,9 @@ const ROW_PRESET_LABELS = {
 };
 
 const FILTER_STATE_STORAGE_KEY = "wb-unit-economics:cabinet-filters:v1";
+const RELEASE_NOTES_STORAGE_KEY = "wb-unit-economics:release-notes:last-seen:v1";
+const WEB_BUILD_ID =
+  document.querySelector('meta[name="shumeiko-build-id"]')?.content || "development";
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -841,6 +866,9 @@ function init() {
   configurePageMode();
   els.workspaceNavButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      state.newsTargetVersion = "";
+      state.guideTargetId = "";
+      state.guideReturnVersion = "";
       selectWorkspace(button.dataset.workspaceNav || "overview", {
         checkView: "summary",
         updateLocation: true,
@@ -859,6 +887,19 @@ function init() {
   window.addEventListener("popstate", () => {
     configureWorkspaceFromLocation();
     restoreReportContextFromLocation();
+  });
+  els.newsRetry?.addEventListener("click", () => loadReleaseNotes({ force: true }));
+  els.newsMarkAllRead?.addEventListener("click", markAllReleaseNotesRead);
+  els.newsReleaseList?.addEventListener("click", onNewsReleaseListClick);
+  els.guideSearchInput?.addEventListener("input", () => {
+    state.guideSearchQuery = els.guideSearchInput.value;
+    applyGuideSearch();
+  });
+  els.guideSearchClear?.addEventListener("click", () => {
+    state.guideSearchQuery = "";
+    els.guideSearchInput.value = "";
+    applyGuideSearch();
+    els.guideSearchInput.focus();
   });
   els.costReviewBack.addEventListener("click", () =>
     selectWorkspace("overview", { updateLocation: true }),
@@ -1828,6 +1869,16 @@ function configurePageMode() {
 }
 
 function workspaceFromLocation() {
+  const releaseRoute = window.ReleaseNotesCore?.parseReleaseRoute(
+    window.location.hash,
+  );
+  if (releaseRoute) {
+    return {
+      ...releaseRoute,
+      checkView: "summary",
+      tableScenario: "summary",
+    };
+  }
   const value = window.location.hash.replace(/^#/, "").replace(/\/+$/, "");
   if (!value || value === "overview") {
     return { workspace: "overview", checkView: "summary", tableScenario: "summary", valid: true };
@@ -1872,6 +1923,8 @@ function workspaceFromLocation() {
 
 function configureWorkspaceFromLocation(options = {}) {
   const route = workspaceFromLocation();
+  state.newsTargetVersion = route.workspace === "news" ? route.version || "" : "";
+  state.guideTargetId = route.workspace === "guide" ? route.guideId || "" : "";
   selectWorkspace(route.workspace, {
     checkView: route.checkView,
     tableScenario: route.tableScenario,
@@ -1887,7 +1940,7 @@ function configureWorkspaceFromLocation(options = {}) {
 }
 
 function selectWorkspace(workspace = "overview", options = {}) {
-  const allowed = new Set(["overview", "checks", "tables", "guide"]);
+  const allowed = new Set(["overview", "checks", "tables", "news", "guide"]);
   const allowedCheckViews = new Set(["cost", "reconciliation"]);
   const allowedTableScenarios = new Set([
     "summary",
@@ -1950,7 +2003,13 @@ function selectWorkspace(workspace = "overview", options = {}) {
   if (state.workspace === "tables") {
     applyTableScenario({ load: options.load !== false, focus: options.focus });
   }
-  window.scrollTo({ top: 0, behavior: options.instant ? "auto" : "smooth" });
+  if (state.workspace === "news") {
+    loadReleaseNotes();
+  }
+  window.scrollTo({
+    top: 0,
+    behavior: options.instant || prefersReducedMotion() ? "auto" : "smooth",
+  });
 }
 
 function workspaceHash(workspace, checkView, tableScenario = "summary") {
@@ -1963,7 +2022,17 @@ function workspaceHash(workspace, checkView, tableScenario = "summary") {
   if (workspace === "tables") {
     return tableScenario === "summary" ? "#tables" : `#tables/${tableScenario}`;
   }
+  if (workspace === "news") {
+    return state.newsTargetVersion ? `#news/${state.newsTargetVersion}` : "#news";
+  }
+  if (workspace === "guide") {
+    return state.guideTargetId ? `#guide/${state.guideTargetId}` : "#guide";
+  }
   return `#${workspace || "overview"}`;
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
 }
 
 function workspaceBasePath() {
@@ -2048,6 +2117,269 @@ function closeWorkspaceActionsMenu() {
   els.workspaceActionsMenu.removeAttribute("open");
 }
 
+function releaseCategoryLabel(category) {
+  return {
+    new: "Новое",
+    improved: "Улучшения",
+    fixed: "Исправления",
+  }[category] || "Изменение";
+}
+
+function formatReleaseDate(value) {
+  const parsed = new Date(`${String(value || "")}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value || "");
+  }
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(parsed);
+}
+
+async function loadReleaseNotes(options = {}) {
+  if (!els.newsReleaseList || !window.ReleaseNotesCore) {
+    return;
+  }
+  if (state.releaseNotesLoaded && !options.force) {
+    renderReleaseNotes();
+    markOpenedReleaseAsRead();
+    return;
+  }
+  if (state.releaseNotesLoading) {
+    return;
+  }
+  state.releaseNotesLoading = true;
+  els.newsStatus.textContent = "Загружаем историю версий…";
+  els.newsRetry.hidden = true;
+  try {
+    const response = await fetch(
+      `/static/release-notes.json?v=${encodeURIComponent(WEB_BUILD_ID)}`,
+      { credentials: "same-origin" },
+    );
+    if (!response.ok) {
+      throw new Error(`release notes HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    state.releaseNotes = window.ReleaseNotesCore.normalizeReleaseList(
+      payload.releases,
+    );
+    state.currentReleaseVersion = String(
+      payload.currentVersion || state.releaseNotes[0]?.version || "",
+    );
+    state.lastSeenReleaseVersion = window.ReleaseNotesCore.readLastSeen(
+      window.localStorage,
+      RELEASE_NOTES_STORAGE_KEY,
+    );
+    state.newsUnreadAtOpen = window.ReleaseNotesCore.unreadVersions(
+      state.releaseNotes,
+      state.lastSeenReleaseVersion,
+    );
+    state.releaseNotesLoaded = true;
+    renderReleaseNotes();
+    syncNewsBadge();
+    markOpenedReleaseAsRead();
+  } catch (_error) {
+    state.releaseNotesLoaded = false;
+    els.newsStatus.textContent =
+      "Не удалось загрузить новости. Остальные разделы кабинета продолжают работать.";
+    els.newsRetry.hidden = false;
+  } finally {
+    state.releaseNotesLoading = false;
+  }
+}
+
+function syncNewsBadge() {
+  if (!els.newsNavCount || !window.ReleaseNotesCore) {
+    return;
+  }
+  const unread = window.ReleaseNotesCore.unreadVersions(
+    state.releaseNotes,
+    state.lastSeenReleaseVersion,
+  );
+  els.newsNavCount.hidden = unread.length === 0;
+  els.newsNavCount.textContent = unread.length ? String(unread.length) : "";
+  const button = els.newsNavCount.closest("[data-workspace-nav]");
+  button?.setAttribute(
+    "aria-label",
+    unread.length
+      ? `Новости и обновления, непрочитанных версий: ${unread.length}`
+      : "Новости и обновления",
+  );
+}
+
+function markReleaseSeen(version) {
+  if (!version || !window.ReleaseNotesCore) {
+    return;
+  }
+  const current = state.lastSeenReleaseVersion;
+  const next =
+    current && window.ReleaseNotesCore.compareVersions(current, version) >= 0
+      ? current
+      : version;
+  window.ReleaseNotesCore.writeLastSeen(
+    window.localStorage,
+    RELEASE_NOTES_STORAGE_KEY,
+    next,
+  );
+  state.lastSeenReleaseVersion = next;
+  syncNewsBadge();
+}
+
+function markOpenedReleaseAsRead() {
+  if (state.workspace !== "news" || !state.releaseNotesLoaded) {
+    return;
+  }
+  const target = state.newsTargetVersion
+    ? state.releaseNotes.find((release) => release.version === state.newsTargetVersion)
+    : state.releaseNotes[0];
+  if (target) {
+    markReleaseSeen(target.version);
+  }
+}
+
+function markAllReleaseNotesRead() {
+  const latest = state.releaseNotes[0];
+  if (!latest) {
+    return;
+  }
+  state.newsUnreadAtOpen = [];
+  markReleaseSeen(latest.version);
+  renderReleaseNotes();
+  els.newsStatus.textContent = "Все доступные версии отмечены прочитанными.";
+}
+
+function onNewsReleaseListClick(event) {
+  const link = event.target.closest("[data-news-guide-link]");
+  if (!link) {
+    return;
+  }
+  state.guideReturnVersion = String(link.dataset.newsVersion || "");
+  state.guideTargetId = String(link.dataset.guideId || "");
+  state.guideSearchQuery = "";
+}
+
+function appendReleaseMedia(container, media) {
+  if (!media?.src) {
+    return;
+  }
+  const figure = document.createElement("figure");
+  figure.className = "news-release-media";
+  const link = document.createElement("a");
+  link.href = `${media.src}?v=${encodeURIComponent(WEB_BUILD_ID)}`;
+  link.target = "_blank";
+  link.rel = "noopener";
+  const image = document.createElement("img");
+  image.src = link.href;
+  image.alt = String(media.alt || "");
+  image.loading = "lazy";
+  image.decoding = "async";
+  const caption = document.createElement("figcaption");
+  caption.textContent = String(media.caption || "");
+  link.append(image);
+  figure.append(link, caption);
+  container.append(figure);
+}
+
+function buildReleaseItem(item, release) {
+  const listItem = document.createElement("li");
+  listItem.className = "news-change-item";
+  const category = document.createElement("span");
+  category.className = `news-category news-category--${item.category}`;
+  category.textContent = releaseCategoryLabel(item.category);
+  const title = document.createElement("h4");
+  title.textContent = String(item.title || "");
+  const description = document.createElement("p");
+  description.textContent = String(item.description || "");
+  const guideLink = document.createElement("a");
+  guideLink.className = "news-guide-link";
+  guideLink.href = `#guide/${encodeURIComponent(item.guideId || "guide")}`;
+  guideLink.textContent = "Открыть инструкцию";
+  guideLink.dataset.newsGuideLink = "true";
+  guideLink.dataset.newsVersion = release.version;
+  guideLink.dataset.guideId = item.guideId || "guide";
+  listItem.append(category, title, description, guideLink);
+  appendReleaseMedia(listItem, item.media);
+  return listItem;
+}
+
+function buildReleaseCard(release, open) {
+  const listItem = document.createElement("li");
+  listItem.className = "news-release-card";
+  listItem.dataset.releaseVersion = release.version;
+  const details = document.createElement("details");
+  details.open = open;
+  const summary = document.createElement("summary");
+  const heading = document.createElement("h3");
+  heading.className = "news-release-heading";
+  heading.id = `news-release-${release.version.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+  const version = document.createElement("strong");
+  version.textContent = release.version;
+  const title = document.createElement("span");
+  title.textContent = release.title;
+  heading.append(version, title);
+  const releaseDate = document.createElement("time");
+  releaseDate.dateTime = release.releasedAt;
+  releaseDate.textContent = formatReleaseDate(release.releasedAt);
+  summary.append(heading, releaseDate);
+  const body = document.createElement("div");
+  body.className = "news-release-body";
+  const description = document.createElement("p");
+  description.className = "news-release-summary";
+  description.textContent = release.summary;
+  const items = document.createElement("ul");
+  items.className = "news-change-list";
+  (release.items || []).forEach((item) => {
+    items.append(buildReleaseItem(item, release));
+  });
+  body.append(description, items);
+  details.append(summary, body);
+  listItem.append(details);
+  return listItem;
+}
+
+function renderReleaseNotes() {
+  if (!els.newsReleaseList || !state.releaseNotesLoaded) {
+    return;
+  }
+  els.newsReleaseList.replaceChildren();
+  const target = state.newsTargetVersion
+    ? state.releaseNotes.find((release) => release.version === state.newsTargetVersion)
+    : state.releaseNotes[0];
+  const openVersion = target?.version || state.releaseNotes[0]?.version || "";
+  const unread = new Set(state.newsUnreadAtOpen);
+  let unreadDividerAdded = false;
+  state.releaseNotes.forEach((release) => {
+    if (unread.has(release.version) && !unreadDividerAdded) {
+      const divider = document.createElement("li");
+      divider.className = "news-unread-divider";
+      divider.textContent = "Непрочитанное";
+      els.newsReleaseList.append(divider);
+      unreadDividerAdded = true;
+    }
+    els.newsReleaseList.append(
+      buildReleaseCard(release, release.version === openVersion),
+    );
+  });
+  const latest = state.releaseNotes[0];
+  if (latest) {
+    els.newsCurrentVersion.textContent = state.currentReleaseVersion || latest.version;
+    els.newsCurrentDate.dateTime = latest.releasedAt;
+    els.newsCurrentDate.textContent = formatReleaseDate(latest.releasedAt);
+  }
+  els.newsStatus.textContent = target || !state.newsTargetVersion
+    ? `Доступно версий: ${state.releaseNotes.length}.`
+    : `Версия ${state.newsTargetVersion} не найдена. Показана актуальная версия.`;
+  els.newsRetry.hidden = true;
+  if (state.workspace === "news") {
+    window.requestAnimationFrame(() => {
+      document.querySelector(
+        `[data-release-version="${CSS.escape(openVersion)}"] summary`,
+      )?.focus({ preventScroll: true });
+    });
+  }
+}
+
 function compactGuideText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -2100,6 +2432,70 @@ function guideEntryDescription(source) {
   );
 }
 
+function guideEntryFromSource(source) {
+  return {
+    id: compactGuideText(source.dataset.guideId),
+    title: guideEntryTitle(source),
+    description: guideEntryDescription(source),
+    result: compactGuideText(source.dataset.guideResult),
+    caution: compactGuideText(source.dataset.guideCaution),
+    troubleshooting: compactGuideText(source.dataset.guideTroubleshooting),
+    updatedVersion: compactGuideText(source.dataset.guideUpdatedVersion),
+  };
+}
+
+function appendGuideDetail(container, label, value, className = "") {
+  if (!value) {
+    return;
+  }
+  const row = document.createElement("p");
+  row.className = `guide-card-detail ${className}`.trim();
+  const heading = document.createElement("strong");
+  heading.textContent = label;
+  const copy = document.createElement("span");
+  copy.textContent = value;
+  row.append(heading, copy);
+  container.append(row);
+}
+
+function buildGuideCard(entry) {
+  const item = document.createElement("li");
+  item.className = "guide-card";
+  item.id = entry.id ? `guide-topic-${entry.id}` : "";
+  item.tabIndex = -1;
+  item.dataset.guideSearchEntry = "true";
+  item.dataset.guideId = entry.id || "";
+  item.dataset.guideTitle = entry.title || "";
+  item.dataset.guideDescription = entry.description || "";
+  item.dataset.guideResult = entry.result || "";
+  item.dataset.guideCaution = entry.caution || "";
+  item.dataset.guideTroubleshooting = entry.troubleshooting || "";
+  const header = document.createElement("div");
+  header.className = "guide-card-header";
+  const title = document.createElement("h3");
+  title.textContent = entry.title;
+  header.append(title);
+  if (entry.updatedVersion) {
+    const updated = document.createElement("a");
+    updated.className = "guide-version-link";
+    updated.href = `#news/${encodeURIComponent(entry.updatedVersion)}`;
+    updated.textContent = `Обновлено в ${entry.updatedVersion}`;
+    header.append(updated);
+  }
+  item.append(header);
+  appendGuideDetail(item, "Когда использовать", entry.description);
+  appendGuideDetail(item, "Что нажать или выбрать", entry.title);
+  appendGuideDetail(item, "Ожидаемый результат", entry.result);
+  appendGuideDetail(item, "Ограничение", entry.caution, "is-caution");
+  appendGuideDetail(
+    item,
+    "Если не получилось",
+    entry.troubleshooting,
+    "is-troubleshooting",
+  );
+  return item;
+}
+
 function renderGuideGroup(group, list, role) {
   const sources = [...document.querySelectorAll(`[data-guide-entry="${group}"]`)]
     .filter((source) => guideEntryVisibleForRole(source, role))
@@ -2107,31 +2503,109 @@ function renderGuideGroup(group, list, role) {
       (left, right) =>
         Number(left.dataset.guideOrder || 0) - Number(right.dataset.guideOrder || 0),
     );
-  const cards = sources.map((source) => {
-    const item = document.createElement("li");
-    item.className = "guide-card";
-    const title = document.createElement("h3");
-    title.textContent = guideEntryTitle(source);
-    const description = document.createElement("p");
-    description.textContent = guideEntryDescription(source);
-    item.append(title, description);
-    return item;
-  });
+  const cards = sources.map((source) => buildGuideCard(guideEntryFromSource(source)));
   list.replaceChildren(...cards);
 }
 
 function renderGuideCards(list, items) {
-  const cards = items.map(([heading, copy]) => {
-    const item = document.createElement("li");
-    item.className = "guide-card";
-    const title = document.createElement("h3");
-    title.textContent = heading;
-    const description = document.createElement("p");
-    description.textContent = copy;
-    item.append(title, description);
-    return item;
-  });
+  const prefix = String(list.id || "accounting-guide")
+    .replace(/[^a-zA-Z0-9-]/g, "-")
+    .replace(/^guide-/, "accounting-guide-");
+  const cards = items.map(([heading, copy], index) =>
+    buildGuideCard({
+      id: `${prefix}-${index + 1}`,
+      title: heading,
+      description: copy,
+      result: "Вы сможете перейти к следующему шагу проверки выбранного отчёта.",
+      caution: "Используйте только факты выбранных организации и периода.",
+      troubleshooting: "Если шаг недоступен, проверьте контекст отчёта и открытые замечания.",
+      updatedVersion: "v2.64",
+    }),
+  );
   list.replaceChildren(...cards);
+}
+
+function guideSearchEntries() {
+  return [...document.querySelectorAll("[data-guide-search-entry]")].map((card) => ({
+    id: card.dataset.guideId,
+    title: card.dataset.guideTitle,
+    description: card.dataset.guideDescription,
+    result: card.dataset.guideResult,
+    caution: card.dataset.guideCaution,
+    troubleshooting: card.dataset.guideTroubleshooting,
+  }));
+}
+
+function applyGuideSearch() {
+  if (!els.guideSearchInput || !window.ReleaseNotesCore) {
+    return;
+  }
+  const query = state.guideSearchQuery.trim();
+  const entries = guideSearchEntries();
+  const visibleIds = new Set(
+    window.ReleaseNotesCore.filterGuideEntries(entries, query).map((entry) => entry.id),
+  );
+  document.querySelectorAll("[data-guide-search-entry]").forEach((card) => {
+    card.hidden = query ? !visibleIds.has(card.dataset.guideId) : false;
+  });
+  document.querySelectorAll(".guide-section").forEach((section) => {
+    const list = section.querySelector(".guide-card-list");
+    if (!list) {
+      return;
+    }
+    section.hidden = query
+      ? !list.querySelector("[data-guide-search-entry]:not([hidden])")
+      : false;
+  });
+  els.guideSearchClear.hidden = !query;
+  els.guideSearchStatus.textContent = query
+    ? visibleIds.size
+      ? `Найдено инструкций: ${visibleIds.size}.`
+      : "Ничего не найдено. Измените запрос или очистите поиск."
+    : `Показаны все доступные инструкции: ${entries.length}.`;
+}
+
+function syncGuideReturnBanner() {
+  if (!els.guideReturnBanner || !els.guideReturnLink) {
+    return;
+  }
+  els.guideReturnBanner.hidden = !state.guideReturnVersion;
+  if (!state.guideReturnVersion) {
+    return;
+  }
+  els.guideReturnLink.href = `#news/${encodeURIComponent(state.guideReturnVersion)}`;
+  els.guideReturnLink.textContent = `Вернуться к обновлению ${state.guideReturnVersion}`;
+}
+
+function focusGuideTarget() {
+  if (!state.guideTargetId) {
+    return;
+  }
+  const target = document.querySelector(
+    `#guide-topic-${CSS.escape(state.guideTargetId)}`,
+  );
+  if (!target) {
+    els.userGuideStatus.textContent +=
+      " Связанная карточка недоступна в текущем виде отчёта; показано начало инструкции.";
+    document.querySelector("#user-guide-title")?.focus({ preventScroll: true });
+    return;
+  }
+  state.guideSearchQuery = "";
+  els.guideSearchInput.value = "";
+  applyGuideSearch();
+  target.classList.add("is-guide-target");
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({
+    block: "center",
+    behavior: prefersReducedMotion() ? "auto" : "smooth",
+  });
+  window.setTimeout(() => target.classList.remove("is-guide-target"), 4000);
+}
+
+function finalizeGuideRendering() {
+  syncGuideReturnBanner();
+  applyGuideSearch();
+  window.requestAnimationFrame(focusGuideTarget);
 }
 
 function setGuideCopy({ title, intro, checksTitle, checksIntro, safetyTitle, safetyCopy }) {
@@ -2163,7 +2637,7 @@ function renderAccountingGuide() {
   ]);
   renderGuideCards(els.guideSectionsList, [
     ["Обзор", "Показывает режим, статус, подтверждённые суммы и причину, по которой коэффициент ФНС ещё не рассчитан."],
-    ["Проверки", "Содержит все открытые дозапросы и покрытие read-only источников 1С."],
+    ["Проверки", "Содержит все открытые вопросы и покрытие источников 1С, доступных только для чтения."],
     ["Таблицы", "Разделяет налоговые строки, информационный график, НДС и ЕНС без подмены отсутствующих значений нулями."],
     ["Инструкция", "Возвращает этот порядок работы и правила безопасной ручной отправки."],
   ]);
@@ -2189,7 +2663,7 @@ function restoreMarketplaceGuideCopy() {
       "Выберите контекст отчёта, изучите результат на «Обзоре», разберите замечания в «Проверках» и только потом готовьте отчёт для клиента или Excel.",
     checksTitle: "Как работать с вкладкой «Проверки»",
     checksIntro:
-      "Идите по шагам по порядку. Пропускайте сопоставление, Ozon-only и полную пересборку, если для них нет отдельной причины.",
+      "Идите по шагам по порядку. Пропускайте сопоставление, отдельное обновление Ozon и полную пересборку, если для них нет отдельной причины.",
     safetyTitle: "Перед отправкой клиенту",
     safetyCopy:
       "Проверьте период и кабинет, откройте «Проверки» и убедитесь, что замечания по источникам, себестоимости и сопоставлению разобраны. Предварительный расчёт с замечаниями можно изучать, но не следует выдавать за подтверждённый итог.",
@@ -2207,6 +2681,7 @@ function renderUserGuide() {
   }
   if (isAccountingReportKind()) {
     renderAccountingGuide();
+    finalizeGuideRendering();
     return;
   }
   restoreMarketplaceGuideCopy();
@@ -2222,6 +2697,7 @@ function renderUserGuide() {
   }[role];
   els.userGuideStatus.textContent =
     `Инструкция собрана из текущего интерфейса и учитывает права ${roleLabel}.`;
+  finalizeGuideRendering();
 }
 
 function renderWorkspaceHeader() {
@@ -2233,6 +2709,15 @@ function renderWorkspaceHeader() {
     summary.latestSourceRefresh ||
     (state.freshness || {}).latestSourceRefresh;
   const freshnessCopy = reportFreshnessSubtitle(summary.meta || {}, refresh);
+  if (state.workspace === "news") {
+    loadReleaseNotes();
+    setTopbarNotice(
+      "Новости и обновления",
+      "История версий и прямые ссылки на актуальную инструкцию.",
+      "is-info",
+    );
+    return;
+  }
   if (state.workspace === "guide") {
     renderUserGuide();
     setTopbarNotice(
@@ -19522,6 +20007,7 @@ function showCabinet() {
     );
   }
   syncLogisticsEntryPoint();
+  loadReleaseNotes();
   renderWorkspaceHeader();
 }
 
