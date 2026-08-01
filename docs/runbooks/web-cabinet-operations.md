@@ -1801,3 +1801,21 @@ production full на новом runtime; refresh создаст только imm
 runtime `runtime-main-880a214-cost-quality-split-20260724` сохранен как точная
 цель rollback. Принятое исключение без live canary относится только к этому
 promotion и не переносится на будущие releases автоматически.
+
+## Stabilization workspace audit v2.63 — 1 августа 2026 года
+
+Release-record PR
+[#89](https://github.com/Offonika/Ai_analitik/pull/89) влит merge commit
+`04ab9add5c5a1645eaae38f7ea4538bbdc8cc996`. GitHub Actions run
+`30695647237` содержал оба blocking job `quality` и `tests`; оба завершились
+успешно.
+
+Старый worktree `codex/test-full-report-publication-evidence` оставлен без
+checkout, reset, rebase, stash и новых изменений. Его HEAD —
+`1c76172b5fb723e206ddcd7faf61c591f095f8f3`, SHA-256 tracked binary diff —
+`136b1e8f7f71923cd7b827f40880fed5cf58f881ab014cb6b8943165be2b3a4a`.
+Из `21` измененного файла `17` побайтно совпали с `origin/main`; оставшиеся
+четыре документа оказались более старыми версиями канонического текста main.
+Функционально уникальной дельты для v2.63 не найдено, поэтому wholesale
+cherry-pick и ручной перенос не выполнялись. Стабилизация продолжена в чистой
+ветке `codex/v2-63-stabilization-20260801` от указанного merge commit.

@@ -7,7 +7,7 @@ status: active
 source_of_truth: true
 truth_scope: configuration
 truth_priority: 100
-updated_at: "2026-07-24"
+updated_at: "2026-08-01"
 ---
 
 # Config
@@ -18,7 +18,14 @@ updated_at: "2026-07-24"
 - период отчета;
 - правила маппинга товаров;
 - явная связка `WB_ACCOUNT_*` с организациями 1С;
-- версия методики расчета.
+- версия методики расчета;
+- машинные release acceptance matrices в `config/acceptance/` без секретов,
+  raw данных и локальных путей к отчетам.
+
+Acceptance matrix связывает стабильные criterion IDs спецификаций с CI,
+версионированными командами и датированным operational evidence. Статус
+`pending` не является подтверждением live-состояния; фактические значения
+заполняются только после проверки указанного окружения.
 
 API-ключи Wildberries здесь не хранить. Для локальных Excel/export сценариев
 используется только runtime `.env` вне Git. Для web-кабинета ключи клиента

@@ -108,10 +108,16 @@ def _check_report(
     for artifact_type, count in sorted(ready_types.items()):
         print(f"- {artifact_type}: {count}")
 
-    if report.publication_status != "published":
-        issues.append("report is not published")
-    if not report.is_current:
-        issues.append("report is not current")
+    if report.publication_status != args.expected_publication_status:
+        issues.append(
+            "publication status mismatch: expected "
+            f"{args.expected_publication_status}, got {report.publication_status}"
+        )
+    expected_current = args.expected_current == "true"
+    if report.is_current is not expected_current:
+        issues.append(
+            f"current mismatch: expected {expected_current}, got {report.is_current}"
+        )
     if report.lineage_type != "db_first_report_marts":
         issues.append("report lineage is not db_first_report_marts")
     if args.expected_unit_rows is not None and unit_rows != args.expected_unit_rows:
@@ -352,6 +358,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-unit-rows", type=int, default=None)
     parser.add_argument("--expected-lost-sales-rows", type=int, default=None)
     parser.add_argument("--expected-artifacts", type=int, default=None)
+    parser.add_argument(
+        "--expected-publication-status",
+        choices=("draft", "published", "failed"),
+        default="published",
+    )
+    parser.add_argument(
+        "--expected-current",
+        choices=("true", "false"),
+        default="true",
+    )
     parser.add_argument("--excel-path", type=Path, default=DEFAULT_EXCEL)
     parser.add_argument("--unit-csv-path", type=Path, default=DEFAULT_UNIT_CSV)
     parser.add_argument(

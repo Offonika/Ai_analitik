@@ -9,14 +9,14 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: report-publication
 truth_priority: 100
-related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
-related_tests: [tests/test_report_marts.py, tests/test_report_exports.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
+related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py, scripts/check_db_first_publication.py]
+related_tests: [tests/test_report_marts.py, tests/test_report_exports.py, tests/test_db_first_publication.py, tests/test_db_first_publication_check.py, tests/test_web_app.py, tests/test_source_refresh.py]
 contracts: [unit_economics_report, report_marts, report_artifacts]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation]
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-24"
+updated_at: "2026-08-01"
 ---
 
 # Implementation Status
@@ -204,6 +204,19 @@ Legacy recovery import:
   приёмки.
 - Ошибка новой ревизии не снимает старый `current`.
 
+## v2.63 Stabilization Evidence IDs
+
+- **RP-AC-01** — успешный production weekly full создает новый immutable staff
+  draft с source lineage и зарегистрированными export artifacts.
+- **RP-AC-02** — DB-first проверка нового draft подтверждает lineage,
+  row/artifact counts и Excel/CSV parity.
+- **RP-AC-03** — после создания draft опубликованный `current` точно совпадает
+  с preflight baseline; автоматический publish/switch не выполняется.
+
+Operational DB-first checker принимает явные additive параметры
+`--expected-publication-status` и `--expected-current`. Defaults остаются
+`published` и `true`; для weekly staff draft используются `draft` и `false`.
+
 # Test Plan
 
 Unit:
@@ -272,6 +285,9 @@ Parity-решение и источник старого ориентира `188
 
 # Changelog
 
+- 2026-08-01: добавлены стабильные v2.63 acceptance IDs; operational checker
+  получил обратносуместные expected status/current параметры для проверки
+  immutable weekly staff draft без публикации.
 - 2026-06-23: accepted DB-first report marts spec.
 - 2026-06-23: recorded published/current DB-first baseline and source refresh
   readiness blocker.
