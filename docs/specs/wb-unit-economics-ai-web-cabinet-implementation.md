@@ -1408,6 +1408,11 @@ Large-report loading:
   горизонтальной прокрутки и перекрытия badge; короткая видимая подпись не
   сокращает полное accessible name. Фокус и подсветка инструкции учитывают
   `prefers-reduced-motion`.
+- На ширинах до 760 px поля `Дата начала` и `Дата конца` занимают каждое
+  отдельную строку во всю ширину content columns, а меню действий сохраняет
+  отдельную непрерывную колонку. Native date/select controls имеют
+  `min-width: 0`, `max-width: 100%`, touch-высоту не менее 44 px и не создают
+  overlap или page-level overflow на 320/390 px.
 - Бухгалтерский report kind показывает контекстную инструкцию без
   marketplace-only шагов, не дублирует заголовок общей шапкой, сохраняет
   доступное действие AI и синхронизирует badge/текст `Проверки` с `issues[]`.
@@ -1506,6 +1511,9 @@ Large-report loading:
   does not; AI refinement updates the draft; manual save creates a version;
   `Скопировать клиенту` and `Скачать Markdown` are available; desktop/tablet and
   390px mobile do not overflow.
+- Frontend responsive contract фиксирует mobile topbar grid areas, полную
+  ширину обеих дат, ограничение native date/select шириной контейнера и
+  touch-высоту не менее 44 px; browser gate проверяет 320/390/760/920/1440 px.
 - Frontend Playwright tests for client switcher, default all-cabinets view,
   cabinet/organization filters and no stale data after switching clients.
 - Live-check tests for disabled source, cached source, timeout/unavailable
