@@ -1704,3 +1704,38 @@ test-only credentials нет. По явному решению владельц�
 test `current` не менялся. Поэтому `v2.63-rc.1` нельзя повышать до финальной
 `v2.63` или продвигать в production без отдельного canary либо нового явно
 принятого rollout-решения.
+
+## Accepted production promotion waiver v2.63 — 1 августа 2026 года
+
+Владелец rollout явно принял остаточный риск и разрешил production promotion
+`v2.63` без live full canary. Это решение является отдельным исключением для
+данного RC и удовлетворяет альтернативному gate предыдущего раздела; оно не
+отменяет требование canary для будущих promotion автоматически.
+
+Исключение принято потому, что test-БД намеренно санитизирована, отдельных
+test-only WB/1С credentials нет, а повторное использование production
+credentials в test было отклонено владельцем. Риск ограничен точным immutable
+artifact `runtime-main-1515f5d-report-refresh-runtime-20260731`, уже проверенным
+в test. Его content SHA-256 —
+`c4a9e4d346ca0de9a6ca29899d15ce8dfdcc6ca45a018bb2bb27a258fe17c44a`.
+
+Перед promotion read-only production preflight не выполнял внешних WB/1С
+чтений и завершился `ready_with_warnings`: runtime integrations готовы,
+активных source refresh workers нет, свободное место превышает обязательный
+порог. Владелец принимает предупреждения `mapping service needs_review` и
+`legacy mapping source missing`, поскольку само переключение не запускает
+refresh, не создает report draft и не публикует `current`.
+
+Разрешенная операция ограничена атомарным переключением production runtime на
+указанный artifact и перезапуском только `shumeiko-web-prod.service`.
+Production/test БД, schema, report files, source snapshots, test pointer и
+публикация `current` не меняются; миграции и внешний refresh не запускаются.
+Deployed systemd/nginx files перед переключением должны пройти drift-check.
+
+Немедленные gates после restart: локальный и публичный health со значениями
+`status=ok`, `runtimeEnvironment=production` и совпадающими backend/static build
+ID; успешный production health unit; safety-коды `404`, `404`, `401` для
+неизвестного route, `/.env` и неавторизованного `/api/reports`; повторный
+drift-check. Любая ошибка требует атомарно вернуть production pointer на
+`runtime-main-880a214-cost-quality-split-20260724`, перезапустить только
+production web service и повторить те же проверки.
