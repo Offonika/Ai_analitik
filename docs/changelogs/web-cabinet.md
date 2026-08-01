@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-31"
+updated_at: "2026-08-01"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,12 @@ updated_at: "2026-07-31"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-01: v2.63-rc.1 квалифицировал единый report-refresh RC с бюджетом
+  чтения 1С `1000` страниц, weekly full во вторник в `06:15 MSK`, явно
+  закрепленными production/test report и source roots и отдельной публикацией
+  `current`: refresh создает только immutable staff draft. Immutable artifact
+  развернут и проверен в test, но live full canary отложен, поэтому production
+  runtime не продвигался и версия сохраняет суффикс `rc.1`.
 - 2026-07-31: v2.63 распространил effective `ExecStart` hardening на основной
   test unit и test-only overrides: test environment, cookie, выключенные
   внешние интеграции и отдельные report/source roots больше не могут быть
