@@ -16,6 +16,12 @@ updated_at: "2026-08-01"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-01: v2.63 продвинул квалифицированный immutable report-refresh
+  runtime в production после явно принятого владельцем исключения без live
+  full canary. Promotion изменил только production runtime pointer и
+  перезапустил web service; HTTP API, schema, данные, test и публикация
+  `current` не менялись. Local/public health, security smoke, drift-check и
+  rollback-window monitoring завершились успешно.
 - 2026-08-01: v2.63-rc.1 квалифицировал единый report-refresh RC с бюджетом
   чтения 1С `1000` страниц, weekly full во вторник в `06:15 MSK`, явно
   закрепленными production/test report и source roots и отдельной публикацией
