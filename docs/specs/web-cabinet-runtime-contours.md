@@ -32,7 +32,7 @@ related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, te
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-01"
 ---
 
 # Goal
@@ -172,8 +172,22 @@ Rollback меняет production symlink на предыдущий провер�
 - read-only drift check подтверждает совпадение обязательных systemd/nginx
   файлов с Git и отсутствие незарегистрированных prod/test drop-in’ов.
 
+## v2.63 Stabilization Evidence IDs
+
+- **RC-AC-01** — production release record находится в `main`, а оба
+  обязательных GitHub CI job `quality` и `tests` существуют и успешны.
+- **RC-AC-02** — датированный preflight и post-run smoke подтверждают
+  production health, environment и совпадающий backend/static build ID.
+- **RC-AC-03** — read-only drift check после weekly full не находит отличий
+  deployed systemd/nginx от точной Git revision.
+- **RC-AC-04** — предыдущий полный immutable runtime остается доступной и
+  проверенной целью rollback после weekly full.
+
 # Changelog
 
+- 2026-08-01: добавлены стабильные v2.63 acceptance IDs для release record,
+  production health, drift и rollback evidence; health helper выводит safe
+  current/refresh IDs для сравнения preflight и post-run без DB credential.
 - 2026-07-31: основной test unit и test-only `ExecStart` overrides закрепляют
   environment, cookie, integration master-switch и writable roots после
   secret-bearing `EnvironmentFile`; R-6 сохраняет только явно разрешенное

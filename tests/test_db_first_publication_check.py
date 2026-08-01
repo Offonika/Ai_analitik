@@ -130,6 +130,61 @@ def test_check_db_first_publication_reports_current_and_integration_blocker(
     assert "tenant integrations are not configured" in blocked.stdout
 
 
+def test_check_db_first_publication_accepts_expected_immutable_draft(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'web.sqlite3'}"
+    engine = make_engine(database_url)
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        report = repository.save_report_marts(
+            db,
+            _payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-draft",
+        )
+        report.publication_status = "draft"
+        report.is_current = False
+        for artifact_type in ("csv", "docx", "excel", "html", "pdf"):
+            path = tmp_path / "reports" / f"report-draft.{artifact_type}"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("ready\n", encoding="utf-8")
+            repository.record_report_artifact(
+                db,
+                report,
+                artifact_type=artifact_type,
+                path=path,
+                sha256=file_sha256(path),
+                byte_size=path.stat().st_size,
+            )
+        db.commit()
+
+    result = _run_check(
+        tmp_path,
+        database_url,
+        "--report-id",
+        "report-draft",
+        "--expected-publication-status",
+        "draft",
+        "--expected-current",
+        "false",
+        "--expected-unit-rows",
+        "1",
+        "--expected-lost-sales-rows",
+        "1",
+        "--expected-artifacts",
+        "5",
+        "--skip-file-counts",
+    )
+
+    assert result.returncode == 0
+    assert "Publication status: draft" in result.stdout
+    assert "Current: False" in result.stdout
+    assert "Health: ok" in result.stdout
+
+
 def _payload() -> dict:
     return {
         "meta": {

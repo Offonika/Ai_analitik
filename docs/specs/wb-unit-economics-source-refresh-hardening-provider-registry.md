@@ -61,7 +61,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-01"
 ---
 
 # Implementation Status
@@ -648,6 +648,19 @@ mutual-settlement сохраняет документные строки, а buy
 - Restore читает JSON/CSV/TSV/XLSX data rows, пропускает asynchronous
   create/info responses и воспроизводит точный collection row count.
 
+## v2.63 Stabilization Evidence IDs
+
+- **SR-AC-01** — production weekly timer активен для `06:15 MSK`, а preflight
+  подтверждает отсутствие уже выполняющегося full.
+- **SR-AC-02** — timer создает один full run, отдельный systemd worker получает
+  его и сохраняет свежий DB heartbeat либо validated heartbeat marker до
+  завершения.
+- **SR-AC-03** — effective budget равен `1000` новым страницам 1С, все
+  `required=true` collections завершены, а missing/partial значения не
+  преобразованы в ноль; `publication_required` остается отдельным явным gate.
+- **SR-AC-04** — worker/watchdog dry-run до и после full не находит stale worker
+  или heartbeat marker.
+
 # Rollout
 
 1. Применить код и документацию.
@@ -670,6 +683,8 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-01: добавлены стабильные v2.63 acceptance IDs и fail-closed процедура
+  наблюдения первого production weekly full без ручного запуска или retry.
 - 2026-07-31: ручной test/full canary обязан явно повторять бюджет `1000` и
   test-only writable roots после `EnvironmentFile`; production worker и timers
   для test по-прежнему запрещены.

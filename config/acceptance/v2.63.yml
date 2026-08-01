@@ -1,0 +1,193 @@
+schema_version: 1
+release: "v2.63"
+updated_at: "2026-08-01"
+criteria:
+  - scope: runtime-contours
+    spec_id: workspace-shumeyko-web-cabinet-runtime-contours
+    criterion_id: RC-AC-01
+    required: true
+    owner: engineering
+    status: passed
+    evidence:
+      - type: ci
+        check_id: github-actions:30695647237:quality
+        expected_result: GitHub Actions blocking job quality exists and succeeds for the release-record commit.
+        observed_result: Job quality completed successfully in CI run 30695647237 for PR 89.
+        git_revision: "6f6e053751d6da148473dad7db77ec2fe329e316"
+        environment: ci
+        evidence_date: "2026-08-01T13:45:10+03:00"
+        reference: "https://github.com/Offonika/Ai_analitik/actions/runs/30695647237"
+      - type: ci
+        check_id: github-actions:30695647237:tests
+        expected_result: GitHub Actions blocking job tests exists and succeeds for the release-record commit.
+        observed_result: Job tests completed successfully in CI run 30695647237 for PR 89.
+        git_revision: "6f6e053751d6da148473dad7db77ec2fe329e316"
+        environment: ci
+        evidence_date: "2026-08-01T13:45:10+03:00"
+        reference: "https://github.com/Offonika/Ai_analitik/actions/runs/30695647237"
+      - type: git_record
+        check_id: git:pr:89
+        expected_result: The dated v2.63 production release record is merged into main.
+        observed_result: PR 89 merged release-record commit 6f6e053 through merge commit 04ab9ad.
+        git_revision: "04ab9add5c5a1645eaae38f7ea4538bbdc8cc996"
+        environment: repository
+        evidence_date: "2026-08-01T13:45:10+03:00"
+        reference: "https://github.com/Offonika/Ai_analitik/pull/89"
+  - scope: runtime-contours
+    spec_id: workspace-shumeyko-web-cabinet-runtime-contours
+    criterion_id: RC-AC-02
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_runtime_health.py:production-preflight
+        expected_result: Fresh production health reports status ok, environment production, and matching backend/static build IDs before and after weekly full.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+      - type: production_command
+        check_id: scripts/check_web_cabinet_health.py:production-preflight
+        expected_result: Production service, database summary, and current report are healthy before and after weekly full.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: runtime-contours
+    spec_id: workspace-shumeyko-web-cabinet-runtime-contours
+    criterion_id: RC-AC-03
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_runtime_contour_drift.py:production
+        expected_result: Deployed production systemd and nginx files have no drift from the exact Git revision.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: runtime-contours
+    spec_id: workspace-shumeyko-web-cabinet-runtime-contours
+    criterion_id: RC-AC-04
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: runbook_observation
+        check_id: docs/runbooks/web-cabinet-operations.md#production-release-v263--1-августа-2026-года
+        expected_result: Previous complete immutable runtime remains available as the exact rollback target after weekly full.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: source-refresh
+    spec_id: wb-unit-economics-source-refresh-hardening-provider-registry
+    criterion_id: SR-AC-01
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_source_refresh_health.py:full-systemd
+        expected_result: Weekly timer is active for 06:15 MSK and no full refresh is active during preflight.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: source-refresh
+    spec_id: wb-unit-economics-source-refresh-hardening-provider-registry
+    criterion_id: SR-AC-02
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_source_refresh_health.py:full-worker-heartbeat
+        expected_result: Timer creates one full run, assigns the systemd worker, and preserves a fresh database heartbeat or validated marker until completion.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: source-refresh
+    spec_id: wb-unit-economics-source-refresh-hardening-provider-registry
+    criterion_id: SR-AC-03
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_source_refresh_health.py:required-collection-coverage
+        expected_result: Full run uses a 1000-new-page 1C budget and completes every required collection without silent zero substitution.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: source-refresh
+    spec_id: wb-unit-economics-source-refresh-hardening-provider-registry
+    criterion_id: SR-AC-04
+    required: true
+    owner: operations
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_source_refresh_worker.py:dry-run
+        expected_result: Worker/watchdog dry-run finds no stale worker or heartbeat marker before and after the full run.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: report-publication
+    spec_id: workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts
+    criterion_id: RP-AC-01
+    required: true
+    owner: analytics
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_source_refresh_health.py:new-staff-draft
+        expected_result: Successful weekly full creates one new immutable staff draft with source lineage and registered export artifacts.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: report-publication
+    spec_id: workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts
+    criterion_id: RP-AC-02
+    required: true
+    owner: analytics
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_db_first_publication.py:weekly-draft-parity
+        expected_result: Draft DB lineage, row and artifact counts, and Excel/CSV exports pass DB-first parity.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"
+  - scope: report-publication
+    spec_id: workspace-shumeyko-partners-wb-unit-economics-db-first-report-marts
+    criterion_id: RP-AC-03
+    required: true
+    owner: analytics
+    status: pending
+    evidence:
+      - type: production_command
+        check_id: scripts/check_web_cabinet_health.py:current-baseline
+        expected_result: Published current report remains exactly equal to the preflight baseline after the new draft is created.
+        observed_result: null
+        git_revision: null
+        environment: production
+        evidence_date: null
+        reference: "docs/runbooks/source-refresh-schedule.md#v263-first-production-weekly-full-acceptance"

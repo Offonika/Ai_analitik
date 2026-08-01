@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-31"
+updated_at: "2026-08-01"
 ---
 
 # Назначение
@@ -388,3 +388,93 @@ protection: ошибка чтения lineage завершает запуск б
   Content API для карточек —
   `SHUMEYKO_SOURCE_REFRESH_WB_CONTENT_REQUEST_DELAY_SECONDS`. Их нельзя
   объединять: у endpoint-ов разные лимиты запросов.
+
+# v2.63 first production weekly full acceptance
+
+Первый weekly full на production runtime v2.63 ожидается 4 августа 2026 года в
+`06:15 MSK`. Вручную запускать full либо включать скрытый fallback запрещено.
+Если timer не создал run до `06:25 MSK`, нужно сохранить очищенные status/journal
+evidence, отметить acceptance как `blocked` и остановиться без manual retry.
+
+С `05:45` до `06:10 MSK` operations фиксирует полный Git SHA production
+runtime, current report ID, rollback release и очищенный вывод:
+
+```bash
+.venv/bin/python scripts/check_runtime_health.py \
+  --url http://127.0.0.1:8097/api/health --environment production
+.venv/bin/python scripts/check_web_cabinet_health.py \
+  --health-url http://127.0.0.1:8097/api/health \
+  --service shumeiko-web-prod.service
+.venv/bin/python scripts/check_runtime_contour_drift.py
+.venv/bin/python scripts/check_source_refresh_health.py \
+  --tenant shumeyko --mode full --max-age-hours 168 --systemd
+.venv/bin/python scripts/check_source_refresh_worker.py
+```
+
+`check_runtime_health.py` выводит safe current report и source-refresh IDs из
+health API, поэтому baseline не требует чтения DB credential. DB summary helper
+использует только уже переданный процессу защищенный `SHUMEYKO_DATABASE_URL`;
+если его нет, `database.status=not_configured` остается явным и DB-dependent
+acceptance не закрывается.
+
+Нельзя читать `.env` или systemd EnvironmentFile. Effective weekly unit
+проверяется только по non-secret `ExecStart`: budget обязан явно содержать
+`SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000`. Preflight также подтверждает
+отсутствие active full и достаточное свободное место.
+
+После timer фиксируются start/end, `refresh_run_id`, `snapshot_set_id`, worker
+assignment и свежий DB heartbeat либо validated heartbeat marker. Collection
+status должен отдельно показать mapping, WB cards, WB finance, WB report list,
+optional WB notifications и 1C OData. Все `required=true` обязаны завершиться;
+`publication_required=true` остается отдельным gate, optional failure остается
+предупреждением и никогда не преобразуется в ноль.
+
+Успешный full должен создать только новый immutable staff draft и exports в
+production reports root. До запуска сохраняется current report ID; после
+завершения он обязан остаться тем же. Новый draft проверяется с явными
+зарегистрированными artifact paths:
+
+```bash
+.venv/bin/python scripts/check_source_refresh_health.py \
+  --tenant shumeyko --mode full --max-age-hours 24 --systemd
+.venv/bin/python scripts/check_db_first_publication.py \
+  --report-id <new_draft_report_id> \
+  --expected-publication-status draft --expected-current false \
+  --excel-path <registered_workbook_path> \
+  --unit-csv-path <registered_unit_csv_path> \
+  --lost-sales-csv-path <registered_lost_sales_csv_path> \
+  --require-postgres --require-files
+.venv/bin/python scripts/check_source_refresh_worker.py
+```
+
+Затем повторяются runtime/cabinet health и drift. В runbook записываются только
+дата, Git revision, safe run/report IDs, статусы, hashes и результат parity;
+raw payload, credentials, connection strings и содержимое отчёта не пишутся.
+При `failed`, `blocked`, stale heartbeat, partial required source или parity
+ошибке запрещены публикация, удаление snapshots/checkpoints и автоматический
+retry. Предыдущий `current` остается рабочим, а remediation оформляется
+отдельно.
+
+## v2.63 early baseline — 1 августа 2026 года
+
+В `17:04 MSK` на production host без чтения EnvironmentFile и без внешних
+WB/1С вызовов подтверждены active web, weekly timer и watchdog timer. Следующий
+weekly запуск назначен systemd на `04.08.2026 06:15 MSK`; активных
+`shumeiko-source-refresh-worker@*.service` не было. Production pointer указывал
+на `runtime-main-1515f5d-report-refresh-runtime-20260731`, effective weekly
+`ExecStart` содержал бюджет `1000` страниц.
+
+Local и public health вернули `status=ok`, `runtimeEnvironment=production`,
+одинаковый build ID `20260726-logistics-management-v3`, `refreshActive=false` и
+одинаковые current/refresh IDs. Сами IDs в Git не записаны; для точного
+последующего сравнения зафиксированы SHA-256 значений с завершающим переводом
+строки: current report
+`fa65997a46e22708954b9755b8a37ec71ec547315ef02f1e34ae86e9d40ff9ee`,
+latest refresh
+`4afb98031f04c98e34bce4f7b196e6f0503e63584db6388a554162ce00fa2540`.
+Read-only runtime drift-check не нашел отличий.
+
+Защищенный DB URL не передавался диагностическому shell, поэтому DB summary
+явно остался `not_configured`; этот ранний baseline не закрывает критерии
+`RC-AC-02`–`RP-AC-03`. Их status остается `pending` до свежего preflight и
+post-run evidence 4 августа.

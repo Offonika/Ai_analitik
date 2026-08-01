@@ -170,6 +170,15 @@ documents:
     summary: "Accepted spec DB-first публикации: расчетные витрины БД как источник правды, Excel/web/DOCX/PDF/HTML/CSV как экспорты."
     read_when: "Меняются report marts, публикация report_id, lineage, current report или экспортные форматы."
     search_terms: ["DB first", "report marts", "публикация отчета", "report_id", "экспорт отчета"]
+  - path: "docs/specs/release-acceptance-matrix.md"
+    title: "Release acceptance matrix"
+    doc_type: "spec"
+    status: "implemented"
+    audience: ["engineering", "operations", "analytics"]
+    source_of_truth: false
+    summary: "Implemented machine-readable release acceptance matrix with criterion, command, CI and dated operational evidence validation."
+    read_when: "Меняются release acceptance criteria, evidence status, CI gates или переход спецификации в implemented."
+    search_terms: ["acceptance matrix", "release evidence", "criterion id", "quality tests", "implemented gate"]
   - path: "docs/specs/wb-logistics-cost-analysis-implementation.md"
     title: "WB: анализ затрат на логистику"
     doc_type: "spec"

@@ -35,6 +35,9 @@ def main() -> int:
         raise SystemExit("backend/static build mismatch")
     print(
         f"status=ok environment={args.environment} buildId={backend_build} "
+        f"currentReportId={payload.get('latestPublishedReportId') or 'none'} "
+        f"refreshRunId={payload.get('latestSourceRefreshRunId') or 'none'} "
+        f"refreshStatus={payload.get('latestSourceRefreshStatus') or 'none'} "
         f"refreshActive={bool(payload.get('latestSourceRefreshActive'))}"
     )
     return 0
