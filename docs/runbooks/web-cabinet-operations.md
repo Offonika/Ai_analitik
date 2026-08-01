@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-08-01"
+updated_at: "2026-08-02"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -1801,3 +1801,89 @@ production full на новом runtime; refresh создаст только imm
 runtime `runtime-main-880a214-cost-quality-split-20260724` сохранен как точная
 цель rollback. Принятое исключение без live canary относится только к этому
 promotion и не переносится на будущие releases автоматически.
+
+## Production release v2.64 — 2 августа 2026 года
+
+Раздел `Новости`, связанная инструкция и mobile navigation выпущены через PR
+[#91](https://github.com/Offonika/Ai_analitik/pull/91), merge commit
+`3222affb2123416183ecd6c5d6a6676fc23052c5`. Race fix сохранения поиска
+инструкции выпущен через PR
+[#92](https://github.com/Offonika/Ai_analitik/pull/92), merge commit
+`b7a40ec7ed4a9bb680006115af71aadd5617187e`. Финальный corrective mobile
+topbar выпущен через PR
+[#93](https://github.com/Offonika/Ai_analitik/pull/93), merge commit
+`30cc290ad3783af735787b00d2396a793ecaf20c`. Для head commit каждого PR
+GitHub Actions runs `224`, `226` и `228` создали и успешно завершили оба
+обязательных job, `quality` и `tests`.
+
+Corrective gate подтвердил причину перекрытия дат на 390 px: отсутствующая в
+mobile template область `report-kind` создавала неявную CSS Grid колонку.
+Финальная сетка оставляет две content columns и отдельную непрерывную колонку
+действий; `Дата начала` и `Дата конца` используют отдельные полноширинные
+строки. Browser matrix на 320/390/760/920/1440 px не обнаружила page overflow;
+ширина каждой даты на 320/390/760 составила соответственно `246`, `316` и
+`686` px, а touch-высота дат и action menu — `44` px. Keyboard navigation,
+zoom 200%, `prefers-reduced-motion`, переход `Новости → Инструкция → назад` и
+сохранение поиска прошли. Обезличенные screenshots просмотрены вручную.
+Auxiliary retry/storage harness не использовался как release blocker: его
+чистая JSON/storage логика покрыта успешными Node и CI tests.
+
+Локально успешно выполнены `git diff --check`, Ruff по `scripts`, `src` и
+`tests`, JavaScript syntax и Node tests, release-notes validator, OpenAPI/TZ
+sync, no-secrets и git-safety checks, а также все пять обязательных валидаторов
+документации из `AGENTS.md`. Полный pytest завершился результатом `1107 passed`
+за `30:40` без failures.
+
+Из точного merge commit PR #93 собран immutable release
+`runtime-main-30cc290-v264-news-guide-v3-20260801`. Manifest подтверждает
+`sourceDirty=false`, archive SHA-256
+`f87474eb0886b632a17e95474fb0cb34aaaa47eac4cfc908aec7a8dff23803e2` и
+content SHA-256
+`8b5e59c13cb47789f24dce0e4fb6d06374830a212ae5599c11e50878f03c97c5`.
+Source archive и dependency freeze hashes пересчитаны независимо; runtime
+bootstrap и общий content hash совпали с manifest. Release имеет ноль writable
+entries, а его Python environment импортирует `wb_unit_economics` только из
+`src` этого же release.
+
+Test pointer был атомарно переключен с
+`runtime-main-b7a40ec-v264-news-guide-v2-20260801` на v3; перезапущен только
+`shumeiko-web-test.service`. Local/public health вернули `status=ok`,
+`runtimeEnvironment=test`, одинаковый backend/static build ID
+`20260801-v264-news-guide-v3` и `refreshActive=false`. Safety smoke вернул
+`404`, `404`, `401` для неизвестного route, `/.env` и неавторизованного
+`/api/reports`; `X-Robots-Tag` сохранил `noindex`, `nofollow`, `noarchive`.
+Health unit и drift-check завершились успешно. Повторный live browser gate
+подтвердил ту же responsive/accessibility matrix; screenshots просмотрены.
+Production до окончания test gate оставался на
+`runtime-main-1515f5d-report-refresh-runtime-20260731`.
+
+Read-only production preflight не выполнял внешних WB/1С запросов и завершился
+`ready_with_warnings`: runtime integrations готовы, active source refresh
+workers отсутствуют, свободно `33.19` GiB при обязательном пороге `20` GiB.
+Предупреждения `mapping service needs_review` и отсутствующий legacy mapping
+source приняты для этого UI-only promotion: переключение не запускает refresh,
+не создает staff draft и не публикует report `current`.
+
+После зелёного test gate production pointer атомарно переключен на тот же
+immutable v3 artifact и перезапущен только `shumeiko-web-prod.service`.
+Production/test БД, schema, report files, source snapshots, integrations,
+credentials и публикация report `current` не менялись; миграции, backup и
+внешний source refresh не запускались. Новый backup не требовался: операция
+имела точный атомарный rollback на
+`runtime-main-1515f5d-report-refresh-runtime-20260731` и не изменяла данные.
+
+После restart local/public production health вернули `status=ok`,
+`runtimeEnvironment=production`, build ID `20260801-v264-news-guide-v3` и
+`refreshActive=false`. Public root ответил `200`, safety smoke — `404`, `404`,
+`401`; `X-Robots-Tag` корректен. SHA-256 public CSS точно совпал с immutable
+artifact (`36d513bb607ed9e63f3806456b8fbf916c2920bbae169cd786863e432c7cd447`).
+Production health unit и повторный drift-check завершились успешно; оба web
+service остались active с `NRestarts=0`.
+
+Rollback-window monitoring с `01:37:55` до `01:42:28 MSK` выполнил `10/10`
+успешных local/public health, pointer и service checks с интервалом 30 секунд.
+Автоматических рестартов и error-level записей production service не было;
+rollback не потребовался. Annotated tag
+[`v2.64`](https://github.com/Offonika/Ai_analitik/releases/tag/v2.64)
+указывает на deployed merge commit `30cc290ad3783af735787b00d2396a793ecaf20c`;
+GitHub Release опубликован по тому же тегу.
