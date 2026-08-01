@@ -89,6 +89,7 @@ class UserGuideContractParser(HTMLParser):
         self.failures: list[str] = []
         self.workspaces: set[str] = set()
         self.checks_guide_ids: set[str] = set()
+        self.guide_ids: set[str] = set()
         self.guide_panel_found = False
 
     def handle_starttag(
@@ -127,10 +128,32 @@ class UserGuideContractParser(HTMLParser):
     ) -> None:
         identifier = attributes.get("id", tag)
         guide_entry = attributes.get("data-guide-entry", "")
+        guide_id = attributes.get("data-guide-id", "").strip()
         has_description = bool(
             attributes.get("data-guide-description") or attributes.get("data-tooltip")
         )
         ignored = attributes.get("data-guide-ignore") == "true"
+
+        if guide_entry:
+            if not guide_id:
+                self.failures.append(f"{identifier}: data-guide-id is missing")
+            elif not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", guide_id):
+                self.failures.append(
+                    f"{identifier}: invalid data-guide-id={guide_id!r}"
+                )
+            elif guide_id in self.guide_ids:
+                self.failures.append(
+                    f"{identifier}: duplicate data-guide-id={guide_id!r}"
+                )
+            else:
+                self.guide_ids.add(guide_id)
+            for field, label in (
+                ("data-guide-result", "expected result"),
+                ("data-guide-caution", "limitation"),
+                ("data-guide-troubleshooting", "troubleshooting"),
+            ):
+                if not attributes.get(field, "").strip():
+                    self.failures.append(f"{identifier}: guide {label} is missing")
 
         workspace = attributes.get("data-workspace-nav", "")
         if workspace:
@@ -275,6 +298,8 @@ def validate_user_guide_contract() -> list[str]:
     required_js = [
         'if (value === "guide")',
         "function renderUserGuide()",
+        "function applyGuideSearch()",
+        "function focusGuideTarget()",
         'document.createElement("li")',
         "list.replaceChildren(...cards)",
     ]

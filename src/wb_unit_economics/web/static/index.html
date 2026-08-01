@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260726-logistics-management-v3"
+      content="20260801-v264-news-guide-v1"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="/static/icons/chart-bar.svg" type="image/svg+xml" />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260726-logistics-management-v3"
+      href="/static/styles.css?v=20260801-v264-news-guide-v1"
     />
     <link
       rel="stylesheet"
@@ -70,8 +70,13 @@
               type="button"
               data-workspace-nav="overview"
               data-guide-entry="sections"
+              data-guide-id="overview"
               data-guide-order="10"
               data-guide-description="Главные показатели, динамика продаж, аналитические подсказки и готовность текущего отчёта."
+              data-guide-result="Вы увидите основные итоги и поймёте, можно ли переходить к детальной проверке."
+              data-guide-caution="Предварительный результат с замечаниями нельзя выдавать за подтверждённый итог."
+              data-guide-troubleshooting="Если показателей нет, проверьте выбранного клиента, вид отчёта и период."
+              data-guide-updated-version="v2.64"
               aria-current="page"
             >
               <img src="/static/icons/house.svg" alt="" aria-hidden="true" />
@@ -81,26 +86,67 @@
               type="button"
               data-workspace-nav="checks"
               data-guide-entry="sections"
+              data-guide-id="checks"
               data-guide-order="20"
               data-guide-description="Качество источников, сопоставление с 1С, проблемные строки и проверки перед отправкой клиенту."
+              data-guide-result="Вы получите список замечаний и действий, которые нужно завершить перед отправкой результата."
+              data-guide-caution="Статус «Требует проверки» не равен ошибке загрузки: сначала прочитайте пояснение."
+              data-guide-troubleshooting="Если нужного действия нет, проверьте роль и выбранный вид отчёта."
+              data-guide-updated-version="v2.64"
+              aria-label="Проверки"
             >
               <img src="/static/icons/shield-check.svg" alt="" aria-hidden="true" />
-              <span>Проверки</span>
+              <span data-mobile-label="Контроль">Проверки</span>
               <span id="checks-nav-count" class="workspace-nav-count" hidden></span>
             </button>
             <button
               type="button"
               data-workspace-nav="tables"
               data-guide-entry="sections"
+              data-guide-id="tables"
               data-guide-order="30"
               data-guide-description="Сценарии аналитики: товары, логистика, возвраты, расходы WB и исходные строки расчёта."
+              data-guide-result="Вы сможете перейти от сводки к строкам, из которых рассчитаны показатели."
+              data-guide-caution="Состав сценариев зависит от роли, источников и включённых возможностей клиента."
+              data-guide-troubleshooting="Если сценарий недоступен, вернитесь к сводке и проверьте выбранный отчёт."
+              data-guide-updated-version="v2.64"
+              aria-label="Аналитика и таблицы"
             >
               <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
-              <span>Аналитика и таблицы</span>
+              <span data-mobile-label="Анализ">Аналитика и таблицы</span>
             </button>
-            <button type="button" data-workspace-nav="guide">
+            <button
+              type="button"
+              data-workspace-nav="news"
+              data-guide-entry="sections"
+              data-guide-id="news"
+              data-guide-order="40"
+              data-guide-description="История версий, краткое описание новых возможностей и ссылки на связанные инструкции."
+              data-guide-result="Вы увидите, что изменилось после прошлого посещения и где прочитать подробную инструкцию."
+              data-guide-caution="Новости содержат только безопасное пользовательское описание без внутренних данных."
+              data-guide-troubleshooting="Если список не загрузился, нажмите «Повторить»; остальные разделы продолжат работать."
+              data-guide-updated-version="v2.64"
+              aria-label="Новости и обновления"
+            >
               <img src="/static/icons/file-text.svg" alt="" aria-hidden="true" />
-              <span>Инструкция</span>
+              <span>Новости</span>
+              <span id="news-nav-count" class="workspace-nav-count" hidden></span>
+            </button>
+            <button
+              type="button"
+              data-workspace-nav="guide"
+              data-guide-entry="sections"
+              data-guide-id="guide"
+              data-guide-order="50"
+              data-guide-description="Пошаговая помощь по разделам и доступным действиям текущего кабинета."
+              data-guide-result="Вы найдёте нужный шаг через поиск или прямую ссылку из новости."
+              data-guide-caution="Инструкция учитывает вашу роль и выбранный вид отчёта."
+              data-guide-troubleshooting="Если ссылка ведёт в начало инструкции, найдите действие по его названию."
+              data-guide-updated-version="v2.64"
+              aria-label="Инструкция"
+            >
+              <img src="/static/icons/file-text.svg" alt="" aria-hidden="true" />
+              <span data-mobile-label="Помощь">Инструкция</span>
             </button>
             <button id="accounting-workflow-open" type="button" hidden>
               <img src="/static/icons/table.svg" alt="" aria-hidden="true" />
@@ -115,8 +161,13 @@
             <label
               class="client-switcher"
               data-guide-entry="start"
+              data-guide-id="client-context"
               data-guide-order="10"
               data-guide-description="Выберите клиентский контур. Все показатели, проверки и доступные отчёты переключатся вместе с ним."
+              data-guide-result="Заголовок и данные кабинета будут относиться к выбранному клиенту."
+              data-guide-caution="Не сравнивайте показатели разных клиентов в одном открытом контексте."
+              data-guide-troubleshooting="Если клиента нет в списке, проверьте выданную вам роль и доступ."
+              data-guide-updated-version="v2.64"
             >
               <span>Клиент</span>
               <select id="client-select" aria-label="Выбор клиента"></select>
@@ -136,8 +187,13 @@
             <label
               class="cabinet-switcher report-only-control marketplace-report-control"
               data-guide-entry="start"
+              data-guide-id="marketplace-cabinet"
               data-guide-order="20"
               data-guide-description="Оставьте все кабинеты для общей картины или выберите один кабинет WB/Ozon для отдельного среза."
+              data-guide-result="Показатели и таблицы пересчитаются в рамках выбранного кабинета маркетплейса."
+              data-guide-caution="Выбор одного кабинета сужает срез и не меняет сохранённый отчёт."
+              data-guide-troubleshooting="Если список пуст, проверьте клиента и наличие опубликованного отчёта."
+              data-guide-updated-version="v2.64"
             >
               <span>Кабинет МП</span>
               <select
@@ -148,8 +204,13 @@
             <label
               class="period-start-switcher report-only-control marketplace-report-control"
               data-guide-entry="start"
+              data-guide-id="period-start"
               data-guide-order="30"
               data-guide-description="Задайте начало периода. Фильтр применяется к показателям и детализациям текущего отчёта."
+              data-guide-result="Кабинет покажет данные не раньше выбранной даты в пределах покрытия отчёта."
+              data-guide-caution="Фильтр не создаёт новые данные за пределами загруженного периода."
+              data-guide-troubleshooting="Если дата не применяется, проверьте, что она не позже даты окончания."
+              data-guide-updated-version="v2.64"
             >
               <span>Дата начала</span>
               <input id="topbar-period-start" type="date" aria-label="Дата начала периода" />
@@ -157,8 +218,13 @@
             <label
               class="period-end-switcher report-only-control marketplace-report-control"
               data-guide-entry="start"
+              data-guide-id="period-end"
               data-guide-order="40"
               data-guide-description="Задайте конец периода и проверьте фактический диапазон данных в заголовке отчёта."
+              data-guide-result="Показатели будут ограничены выбранной конечной датой в пределах доступных данных."
+              data-guide-caution="Неполный месяц остаётся явно отмеченным и не становится полным после фильтрации."
+              data-guide-troubleshooting="Если период пуст, расширьте диапазон до дат покрытия текущего отчёта."
+              data-guide-updated-version="v2.64"
             >
               <span>Дата конца</span>
               <input id="topbar-period-end" type="date" aria-label="Дата конца периода" />
@@ -174,8 +240,14 @@
                   aria-haspopup="dialog"
                   aria-controls="report-wizard-overlay"
                   data-guide-entry="actions"
+                  data-guide-id="create-report"
                   data-guide-order="10"
                   data-guide-roles="consultant,admin"
+                  data-guide-description="Откройте мастер, проверьте клиентский контекст и параметры нового отчёта."
+                  data-guide-result="После запуска появится отдельный проверяемый черновик; текущий опубликованный отчёт не изменится."
+                  data-guide-caution="Действие доступно только сотрудникам и не публикует результат автоматически."
+                  data-guide-troubleshooting="Если запуск недоступен, выполните проверку готовности и устраните показанную причину."
+                  data-guide-updated-version="v2.64"
                   data-tooltip="Открыть мастер формирования отчета."
                 >
                   Сформировать отчёт
@@ -186,8 +258,13 @@
                   href="#"
                   hidden
                   data-guide-entry="actions"
+                  data-guide-id="download-excel"
                   data-guide-order="20"
                   data-guide-description="Скачайте защищённый Excel текущего опубликованного отчёта."
+                  data-guide-result="Браузер скачает Excel именно выбранного опубликованного отчёта."
+                  data-guide-caution="Перед отправкой сверяйте клиента, период и статус проверки."
+                  data-guide-troubleshooting="Если ссылка недоступна, убедитесь, что для выбранного контекста есть опубликованный Excel."
+                  data-guide-updated-version="v2.64"
                   data-tooltip="Скачать текущий опубликованный Excel-отчёт."
                 >
                   Скачать Excel
@@ -199,8 +276,13 @@
                   aria-haspopup="dialog"
                   aria-controls="client-output-widget-overlay"
                   data-guide-entry="actions"
+                  data-guide-id="client-output"
                   data-guide-order="30"
                   data-guide-description="Откройте отчёт клиенту, сформируйте файл и скачайте нужный формат."
+                  data-guide-result="Вы получите клиентский файл выбранного отчёта без изменения исходных данных."
+                  data-guide-caution="Не отправляйте результат, пока в «Проверках» остаются блокирующие замечания."
+                  data-guide-troubleshooting="Если формат не сформирован, сохраните готовый Excel и повторите создание клиентского файла."
+                  data-guide-updated-version="v2.64"
                 >
                   Отчёт клиенту
                 </button>
@@ -211,9 +293,14 @@
                   aria-haspopup="dialog"
                   aria-controls="integrations-widget-overlay"
                   data-guide-entry="actions"
+                  data-guide-id="integrations-settings"
                   data-guide-order="40"
                   data-guide-roles="consultant,admin"
-                  data-guide-description="Проверьте read-only подключения WB, Ozon и 1С для выбранного клиента."
+                  data-guide-description="Проверьте подключения WB, Ozon и 1С только для чтения по выбранному клиенту."
+                  data-guide-result="Карточки покажут готовность подключений без изменения внешних систем."
+                  data-guide-caution="Ключи и пароли не отображаются после сохранения; проверки ничего не изменяют во внешних системах."
+                  data-guide-troubleshooting="Если проверка не проходит, повторно сохраните доступ и прочитайте точный статус подключения."
+                  data-guide-updated-version="v2.64"
                   hidden
                 >
                   Настройки
@@ -225,8 +312,14 @@
                   aria-haspopup="dialog"
                   aria-controls="new-client-widget-overlay"
                   data-guide-entry="actions"
+                  data-guide-id="add-client"
                   data-guide-order="50"
                   data-guide-roles="consultant,admin"
+                  data-guide-description="Создайте отдельный клиентский контур и назначьте его основные параметры."
+                  data-guide-result="Новый клиент появится в разрешённом списке без смешения с существующими данными."
+                  data-guide-caution="Создание доступно только сотрудникам; подключения и отчёты добавляются отдельно."
+                  data-guide-troubleshooting="Если клиент не появился, обновите список и проверьте сообщение формы."
+                  data-guide-updated-version="v2.64"
                   data-tooltip="Создать новый клиентский контур."
                   hidden
                 >
@@ -268,8 +361,13 @@
             aria-controls="ai-widget-overlay"
             aria-label="Открыть AI-аналитика"
             data-guide-entry="actions"
+            data-guide-id="ai-analyst"
             data-guide-order="60"
             data-guide-description="Задайте вопрос по уже рассчитанным данным. Помощник ничего не изменяет в источниках и отчёте."
+            data-guide-result="Ответ будет основан на доступных фактах выбранного отчёта и покажет ограничения данных."
+            data-guide-caution="AI не подтверждает отсутствующие значения и не выполняет действия во внешних системах."
+            data-guide-troubleshooting="Если ответ недоступен, проверьте выбранный отчёт и статус источников."
+            data-guide-updated-version="v2.64"
           >
             <img class="ai-assistant-icon" src="/static/icons/robot.svg" alt="" aria-hidden="true" />
             <span>AI-аналитик</span>
@@ -834,10 +932,15 @@
               id="source-refresh-status"
               class="source-refresh-status"
               data-guide-entry="checks"
+              data-guide-id="refresh-summary"
               data-guide-order="10"
               data-guide-roles="consultant,admin"
               data-guide-label="Прочитайте сводку запуска"
               data-guide-description="Сверьте статус, период, режим, прогресс и состояние Excel. «Требует проверки» означает, что данные загружены, но замечания ещё нужно разобрать; это не равно ошибке подключения."
+              data-guide-result="Вы поймёте, завершён ли запуск и какой результат требует следующего действия."
+              data-guide-caution="Не оценивайте запуск только по цвету статуса — прочитайте период и пояснение."
+              data-guide-troubleshooting="Если статус давно не меняется, обновите его и проверьте этапы процесса."
+              data-guide-updated-version="v2.64"
             >
               Статус еще не загружен.
             </div>
@@ -847,19 +950,29 @@
             class="source-refresh-steps"
             aria-label="Шаги обновления данных и расчёта"
             data-guide-entry="checks"
+            data-guide-id="refresh-steps"
             data-guide-order="20"
             data-guide-roles="consultant,admin"
             data-guide-label="Проверьте, на каком этапе остановился процесс"
             data-guide-description="Лента «Сопоставление → Проверка → Обновление → Готово» показывает ход последнего запуска. Не запускайте второй процесс, пока текущий ещё выполняется."
+            data-guide-result="Текущий этап и уже завершённые шаги будут видны в одной последовательности."
+            data-guide-caution="Параллельный запуск может быть заблокирован до завершения активного процесса."
+            data-guide-troubleshooting="Если этап не меняется, обновите статус и прочитайте сообщение последнего запуска."
+            data-guide-updated-version="v2.64"
           ></ol>
           <form
             id="source-refresh-mapping-form"
             class="source-refresh-mapping-form"
             data-guide-entry="checks"
+            data-guide-id="mapping-upload"
             data-guide-order="50"
             data-guide-roles="consultant,admin"
             data-guide-label="При необходимости обновите сопоставление клиента"
             data-guide-description="Загружайте TXT, TSV или CSV из 1С, когда есть товары без связи с номенклатурой. Файл обновляет сопоставление всего клиента и будет применяться в следующих отчётах."
+            data-guide-result="Новые связи станут доступны последующим проверкам и отчётам выбранного клиента."
+            data-guide-caution="Перед загрузкой убедитесь, что файл относится к выбранному клиенту и содержит ожидаемые колонки."
+            data-guide-troubleshooting="Если файл отклонён, исправьте показанную структуру или кодировку и загрузите его повторно."
+            data-guide-updated-version="v2.64"
           >
             <label
               class="file-picker upload-file-button compact"
@@ -886,9 +999,14 @@
               type="button"
               class="secondary-button"
               data-guide-entry="checks"
+              data-guide-id="refresh-readiness"
               data-guide-order="40"
               data-guide-roles="consultant,admin"
               data-guide-description="Начинайте с этой кнопки: она проверяет настройки и возможность запуска без внешнего чтения WB/1С и без формирования нового отчёта."
+              data-guide-result="Кабинет покажет, готов ли контур к запуску и что нужно исправить."
+              data-guide-caution="Проверка готовности не загружает данные и не создаёт новый отчёт."
+              data-guide-troubleshooting="Если проверка заблокирована, откройте настройки и устраните указанную причину."
+              data-guide-updated-version="v2.64"
               data-tooltip="Проверить настройки без внешнего чтения WB и 1C."
             >
               Проверить готовность
@@ -898,9 +1016,14 @@
               type="button"
               hidden
               data-guide-entry="checks"
+              data-guide-id="refresh-incremental"
               data-guide-order="60"
               data-guide-roles="consultant,admin"
               data-guide-description="Обычный рабочий сценарий: обновляет последние 28 дней WB и свежие данные 1С, затем собирает новый полный черновик отчёта."
+              data-guide-result="Будет создан новый служебный черновик с обновлёнными данными; опубликованный отчёт останется прежним."
+              data-guide-caution="Не запускайте повторно, пока активный процесс не завершён."
+              data-guide-troubleshooting="При ошибке откройте сводку запуска, устраните причину и только затем повторите."
+              data-guide-updated-version="v2.64"
               data-tooltip="Обновить последние 28 дней WB и свежую 1С, затем собрать полный черновик."
             >
               Обновить последние данные
@@ -910,9 +1033,14 @@
               type="button"
               class="secondary-button"
               data-guide-entry="checks"
+              data-guide-id="refresh-full"
               data-guide-order="80"
               data-guide-roles="consultant,admin"
               data-guide-description="Используйте только для первой загрузки, исправления исторических данных или восстановления. Операция заново скачивает историю и обычно занимает 30–40 минут."
+              data-guide-result="После завершения появится новый полный черновик на повторно загруженной истории."
+              data-guide-caution="Это редкая длительная операция; для обычного обновления используйте последние данные."
+              data-guide-troubleshooting="Если процесс остановился, не запускайте второй: сначала проверьте сводку и доступность источников."
+              data-guide-updated-version="v2.64"
               data-tooltip="Полностью скачать историю WB и 1C заново. Обычно занимает 30–40 минут."
             >
               Полная пересборка истории
@@ -922,9 +1050,14 @@
               type="button"
               class="secondary-button"
               data-guide-entry="checks"
+              data-guide-id="refresh-ozon"
               data-guide-order="70"
               data-guide-roles="consultant,admin"
               data-guide-description="Запускайте для служебной витрины Ozon + 1С. Кнопка не требует обязательного WB и не публикует клиентский отчёт."
+              data-guide-result="Будет создан отдельный служебный черновик Ozon + 1С для проверки."
+              data-guide-caution="Действие не публикует результат и не заменяет WB-отчёт."
+              data-guide-troubleshooting="Если запуск недоступен, проверьте настройки Ozon и выбранного клиента."
+              data-guide-updated-version="v2.64"
               data-tooltip="Загрузить служебную витрину Ozon + 1C без обязательного WB. Отчет не публикуется."
             >
               Обновить Ozon + 1C
@@ -934,9 +1067,14 @@
               type="button"
               class="secondary-button"
               data-guide-entry="checks"
+              data-guide-id="refresh-status"
               data-guide-order="90"
               data-guide-roles="consultant,admin"
               data-guide-description="Перечитывает состояние последнего запуска. Кнопка не запускает новую загрузку и не пересчитывает отчёт."
+              data-guide-result="Сводка и этапы обновятся до последнего сохранённого состояния процесса."
+              data-guide-caution="Обновление статуса не продолжает и не повторяет завершившийся запуск."
+              data-guide-troubleshooting="Если состояние не изменилось, прочитайте сообщение запуска или дождитесь следующего автоматического обновления."
+              data-guide-updated-version="v2.64"
               data-tooltip="Обновить статус последней загрузки."
             >
               Обновить статус
@@ -946,10 +1084,15 @@
             id="source-refresh-collections"
             class="source-refresh-collections"
             data-guide-entry="checks"
+            data-guide-id="source-collections"
             data-guide-order="30"
             data-guide-roles="consultant,admin"
             data-guide-label="Проверьте карточки источников"
             data-guide-description="Карточки показывают, какие коллекции WB, Ozon и 1С загружены и сколько строк получено. «Загружен» подтверждает получение данных, но замечания и дополнительные строки всё равно нужно проверить."
+            data-guide-result="Вы увидите покрытие каждого источника и заметите отсутствующие или частичные коллекции."
+            data-guide-caution="Наличие строк не подтверждает их полноту и корректное сопоставление."
+            data-guide-troubleshooting="Если коллекция пуста или частична, откройте её пояснение и проверьте доступ к источнику."
+            data-guide-updated-version="v2.64"
           ></div>
         </section>
 
@@ -1135,9 +1278,14 @@
             class="panel preflight-panel report-page-section"
             aria-labelledby="preflight-title"
             data-guide-entry="checks"
+            data-guide-id="preflight-review"
             data-guide-order="100"
             data-guide-label="Разберите замечания отчёта"
             data-guide-description="После завершения обновления откройте проблемные строки и сверку WB ↔ 1С. Отправляйте результат клиенту только после разбора блокирующих замечаний и проверки периода."
+            data-guide-result="Вы получите подтверждённый перечень замечаний и основание для решения об отправке."
+            data-guide-caution="Неблокирующие замечания остаются видимыми и не должны замалчиваться."
+            data-guide-troubleshooting="Если причина непонятна, откройте связанную строку или сверку и проверьте исходный статус."
+            data-guide-updated-version="v2.64"
           >
             <div class="preflight-header">
               <div>
@@ -2124,6 +2272,45 @@
         </section>
 
         <section
+          id="news-page"
+          class="news-page"
+          data-workspace-panel="news"
+          aria-labelledby="news-title"
+        >
+          <div class="news-intro panel">
+            <div>
+              <p class="eyebrow">Что изменилось в кабинете</p>
+              <h2 id="news-title" tabindex="-1">Новости и обновления</h2>
+              <p class="muted">
+                Краткие описания новых возможностей, улучшений и исправлений
+                со ссылками на актуальную инструкцию.
+              </p>
+            </div>
+            <div class="news-version-summary">
+              <span>Установленная версия</span>
+              <strong id="news-current-version">v2.64</strong>
+              <time id="news-current-date" datetime="2026-08-01">01.08.2026</time>
+            </div>
+          </div>
+
+          <div class="news-toolbar panel">
+            <p id="news-status" role="status" aria-live="polite">
+              Загружаем историю версий…
+            </p>
+            <div class="news-toolbar-actions">
+              <button id="news-retry" type="button" class="secondary-button" hidden>
+                Повторить
+              </button>
+              <button id="news-mark-all-read" type="button" class="secondary-button">
+                Отметить всё прочитанным
+              </button>
+            </div>
+          </div>
+
+          <ol id="news-release-list" class="news-release-list"></ol>
+        </section>
+
+        <section
           id="user-guide-page"
           class="user-guide-page"
           data-workspace-panel="guide"
@@ -2132,7 +2319,7 @@
           <div class="guide-intro panel">
             <div>
               <p class="eyebrow">Справка по текущему кабинету</p>
-              <h2 id="user-guide-title">Как пользоваться сервисом</h2>
+              <h2 id="user-guide-title" tabindex="-1">Как пользоваться сервисом</h2>
               <p class="muted">
                 Выберите контекст отчёта, изучите результат на «Обзоре»,
                 разберите замечания в «Проверках» и только потом готовьте
@@ -2141,6 +2328,34 @@
             </div>
             <p id="user-guide-status" class="guide-sync-note" role="status">
               Инструкция собирается из текущего интерфейса.
+            </p>
+          </div>
+
+          <div id="guide-return-banner" class="guide-return-banner" hidden>
+            <span>Вы открыли инструкцию из описания обновления.</span>
+            <a id="guide-return-link" href="#news/v2.64">Вернуться к обновлению v2.64</a>
+          </div>
+
+          <div class="guide-search panel" role="search">
+            <label for="guide-search-input">Найти инструкцию</label>
+            <div class="guide-search-control">
+              <input
+                id="guide-search-input"
+                type="search"
+                placeholder="Например: скачать Excel или обновить статус"
+                autocomplete="off"
+              />
+              <button
+                id="guide-search-clear"
+                type="button"
+                class="secondary-button"
+                hidden
+              >
+                Очистить
+              </button>
+            </div>
+            <p id="guide-search-status" class="muted" role="status" aria-live="polite">
+              Показаны все доступные инструкции.
             </p>
           </div>
 
@@ -2173,8 +2388,8 @@
               <p class="eyebrow">Подробный сценарий</p>
               <h2 id="guide-checks-title">Как работать с вкладкой «Проверки»</h2>
               <p class="muted">
-                Идите по шагам по порядку. Пропускайте сопоставление, Ozon-only
-                и полную пересборку, если для них нет отдельной причины.
+                Идите по шагам по порядку. Пропускайте сопоставление, отдельное
+                обновление Ozon и полную пересборку, если для них нет отдельной причины.
               </p>
             </div>
             <ol
@@ -2192,6 +2407,31 @@
               выдавать за подтверждённый итог.
             </p>
           </aside>
+
+          <section class="guide-section" aria-labelledby="guide-faq-title">
+            <div class="guide-section-heading">
+              <p class="eyebrow">Частые вопросы</p>
+              <h2 id="guide-faq-title">Если что-то не получилось</h2>
+            </div>
+            <div class="guide-faq-list">
+              <details>
+                <summary>Почему в кабинете нет данных?</summary>
+                <p>Проверьте клиента, вид отчёта, кабинет и период. Если срез верный, откройте «Проверки» и прочитайте покрытие источников.</p>
+              </details>
+              <details>
+                <summary>Почему действие недоступно?</summary>
+                <p>Набор действий зависит от роли и выбранного отчёта. Сотрудникам также нужно проверить готовность подключений.</p>
+              </details>
+              <details>
+                <summary>Что означает «Предварительный расчёт»?</summary>
+                <p>Часть показателей рассчитана, но остаются замечания к источникам или сверке. Такой результат можно изучать, но нельзя выдавать за подтверждённый итог.</p>
+              </details>
+              <details>
+                <summary>Почему обновление не завершилось?</summary>
+                <p>Откройте сводку запуска, обновите статус и найдите последний завершённый этап. Не запускайте второй процесс, пока первый остаётся активным.</p>
+              </details>
+            </div>
+          </section>
         </section>
       </div>
       </section>
@@ -3217,9 +3457,10 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260726-logistics-management-v3" defer></script>
-    <script src="/static/month-close-report.js?v=20260726-logistics-management-v3" defer></script>
-    <script src="/static/tax-load-report.js?v=20260726-logistics-management-v3" defer></script>
-    <script src="/static/app.js?v=20260726-logistics-management-v3" defer></script>
+    <script src="/static/report-scenarios.js?v=20260801-v264-news-guide-v1" defer></script>
+    <script src="/static/month-close-report.js?v=20260801-v264-news-guide-v1" defer></script>
+    <script src="/static/tax-load-report.js?v=20260801-v264-news-guide-v1" defer></script>
+    <script src="/static/release-notes-core.js?v=20260801-v264-news-guide-v1" defer></script>
+    <script src="/static/app.js?v=20260801-v264-news-guide-v1" defer></script>
   </body>
 </html>

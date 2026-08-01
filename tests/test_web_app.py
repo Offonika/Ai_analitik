@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260726-logistics-management-v3"
+        "20260801-v264-news-guide-v1"
     )
     assert health.json()["staticBuildId"] == (
-        "20260726-logistics-management-v3"
+        "20260801-v264-news-guide-v1"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260726-logistics-management-v3" in cabinet.text
-    assert "app.js?v=20260726-logistics-management-v3" in cabinet.text
+    assert "styles.css?v=20260801-v264-news-guide-v1" in cabinet.text
+    assert "app.js?v=20260801-v264-news-guide-v1" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7277,7 +7277,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert 'data-workspace-nav="overview"' in cabinet.text
     assert 'data-workspace-nav="checks"' in cabinet.text
     assert 'data-workspace-nav="tables"' in cabinet.text
+    assert 'data-workspace-nav="news"' in cabinet.text
     assert 'data-workspace-nav="guide"' in cabinet.text
+    assert 'id="news-page"' in cabinet.text
+    assert 'data-workspace-panel="news"' in cabinet.text
     assert 'id="user-guide-page"' in cabinet.text
     assert 'data-workspace-panel="guide"' in cabinet.text
     assert "Как пользоваться сервисом" in cabinet.text
@@ -7374,7 +7377,7 @@ def test_user_guide_is_generated_from_current_interface_metadata(
 
     assert app_js.status_code == 200
     assert 'if (value === "guide")' in app_js.text
-    assert '["overview", "checks", "tables", "guide"]' in app_js.text
+    assert '["overview", "checks", "tables", "news", "guide"]' in app_js.text
     assert "#tables/${tableScenario}" in app_js.text
     assert 'tableScenario: "logistics"' in app_js.text
     assert "function renderUserGuide()" in app_js.text
@@ -7386,7 +7389,45 @@ def test_user_guide_is_generated_from_current_interface_metadata(
 
     assert styles.status_code == 200
     assert 'data-active-workspace="guide"' in styles.text
-    assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in styles.text
+    assert 'data-active-workspace="news"' in styles.text
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in styles.text
+
+
+def test_release_news_and_linked_guide_assets_are_served(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    cabinet = client.get("/cabinet")
+    notes = client.get("/static/release-notes.json")
+    core = client.get("/static/release-notes-core.js")
+    app_js = client.get("/static/app.js")
+
+    assert notes.status_code == 200
+    assert core.status_code == 200
+    payload = notes.json()
+    assert payload["currentVersion"] == "v2.64"
+    assert [release["version"] for release in payload["releases"]] == [
+        "v2.64",
+        "v2.63",
+        "v2.62",
+        "v2.61",
+    ]
+    for item in payload["releases"][0]["items"]:
+        media = client.get(item["media"]["src"])
+        assert media.status_code == 200
+        assert media.headers["content-type"] == "image/webp"
+    assert 'id="news-nav-count"' in cabinet.text
+    assert 'id="guide-search-input"' in cabinet.text
+    assert 'id="guide-return-banner"' in cabinet.text
+    assert 'data-guide-id="news"' in cabinet.text
+    assert 'data-guide-result=' in cabinet.text
+    assert 'data-guide-caution=' in cabinet.text
+    assert 'data-guide-troubleshooting=' in cabinet.text
+    assert "function loadReleaseNotes(" in app_js.text
+    assert "function markAllReleaseNotesRead(" in app_js.text
+    assert "function applyGuideSearch(" in app_js.text
+    assert "function focusGuideTarget(" in app_js.text
+    assert "window.ReleaseNotesCore?.parseReleaseRoute" in app_js.text
+    assert "innerHTML" not in core.text
 
 
 def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
@@ -7556,7 +7597,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260726-logistics-management-v3" in cabinet.text
+    assert "20260801-v264-news-guide-v1" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
