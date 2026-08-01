@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-07-31"
+updated_at: "2026-08-01"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -1619,3 +1619,88 @@ Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/cu
 `scripts/promote_runtime_release.py --environment test`, перезапустить только
 `shumeiko-web-test.service` и повторить test health/safety smoke. Draft reports,
 source snapshots и production при runtime rollback не изменяются.
+
+## Operational qualification v2.63-rc.1 — 1 августа 2026 года
+
+Report-refresh hardening выпущен как проверенный test release candidate
+`v2.63-rc.1`, но не как production release. PR
+[#86](https://github.com/Offonika/Ai_analitik/pull/86) перенес продуктовый diff
+на base `adf308f`; RC commit —
+`b1fcb0ca3c3e3d74a6232249db0d074ee811d731`, merge commit —
+`1515f5dce14324f892a9142bea335a149de79f7a`. Оба обязательных GitHub CI job,
+`quality` и `tests`, завершились успешно.
+
+Из точного merge commit собран immutable release
+`runtime-main-1515f5d-report-refresh-runtime-20260731`. Manifest подтверждает
+`sourceDirty=false`, content SHA-256
+`c4a9e4d346ca0de9a6ca29899d15ce8dfdcc6ca45a018bb2bb27a258fe17c44a` и
+archive SHA-256
+`259e19a87662a39fe051949a5bc77054ef45a48d54fbfd39cfcae493efce059e`.
+Команда `git diff --name-only adf308f..b1fcb0c` воспроизводит точный состав из
+`21` файла:
+
+```text
+.env.example
+deploy/systemd/shumeiko-source-refresh-daily.service
+deploy/systemd/shumeiko-source-refresh-weekly.service
+deploy/systemd/shumeiko-source-refresh-weekly.timer
+deploy/systemd/shumeiko-source-refresh-worker@.service
+deploy/systemd/shumeiko-web-prod.service
+deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf
+deploy/systemd/shumeiko-web-test.service
+deploy/systemd/shumeiko-web-test.service.d/zzz-logistics-r6-client-test.conf
+deploy/systemd/shumeiko-web-test.service.d/zzzz-unit-economics-calculator-staff-test.conf
+docs/changelogs/web-cabinet.md
+docs/generated/web-api.md
+docs/manifest.yml
+docs/runbooks/source-refresh-schedule.md
+docs/runbooks/web-cabinet-operations.md
+docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md
+docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md
+docs/specs/web-cabinet-runtime-contours.md
+src/wb_unit_economics/web/settings.py
+tests/test_runtime_contour_scripts.py
+tests/test_source_refresh_worker.py
+```
+
+RC закрепляет бюджет одного 1С refresh в `1000` страниц, weekly full во вторник
+в `06:15 MSK`, production/test writable roots в effective `ExecStart` и
+неизменяемый staff draft как результат refresh. Публикация `current` остается
+отдельной финансовой операцией. HTTP API и схема БД этим продуктовым diff не
+менялись; миграции не требовались.
+
+Локально успешно выполнены `git diff --check`, Ruff без исправления файлов,
+целевые `test_runtime_contour_scripts.py` и `test_source_refresh_worker.py`,
+полный pytest, `systemd-analyze verify` измененных unit-файлов и все пять
+валидаторов документации из `AGENTS.md`. После test rollout локальный и
+публичный health вернули `status=ok`, `runtimeEnvironment=test` и совпадающие
+backend/static build ID. Safety smoke вернул ожидаемые HTTP-коды `200`, `404`,
+`404`, `401` для health, неизвестного route, `/.env` и неавторизованного
+`/api/reports`; runtime drift-check завершился без расхождений.
+
+Clean restore test-БД не содержал post-data объекты. До запуска backend они
+были восстановлены из read-only schema dump production одной транзакцией;
+итоговая test-схема содержит `189` индексов и `266` constraints, включая
+обязательный idempotency constraint генерации отчетов. Повторная проверка
+санитизации подтвердила нулевые sessions, live-check cache, raw snapshot rows,
+активных client-only пользователей, небезопасные integration fields и ссылки
+на production paths.
+
+Test symlink указывает на
+`runtime-main-1515f5d-report-refresh-runtime-20260731`, квалифицированный как
+`v2.63-rc.1`; test web и health timer активны.
+Production остается на предыдущем runtime
+`runtime-main-880a214-cost-quality-split-20260724`; production report и
+публикация `current` не переключались. После диагностического раскрытия
+production DB credential был ротирован без записи значения в Git или этот
+документ; runtime artifact production при этом не менялся. Ротация credential
+корпоративного proxy остается отдельным закрытым operational follow-up без
+фиксации адреса, логина или значения.
+
+Test/full preflight не выполнял внешних WB/1С чтений и ожидаемо завершился
+`blocked`: санитизация удалила cloned integration secrets, а отдельных
+test-only credentials нет. По явному решению владельца live full canary
+отложен. Новые source refresh runs и staff drafts не создавались; существующий
+test `current` не менялся. Поэтому `v2.63-rc.1` нельзя повышать до финальной
+`v2.63` или продвигать в production без отдельного canary либо нового явно
+принятого rollout-решения.
