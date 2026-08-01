@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260801-v264-news-guide-v2"
+        "20260801-v264-news-guide-v3"
     )
     assert health.json()["staticBuildId"] == (
-        "20260801-v264-news-guide-v2"
+        "20260801-v264-news-guide-v3"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260801-v264-news-guide-v2" in cabinet.text
-    assert "app.js?v=20260801-v264-news-guide-v2" in cabinet.text
+    assert "styles.css?v=20260801-v264-news-guide-v3" in cabinet.text
+    assert "app.js?v=20260801-v264-news-guide-v3" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7605,7 +7605,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260801-v264-news-guide-v2" in cabinet.text
+    assert "20260801-v264-news-guide-v3" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
@@ -16132,3 +16132,34 @@ def test_ozon_commissioner_control_detects_wrong_onec_document_date() -> None:
         )
         == "wrong_date"
     )
+
+
+def test_mobile_topbar_period_controls_use_full_width_rows() -> None:
+    styles = Path("src/wb_unit_economics/web/static/styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        ".workspace-main .topbar-controls {\n"
+        "    grid-template-columns: repeat(2, minmax(0, 1fr)) 44px;\n"
+        "    grid-template-areas:\n"
+        '      "client cabinet actions"\n'
+        '      "report-kind report-kind actions"\n'
+        '      "period-start period-start actions"\n'
+        '      "period-end period-end actions";'
+    ) in styles
+    native_controls = styles.split(
+        '.workspace-main .topbar input[type="date"] {',
+        1,
+    )[1].split("}", 1)[0]
+    assert "width: 100%" in native_controls
+    assert "min-width: 0" in native_controls
+    assert "max-width: 100%" in native_controls
+    mobile_native_controls = styles.split(
+        "@media (max-width: 760px)",
+        2,
+    )[2].split(
+        '.workspace-main .topbar input[type="date"] {',
+        1,
+    )[1].split("}", 1)[0]
+    assert "min-height: 44px" in mobile_native_controls

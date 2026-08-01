@@ -6165,7 +6165,11 @@ td {
 
 .workspace-main .topbar select,
 .workspace-main .topbar input[type="date"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 42px;
+  box-sizing: border-box;
   border-color: transparent;
   background: transparent;
   color: #203651;
@@ -8559,12 +8563,17 @@ td {
 
   .workspace-main .topbar-controls {
     grid-template-columns: repeat(2, minmax(0, 1fr)) 44px;
+    grid-template-areas:
+      "client cabinet actions"
+      "report-kind report-kind actions"
+      "period-start period-start actions"
+      "period-end period-end actions";
     gap: 6px;
   }
 
   .workspace-main .topbar select,
   .workspace-main .topbar input[type="date"] {
-    min-height: 38px;
+    min-height: 44px;
     padding-inline: 6px;
     font-size: 11px;
   }
