@@ -2581,8 +2581,10 @@ function focusGuideTarget() {
   if (!state.guideTargetId) {
     return;
   }
+  const guideTargetId = state.guideTargetId;
+  state.guideTargetId = "";
   const target = document.querySelector(
-    `#guide-topic-${CSS.escape(state.guideTargetId)}`,
+    `#guide-topic-${CSS.escape(guideTargetId)}`,
   );
   if (!target) {
     els.userGuideStatus.textContent +=
