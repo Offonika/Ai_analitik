@@ -792,9 +792,9 @@ UI readiness behavior:
   organizations of the selected client;
 - unit-economics table must stay inside its panel and scroll horizontally on
   narrow screens instead of clipping the right-side columns;
-- AI-аналитик отображается как всплывающий виджет поверх отчета: быстрые
-  вопросы, история сообщений, линия событий read-only tools и источник ответа
-  `openai`/`fallback`;
+- AI-аналитик отображается как одноколонный chat-first виджет поверх отчета:
+  локальное стартовое резюме без вызова OpenAI, история сообщений, не более
+  трех контекстных вопросов и свернутые по умолчанию safe evidence/события;
 - `consultant/admin` видит staff-only раздел `Интеграции` для tenant-level
   WB API и 1С read-only подключений; ключи не относятся к профилю пользователя;
 - в шапке staff-интерфейса действие называется `Сформировать отчет` и открывает
@@ -1089,7 +1089,7 @@ Audit actions:
 ## AI UX And Streaming
 
 AI-аналитик в кабинете показывает не raw reasoning модели, а безопасную
-операционную трассу:
+операционную трассу и evidence по запросу пользователя:
 
 - какие read-only tools были вызваны;
 - какие KPI, SKU, статусы или месяцы стали evidence;
@@ -1110,16 +1110,57 @@ AI-аналитик в кабинете показывает не raw reasoning 
 
 Штатный SSE UI восстанавливает последний активный thread текущего пользователя
 для выбранного отчёта через `GET /api/ai/threads?report_id=<id>&limit=1`.
-После перезагрузки страницы сохранённые сообщения, safe events и источник
-последнего ответа снова видимы; UI не очищает серверную историю. Во время
-запроса поле и кнопка блокируются, статус явно показывает `Анализирую…`, а
-обрыв stream без `final` отображается как безопасная ошибка.
+После перезагрузки страницы сохранённые сообщения, safe events, citations и
+источник последнего ответа снова доступны; UI не очищает серверную историю.
+Во время запроса поле и кнопка блокируются, одна строка статуса показывает
+текущее безопасное событие, а обрыв stream без `final` отображается как
+одна компактная безопасная ошибка с возможностью повторить исходный вопрос.
+Retry не создаёт второй user message. В раскрываемой трассе UI показывает только
+последний завершённый ответ: `tool_started`, `tool_progress` и `tool_completed`
+одного tool объединяются в одну строку, а `status` и `assistant_done` остаются
+служебными событиями и не увеличивают видимый счётчик. Полная safe event history
+остаётся в серверном thread для аудита.
 
-Модальный AI widget имеет отдельные grid-строки для header, report context,
-quick questions и прокручиваемой chat workspace. Длинный текст переносится
-внутри message/timeline, форма не выходит за viewport. На узком или низком
-экране сам widget получает вертикальную прокрутку вместо обрезки через
-`overflow:hidden`; поле вопроса и кнопка остаются доступны после прокрутки.
+Если у выбранного отчета еще нет истории, widget локально показывает короткое
+резюме из уже загруженного `summary`. Открытие widget не создает `ai_thread`, не
+вызывает OpenAI и не записывает локальное резюме в `ai_messages`; thread
+создается только при первом вопросе пользователя. Резюме использует фактический
+период, readiness и одно доступное роли ограничение, не подменяет `null` нулем и
+не дублируется после восстановления серверной истории.
+
+Модальный AI widget является одноколонным chat-first интерфейсом. В шапке
+показываются имя помощника, период/readiness и read-only boundary; крупные KPI,
+progress bars, постоянный статус `Не запускался` и отдельная правая timeline не
+используются. До первого вопроса показывается не более трех детерминированных
+role-aware quick questions. После начала диалога они скрываются, а безопасные
+citations, источник ответа и tool events доступны в свернутых по умолчанию
+блоках `Источники` и `Источники и проверки`. Role-dependent readiness явно
+подписывается: `consultant/admin` видит `Внутренняя готовность`, учитывающую
+staff-only проверки и клиентский черновик, а `client` — `Готовность отчёта` без
+раскрытия или косвенного указания внутренних причин.
+
+Ответ по умолчанию состоит из коротких частей `Вывод`, `Факты` (не более трех)
+и `Следующий шаг`. Под ответом может быть не более одного основного read-only
+действия: открыть сводку, проверку качества или отфильтрованные строки текущего
+report scope. Остальные переходы остаются внутри evidence; они не записывают в
+WB, 1С, mapping или report mart.
+
+Deterministic fallback выбирает один основной intent в порядке: явное
+обновление 1С, readiness, себестоимость/качество, убыточность, маржа, SKU,
+динамика, управленческий вывод, общая сводка. Summary загружается всегда, а
+дополнительные read-only tools вызываются только для выбранного intent. Вопрос
+об убыточности называет до трех SKU, их отрицательный результат и доступный
+драйвер; вопрос о readiness перечисляет доступные роли причины и следующий
+контроль; `null` прибыль или маржа объясняются как нерассчитанные и не
+подменяются нулём. Live-проверка 1С запускается только при явной просьбе
+проверить или сверить себестоимость, а rebuild — только при существующем
+explicit refresh intent.
+
+Длинный текст переносится внутри messages/evidence, форма остается доступной у
+нижней границы widget. На узком или низком экране widget получает вертикальную
+прокрутку вместо обрезки; composer, retry и закрытие остаются доступны. На
+узком экране основные кнопки widget имеют target area не менее 44 px, summary
+раскрываемых блоков — не менее 32 px, а короткий placeholder не обрезается.
 
 Клиентская роль видит только safe trace. `consultant` и `admin` могут видеть
 дополнительные служебные labels tool names/status, но не raw prompts, SQL,
@@ -1383,8 +1424,14 @@ Large-report loading:
 - Admin can create, reset and disable users without public registration.
 - Consultant/admin can review audit events.
 - AI chat returns answers based on report tools and logs tool calls.
-- AI widget shows messages, quick questions, safe step timeline, source status
-  `OpenAI`/`fallback` and evidence cards for used tools.
+- AI widget shows a local no-call start summary or restored messages, at most
+  three role-aware quick questions, one live safe status, collapsed
+  `OpenAI`/fallback trace, citations and read-only evidence actions.
+- Deterministic fallback gives different evidence and the matching read-only
+  action for loss, margin, readiness, cost quality, SKU, period and summary
+  intents; the visible trace contains unique checks of the latest completed
+  answer, role-dependent readiness is explicitly named, and retry shows one
+  error without duplicating the user message.
 - Consultant/admin can save, check and disable tenant integrations without full
   secrets being returned by API or audit.
 - Tenant integrations with encrypted storage run real read-only WB Finance ping
@@ -1512,7 +1559,9 @@ Large-report loading:
   excludes Ozon diagnostic drafts; the same card can explicitly restore the
   exact draft into the financial-review step without starting source refresh.
 - AI tests with mocked/fallback model path and whitelisted tool outputs: no
-  external API call required.
+  external API call required. Intent tests cover loss, margin, readiness, cost
+  quality, SKU, period, summary, explicit refresh, empty evidence and nullable
+  financial KPIs without zero substitution.
 - Client-draft API tests for staff-only access, client denial, tenant boundary,
   revision creation, manual save, finalize, audit events and OpenAI-unavailable
   behavior without changing an existing draft.
@@ -1564,6 +1613,9 @@ Large-report loading:
 - Import tests from an Excel-derived dashboard payload.
 - Frontend smoke: login/authenticated API load, filters, AI widget and mobile
   overflow.
+- Frontend AI smoke covers staff/client readiness labels, unique checks of the
+  latest answer after restore, one retry alert, no duplicate user bubble and
+  44 px mobile actions/32 px disclosure targets at 390 px.
 - Frontend guide contract: hash routing и sidebar state для `#guide`, генерация
   карточек безопасными DOM methods, role filtering и обязательное
   `data-guide-*` покрытие верхней навигации, фильтров, action menu и всех кнопок

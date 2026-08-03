@@ -6,13 +6,13 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta
       name="shumeiko-build-id"
-      content="20260805-v270-report-wizard-main-sync"
+      content="20260805-v271-ai-chat-main-sync"
     />
     <title>Shumeyko WB Unit Economics</title>
     <link rel="icon" href="/static/icons/chart-bar.svg" type="image/svg+xml" />
     <link
       rel="stylesheet"
-      href="/static/styles.css?v=20260805-v270-report-wizard-main-sync"
+      href="/static/styles.css?v=20260805-v271-ai-chat-main-sync"
     />
     <link
       rel="stylesheet"
@@ -2449,9 +2449,9 @@
             <div>
               <p class="eyebrow">Помощник без изменения данных</p>
               <h2 id="ai-title">AI-аналитик</h2>
+              <p id="ai-context-line" class="ai-context-line">Выберите отчёт</p>
             </div>
             <div class="widget-actions ai-widget-actions">
-              <span id="ai-source-status" class="status-pill">Не запускался</span>
               <button
                 id="ai-widget-close"
                 type="button"
@@ -2462,57 +2462,48 @@
               </button>
             </div>
           </div>
-          <section id="ai-context-strip" class="ai-context-strip" aria-labelledby="ai-context-title">
-            <div class="ai-context-heading">
-              <div>
-                <p class="eyebrow">Контекст текущего отчёта</p>
-                <h3 id="ai-context-title">Факты для вопроса</h3>
-              </div>
-              <span id="ai-context-readiness" class="status-pill">Нет отчёта</span>
-            </div>
-            <div id="ai-context-metrics" class="metric-grid ai-context-metrics"></div>
-            <div id="ai-context-bars" class="ai-context-bars"></div>
-            <p id="ai-context-empty" class="analytics-empty">
-              Выберите клиента и дождитесь загрузки отчёта — здесь появится краткий контекст.
-            </p>
-          </section>
-          <div class="quick-questions" aria-label="Быстрые вопросы AI">
-            <button type="button" data-ai-question="Что самое важное по убыточности?">
-              Что убыточно?
-            </button>
-            <button type="button" data-ai-question="Где в отчете нет себестоимости 1С?">
-              Где нет себестоимости?
-            </button>
-            <button type="button" data-ai-question="Что мешает отправке отчета клиенту?">
-              Что мешает отправке?
-            </button>
-            <button type="button" data-ai-question="Сформируй короткий вывод клиенту.">
-              Вывод клиенту
-            </button>
-          </div>
           <div id="chatkit-shell" class="chatkit-shell" hidden>
             <openai-chatkit id="chatkit-element"></openai-chatkit>
           </div>
           <div class="ai-workspace">
-            <div class="ai-chat" aria-live="polite">
-              <div id="ai-messages" class="ai-messages"></div>
+            <div class="ai-chat">
+              <div
+                id="ai-messages"
+                class="ai-messages"
+                role="log"
+                aria-live="polite"
+                aria-relevant="additions"
+              ></div>
+              <div
+                id="ai-quick-questions"
+                class="quick-questions ai-quick-questions"
+                aria-label="Быстрые вопросы AI"
+              ></div>
+              <p id="ai-live-status" class="ai-live-status" role="status" aria-live="polite"></p>
               <form id="ai-form" class="ai-form">
                 <input
                   id="ai-input"
                   name="message"
                   type="text"
                   aria-label="Вопрос AI-аналитику"
-                  placeholder="Спросите по отчёту, SKU, себестоимости или готовности"
+                  placeholder="Спросите по отчёту…"
                   autocomplete="off"
                 />
                 <button id="ai-send-button" type="submit">Спросить</button>
               </form>
-              <p id="ai-error" class="error-text" role="alert"></p>
+              <div id="ai-retry" class="ai-retry" role="alert" aria-live="assertive" hidden>
+                <span id="ai-retry-message">Вопрос не отправлен.</span>
+                <button id="ai-retry-button" type="button" class="secondary-button">Повторить</button>
+              </div>
+              <p id="ai-error" class="error-text" role="alert" hidden></p>
             </div>
-            <aside class="ai-timeline" aria-label="Ход работы AI">
-              <h3>Ход анализа</h3>
+            <details id="ai-trace" class="ai-trace" hidden>
+              <summary>
+                <span>Источники и проверки</span>
+                <span id="ai-trace-count" class="ai-trace-count"></span>
+              </summary>
               <ul id="ai-events" class="event-list"></ul>
-            </aside>
+            </details>
           </div>
         </section>
       </div>
@@ -3494,10 +3485,10 @@
       </div>
     </main>
     <script src="/static/sortable-tables.js?v=20260718-column-sorting-v3" defer></script>
-    <script src="/static/report-scenarios.js?v=20260805-v270-report-wizard-main-sync" defer></script>
-    <script src="/static/month-close-report.js?v=20260805-v270-report-wizard-main-sync" defer></script>
-    <script src="/static/tax-load-report.js?v=20260805-v270-report-wizard-main-sync" defer></script>
-    <script src="/static/release-notes-core.js?v=20260805-v270-report-wizard-main-sync" defer></script>
-    <script src="/static/app.js?v=20260805-v270-report-wizard-main-sync" defer></script>
+    <script src="/static/report-scenarios.js?v=20260805-v271-ai-chat-main-sync" defer></script>
+    <script src="/static/month-close-report.js?v=20260805-v271-ai-chat-main-sync" defer></script>
+    <script src="/static/tax-load-report.js?v=20260805-v271-ai-chat-main-sync" defer></script>
+    <script src="/static/release-notes-core.js?v=20260805-v271-ai-chat-main-sync" defer></script>
+    <script src="/static/app.js?v=20260805-v271-ai-chat-main-sync" defer></script>
   </body>
 </html>

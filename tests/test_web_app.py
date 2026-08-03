@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260805-v270-report-wizard-main-sync"
+        "20260805-v271-ai-chat-main-sync"
     )
     assert health.json()["staticBuildId"] == (
-        "20260805-v270-report-wizard-main-sync"
+        "20260805-v271-ai-chat-main-sync"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260805-v270-report-wizard-main-sync" in cabinet.text
-    assert "app.js?v=20260805-v270-report-wizard-main-sync" in cabinet.text
+    assert "styles.css?v=20260805-v271-ai-chat-main-sync" in cabinet.text
+    assert "app.js?v=20260805-v271-ai-chat-main-sync" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7296,10 +7296,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Подтвердить" in cabinet.text
     assert 'id="ai-open-button"' in cabinet.text
     assert 'class="ai-assistant-icon"' in cabinet.text
-    assert 'id="ai-context-strip"' in cabinet.text
+    assert 'id="ai-context-line"' in cabinet.text
     assert "AI-аналитик" in cabinet.text
     assert "Помощник без изменения данных" in cabinet.text
-    assert "или готовности" in cabinet.text
+    assert 'placeholder="Спросите по отчёту…"' in cabinet.text
     assert "mapping и обязательных" not in cabinet.text
     assert "Read-only помощник" not in cabinet.text
     assert "P&amp;L юнит-экономики" not in cabinet.text
@@ -7443,9 +7443,11 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
 ) -> None:
     client = make_client(tmp_path)
 
+    cabinet = client.get("/")
     app_js = client.get("/static/app.js")
     styles = client.get("/static/styles.css")
 
+    assert cabinet.status_code == 200
     assert app_js.status_code == 200
     assert styles.status_code == 200
     assert (
@@ -7453,10 +7455,24 @@ def test_ai_sse_ui_restores_history_and_contains_modal_overflow(
         in app_js.text
     )
     assert "function renderAiThread(thread)" in app_js.text
-    assert 'els.aiSourceStatus.textContent = "Анализирую…"' in app_js.text
-    assert 'throw new Error("AI stream ended without a final answer")' in app_js.text
-    assert "grid-template-rows: auto auto auto minmax(0, 1fr);" in styles.text
-    assert ".ai-widget {\n    display: block;\n    overflow-y: auto;" in styles.text
+    assert "function renderAiStartState(summary = {})" in app_js.text
+    assert 'reason?.message || reason?.label || reason?.title || ""' in app_js.text
+    assert "function appendAiEvidence(item, message)" in app_js.text
+    assert "function runAiMessageAction(action)" in app_js.text
+    assert "return items.slice(0, 3);" in app_js.text
+    assert 'els.aiLiveStatus.textContent = "Анализирую…"' in app_js.text
+    assert "AI stream ended without a final answer" in app_js.text
+    assert 'id="ai-messages"' in cabinet.text
+    assert 'role="log"' in cabinet.text
+    assert 'id="ai-live-status"' in cabinet.text
+    assert 'id="ai-trace"' in cabinet.text
+    assert 'id="ai-retry-button"' in cabinet.text
+    assert 'class="ai-timeline"' not in cabinet.text
+    assert 'id="ai-context-metrics"' not in cabinet.text
+    assert "Не запускался" not in cabinet.text
+    assert "grid-template-rows: auto minmax(0, 1fr);" in styles.text
+    assert "width: min(780px, 100%);" in styles.text
+    assert "max-height: min(280px, 38vh);" in styles.text
     assert "@media (max-height: 700px)" in styles.text
     assert "overscroll-behavior: contain;" in styles.text
     assert "word-break: break-word;" in styles.text
@@ -7605,7 +7621,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260805-v270-report-wizard-main-sync" in cabinet.text
+    assert "20260805-v271-ai-chat-main-sync" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
@@ -8708,6 +8724,8 @@ def test_frontend_login_and_widget_accessibility_regressions(tmp_path: Path) -> 
     assert "openWidgetOverlay" in text
     assert "closeWidgetOverlay" in text
     assert "trapWidgetFocus" in text
+    assert 'const FOCUSABLE_WIDGET_SELECTOR = [\n  "summary",' in text
+    assert 'function setAiError(message = "")' in text
     assert "!els.newClientWidgetOverlay.hidden" in text
 
     cabinet = client.get("/cabinet")
@@ -15339,8 +15357,11 @@ def test_ai_fallback_uses_report_facts(tmp_path: Path) -> None:
     ]
     assert assistant_messages
     assert "Убыточных строк" in assistant_messages[-1]
-    assert "06.04.2026 - 12.04.2026" in assistant_messages[-1]
-    assert "не меняю данные" in assistant_messages[-1]
+    assert "Убыточный товар" in assistant_messages[-1]
+    assert "Возвраты + логистика" in assistant_messages[-1]
+    assert "Вывод" in assistant_messages[-1]
+    assert "Факты" in assistant_messages[-1]
+    assert "Следующий шаг" in assistant_messages[-1]
     assistant_payloads = [
         item for item in answer["messages"] if item["role"] == "assistant"
     ]
@@ -15354,6 +15375,278 @@ def test_ai_fallback_uses_report_facts(tmp_path: Path) -> None:
     ]
     assert done_events[-1]["payload"]["answerSource"] == "fallback"
     assert done_events[-1]["payload"]["fallbackReason"] == "no_openai_key"
+
+
+def test_ai_fallback_plans_only_tools_for_primary_intent() -> None:
+    analyst = AiAnalyst(WebSettings())
+
+    assert analyst._planned_tool_names("Что мешает готовности отчёта?") == []
+    assert analyst._planned_tool_names("Объясни маржу") == []
+    assert analyst._planned_tool_names("Какие товары убыточны?") == [
+        "get_loss_drivers"
+    ]
+    assert analyst._planned_tool_names("Где нет себестоимости 1С?") == [
+        "get_data_quality_issues"
+    ]
+    assert analyst._planned_tool_names("Проверь себестоимость 1С") == [
+        "get_data_quality_issues",
+        "verify_onec_cost",
+    ]
+    assert analyst._planned_tool_names("Найди SKU A-LOSS") == ["search_sku"]
+    assert analyst._planned_tool_names("Сравни динамику по месяцам") == [
+        "compare_periods"
+    ]
+    assert analyst._planned_tool_names("Сформулируй главный вывод") == [
+        "get_loss_drivers",
+        "get_data_quality_issues",
+    ]
+    assert analyst._planned_tool_names(
+        "Дозагрузи 1С себестоимость и пересобери отчёт"
+    ) == ["get_data_quality_issues", "refresh_onec_and_rebuild_report"]
+
+
+def test_ai_fallback_composes_answers_by_intent_without_zero_substitution() -> None:
+    analyst = AiAnalyst(WebSettings())
+    summary = {
+        "period": "Апрель 2026",
+        "revenue": 100_000,
+        "profit": -15_000,
+        "margin": -0.15,
+        "rows": 10,
+        "loss_rows": 2,
+        "quality": {"missingCostRows": 1},
+        "readiness": {
+            "label": "Нужна проверка",
+            "score": 70,
+            "blockingReasons": [],
+            "reviewReasons": [{"message": "Не подтверждена себестоимость."}],
+            "nextAction": "Проверить себестоимость.",
+        },
+        "limitations": ["Причины возврата не передаются текущими источниками."],
+    }
+    outputs = {
+        "get_report_summary": summary,
+        "get_loss_drivers": {
+            "loss_rows": 2,
+            "top_losses": [
+                {
+                    "product": "Товар A",
+                    "profit": -10_000,
+                    "loss_driver": "Логистика",
+                },
+                {
+                    "product": "Товар B",
+                    "profit": -5_000,
+                    "loss_driver": "Возвраты",
+                },
+            ],
+        },
+        "get_data_quality_issues": {
+            "review_rows": 1,
+            "statuses": [{"status": "Нет себестоимости 1С", "rows": 1}],
+        },
+        "search_sku": {
+            "query": "A-LOSS",
+            "total": 1,
+            "items": [
+                {
+                    "product": "Товар A",
+                    "profit": -10_000,
+                    "status": "ОК",
+                }
+            ],
+        },
+        "compare_periods": {
+            "monthly": [
+                {
+                    "month": "Март 2026",
+                    "revenue": 80_000,
+                    "profit": -20_000,
+                    "margin": -0.25,
+                },
+                {
+                    "month": "Апрель 2026",
+                    "revenue": 100_000,
+                    "profit": -15_000,
+                    "margin": -0.15,
+                },
+            ]
+        },
+    }
+
+    loss = analyst._fallback_answer(outputs, "Какие товары убыточны?")
+    margin = analyst._fallback_answer(outputs, "Объясни маржу")
+    readiness = analyst._fallback_answer(outputs, "Почему отчёт не готов?")
+    cost = analyst._fallback_answer(outputs, "Где нет себестоимости?")
+    sku = analyst._fallback_answer(outputs, "Найди SKU A-LOSS")
+    period = analyst._fallback_answer(outputs, "Сравни динамику по месяцам")
+
+    assert "Главная убыточная позиция — Товар A" in loss
+    assert "драйвер — Логистика" in loss
+    assert "Маржа за Апрель 2026 составляет -15.0%" in margin
+    assert "Нужна проверка: 70/100" in readiness
+    assert "Не подтверждена себестоимость." in readiness
+    assert "Строк с себестоимостью, требующей проверки: 1" in cost
+    assert "По запросу найдено строк: 1" in sku
+    assert "Прибыль изменилась с -20,000 ₽" in period
+    assert len({loss, margin, readiness, cost, sku, period}) == 6
+    assert all(".." not in answer for answer in (loss, margin, readiness, cost))
+
+    unavailable = {
+        **summary,
+        "profit": None,
+        "margin": None,
+        "quality": {"missingCostRows": 3},
+    }
+    null_margin = analyst._fallback_answer(
+        {"get_report_summary": unavailable},
+        "Объясни маржу",
+    )
+    assert "прибыль и маржа пока не рассчитаны" in null_margin
+    assert "Прибыль до налогов: не рассчитана" in null_margin
+    assert "Прибыль до налогов: 0 ₽" not in null_margin
+
+    no_losses = analyst._fallback_answer(
+        {
+            "get_report_summary": {**summary, "loss_rows": 0},
+            "get_loss_drivers": {"loss_rows": 0, "top_losses": []},
+        },
+        "Что убыточно?",
+    )
+    unknown_sku = analyst._fallback_answer(
+        {
+            "get_report_summary": summary,
+            "search_sku": {"query": "UNKNOWN", "total": 0, "items": []},
+        },
+        "Найди SKU UNKNOWN",
+    )
+    empty_period = analyst._fallback_answer(
+        {
+            "get_report_summary": summary,
+            "compare_periods": {"monthly": []},
+        },
+        "Покажи динамику",
+    )
+    assert "убыточных строк нет" in no_losses
+    assert "товар или SKU не найден" in unknown_sku
+    assert "нет месячной динамики" in empty_period
+
+
+def test_ai_fallback_service_uses_primary_intent_tools(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    analyst = client.app.state.analyst
+    with client.app.state.session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+
+        def answer(question: str):
+            thread = repository.create_ai_thread(
+                db,
+                user=user,
+                tenant_id=report.tenant_id,
+                client_id=report.client_id,
+                report_id=report.id,
+                title="Проверка intent",
+            )
+            db.flush()
+            result = analyst.answer(
+                db,
+                user=user,
+                thread=thread,
+                question=question,
+            )
+            db.flush()
+            tools = {
+                item["toolName"]
+                for item in repository.thread_events(db, user, thread)
+                if item["type"] == "tool_completed"
+            }
+            return result, tools
+
+        loss, loss_tools = answer("Что самое важное по убыточности?")
+        margin, margin_tools = answer("Объясни маржу простыми словами")
+        readiness, readiness_tools = answer("Что мешает готовности отчёта?")
+        cost, cost_tools = answer("Где в отчёте нет себестоимости 1С?")
+
+    assert "Убыточный товар" in loss.content
+    assert "Возвраты + логистика" in loss.content
+    assert loss_tools == {"get_report_summary", "get_loss_drivers"}
+    assert "марж" in margin.content.casefold()
+    assert margin_tools == {"get_report_summary"}
+    assert "/100" in readiness.content
+    assert readiness_tools == {"get_report_summary"}
+    assert "себестоимост" in cost.content.casefold()
+    assert cost_tools == {"get_report_summary", "get_data_quality_issues"}
+    assert len({loss.content, margin.content, readiness.content, cost.content}) == 4
+
+
+def test_ai_explicit_refresh_intent_remains_service_backed(tmp_path: Path) -> None:
+    fake_service = FakeAutoRefreshService(
+        tmp_path / "reports" / "auto-refresh.xlsx"
+    )
+    client = make_client(
+        tmp_path,
+        settings_overrides={"source_refresh_enabled": True},
+        auto_refresh_service=fake_service,
+    )
+    analyst = client.app.state.analyst
+    with client.app.state.session_factory() as db:
+        user = db.query(repository.User).filter_by(email="admin@example.com").one()
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        thread = repository.create_ai_thread(
+            db,
+            user=user,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            report_id=report.id,
+            title="Проверка refresh intent",
+        )
+        db.flush()
+
+        result = analyst.answer(
+            db,
+            user=user,
+            thread=thread,
+            question="Дозагрузи 1С себестоимость и пересобери отчёт",
+        )
+        db.flush()
+        tools = {
+            item["toolName"]
+            for item in repository.thread_events(db, user, thread)
+            if item["type"] == "tool_completed"
+        }
+
+    assert "report-1-refresh" in result.content
+    assert tools == {
+        "get_report_summary",
+        "get_data_quality_issues",
+        "refresh_onec_and_rebuild_report",
+    }
+    assert fake_service.last_reason == (
+        "Дозагрузи 1С себестоимость и пересобери отчёт"
+    )
+
+
+def test_ai_chat_static_contract_is_minimal_and_mobile_accessible() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app_js = (root / "src/wb_unit_economics/web/static/app.js").read_text()
+    index_html = (root / "src/wb_unit_economics/web/static/index.html").read_text()
+    styles = (root / "src/wb_unit_economics/web/static/styles.css").read_text()
+
+    assert "function lastCompletedAiAnswerEvents(events)" in app_js
+    assert "function aiTraceEventKey(event)" in app_js
+    assert 'return "answer-source";' in app_js
+    assert 'openProductsPreset("losses")' in app_js
+    assert "Внутренняя готовность" in app_js
+    assert "Готовность отчёта" in app_js
+    assert 'id="ai-retry-message"' in index_html
+    assert 'role="alert" aria-live="assertive"' in index_html
+    assert 'id="ai-error" class="error-text" role="alert" hidden' in index_html
+    assert 'placeholder="Спросите по отчёту…"' in index_html
+    assert ".ai-message-action {\n    min-height: 44px;" in styles
+    assert ".ai-trace summary {\n    min-height: 32px;" in styles
 
 
 def test_ai_openai_source_is_visible_when_model_answers(
@@ -15391,6 +15684,9 @@ def test_ai_prompts_are_versioned_package_resources() -> None:
 
     assert "{{LIMITATIONS}}" in analyst_prompt
     assert "короткое приветствие" in analyst_prompt
+    assert "`Вывод`" in analyst_prompt
+    assert "`Факты`" in analyst_prompt
+    assert "`Следующий шаг`" in analyst_prompt
     assert "Обязательные разделы" in client_draft_prompt
     rendered = render_prompt("ai_analyst", LIMITATIONS="- Только тест")
     assert "{{LIMITATIONS}}" not in rendered
@@ -15880,6 +16176,8 @@ def test_ai_stream_returns_safe_events_and_final_answer(tmp_path: Path) -> None:
     assert "event: answer_source" in body
     assert "event: final" in body
     assert "answerSource" in body
+    assert '"citations":' in body
+    assert '"reportId": "report-1"' in body
     assert "Убыточных строк" in body
 
     events = client.get(f"/api/ai/threads/{thread['id']}/events").json()["items"]
