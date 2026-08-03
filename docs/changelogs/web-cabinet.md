@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-07-24"
+updated_at: "2026-08-03"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,25 @@ updated_at: "2026-07-24"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-03: v2.65 сделал deterministic fallback intent-aware, сохранил
+  role-dependent readiness с явными подписями, свернул started/completed в
+  уникальные проверки последнего ответа и закрепил единственную retry-ошибку,
+  короткий mobile placeholder, доступные target areas и focus trap для
+  раскрываемых блоков trace/citations; пустой неретраимый alert скрыт из
+  accessibility tree без изменения API/БД.
+- 2026-08-02: v2.64 перевёл AI-аналитика в минималистичный chat-first widget:
+  локальное резюме не вызывает OpenAI и не создает thread, до первого вопроса
+  видны не более трех role-aware подсказок, а citations, источник ответа и
+  safe tool trace раскрываются по запросу рядом с сообщениями.
+- 2026-07-31: v2.63 распространил effective `ExecStart` hardening на основной
+  test unit и test-only overrides: test environment, cookie, выключенные
+  внешние интеграции и отдельные report/source roots больше не могут быть
+  переопределены старыми значениями из `EnvironmentFile`.
+- 2026-07-30: v2.62 закрепил production export/source roots на уровне
+  effective `ExecStart` основного unit и corporate-proxy login-shell drop-in
+  после secret-bearing `EnvironmentFile`, чтобы новый Excel создавался внутри
+  разрешенного `/data` и authenticated export не возвращал `export not found`
+  из-за старого workspace-relative значения.
 - 2026-07-24: v2.60 объединил актуальный production workflow с доработками
   налоговой нагрузки и test-only логистики: выбранный `report_id` скачивает
   собственный Excel и период, черновой график налогов остаётся
