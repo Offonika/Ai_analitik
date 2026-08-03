@@ -122,7 +122,7 @@ class AiAnalyst:
             tool_names=tool_names,
         )
         return AiAnswer(
-            content=self._fallback_answer(fallback_outputs),
+            content=self._fallback_answer(fallback_outputs, question),
             answer_source="fallback",
             model=self.settings.openai_model,
             fallback_reason=fallback_reason,
@@ -991,63 +991,304 @@ class AiAnalyst:
             "limitations": self._limitations(summary),
         }
 
-    def _fallback_answer(self, tool_outputs: dict[str, Any]) -> str:
+    def _fallback_answer(
+        self, tool_outputs: dict[str, Any], question: str
+    ) -> str:
         summary = tool_outputs["get_report_summary"]
-        margin = summary["margin"]
-        margin_text = "н/д" if margin is None else f"{margin:.1%}"
-        revenue_text = self._money_or_na(summary.get("revenue"))
-        profit_text = self._money_or_na(summary.get("profit"))
+        intent = self._question_intent(question)
+        period = str(summary.get("period") or "текущий период")
+        conclusion = self._summary_result_conclusion(summary)
+        facts: list[str] = [
+            f"Выручка после СПП: {self._money_or_na(summary.get('revenue'))}",
+            (
+                f"Убыточных строк: {int(summary.get('loss_rows') or 0)} "
+                f"из {int(summary.get('rows') or 0)}"
+            ),
+        ]
+        next_step = "Откройте сводку и начните с показателя с наибольшим влиянием."
+
         loss_output = tool_outputs.get("get_loss_drivers") or {}
         top_losses = loss_output.get("top_losses", [])
-        loss_lines = "\n".join(
-            f"- {item['product']}: {float(item['profit'] or 0):,.0f} ₽; "
-            f"драйвер: {item['loss_driver'] or 'нужно уточнить'}; "
-            f"статус: {item['status'] or 'не указан'}"
-            for item in top_losses[:5]
-        )
-        if not loss_lines and loss_output.get("loss_rows") is None:
-            loss_lines = "- Убыточность не рассчитана: нет полной закрытой недели."
-        elif not loss_lines:
-            loss_lines = "- Убыточных строк в текущем отборе нет."
         quality = tool_outputs.get("get_data_quality_issues") or {}
-        quality_line = ""
-        if quality.get("statuses"):
-            first = quality["statuses"][0]
-            quality_line = (
-                f"\n\nКрупнейший статус качества данных: {first['status']} "
-                f"({first['rows']} строк)."
-            )
-        refresh = tool_outputs.get("refresh_onec_and_rebuild_report")
-        refresh_line = ""
-        if refresh:
+
+        if intent == "refresh":
+            refresh = tool_outputs.get("refresh_onec_and_rebuild_report") or {}
             if refresh.get("newReportRunId"):
-                refresh_line = (
-                    "\n\n1С дозагружена без изменения данных, создан новый расчёт: "
-                    f"{refresh['newReportRunId']}. Старый отчет не менялся."
+                conclusion = (
+                    f"Обновление только для чтения завершено: создан расчёт "
+                    f"{refresh['newReportRunId']}"
+                )
+                next_step = (
+                    "Откройте новый расчёт "
+                    f"{refresh['newReportRunId']} после дозагрузки 1С "
+                    "только для чтения и "
+                    "сравните готовность со старым отчётом."
                 )
             else:
                 refresh_reason = (
                     refresh.get("message") or refresh.get("status") or "нужна проверка"
                 )
-                refresh_line = (
-                    "\n\nАвтоматическое обновление 1С не создало новый расчёт: "
+                conclusion = f"Новый расчёт не создан: {refresh_reason}"
+                next_step = (
+                    "Проверьте причину, по которой новый расчёт не создан: "
                     f"{refresh_reason}."
                 )
-        return (
-            f"По расчету за {summary['period']} выручка после СПП составляет "
-            f"{revenue_text}, прибыль до налогов "
-            f"{profit_text}, маржа {margin_text}.\n\n"
-            f"Убыточных строк: "
-            f"{summary['loss_rows'] if summary['loss_rows'] is not None else 'н/д'} "
-            f"из {summary['rows'] if summary['rows'] is not None else 'н/д'}.\n"
-            f"{loss_lines}{quality_line}{refresh_line}\n\n"
-            "Ограничения: "
-            f"{'; '.join(summary.get('limitations') or LIMITATIONS)}. "
-            "Я не меняю данные WB/1C и не записываю ничего во внешние системы."
+            facts = [
+                f"Исходный период: {period}",
+                str(refresh.get("message") or "Текущий отчёт не изменялся"),
+            ]
+        elif intent == "readiness":
+            readiness = summary.get("readiness") or {}
+            score = readiness.get("score")
+            score_text = (
+                f"{int(score)}/100" if isinstance(score, (int, float)) else "без оценки"
+            )
+            conclusion = (
+                f"{readiness.get('label') or 'Готовность ещё не рассчитана'}: "
+                f"{score_text}"
+            )
+            reasons = [
+                *list(readiness.get("blockingReasons") or []),
+                *list(readiness.get("reviewReasons") or []),
+            ]
+            facts = [
+                self._readiness_reason_text(reason)
+                for reason in reasons
+                if self._readiness_reason_text(reason)
+            ] or ["Блокирующих или контрольных причин не найдено"]
+            next_step = str(
+                readiness.get("nextAction")
+                or "Откройте сводку и проверьте статус отправки отчёта."
+            )
+        elif intent == "cost_quality":
+            summary_quality = summary.get("quality") or {}
+            missing_cost = int(summary_quality.get("missingCostRows") or 0)
+            review_rows = int(quality.get("review_rows") or 0)
+            conclusion = (
+                f"Строк с себестоимостью, требующей проверки: {missing_cost}"
+                if missing_cost
+                else "Строк без подтверждённой себестоимости не найдено"
+            )
+            facts = []
+            verification = tool_outputs.get("verify_onec_cost") or {}
+            if verification.get("message"):
+                facts.append(f"Проверка 1С: {verification['message']}")
+            if review_rows:
+                facts.append(f"Всего строк к проверке качества: {review_rows}")
+            facts.extend(
+                f"{item.get('status') or 'Статус не указан'} — "
+                f"строк: {int(item.get('rows') or 0)}"
+                for item in list(quality.get("statuses") or [])[:3]
+            )
+            if not facts:
+                facts.append("Дополнительных статусов качества данных не найдено")
+            next_step = (
+                "Откройте проверку себестоимости и разберите проблемные строки."
+                if missing_cost or review_rows
+                else "Откройте сводку и продолжите проверку отчёта."
+            )
+        elif intent == "loss":
+            loss_rows = int(loss_output.get("loss_rows") or 0)
+            if top_losses:
+                first = top_losses[0]
+                conclusion = (
+                    f"Главная убыточная позиция — "
+                    f"{first.get('product') or 'товар без названия'}: "
+                    f"{self._money_or_na(first.get('profit'))}; драйвер — "
+                    f"{first.get('loss_driver') or 'нужно уточнить'}"
+                )
+                facts = [
+                    f"Убыточных строк в текущем отборе: {loss_rows}",
+                    *[
+                        f"{item.get('product') or 'Товар без названия'}: "
+                        f"{self._money_or_na(item.get('profit'))}; драйвер — "
+                        f"{item.get('loss_driver') or 'нужно уточнить'}"
+                        for item in top_losses[1:3]
+                    ],
+                ]
+                next_step = (
+                    "Откройте убыточные продажи и проверьте позиции "
+                    "с наибольшим отрицательным результатом."
+                )
+            else:
+                conclusion = "В текущем отборе убыточных строк нет"
+                facts = [
+                    f"Проверено строк: {int(summary.get('rows') or 0)}",
+                    "Прибыль до налогов: "
+                    + self._money_or_na(
+                        summary.get("profit"), missing="не рассчитана"
+                    ),
+                ]
+                next_step = "Откройте сводку и проверьте остальные зоны риска."
+        elif intent == "margin":
+            margin = summary.get("margin")
+            profit = summary.get("profit")
+            if margin is None and profit is None:
+                conclusion = f"За {period} прибыль и маржа пока не рассчитаны"
+            elif margin is None:
+                conclusion = (
+                    f"За {period} прибыль до налогов — "
+                    f"{self._money_or_na(profit)}, маржа пока не рассчитана"
+                )
+            else:
+                conclusion = f"Маржа за {period} составляет {float(margin):.1%}"
+            summary_quality = summary.get("quality") or {}
+            facts = [
+                f"Выручка после СПП: {self._money_or_na(summary.get('revenue'))}",
+                "Прибыль до налогов: "
+                + self._money_or_na(profit, missing="не рассчитана"),
+            ]
+            missing_cost = int(summary_quality.get("missingCostRows") or 0)
+            if missing_cost:
+                facts.append(
+                    f"Без подтверждённой себестоимости: {missing_cost} строк"
+                )
+            next_step = (
+                "Откройте проверку себестоимости: без неё маржу нельзя считать полной."
+                if margin is None or missing_cost
+                else "Откройте сводку и сравните маржу с динамикой периода."
+            )
+        elif intent == "sku":
+            search = tool_outputs.get("search_sku") or {}
+            items = list(search.get("items") or [])
+            if items:
+                conclusion = (
+                    f"По запросу найдено строк: {int(search.get('total') or 0)}"
+                )
+                facts = [
+                    f"{item.get('product') or item.get('article_1c') or 'Товар'}: "
+                    f"результат {self._money_or_na(item.get('profit'))}; "
+                    f"статус — {item.get('status') or 'не указан'}"
+                    for item in items[:3]
+                ]
+                next_step = "Откройте найденный товар и проверьте его расчётную строку."
+            else:
+                conclusion = "По запросу товар или SKU не найден"
+                facts = [
+                    f"Поисковый запрос: {search.get('query') or question}",
+                    "Поиск выполнялся только в текущем report scope",
+                ]
+                next_step = "Уточните артикул, штрихкод, nmId или название товара."
+        elif intent == "period":
+            comparison = tool_outputs.get("compare_periods") or {}
+            monthly = list(comparison.get("monthly") or [])
+            if len(monthly) >= 2:
+                first = monthly[0]
+                last = monthly[-1]
+                conclusion = (
+                    f"Прибыль изменилась с {self._money_or_na(first.get('profit'))} "
+                    f"в {first.get('month') or 'первом месяце'} до "
+                    f"{self._money_or_na(last.get('profit'))} "
+                    f"в {last.get('month') or 'последнем месяце'}"
+                )
+            elif monthly:
+                conclusion = "Для сравнения доступен только один месяц"
+            else:
+                conclusion = "В текущем расчёте нет месячной динамики для сравнения"
+            facts = [
+                f"{item.get('month') or 'Месяц'}: выручка "
+                f"{self._money_or_na(item.get('revenue'))}, прибыль "
+                f"{self._money_or_na(item.get('profit'))}, маржа "
+                f"{self._margin_or_na(item.get('margin'))}"
+                for item in monthly[-3:]
+            ] or [f"Доступный период отчёта: {period}"]
+            next_step = "Откройте сводку и сопоставьте месяцы с качеством данных."
+        else:
+            if top_losses:
+                first = top_losses[0]
+                facts.append(
+                    f"Главная убыточная позиция — "
+                    f"{first.get('product') or 'товар без названия'}: "
+                    f"{self._money_or_na(first.get('profit'))}"
+                )
+            elif quality.get("statuses"):
+                first_status = quality["statuses"][0]
+                facts.append(
+                    f"Главная проверка качества — "
+                    f"{first_status.get('status') or 'статус не указан'}: "
+                    f"{int(first_status.get('rows') or 0)} строк"
+                )
+
+        return self._format_fallback_answer(
+            conclusion=conclusion,
+            facts=facts,
+            next_step=next_step,
+            limitations=list(summary.get("limitations") or LIMITATIONS),
         )
 
-    def _money_or_na(self, value: Any) -> str:
-        return "не рассчитано" if value is None else f"{float(value):,.0f} ₽"
+    def _summary_result_conclusion(self, summary: dict[str, Any]) -> str:
+        period = str(summary.get("period") or "текущий период")
+        profit = summary.get("profit")
+        margin = summary.get("margin")
+        if profit is None and margin is None:
+            return f"За {period} прибыль и маржа пока не рассчитаны"
+        if profit is None:
+            return (
+                f"За {period} прибыль пока не рассчитана, "
+                f"маржа составляет {float(margin):.1%}"
+            )
+        if margin is None:
+            return (
+                f"За {period} прибыль до налогов — {self._money_or_na(profit)}, "
+                "маржа пока не рассчитана"
+            )
+        return (
+            f"За {period} прибыль до налогов — {self._money_or_na(profit)}, "
+            f"маржа — {float(margin):.1%}"
+        )
+
+    def _format_fallback_answer(
+        self,
+        *,
+        conclusion: str,
+        facts: list[str],
+        next_step: str,
+        limitations: list[str],
+    ) -> str:
+        fact_lines = [
+            f"- {self._sentence(item)}" for item in facts if str(item).strip()
+        ][:3]
+        if not fact_lines:
+            fact_lines = ["- Дополнительных рассчитанных фактов нет."]
+        limitation = (
+            f"\n\nОграничение: {self._sentence(limitations[0])}"
+            if limitations
+            else ""
+        )
+        return (
+            "Вывод\n"
+            f"{self._sentence(conclusion)}\n\n"
+            "Факты\n"
+            f"{chr(10).join(fact_lines)}\n\n"
+            "Следующий шаг\n"
+            f"{self._sentence(next_step)}"
+            f"{limitation}"
+        )
+
+    def _readiness_reason_text(self, reason: Any) -> str:
+        if isinstance(reason, str):
+            return reason.strip()
+        if isinstance(reason, dict):
+            return str(
+                reason.get("message")
+                or reason.get("label")
+                or reason.get("title")
+                or ""
+            ).strip()
+        return ""
+
+    def _sentence(self, value: Any) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"\.{2,}$", ".", text)
+        if not text:
+            return ""
+        return text if text.endswith((".", "!", "?", "…")) else f"{text}."
+
+    def _money_or_na(self, value: Any, *, missing: str = "не рассчитано") -> str:
+        return missing if value is None else f"{float(value):,.0f} ₽"
+
+    def _margin_or_na(self, value: Any) -> str:
+        return "не рассчитана" if value is None else f"{float(value):.1%}"
 
     def _base_client_draft(self, summary: dict[str, Any]) -> str:
         evidence = repository.client_draft_evidence_payload(summary)
@@ -1163,24 +1404,105 @@ class AiAnalyst:
             return self._base_client_draft(summary)
         return text
 
-    def _planned_tool_names(self, question: str) -> list[str]:
-        text = question.lower()
-        names = ["get_loss_drivers", "get_data_quality_issues"]
-        if any(token in text for token in ("артикул", "баркод", "sku", "товар", "nm")):
-            names.append("search_sku")
-        if any(token in text for token in ("сравн", "динамик", "месяц", "период")):
-            names.append("compare_periods")
-        if any(token in text for token in ("отчет", "записк", "вывод")):
-            names.append("draft_management_report")
-        if "1с" in text or "себестоим" in text:
-            names.append("verify_onec_cost")
-        if "остат" in text:
-            names.append("verify_wb_stock")
-        if "карточ" in text or "wb" in text:
-            names.append("verify_wb_card")
+    def _question_intent(self, question: str) -> str:
+        text = self._normalized_question(question)
         if self._explicit_refresh_intent(text):
-            names.append("refresh_onec_and_rebuild_report")
-        return names
+            return "refresh"
+        if any(
+            token in text
+            for token in ("готов", "отправ", "блокир", "что мешает")
+        ):
+            return "readiness"
+        if any(
+            token in text
+            for token in (
+                "себестоим",
+                "качест дан",
+                "статус дан",
+                "маппинг",
+                "mapping",
+                "неполные данные",
+            )
+        ):
+            return "cost_quality"
+        if any(
+            token in text
+            for token in ("убыт", "убыточ", "в минус", "отрицательн", "потер")
+        ):
+            return "loss"
+        if any(token in text for token in ("марж", "рентабель")):
+            return "margin"
+        if any(
+            token in text
+            for token in (
+                "артикул",
+                "баркод",
+                "штрихкод",
+                "sku",
+                "товар",
+                "nm",
+                "карточ",
+                "остат",
+            )
+        ):
+            return "sku"
+        if any(
+            token in text
+            for token in ("сравн", "динамик", "месяц", "период", "тренд", "изменил")
+        ):
+            return "period"
+        if any(
+            token in text
+            for token in (
+                "управлен",
+                "записк",
+                "главн",
+                "важн",
+                "вывод",
+                "итог",
+                "резюм",
+            )
+        ):
+            return "management"
+        return "summary"
+
+    def _normalized_question(self, question: str) -> str:
+        return " ".join(question.casefold().replace("ё", "е").split())
+
+    def _planned_tool_names(self, question: str) -> list[str]:
+        text = self._normalized_question(question)
+        intent = self._question_intent(text)
+        names: list[str]
+        if intent == "refresh":
+            names = ["get_data_quality_issues", "refresh_onec_and_rebuild_report"]
+        elif intent == "cost_quality":
+            names = ["get_data_quality_issues"]
+            if self._explicit_onec_verification_intent(text):
+                names.append("verify_onec_cost")
+        elif intent == "loss":
+            names = ["get_loss_drivers"]
+        elif intent == "sku":
+            names = ["search_sku"]
+            verify_words = ("проверь", "проверить", "сверь", "сверить")
+            if any(word in text for word in verify_words):
+                if "остат" in text:
+                    names.append("verify_wb_stock")
+                elif "карточ" in text or "wb" in text:
+                    names.append("verify_wb_card")
+        elif intent == "period":
+            names = ["compare_periods"]
+        elif intent in {"management", "summary"}:
+            names = ["get_loss_drivers", "get_data_quality_issues"]
+        else:
+            names = []
+        return list(dict.fromkeys(names))
+
+    def _explicit_onec_verification_intent(self, text: str) -> bool:
+        verify_words = ("проверь", "проверить", "сверь", "сверить")
+        data_words = ("1с", "себестоим")
+        return any(word in text for word in verify_words) and any(
+            word in text for word in data_words
+        )
 
     def _explicit_refresh_intent(self, text: str) -> bool:
         refresh_words = (
