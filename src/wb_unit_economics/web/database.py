@@ -41,7 +41,8 @@ LOGISTICS_MEASUREMENTS_SCHEMA_VERSION = (
 LOGISTICS_RETURN_REASONS_SCHEMA_VERSION = (
     "2026_07_23_logistics_return_reasons_context_v1"
 )
-DB_FIRST_SCHEMA_VERSION = LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
+SOURCE_REFRESH_QUEUE_SCHEMA_VERSION = "2026_08_04_source_refresh_queue_v1"
+DB_FIRST_SCHEMA_VERSION = SOURCE_REFRESH_QUEUE_SCHEMA_VERSION
 MULTI_CLIENT_BACKFILL_VERSION = "2026_06_30_multi_client_hierarchy"
 DEFAULT_CONSULTING_FIRM_ID = "firm_shumeyko_partners"
 DEFAULT_CONSULTING_FIRM_NAME = "Шумейко и Партнеры"
@@ -134,6 +135,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
         _record_schema_migration(engine, LOGISTICS_ROUTES_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_MEASUREMENTS_SCHEMA_VERSION)
         _record_schema_migration(engine, LOGISTICS_RETURN_REASONS_SCHEMA_VERSION)
+        _record_schema_migration(engine, SOURCE_REFRESH_QUEUE_SCHEMA_VERSION)
 
 
 def schema_version(engine: Engine) -> str:

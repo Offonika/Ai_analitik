@@ -48,7 +48,7 @@ class WebSettings(BaseSettings):
     source_refresh_incremental_enabled: bool = False
     source_refresh_incremental_window_days: int = 28
     source_refresh_onec_page_size: int = 5000
-    source_refresh_onec_max_pages: int = 200
+    source_refresh_onec_max_pages: int = 1000
     accounting_recordtype_page_size: int = 10000
     source_refresh_wb_limit: int = 100000
     source_refresh_wb_max_pages: int = 50
@@ -72,6 +72,9 @@ class WebSettings(BaseSettings):
     source_refresh_failed_snapshot_keep: int = 2
     source_refresh_worker_backend: str = "auto"
     source_refresh_worker_unit_prefix: str = "shumeiko-source-refresh-worker"
+    source_refresh_task_queue_enabled: bool = False
+    source_refresh_heavy_concurrency: int = 1
+    source_refresh_collector_concurrency: int = 2
     db_first_reports_enabled: bool = False
     enabled_report_kinds: str = "marketplace_unit_economics"
     unit_economics_calculator_enabled: bool = False

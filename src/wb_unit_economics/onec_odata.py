@@ -7,7 +7,7 @@ import shutil
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -42,6 +42,21 @@ TIMEOUT_KEYS = (
     "ONEC_ODATA_TIMEOUT",
 )
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+ONEC_METADATA_SCHEDULED_TIMEOUT_SECONDS = 60.0
+ONEC_METADATA_RETRY_DELAYS_SECONDS = (5.0, 15.0)
+ONEC_METADATA_RETRYABLE_ERROR_TYPES = frozenset(
+    {
+        "ConnectError",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ProxyError",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "WriteError",
+        "WriteTimeout",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -124,6 +139,8 @@ class OnecODataMetadataCheckResult:
     status_code: int | None = None
     error: str = ""
     content_type: str = ""
+    attempt_count: int = 1
+    timeout_seconds: float | None = None
 
 
 class OnecODataConfigError(ValueError):
@@ -187,6 +204,36 @@ def check_onec_odata_metadata(
         status_code=response.status_code,
         content_type=content_type,
     )
+
+
+def check_onec_odata_metadata_with_retry(
+    settings: OnecODataSettings,
+    *,
+    timeout_seconds: float = ONEC_METADATA_SCHEDULED_TIMEOUT_SECONDS,
+    retry_delays_seconds: tuple[float, ...] = ONEC_METADATA_RETRY_DELAYS_SECONDS,
+    transport: httpx.BaseTransport | None = None,
+) -> OnecODataMetadataCheckResult:
+    """Retry only transient scheduled metadata failures before source reads."""
+
+    effective_timeout = max(float(timeout_seconds), 0.001)
+    delays = tuple(max(float(delay), 0.0) for delay in retry_delays_seconds)
+    retry_settings = replace(settings, timeout_seconds=effective_timeout)
+    for attempt_count in range(1, len(delays) + 2):
+        result = replace(
+            check_onec_odata_metadata(retry_settings, transport=transport),
+            attempt_count=attempt_count,
+            timeout_seconds=effective_timeout,
+        )
+        retry_allowed = (
+            result.status_code in RETRYABLE_STATUS_CODES
+            or result.error in ONEC_METADATA_RETRYABLE_ERROR_TYPES
+        )
+        if result.ok or not retry_allowed or attempt_count > len(delays):
+            return result
+        delay = delays[attempt_count - 1]
+        if delay > 0:
+            time.sleep(delay)
+    raise RuntimeError("unreachable metadata retry state")
 
 
 DEFAULT_SAMPLE_COLLECTIONS = (

@@ -28,7 +28,25 @@ def enqueue_source_refresh_worker(
 ) -> dict[str, Any]:
     """Persist a queued run and hand it to the configured external worker."""
     payload = source_refresh_service.enqueue(db, user=user, **run_options)
+    queue_enabled = bool(
+        getattr(
+            getattr(source_refresh_service, "settings", None),
+            "source_refresh_task_queue_enabled",
+            False,
+        )
+    )
+    if queue_enabled and payload.get("status") == "queued":
+        refresh_run = db.get(SourceRefreshRun, str(payload["id"]))
+        if refresh_run is None:
+            raise SourceRefreshWorkerLaunchError("queued source refresh was not found")
+        repository.ensure_source_refresh_task_chain(db, refresh_run)
+        payload = {
+            **payload,
+            **repository.source_refresh_queue_payload(db, refresh_run),
+        }
     db.commit()
+    if queue_enabled:
+        return payload
     if payload.get("finishedAt") is not None or payload.get("status") != "queued":
         return payload
     return launch_source_refresh_worker(

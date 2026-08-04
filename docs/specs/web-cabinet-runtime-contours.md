@@ -26,13 +26,18 @@ related_code:
   - deploy/systemd/shumeiko-web-prod-health.service
   - deploy/systemd/shumeiko-web-test-health.service
   - deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf
+  - deploy/systemd/shumeiko-source-refresh.slice
+  - deploy/systemd/shumeiko-source-refresh-dispatcher.service
+  - deploy/systemd/shumeiko-source-refresh-dispatcher@.service
+  - deploy/systemd/shumeiko-source-refresh-dispatcher@.timer
+  - deploy/systemd/shumeiko-source-refresh-collector@.service
   - deploy/nginx/analitika.offonika.ru.conf
   - deploy/nginx/shumeiko.offonika.ru.conf
 related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_contour_drift.py, tests/test_runtime_release_retention.py]
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-24"
+updated_at: "2026-08-04"
 ---
 
 # Goal
@@ -87,7 +92,17 @@ systemd unit и имеют приоритет над EnvironmentFile. Секре
   profile, production unit должен подключать versioned drop-in
   `deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf`.
   Он загружает профиль только при запуске uvicorn и не копирует URL или
-  credentials proxy в Git либо runtime EnvironmentFile.
+  credentials proxy в Git либо runtime EnvironmentFile. Поскольку drop-in
+  переопределяет `ExecStart`, он обязан повторять через `/usr/bin/env` те же
+  non-secret production-границы и writable roots, что основной unit; старые
+  значения из `EnvironmentFile` не могут менять effective export/source roots.
+- Test unit и каждый test-only drop-in, переопределяющий `ExecStart`, обязаны
+  повторять через `/usr/bin/env` `runtime_environment=test`, отдельное имя
+  cookie, выключенный master-switch внешних интеграций и test-only
+  export/source roots. Разрешенный R-6 override может включить client login,
+  но не может изменить environment, cookie, integration master-switch либо
+  writable roots. Значения из `EnvironmentFile` не могут вернуть test-процесс
+  к production или workspace-relative путям.
 
 # Test Database Clone
 
@@ -139,6 +154,16 @@ manifest и в общий content hash.
 Rollback меняет production symlink на предыдущий проверенный immutable release;
 клиентская БД не восстанавливается без отдельного решения об откате данных.
 
+Production queue units входят в общий `shumeiko-source-refresh.slice` с
+`MemoryMax=5G` и `CPUQuota=500%`. Collector instances `@1/@2` имеют предел
+`1G`, heavy dispatcher — `MemoryHigh=1536M`, `MemoryMax=2G`, swap запрещён.
+До performance-canary используется только обычный dispatcher с concurrency
+`1`. После canary он отключается и заменяется экземплярами dispatcher `@1/@2`
+с общим admission limit `2`; одновременно держать оба варианта timers нельзя.
+В test эти timers автоматически не включаются: frozen-source canary запускает
+их команды вручную с test database/source/report roots. Наличие unit-файлов в
+immutable release не является свидетельством активного rollout.
+
 # Acceptance Criteria
 
 - оба local health endpoint отвечают `200`, правильным environment и build ID;
@@ -149,6 +174,8 @@ Rollback меняет production symlink на предыдущий провер�
 - client-only login отклоняется в test, staff login работает;
 - test mutation не появляется в production database;
 - test не читает production snapshots/backups и не имеет automatic timers;
+- effective `ExecStart` основного test unit и всех test-only overrides содержит
+  только test report/source roots; production roots в нем отсутствуют;
 - production health `ok`, refresh не активен, current report и Excel доступны;
 - параллельные build/promotion/retention не пересекаются, а cleanup сохраняет
   оба active target и минимум один полный rollback release;
@@ -162,6 +189,15 @@ Rollback меняет production symlink на предыдущий провер�
 
 # Changelog
 
+- 2026-08-04: оформлены два независимых heavy dispatcher slots `@1/@2`; второй
+  допускается только после performance-canary и замены одиночного timer.
+- 2026-07-31: основной test unit и test-only `ExecStart` overrides закрепляют
+  environment, cookie, integration master-switch и writable roots после
+  secret-bearing `EnvironmentFile`; R-6 сохраняет только явно разрешенное
+  исключение для client login.
+- 2026-07-30: corporate-proxy login-shell drop-in повторяет non-secret
+  production-границы через `/usr/bin/env`; его effective `ExecStart` больше не
+  возвращает export/source roots к старым значениям из `EnvironmentFile`.
 - 2026-07-24: завершено legacy rollback window: unit 8096 и старый
   EnvironmentFile удаляются, rollback выполняется предыдущим immutable release;
   test nginx больше не имеет fallback на старый статический shell, scheduled

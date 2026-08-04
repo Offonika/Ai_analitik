@@ -61,7 +61,7 @@ from wb_unit_economics.onec_odata import (
     OnecODataMetadataCheckResult,
     OnecODataSettings,
     OnecSampleExportResult,
-    check_onec_odata_metadata,
+    check_onec_odata_metadata_with_retry,
     export_onec_accounting_balance_and_turnovers,
     export_onec_accounting_recordtype_balances,
     export_onec_samples,
@@ -165,6 +165,8 @@ from wb_unit_economics.web.models import (
     ReportUnitRow,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceRefreshStageEvent,
+    SourceRefreshTask,
     SourceSnapshotRow,
     Tenant,
     TenantIntegration,
@@ -600,6 +602,94 @@ class SourceRefreshConfigError(RuntimeError):
     pass
 
 
+_RETRYABLE_SOURCE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+_PERMANENT_SOURCE_HTTP_STATUSES = {400, 401, 403, 404, 409, 422}
+_TRANSIENT_SOURCE_ERROR_MARKERS = (
+    "connecterror",
+    "connecttimeout",
+    "networkerror",
+    "pooltimeout",
+    "readerror",
+    "readtimeout",
+    "remoteprotocolerror",
+    "service_unavailable",
+    "temporary",
+    "timeout",
+    "transport",
+    "writeerror",
+    "writetimeout",
+)
+_PERMANENT_SOURCE_ERROR_MARKERS = (
+    "authorization",
+    "credential",
+    "forbidden",
+    "mapping",
+    "partial_source",
+    "unauthorized",
+)
+
+
+def _source_refresh_exception_is_transient(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code in _RETRYABLE_SOURCE_HTTP_STATUSES
+    if isinstance(exc, OSError):
+        return True
+    class_names = " ".join(
+        item.__name__.lower() for item in exc.__class__.__mro__
+    )
+    return any(marker in class_names for marker in _TRANSIENT_SOURCE_ERROR_MARKERS)
+
+
+def _collection_failure_is_transient(
+    collection: SourceRefreshCollection,
+) -> bool:
+    if collection.status != "failed":
+        return False
+    payload = collection.payload if isinstance(collection.payload, Mapping) else {}
+    nodes: list[Mapping[str, Any]] = [payload]
+    results = payload.get("results")
+    if isinstance(results, list):
+        nodes.extend(item for item in results if isinstance(item, Mapping))
+    status_codes: set[int] = set()
+    retryable = False
+    errors = [str(collection.error_message or "")]
+    for node in nodes:
+        value = node.get("statusCode", node.get("httpStatus"))
+        try:
+            if value is not None:
+                status_codes.add(int(value))
+        except (TypeError, ValueError):
+            pass
+        retryable = retryable or node.get("retryable") is True
+        errors.extend(
+            str(node.get(key) or "")
+            for key in ("error", "errorType", "message")
+        )
+    if status_codes & _PERMANENT_SOURCE_HTTP_STATUSES:
+        return False
+    error_text = " ".join(errors).lower()
+    if any(marker in error_text for marker in _PERMANENT_SOURCE_ERROR_MARKERS):
+        return False
+    if status_codes & _RETRYABLE_SOURCE_HTTP_STATUSES or retryable:
+        return True
+    return any(marker in error_text for marker in _TRANSIENT_SOURCE_ERROR_MARKERS)
+
+
+def _metadata_failure_is_transient(
+    result: OnecODataMetadataCheckResult,
+) -> bool:
+    if result.status_code in _PERMANENT_SOURCE_HTTP_STATUSES:
+        return False
+    if result.status_code in _RETRYABLE_SOURCE_HTTP_STATUSES:
+        return True
+    error = str(result.error or "").lower()
+    if any(marker in error for marker in _PERMANENT_SOURCE_ERROR_MARKERS):
+        return False
+    return any(marker in error for marker in _TRANSIENT_SOURCE_ERROR_MARKERS)
+
+
 @dataclass(frozen=True)
 class SourceCredentials:
     wb_settings: WbFinanceSettings | None
@@ -645,6 +735,19 @@ class SourceCollector:
 class CollectorOutputs:
     output_dirs: dict[str, Path]
     mapping_collection: SourceRefreshCollection
+
+
+@dataclass(frozen=True)
+class PersistedPipelineInputs:
+    source_report: ReportRun | None
+    base_refresh_run: SourceRefreshRun | None
+    mapping_collection: SourceRefreshCollection
+    wb_finance_dir: Path | None
+    wb_report_list_dir: Path | None
+    wb_cards_dir: Path | None
+    wb_stock_history_dir: Path | None
+    onec_dir: Path | None
+    composite_rebuild: bool
 
 
 class SourceRefreshService:
@@ -756,7 +859,9 @@ class SourceRefreshService:
         self._onec_exporter = onec_exporter
         self._onec_accounting_balance_exporter = onec_accounting_balance_exporter
         self._onec_accounting_recordtype_exporter = onec_accounting_recordtype_exporter
-        self._onec_metadata_checker = onec_metadata_checker or check_onec_odata_metadata
+        self._onec_metadata_checker = (
+            onec_metadata_checker or check_onec_odata_metadata_with_retry
+        )
         self._workbook_builder = workbook_builder
         self._dashboard_payload_builder = dashboard_payload_builder
 
@@ -837,6 +942,7 @@ class SourceRefreshService:
         refresh_run_id: str,
         *,
         worker_id: str = "",
+        stop_after_sources: bool = False,
     ) -> dict[str, Any]:
         refresh_run = db.scalar(
             select(SourceRefreshRun)
@@ -876,7 +982,438 @@ class SourceRefreshService:
                 refresh_run,
                 user=user,
             )
-        return self._execute_run(db, refresh_run, user=user)
+        return self._execute_run(
+            db,
+            refresh_run,
+            user=user,
+            stop_after_sources=stop_after_sources,
+        )
+
+    def run_split_materialize_task(
+        self,
+        db: Session,
+        task: SourceRefreshTask,
+        *,
+        worker_id: str,
+    ) -> dict[str, Any]:
+        """Materialize typed facts from persisted raw collections only."""
+        refresh_run = db.get(SourceRefreshRun, task.refresh_run_id)
+        if refresh_run is None:
+            raise SourceRefreshConfigError("source refresh run not found")
+        if (
+            task.task_type != "materialize_facts"
+            or task.status != "running"
+            or task.worker_id != worker_id
+        ):
+            raise SourceRefreshBusyError("materialize task is not owned by worker")
+        db.info["source_refresh_split_pipeline"] = True
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            worker_id=worker_id,
+            heartbeat_at=security.utcnow(),
+        )
+        event = repository.begin_source_refresh_stage(
+            db,
+            refresh_run,
+            stage="materialize_facts",
+            task=task,
+        )
+        db.commit()
+        try:
+            inputs = self._persisted_pipeline_inputs(db, refresh_run)
+            if (
+                refresh_run.mode in {"daily", "incremental", "weekly", "full"}
+                and self.settings.marketplace_daily_facts_enabled
+                and inputs.wb_finance_dir is not None
+                and inputs.onec_dir is not None
+            ):
+                self._materialize_wb_daily_facts(
+                    db,
+                    refresh_run,
+                    wb_finance_dir=inputs.wb_finance_dir,
+                    onec_dir=inputs.onec_dir,
+                    wb_report_list_dir=inputs.wb_report_list_dir,
+                    wb_cards_dir=inputs.wb_cards_dir,
+                    wb_stock_history_dir=inputs.wb_stock_history_dir,
+                )
+            if refresh_run.mode == "incremental":
+                coverage_issue = self._daily_facts_coverage_issue(
+                    db,
+                    tenant_id=refresh_run.tenant_id,
+                    client_id=refresh_run.client_id,
+                    period_start=refresh_run.period_start,
+                    period_end=refresh_run.period_end,
+                )
+                if coverage_issue:
+                    raise SourceRefreshConfigError(coverage_issue)
+            now = security.utcnow()
+            stage_metrics = repository.source_refresh_stage_completion_metrics(
+                db,
+                refresh_run,
+                stage="materialize_facts",
+            )
+            repository.complete_source_refresh_task(
+                db,
+                task,
+                metrics=stage_metrics,
+                finished_at=now,
+            )
+            repository.finish_source_refresh_stage(
+                db,
+                event,
+                status="succeeded",
+                metrics=stage_metrics,
+                finished_at=now,
+            )
+            repository.update_source_refresh_run(
+                db,
+                refresh_run,
+                status="rebuilding",
+                worker_id="",
+                heartbeat_at=now,
+            )
+            db.commit()
+            return repository.source_refresh_run_payload(refresh_run)
+        except Exception as exc:
+            self._fail_split_task(
+                db,
+                task_id=task.id,
+                event_id=event.id,
+                safe_error_code="materialize_facts_failed",
+                exc=exc,
+            )
+            refresh_run = db.get(SourceRefreshRun, task.refresh_run_id)
+            if refresh_run is None:
+                raise
+            return repository.source_refresh_run_payload(refresh_run)
+        finally:
+            db.info.pop("source_refresh_split_pipeline", None)
+
+    def run_split_build_report_task(
+        self,
+        db: Session,
+        task: SourceRefreshTask,
+        *,
+        worker_id: str,
+    ) -> dict[str, Any]:
+        """Build DB marts and a staff draft without running any export."""
+        refresh_run = db.get(SourceRefreshRun, task.refresh_run_id)
+        if refresh_run is None:
+            raise SourceRefreshConfigError("source refresh run not found")
+        if (
+            task.task_type != "build_report"
+            or task.status != "running"
+            or task.worker_id != worker_id
+        ):
+            raise SourceRefreshBusyError("build task is not owned by worker")
+        if not self.settings.db_first_reports_enabled:
+            raise SourceRefreshConfigError("split pipeline requires DB-first reports")
+        db.info["source_refresh_split_pipeline"] = True
+        repository.update_source_refresh_run(
+            db,
+            refresh_run,
+            worker_id=worker_id,
+            heartbeat_at=security.utcnow(),
+        )
+        event = repository.begin_source_refresh_stage(
+            db,
+            refresh_run,
+            stage="build_report",
+            task=task,
+        )
+        db.commit()
+        try:
+            inputs = self._persisted_pipeline_inputs(db, refresh_run)
+            contributing_runs: list[SourceRefreshRun] = []
+            if refresh_run.mode == "incremental":
+                contributing_runs = self._daily_fact_contributing_runs(
+                    db,
+                    refresh_run,
+                )
+            wb_summary_rows = (
+                self._incremental_wb_summary_rows(
+                    refresh_run,
+                    base_refresh_run=inputs.base_refresh_run,
+                    current_report_list_dir=inputs.wb_report_list_dir,
+                )
+                if refresh_run.mode == "incremental"
+                else []
+            )
+            finance_collection = next(
+                (
+                    item
+                    for item in refresh_run.collections
+                    if item.source_type == "wb_finance_detail"
+                ),
+                None,
+            )
+            facts_materialized = bool(
+                finance_collection is not None
+                and ((finance_collection.payload or {}).get("dailyFacts") or {}).get(
+                    "status"
+                )
+                == "materialized"
+            )
+            wb_daily_facts = (
+                self._daily_facts_for_report(
+                    db,
+                    refresh_run,
+                    wb_summary_rows=wb_summary_rows,
+                )
+                if facts_materialized
+                else None
+            )
+            report_snapshot_set_id = self._report_snapshot_set_id(
+                refresh_run,
+                base_refresh_run=(
+                    inputs.base_refresh_run
+                    if inputs.composite_rebuild
+                    or refresh_run.mode == "incremental"
+                    else None
+                ),
+                contributing_runs=contributing_runs,
+            )
+            report, excel_path = self._build_db_first_report(
+                db,
+                refresh_run,
+                source_report=inputs.source_report,
+                wb_finance_dir=inputs.wb_finance_dir,
+                onec_dir=inputs.onec_dir,
+                wb_report_list_dir=inputs.wb_report_list_dir,
+                wb_cards_dir=inputs.wb_cards_dir,
+                wb_stock_history_dir=inputs.wb_stock_history_dir,
+                source_snapshot_set_id=report_snapshot_set_id,
+                base_refresh_run=(
+                    inputs.base_refresh_run
+                    if inputs.composite_rebuild
+                    or refresh_run.mode == "incremental"
+                    else None
+                ),
+                contributing_runs=contributing_runs,
+                wb_daily_facts=wb_daily_facts,
+                wb_summary_rows=wb_summary_rows,
+            )
+            primary_document_refresh = (
+                inputs.base_refresh_run
+                if inputs.composite_rebuild and inputs.base_refresh_run is not None
+                else refresh_run
+            )
+            primary_document_scope = repository.apply_wb_buyout_primary_documents(
+                db,
+                report,
+                primary_document_refresh,
+                source_runs=(
+                    contributing_runs
+                    if refresh_run.mode == "incremental"
+                    else ()
+                ),
+            )
+            self._attach_source_loads(
+                db,
+                report,
+                refresh_run,
+                contributing_runs=contributing_runs,
+            )
+            mapping_report_scope = repository.reconcile_report_mapping_source_load(
+                db,
+                report,
+            )
+            refresh_run.new_report_run_id = report.id
+            repository.link_source_refresh_tasks_to_report(db, refresh_run, report)
+            report_row_count = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReportUnitRow)
+                    .where(ReportUnitRow.report_run_id == report.id)
+                )
+                or 0
+            )
+            now = security.utcnow()
+            repository.complete_source_refresh_task(
+                db,
+                task,
+                metrics={"rowCount": report_row_count},
+                finished_at=now,
+            )
+            repository.finish_source_refresh_stage(
+                db,
+                event,
+                status="succeeded",
+                metrics={"rowCount": report_row_count},
+                finished_at=now,
+            )
+            repository.update_source_refresh_run(
+                db,
+                refresh_run,
+                status="rebuilding",
+                worker_id="",
+                new_report_run_id=report.id,
+                workbook_path="",
+                heartbeat_at=now,
+            )
+            repository.audit(
+                db,
+                action="source_refresh_report_marts_created",
+                user=None,
+                tenant_id=refresh_run.tenant_id,
+                entity_type="source_refresh_run",
+                entity_id=refresh_run.id,
+                payload={
+                    "newReportRunId": report.id,
+                    "snapshotSetId": report_snapshot_set_id,
+                    "mappingReportScope": mapping_report_scope,
+                    "buyoutPrimaryDocumentScope": primary_document_scope,
+                    "automaticPublication": False,
+                    "excelPending": True,
+                },
+            )
+            db.commit()
+            payload = repository.source_refresh_run_payload(refresh_run)
+            payload["pendingWorkbookPath"] = str(excel_path.name)
+            return payload
+        except Exception as exc:
+            self._fail_split_task(
+                db,
+                task_id=task.id,
+                event_id=event.id,
+                safe_error_code="build_report_failed",
+                exc=exc,
+            )
+            refresh_run = db.get(SourceRefreshRun, task.refresh_run_id)
+            if refresh_run is None:
+                raise
+            return repository.source_refresh_run_payload(refresh_run)
+        finally:
+            db.info.pop("source_refresh_split_pipeline", None)
+
+    def _persisted_pipeline_inputs(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+    ) -> PersistedPipelineInputs:
+        root_dir = Path(refresh_run.root_dir).resolve()
+        allowed_root = self.settings.source_refresh_root_path.resolve()
+        if (
+            not refresh_run.root_dir
+            or not root_dir.is_relative_to(allowed_root)
+            or not root_dir.is_dir()
+        ):
+            raise SourceRefreshConfigError("source refresh raw root is unavailable")
+
+        def subdirectory(name: str) -> Path | None:
+            candidate = root_dir / name
+            if (
+                candidate.is_dir()
+                and not candidate.is_symlink()
+                and candidate.resolve().is_relative_to(root_dir)
+            ):
+                return candidate.resolve()
+            return None
+
+        mapping_collection = next(
+            (
+                item
+                for item in reversed(refresh_run.collections)
+                if item.source_type == "sku_mapping"
+            ),
+            None,
+        )
+        if mapping_collection is None:
+            raise SourceRefreshConfigError("sku mapping collection is unavailable")
+        source_report = (
+            db.get(ReportRun, refresh_run.source_report_run_id)
+            if refresh_run.source_report_run_id
+            else None
+        )
+        base_refresh_run = (
+            db.get(SourceRefreshRun, refresh_run.base_source_refresh_run_id)
+            if refresh_run.base_source_refresh_run_id
+            else None
+        )
+        composite_rebuild = bool(
+            refresh_run.mode == "onec-only"
+            and source_report is not None
+            and base_refresh_run is not None
+        )
+        wb_finance_dir = subdirectory("wb_finance")
+        wb_report_list_dir = subdirectory("wb_sales_report_list")
+        wb_cards_dir = subdirectory("wb_product_cards")
+        wb_stock_history_dir = subdirectory("wb_stock_history_daily")
+        if composite_rebuild and base_refresh_run is not None:
+            wb_finance_dir = self._required_collection_raw_dir(
+                base_refresh_run,
+                "wb_finance_detail",
+            )
+            wb_cards_dir = self._required_collection_raw_dir(
+                base_refresh_run,
+                "wb_product_cards",
+            )
+            wb_report_list_dir = self._optional_collection_raw_dir(
+                base_refresh_run,
+                "wb_sales_report_list",
+            )
+            wb_stock_history_dir = self._optional_collection_raw_dir(
+                base_refresh_run,
+                "wb_stock_history_daily",
+            )
+        return PersistedPipelineInputs(
+            source_report=source_report,
+            base_refresh_run=base_refresh_run,
+            mapping_collection=mapping_collection,
+            wb_finance_dir=wb_finance_dir,
+            wb_report_list_dir=wb_report_list_dir,
+            wb_cards_dir=wb_cards_dir,
+            wb_stock_history_dir=wb_stock_history_dir,
+            onec_dir=subdirectory("onec"),
+            composite_rebuild=composite_rebuild,
+        )
+
+    def _fail_split_task(
+        self,
+        db: Session,
+        *,
+        task_id: str,
+        event_id: int,
+        safe_error_code: str,
+        exc: Exception,
+    ) -> None:
+        with suppress(Exception):
+            db.rollback()
+        task = db.get(SourceRefreshTask, task_id)
+        if task is None:
+            return
+        event = db.get(SourceRefreshStageEvent, event_id)
+        now = security.utcnow()
+        if task.status == "running":
+            repository.fail_source_refresh_task(
+                db,
+                task,
+                safe_error_code=safe_error_code,
+                safe_error_message=_safe_error(exc),
+                transient=isinstance(exc, OSError),
+                failed_at=now,
+            )
+        if event is not None and event.status == "running":
+            repository.finish_source_refresh_stage(
+                db,
+                event,
+                status="failed",
+                safe_error_code=safe_error_code,
+                finished_at=now,
+            )
+        refresh_run = db.get(SourceRefreshRun, task.refresh_run_id)
+        if refresh_run is not None:
+            repository.update_source_refresh_run(
+                db,
+                refresh_run,
+                status="failed",
+                worker_id="",
+                failure_code=safe_error_code,
+                error_message=_safe_error(exc),
+                finished_at=now,
+            )
+        db.commit()
 
     def _execute_accounting_report_generation(
         self,
@@ -1689,6 +2226,7 @@ class SourceRefreshService:
         refresh_run: SourceRefreshRun,
         *,
         user: User | None,
+        stop_after_sources: bool = False,
     ) -> dict[str, Any]:
         tenant_id = refresh_run.tenant_id
         mode = refresh_run.mode
@@ -1717,7 +2255,9 @@ class SourceRefreshService:
                 db,
                 refresh_run,
                 status="running",
-                started_at=security.utcnow(),
+                error_message="",
+                failure_code="",
+                started_at=refresh_run.started_at or security.utcnow(),
                 heartbeat_at=security.utcnow(),
                 root_dir=str(root_dir),
             )
@@ -1837,10 +2377,12 @@ class SourceRefreshService:
                         db,
                         refresh_run,
                         status="failed",
+                        failure_code="onec_odata_metadata_unavailable",
                         error_message=(
                             "onec_odata_metadata_unavailable: "
                             f"{metadata_result.error or 'unknown_error'}"
                         ),
+                        retryable=_metadata_failure_is_transient(metadata_result),
                     )
 
             outputs = self._run_collectors(
@@ -1860,7 +2402,9 @@ class SourceRefreshService:
                     db,
                     refresh_run,
                     status="failed",
+                    failure_code="mandatory_source_failed",
                     error_message="Mandatory source refresh collection failed.",
+                    retryable=self._mandatory_failure_is_transient(refresh_run),
                 )
             ozon_promotion_succeeded = self._promote_ozon_typed_facts(
                 db,
@@ -1919,6 +2463,8 @@ class SourceRefreshService:
                 status="source_loaded",
             )
             _commit_source_refresh_progress(db)
+            if stop_after_sources:
+                return repository.source_refresh_run_payload(refresh_run)
             if (
                 mode in {"daily", "incremental"}
                 and self.settings.marketplace_daily_facts_enabled
@@ -2113,6 +2659,16 @@ class SourceRefreshService:
                 or logistics_needs_review
                 else "report_created"
             )
+            refresh_run.new_report_run_id = new_report.id
+            repository.link_source_refresh_tasks_to_report(db, refresh_run, new_report)
+            db.commit()
+            if self.settings.db_first_reports_enabled:
+                self._export_db_first_report_excel(
+                    db,
+                    refresh_run,
+                    new_report,
+                    excel_path=workbook_path,
+                )
             repository.update_source_refresh_run(
                 db,
                 refresh_run,
@@ -2186,10 +2742,36 @@ class SourceRefreshService:
             with suppress(Exception):
                 db.rollback()
             refresh_run = db.get(SourceRefreshRun, refresh_run.id) or refresh_run
+            if (
+                db.info.get("source_refresh_split_pipeline")
+                and _source_refresh_exception_is_transient(exc)
+                and repository.requeue_transient_source_refresh_task(
+                    db,
+                    refresh_run,
+                    task_type="collect_sources",
+                    safe_error_code="collect_sources_transport_failed",
+                    safe_error_message=safe_error,
+                )
+            ):
+                repository.audit(
+                    db,
+                    action="source_refresh_task_retry_scheduled",
+                    user=user,
+                    tenant_id=tenant_id,
+                    entity_type="source_refresh_run",
+                    entity_id=refresh_run.id,
+                    payload={
+                        "taskType": "collect_sources",
+                        "errorType": exc.__class__.__name__,
+                    },
+                )
+                _commit_source_refresh_progress(db)
+                return repository.source_refresh_run_payload(refresh_run)
             repository.update_source_refresh_run(
                 db,
                 refresh_run,
                 status="failed",
+                failure_code="collect_sources_failed",
                 error_message=safe_error,
                 finished_at=security.utcnow(),
             )
@@ -4104,6 +4686,8 @@ class SourceRefreshService:
                 "endpointCategory": "odata_metadata",
                 "statusCode": result.status_code,
                 "metadataValid": result.ok,
+                "attemptCount": result.attempt_count,
+                "timeoutSeconds": result.timeout_seconds,
                 "checkedAt": checked_at,
             },
         )
@@ -4120,6 +4704,8 @@ class SourceRefreshService:
                     "httpStatus": result.status_code,
                     "metadataValid": result.ok,
                     "errorType": result.error,
+                    "attemptCount": result.attempt_count,
+                    "timeoutSeconds": result.timeout_seconds,
                 },
             )
         return result
@@ -4131,13 +4717,45 @@ class SourceRefreshService:
         *,
         status: str,
         error_message: str = "",
+        failure_code: str = "",
+        retryable: bool = False,
     ) -> dict[str, Any]:
+        if (
+            status == "failed"
+            and retryable
+            and db.info.get("source_refresh_split_pipeline")
+            and repository.requeue_transient_source_refresh_task(
+                db,
+                refresh_run,
+                task_type="collect_sources",
+                safe_error_code=failure_code or "collect_sources_transport_failed",
+                safe_error_message=error_message,
+            )
+        ):
+            repository.audit(
+                db,
+                action="source_refresh_task_retry_scheduled",
+                user=None,
+                tenant_id=refresh_run.tenant_id,
+                entity_type="source_refresh_run",
+                entity_id=refresh_run.id,
+                payload={
+                    "taskType": "collect_sources",
+                    "failureCode": failure_code
+                    or "collect_sources_transport_failed",
+                },
+            )
+            return repository.source_refresh_run_payload(refresh_run)
+        update_fields: dict[str, Any] = {}
+        if failure_code:
+            update_fields["failure_code"] = failure_code
         repository.update_source_refresh_run(
             db,
             refresh_run,
             status=status,
             error_message=error_message,
             finished_at=security.utcnow(),
+            **update_fields,
         )
         if status == "failed":
             with suppress(Exception):
@@ -4414,6 +5032,7 @@ class SourceRefreshService:
                 encoding="utf-8",
             )
             calculation_parity["artifactPath"] = str(parity_path)
+        self._save_onec_cost_snapshots(db, refresh_run, build)
         self._save_wb_daily_facts(
             db,
             refresh_run,
@@ -4432,7 +5051,12 @@ class SourceRefreshService:
         calculation_parity: dict[str, Any] | None = None,
         replacement_summary_rows: Iterable[WbSalesReportSummaryRow] | None = None,
     ) -> None:
-        all_daily_facts = list(build.get("daily_facts", []))
+        source_daily_facts = build.pop("daily_facts", [])
+        all_daily_facts = (
+            source_daily_facts
+            if isinstance(source_daily_facts, list)
+            else list(source_daily_facts)
+        )
         parity = _wb_daily_fact_parity(build, all_daily_facts)
         coverage_start = refresh_run.source_window_start or refresh_run.period_start
         coverage_end = refresh_run.source_window_end or refresh_run.period_end
@@ -4514,6 +5138,37 @@ class SourceRefreshService:
             },
             "calculationParity": calculation_parity or {"status": "not_run"},
         }
+        db.flush()
+
+    @staticmethod
+    def _save_onec_cost_snapshots(
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        build: dict[str, Any],
+    ) -> None:
+        snapshots = build.pop("cost_snapshots", [])
+        count = repository.replace_onec_unf_cost_snapshots(
+            db,
+            refresh_run,
+            snapshots,
+        )
+        collection = next(
+            (
+                item
+                for item in refresh_run.collections
+                if item.source_type == "onec_sales_register"
+            ),
+            None,
+        )
+        if collection is not None:
+            collection.payload = {
+                **(collection.payload or {}),
+                "typedCostSnapshots": {
+                    "status": "materialized",
+                    "rowCount": count,
+                    "contract": "onec_unf_cost_snapshot",
+                },
+            }
         db.flush()
 
     def _daily_facts_for_report(
@@ -4650,7 +5305,6 @@ class SourceRefreshService:
         wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None,
         wb_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     ) -> tuple[ReportRun, Path]:
-        from scripts.export_report_artifacts import export_report_artifacts
         from scripts.rebuild_report_from_sources import (
             _validate_marts,
             build_db_first_payload,
@@ -4766,6 +5420,7 @@ class SourceRefreshService:
             tax_profiles=tax_profiles,
             input_vat_policies=input_vat_policies,
         )
+        self._save_onec_cost_snapshots(db, refresh_run, build)
         if self.settings.marketplace_daily_facts_enabled and wb_daily_facts is None:
             self._save_wb_daily_facts(
                 db,
@@ -4846,7 +5501,26 @@ class SourceRefreshService:
                     )
         _validate_marts(build["payload"])
         db.commit()
+        return report, excel_path
+
+    def _export_db_first_report_excel(
+        self,
+        db: Session,
+        refresh_run: SourceRefreshRun,
+        report: ReportRun,
+        *,
+        excel_path: Path,
+    ) -> None:
+        from scripts.export_report_artifacts import export_report_artifacts
+
+        output_dir = excel_path.parent
         artifact_payload = repository.report_full_payload(db, report)
+        artifact_payload.pop("unitRows", None)
+        repository.transition_source_refresh_stage(
+            db,
+            refresh_run,
+            stage="export_excel",
+        )
         db.commit()
         records = export_report_artifacts(
             artifact_payload,
@@ -4854,10 +5528,15 @@ class SourceRefreshService:
             output_dir=output_dir,
             excel_path=excel_path,
             excel=True,
-            docx=True,
+            docx=False,
             pdf=False,
-            html=True,
-            csv=True,
+            html=False,
+            csv=False,
+            unit_rows_factory=lambda: repository.iter_report_unit_row_payloads(
+                db,
+                report,
+                page_size=1_000,
+            ),
         )
         for artifact_type, record in records:
             repository.record_report_artifact(
@@ -4869,7 +5548,7 @@ class SourceRefreshService:
                 byte_size=record["byte_size"],
                 status=record["status"],
             )
-        return report, excel_path
+        db.flush()
 
     def _attach_source_loads(
         self,
@@ -4978,6 +5657,29 @@ class SourceRefreshService:
                 )
             )
             for item in refresh_run.collections
+        )
+
+    def _mandatory_failure_is_transient(
+        self,
+        refresh_run: SourceRefreshRun,
+    ) -> bool:
+        failed = [
+            item
+            for item in refresh_run.collections
+            if item.required
+            and (
+                item.status not in MANDATORY_OK_STATUSES | REVIEW_STATUSES
+                or (
+                    (
+                        item.source_type == "wb_finance_detail"
+                        or item.source_type.startswith("onec_")
+                    )
+                    and item.status == "partial_source"
+                )
+            )
+        ]
+        return bool(failed) and all(
+            _collection_failure_is_transient(item) for item in failed
         )
 
     def _needs_review(

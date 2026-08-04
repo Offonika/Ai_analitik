@@ -549,6 +549,7 @@ def build_db_first_payload(
         "payload": marts.to_dashboard_payload(),
         "report": report,
         "daily_facts": daily_facts,
+        "cost_snapshots": cost_snapshots,
         "wb_rows": wb_row_count,
         "wb_source_rows": wb_source_row_count,
         "wb_report_period_rows": wb_report_period_row_count,

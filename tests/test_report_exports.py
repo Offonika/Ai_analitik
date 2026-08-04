@@ -7,8 +7,88 @@ from openpyxl import load_workbook
 from wb_unit_economics.excel import REQUIRED_SHEETS
 from wb_unit_economics.report_exports import (
     write_excel_from_marts,
+    write_excel_from_marts_streaming,
     write_ozon_diagnostics_excel,
 )
+
+
+def test_streaming_excel_is_atomic_and_reads_unit_rows_from_factory(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "streaming.xlsx"
+    summary = {
+        "meta": {
+            "client": "Клиент",
+            "period": "01.07.2026 - 31.07.2026",
+            "methodologyVersion": "test-v1",
+            "source": "DB report marts",
+            "lineageType": "db_first_report_marts",
+        },
+        "readiness": {"status": "ready"},
+        "liquidityRows": [],
+        "monthly": [],
+        "expenses": [],
+        "returns": [],
+        "lostSales": [],
+        "documentReconciliation": [],
+        "reconciliationMonthly": [],
+        "taxInputReconciliation": [],
+    }
+    unit_rows = [
+        {
+            "product": "Товар",
+            "articleWb": "WB-1",
+            "article1c": "1C-1",
+            "organization": "Организация",
+            "cabinet": "Кабинет",
+            "sales": 1,
+            "returns": 0,
+            "revenue": 100,
+            "cost": 20,
+            "commission": 10,
+            "logistics": 5,
+            "storage": 1,
+            "acceptance": 1,
+            "promotion": 2,
+            "penalties": 0,
+            "acquiring": 1,
+            "profitBeforeTax": 60,
+            "profit": 55,
+            "status": "ОК",
+        }
+    ]
+
+    write_excel_from_marts_streaming(
+        summary,
+        output,
+        unit_rows_factory=lambda: iter(unit_rows),
+    )
+
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    try:
+        assert "Юнит экономика" in workbook.sheetnames
+        rows = list(workbook["Юнит экономика"].iter_rows(values_only=True))
+        assert rows[1][0] == "Товар"
+    finally:
+        workbook.close()
+
+    original = output.read_bytes()
+
+    def broken_rows():
+        raise RuntimeError("factory failed")
+
+    try:
+        write_excel_from_marts_streaming(
+            summary,
+            output,
+            unit_rows_factory=broken_rows,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("streaming writer must propagate source failure")
+    assert output.read_bytes() == original
+    assert not list(tmp_path.glob(".*.tmp.xlsx"))
 
 
 def test_db_first_excel_export_uses_client_facing_russian_headers(
