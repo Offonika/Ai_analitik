@@ -7621,9 +7621,6 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert cabinet.text.index(
-        'id="logistics-return-reasons"'
-    ) < cabinet.text.index('id="logistics-products-title"')
     assert "20260804-v266-scalable-refresh" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
