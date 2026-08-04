@@ -733,7 +733,7 @@ def test_mapping_api_is_staff_only_and_reports_conflict(tmp_path: Path) -> None:
         ),
         session_factory=session_factory,
     )
-    client = TestClient(app)
+    client = TestClient(app, backend_options={"use_uvloop": True})
     _login(client, "admin@example.com")
 
     rebuild = client.post(

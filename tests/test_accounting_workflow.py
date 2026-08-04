@@ -93,7 +93,7 @@ def _make_client(
         accounting_workflow_evidence_root=str(tmp_path / "evidence"),
     )
     app = create_app(settings=settings, session_factory=session_factory)
-    return TestClient(app), ids
+    return TestClient(app, backend_options={"use_uvloop": True}), ids
 
 
 def _add_report_pair(db, client_id: str, company: ClientCompany) -> None:
