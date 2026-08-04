@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 import shutil
 import subprocess
+import uuid
+import zipfile
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font, PatternFill
 
 from wb_unit_economics.client_report import (
@@ -1086,6 +1092,271 @@ def write_excel_from_marts(summary: dict[str, Any], output_path: Path) -> Path:
     workbook.active = workbook.sheetnames.index("Дашборд")
     workbook.save(output_path)
     return output_path
+
+
+def write_excel_from_marts_streaming(
+    summary: dict[str, Any],
+    output_path: Path,
+    *,
+    unit_rows_factory: Callable[[], Iterable[dict[str, Any]]],
+) -> Path:
+    """Write the large workbook without retaining worksheet cells in memory."""
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(
+        f".{output_path.stem}.{uuid.uuid4().hex}.tmp.xlsx"
+    )
+    workbook = Workbook(write_only=True)
+    try:
+        _write_readme_streaming(workbook.create_sheet("README"), summary)
+        for sheet_name, key in FULL_EXCEL_SHEETS:
+            _write_rows_sheet_streaming(
+                workbook.create_sheet(sheet_name),
+                _streaming_excel_rows(
+                    summary,
+                    sheet_name,
+                    key,
+                    unit_rows_factory=unit_rows_factory,
+                ),
+                sheet_key=key,
+            )
+        _write_methodology_streaming(workbook.create_sheet("Методика"), summary)
+        workbook.active = workbook.sheetnames.index("Дашборд")
+        workbook.save(temporary)
+        _validate_streaming_workbook(temporary)
+        os.replace(temporary, output_path)
+    except Exception:
+        # openpyxl keeps write-only XML generators open until every worksheet is
+        # closed.  A source iterator can fail before ``save()``, so close the
+        # partially written streams explicitly instead of leaving lxml cleanup
+        # to object finalizers (which also emits unraisable XML errors).
+        for sheet in workbook.worksheets:
+            with suppress(Exception):
+                sheet.close()
+        with suppress(Exception):
+            workbook.close()
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+    return output_path
+
+
+def _streaming_excel_rows(
+    summary: dict[str, Any],
+    sheet_name: str,
+    source_key: str,
+    *,
+    unit_rows_factory: Callable[[], Iterable[dict[str, Any]]],
+) -> Iterable[dict[str, Any]]:
+    if source_key == "unitRows":
+        return (
+            _ensure_unit_profit_bridge(dict(item)) for item in unit_rows_factory()
+        )
+    if source_key in summary:
+        stored_rows = (dict(item) for item in _safe_rows(summary.get(source_key)))
+        if sheet_name == "Упущенные продажи":
+            return _lost_sales_streaming_rows(summary, stored_rows)
+        return stored_rows
+    if source_key in {"dashboard", "summary"}:
+        return iter(_dashboard_rows(summary))
+    if source_key == "organizationSummary":
+        return iter(
+            _aggregate_unit_rows_streaming(
+                unit_rows_factory(),
+                (("organization", "Организация 1С"),),
+            )
+        )
+    if source_key == "cabinetSummary":
+        return iter(
+            _aggregate_unit_rows_streaming(
+                unit_rows_factory(),
+                (("cabinet", "Кабинет WB"),),
+            )
+        )
+    if source_key == "productSummary":
+        return iter(
+            _aggregate_unit_rows_streaming(
+                unit_rows_factory(),
+                (
+                    ("product", "Товар"),
+                    ("articleWb", "Артикул WB"),
+                    ("article1c", "Артикул 1С"),
+                ),
+            )
+        )
+    if source_key == "wbReportSummary":
+        return iter(
+            _aggregate_unit_rows_streaming(
+                unit_rows_factory(),
+                (("wbReportId", "ID отчёта WB"), ("documentReport", "Отчёт WB")),
+            )
+        )
+    if source_key == "costRows":
+        return (
+            {
+                "Товар": row.get("product"),
+                "Организация 1С": row.get("organization"),
+                "Артикул 1С": row.get("article1c"),
+                "Штрихкод": row.get("barcode"),
+                "Себестоимость 1С": row.get("cost"),
+                "Статус": row.get("status"),
+                "Причина": row.get("statusReason"),
+            }
+            for row in unit_rows_factory()
+        )
+    if source_key == "mappingRows":
+        return (
+            {
+                "Товар": row.get("product"),
+                "Кабинет WB": row.get("cabinet"),
+                "Организация 1С": row.get("organization"),
+                "Артикул WB": row.get("articleWb"),
+                "Артикул 1С": row.get("article1c"),
+                "Штрихкод": row.get("barcode"),
+                "Статус": row.get("status"),
+                "Причина": row.get("statusReason"),
+            }
+            for row in unit_rows_factory()
+        )
+    if source_key == "errorRows":
+        return (
+            dict(row)
+            for row in unit_rows_factory()
+            if str(row.get("status") or "") != "ОК"
+        )
+    return ()
+
+
+def _lost_sales_streaming_rows(
+    summary: dict[str, Any],
+    rows: Iterable[dict[str, Any]],
+) -> Iterable[dict[str, Any]]:
+    coverage = summary.get("lostSalesCoverage")
+    if isinstance(coverage, dict) and coverage.get("calculated") is not True:
+        yield {
+            "product": coverage.get("message")
+            or "Не рассчитано: недостаточно истории остатков",
+            "sourceStatus": "insufficient_history",
+        }
+    elif isinstance(coverage, dict) and coverage.get("fullCoverage") is not True:
+        yield {
+            "product": coverage.get("message")
+            or "Расчёт выполнен только за доступный период истории остатков.",
+            "sourceStatus": "partial_provider_window_no_extrapolation",
+        }
+    yield from rows
+
+
+def _aggregate_unit_rows_streaming(
+    rows: Iterable[dict[str, Any]],
+    group_fields: tuple[tuple[str, str], ...],
+) -> list[dict[str, Any]]:
+    totals: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        key = tuple(str(row.get(source) or "") for source, _label in group_fields)
+        target = totals.setdefault(
+            key,
+            {label: key[index] for index, (_source, label) in enumerate(group_fields)},
+        )
+        for source, label in (
+            ("sales", "Продажи, шт"),
+            ("returns", "Возвраты, шт"),
+            ("revenue", "Выручка с НДС"),
+            ("revenueWithoutVat", "Выручка без НДС"),
+            ("profitBeforeTax", "Управленческая прибыль WB"),
+            ("profit", "Прибыль до налогов"),
+        ):
+            target[label] = float(target.get(label) or 0) + float(
+                row.get(source) or 0
+            )
+    return list(totals.values())
+
+
+def _write_rows_sheet_streaming(
+    sheet: Any,
+    rows: Iterable[dict[str, Any]],
+    *,
+    sheet_key: str,
+) -> None:
+    iterator: Iterator[dict[str, Any]] = iter(rows)
+    first = next(iterator, None)
+    sample = [first] if first is not None else []
+    headers = _sheet_headers(sheet_key, sample)
+    if not headers:
+        sheet.append(["Нет строк"])
+        return
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_cells = []
+    for field in headers:
+        cell = WriteOnlyCell(sheet, value=_column_label(sheet_key, field))
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        header_cells.append(cell)
+    sheet.append(header_cells)
+    sheet.freeze_panes = "A2"
+    for row in _prepend_optional(first, iterator):
+        cells = []
+        for field in headers:
+            cell = WriteOnlyCell(
+                sheet,
+                value=_localized_cell_value(field, row),
+            )
+            if field in PERCENT_FIELDS and cell.value not in (None, ""):
+                cell.number_format = "0.00%"
+            elif field in MONEY_FIELDS and cell.value not in (None, ""):
+                cell.number_format = '#,##0.00" ₽"'
+            cells.append(cell)
+        sheet.append(cells)
+
+
+def _prepend_optional(
+    first: dict[str, Any] | None,
+    rows: Iterator[dict[str, Any]],
+) -> Iterable[dict[str, Any]]:
+    if first is not None:
+        yield first
+    yield from rows
+
+
+def _write_readme_streaming(sheet: Any, summary: dict[str, Any]) -> None:
+    meta = summary.get("meta", {})
+    for row in (
+        ("Источник", _localized_source(meta.get("source", "DB report marts"))),
+        ("Клиент", meta.get("client", "")),
+        ("Период", meta.get("period", "")),
+        ("Покрытие источников", meta.get("sourceCoverage", "")),
+        ("Статус готовности", _readiness_label(summary)),
+        ("Версия методики", meta.get("methodologyVersion", "")),
+        ("Происхождение данных", _localized_status(meta.get("lineageType", ""))),
+    ):
+        sheet.append(row)
+
+
+def _write_methodology_streaming(sheet: Any, summary: dict[str, Any]) -> None:
+    for row in (
+        ("Правило", "Значение"),
+        ("Источник правды", "Опубликованная расчетная БД"),
+        ("Excel", "Только экспорт из расчетных витрин отчета"),
+        ("Web-кабинет", "Читает сохраненный report_id из БД"),
+        ("Исходные снимки", "Не публикуются через клиентское API"),
+        (
+            "Происхождение данных",
+            _localized_status(summary.get("meta", {}).get("lineageType", "")),
+        ),
+    ):
+        sheet.append(row)
+
+
+def _validate_streaming_workbook(path: Path) -> None:
+    if not zipfile.is_zipfile(path):
+        raise ValueError("streaming Excel is not a valid ZIP archive")
+    workbook = load_workbook(path, read_only=True, data_only=False)
+    try:
+        expected = {"README", "Методика", *(name for name, _key in FULL_EXCEL_SHEETS)}
+        if not expected.issubset(set(workbook.sheetnames)):
+            raise ValueError("streaming Excel is missing required sheets")
+    finally:
+        workbook.close()
 
 
 def write_ozon_diagnostics_excel(

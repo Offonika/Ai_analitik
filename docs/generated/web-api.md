@@ -5,8 +5,8 @@ status: active
 audience: ["engineering", "operations"]
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-08-01"
-updated_at: "2026-08-01"
+last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-08-04"
+updated_at: "2026-08-04"
 ---
 
 # FastAPI route inventory
@@ -80,6 +80,8 @@ updated_at: "2026-08-01"
 | `GET` | `/api/clients/{client_id}/onec-organizations` | `list_client_onec_organizations_api_clients__client_id__onec_organizations_get` | List Client Onec Organizations |
 | `GET` | `/api/clients/{client_id}/ozon-diagnostics` | `client_ozon_diagnostics_api_clients__client_id__ozon_diagnostics_get` | Client Ozon Diagnostics |
 | `GET` | `/api/clients/{client_id}/ozon-diagnostics/export.xlsx` | `client_ozon_diagnostics_export_api_clients__client_id__ozon_diagnostics_export_xlsx_get` | Client Ozon Diagnostics Export |
+| `GET` | `/api/clients/{client_id}/refresh-schedule` | `get_client_refresh_schedule_api_clients__client_id__refresh_schedule_get` | Get Client Refresh Schedule |
+| `PUT` | `/api/clients/{client_id}/refresh-schedule` | `put_client_refresh_schedule_api_clients__client_id__refresh_schedule_put` | Put Client Refresh Schedule |
 | `GET` | `/api/clients/{client_id}/report-kinds` | `list_client_report_kinds_api_clients__client_id__report_kinds_get` | List Client Report Kinds |
 | `GET` | `/api/clients/{client_id}/reports` | `list_client_reports_api_clients__client_id__reports_get` | List Client Reports |
 | `POST` | `/api/clients/{client_id}/reports/generate` | `generate_client_report_api_clients__client_id__reports_generate_post` | Generate Client Report |
@@ -92,6 +94,7 @@ updated_at: "2026-08-01"
 | `POST` | `/api/integrations/{provider}/check` | `check_integration_api_integrations__provider__check_post` | Check Integration |
 | `POST` | `/api/integrations/{provider}/disable` | `disable_integration_api_integrations__provider__disable_post` | Disable Integration |
 | `GET` | `/api/me` | `me_api_me_get` | Me |
+| `GET` | `/api/report-export-jobs/{job_id}` | `get_report_export_job_api_report_export_jobs__job_id__get` | Get Report Export Job |
 | `GET` | `/api/report-generations/{generation_run_id}` | `report_generation_status_api_report_generations__generation_run_id__get` | Report Generation Status |
 | `GET` | `/api/reports` | `list_reports_api_reports_get` | List Reports |
 | `GET` | `/api/reports/latest/summary` | `latest_summary_api_reports_latest_summary_get` | Latest Summary |
@@ -105,6 +108,7 @@ updated_at: "2026-08-01"
 | `GET` | `/api/reports/{report_id}/cogs-reconciliation` | `report_cogs_reconciliation_api_reports__report_id__cogs_reconciliation_get` | Report Cogs Reconciliation |
 | `GET` | `/api/reports/{report_id}/document-reconciliation` | `report_document_reconciliation_api_reports__report_id__document_reconciliation_get` | Report Document Reconciliation |
 | `GET` | `/api/reports/{report_id}/export.xlsx` | `export_excel_api_reports__report_id__export_xlsx_get` | Export Excel |
+| `POST` | `/api/reports/{report_id}/exports` | `request_report_exports_api_reports__report_id__exports_post` | Request Report Exports |
 | `GET` | `/api/reports/{report_id}/financial-document-reconciliation` | `report_financial_document_reconciliation_api_reports__report_id__financial_document_reconciliation_get` | Report Financial Document Reconciliation |
 | `GET` | `/api/reports/{report_id}/freshness` | `report_freshness_api_reports__report_id__freshness_get` | Report Freshness |
 | `POST` | `/api/reports/{report_id}/live-checks/onec-cost` | `live_check_onec_cost_api_reports__report_id__live_checks_onec_cost_post` | Live Check Onec Cost |
@@ -133,4 +137,4 @@ updated_at: "2026-08-01"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **112**.
+Всего маршрутов: **116**.

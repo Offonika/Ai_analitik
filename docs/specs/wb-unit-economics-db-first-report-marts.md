@@ -9,14 +9,14 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: report-publication
 truth_priority: 100
-related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py]
-related_tests: [tests/test_report_marts.py, tests/test_report_exports.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
+related_code: [src/wb_unit_economics/report_marts.py, src/wb_unit_economics/report_exports.py, src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/source_refresh.py, scripts/rebuild_report_from_sources.py, scripts/export_report_artifacts.py, scripts/run_report_export_jobs.py, scripts/run_source_refresh_export_task.py]
+related_tests: [tests/test_report_marts.py, tests/test_report_exports.py, tests/test_report_export_jobs.py, tests/test_db_first_publication.py, tests/test_web_app.py, tests/test_source_refresh.py]
 contracts: [unit_economics_report, report_marts, report_artifacts]
 depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementation]
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-07-24"
+updated_at: "2026-08-04"
 ---
 
 # Implementation Status
@@ -55,7 +55,8 @@ Excel, сайт, DOCX/PDF, HTML, CSV и Power Query являются экспо�
 - единственный `current` published report на tenant;
 - artifact registry: `report_id`, `artifact_type`, `path`, `hash`,
   `created_at`, `status`;
-- экспорт Excel/DOCX/PDF/HTML/CSV из `report_id`;
+- потоковый Excel из `report_id`; DOCX/HTML/CSV создаются отдельными
+  idempotent export jobs только по запросу;
 - обновленный `SourceRefreshService`: `daily` не публикует клиентский отчет,
   `weekly/full` в DB-first режиме публикуют только после validation и export;
 - единый effective tax-profile input для DB-first calculation и readiness:
@@ -123,6 +124,13 @@ tenant. Старый `current` сохраняется до успешной пу
 Артефакты строятся из сохраненного `report_id` и регистрируются с hash/status.
 Поля `source_workbook` и `source_workbook_path` остаются только для legacy
 compatibility и Excel download fallback.
+
+Scheduled refresh автоматически строит только Excel. Его большой лист читает
+`report_unit_rows` keyset-порциями по 1 000, `write_only` workbook сохраняется
+во временное имя, проверяется как ZIP и через openpyxl read-only, затем
+атомарно заменяет целевой файл. Ошибка оставляет готовые marts/draft и
+повторяется только как `export_excel` task. HTTP GET никогда не запускает
+export и скачивает только зарегистрированный ready artifact.
 
 # Public Interfaces
 
@@ -272,6 +280,9 @@ Parity-решение и источник старого ориентира `188
 
 # Changelog
 
+- 2026-08-04: scheduled artifact ограничен Excel, добавлены keyset/write-only
+  atomic export и idempotent optional export jobs; ошибка Excel больше не
+  повторяет source collection или расчёт marts.
 - 2026-06-23: accepted DB-first report marts spec.
 - 2026-06-23: recorded published/current DB-first baseline and source refresh
   readiness blocker.

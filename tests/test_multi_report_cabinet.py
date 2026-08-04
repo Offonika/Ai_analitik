@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 from sqlalchemy import select
 
+from scripts.run_report_export_jobs import claim_export_job, execute_export_job
 from wb_unit_economics.onec_odata import (
     OnecODataMetadataCheckResult,
     OnecODataSettings,
@@ -2572,7 +2573,7 @@ def _make_api_client(
         session_factory=session_factory,
         auto_refresh_service=_QueuedOnlyAutoRefreshService(),
     )
-    return TestClient(app), session_factory
+    return TestClient(app, backend_options={"use_uvloop": True}), session_factory
 
 
 def _complete_generation(
@@ -2712,6 +2713,32 @@ def test_staff_api_generation_idempotency_current_audit_and_excel(
     )
     assert generation.status_code == 200
     assert generation.json()["status"] == "completed"
+    pending_export = client.get(f"/api/reports/{report_id}/export.xlsx")
+    assert pending_export.status_code == 404
+    export_request = client.post(
+        f"/api/reports/{report_id}/exports",
+        json={
+            "formats": ["xlsx"],
+            "idempotencyKey": "month-close-export-1",
+        },
+    )
+    assert export_request.status_code == 200
+    export_job_id = export_request.json()["jobs"][0]["jobId"]
+    with session_factory() as db:
+        job = claim_export_job(db)
+        assert job is not None
+        assert job.id == export_job_id
+        execute_export_job(
+            db,
+            job,
+            WebSettings(
+                _env_file=None,
+                allowed_export_root=str(tmp_path / "reports"),
+            ),
+        )
+    export_status = client.get(f"/api/report-export-jobs/{export_job_id}")
+    assert export_status.status_code == 200
+    assert export_status.json()["status"] == "succeeded"
     export = client.get(f"/api/reports/{report_id}/export.xlsx")
     assert export.status_code == 200
     workbook = load_workbook(filename=BytesIO(export.content), read_only=True)
@@ -2758,6 +2785,27 @@ def test_staff_api_generation_idempotency_current_audit_and_excel(
         other_organization.json()["generationRunId"],
         {**_month_close_evidence(), "organizationId": "ORG-2"},
     )
+    tax_export_request = client.post(
+        f"/api/reports/{other_kind_report_id}/exports",
+        json={
+            "formats": ["xlsx"],
+            "idempotencyKey": "tax-load-export-1",
+        },
+    )
+    assert tax_export_request.status_code == 200
+    tax_export_job_id = tax_export_request.json()["jobs"][0]["jobId"]
+    with session_factory() as db:
+        job = claim_export_job(db)
+        assert job is not None
+        assert job.id == tax_export_job_id
+        execute_export_job(
+            db,
+            job,
+            WebSettings(
+                _env_file=None,
+                allowed_export_root=str(tmp_path / "reports"),
+            ),
+        )
     tax_export = client.get(f"/api/reports/{other_kind_report_id}/export.xlsx")
     assert tax_export.status_code == 200
     assert "xlsx" in tax_export.headers["content-disposition"]
@@ -2879,7 +2927,8 @@ def test_disabled_kind_is_hidden_by_all_read_and_export_routes(tmp_path: Path) -
         enabled_report_kinds="marketplace_unit_economics",
     )
     disabled_client = TestClient(
-        create_app(settings=disabled_settings, session_factory=session_factory)
+        create_app(settings=disabled_settings, session_factory=session_factory),
+        backend_options={"use_uvloop": True},
     )
     _login(disabled_client, "admin@example.com")
 

@@ -10,7 +10,9 @@ source_of_truth: true
 truth_scope: source-retention
 truth_priority: 100
 related_code:
+  - scripts/archive_superseded_reports.py
   - scripts/archive_source_refresh_snapshots.py
+  - scripts/configure_source_refresh_s3_lifecycle.py
   - scripts/prune_source_refresh_database.py
   - scripts/prune_source_refresh.py
   - scripts/prune_report_drafts.py
@@ -18,11 +20,13 @@ related_code:
   - scripts/create_maintenance_backup.py
   - scripts/run_source_refresh_retention_maintenance.py
   - scripts/restore_marketplace_raw_rows.py
+  - scripts/restore_archived_report.py
   - scripts/build_runtime_release.py
   - scripts/promote_runtime_release.py
   - deploy/systemd/shumeiko-runtime-release-prune.service
   - deploy/systemd/shumeiko-runtime-release-prune.timer
   - src/wb_unit_economics/maintenance_safety.py
+  - src/wb_unit_economics/report_archive.py
   - src/wb_unit_economics/snapshot_archive.py
   - src/wb_unit_economics/runtime_release_lock.py
   - src/wb_unit_economics/web/models.py
@@ -41,6 +45,7 @@ ai_sections:
   protected_runs: "Защищенные запуски"
   deletion: "Удаление"
   report_drafts: "Retention черновиков отчетов"
+  report_archive: "Архив superseded-ревизий"
   backup_rollout: "Бэкапы и rollout"
   automatic_maintenance: "Автоматическое обслуживание"
   acceptance: "Критерии приемки"
@@ -61,7 +66,7 @@ depends_on:
   - docs/specs/web-cabinet-runtime-contours.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-24"
+updated_at: "2026-08-04"
 ---
 
 # Implementation Status
@@ -231,6 +236,31 @@ Dry-run печатает только количество кандидатов,
 `reports_root`; общий, внешний, отсутствующий или symlink-путь не удаляется и
 блокирует destructive preflight. Ошибка удаления файла после commit оставляет
 только безопасный orphan и завершает команду ошибкой для ручной сверки.
+
+## Архив superseded-ревизий
+
+Текущие, draft и опубликованные за последние 12 месяцев остаются в PostgreSQL.
+Отдельный dry-run-first `archive_superseded_reports.py` выбирает только
+`publication_status=superseded AND is_current=false` старше 365 дней и не
+обрабатывает уже зарегистрированный verified archive.
+
+При `--apply` команда обрабатывает не более одной ревизии, блокируется активным
+refresh, сериализует report marts, methodology и безопасный source lineage в
+версионированный gzip bundle, загружает его в versioned S3 и полностью читает
+назад точный `VersionId`. В `report_archive_records` сохраняются SHA-256,
+размер, methodology, lineage и VersionId. Raw paths, credentials и payload
+внешних источников в bundle не входят.
+
+Создание verified bundle не удаляет исходные marts. Кандидат на удаление может
+появиться только после отдельного успешного `restore_archived_report.py` smoke.
+Restore сверяет размер/SHA-256 точной S3-версии и создаёт новый
+`publication_status=archived_read_only`, `is_current=false`; existing current
+и publication gate не меняются.
+
+Новые raw snapshot objects получают tag `archive-class=raw-source`, receipts —
+`archive-class=manifest`. S3 lifecycle удаляет только raw-source current и
+non-current versions через 1095 дней. Manifests, hashes, audit и report
+artifacts не подпадают под это правило.
 Production `reports_root` по умолчанию равен `/data/shumeyko/prod/reports` и не
 может находиться внутри Git checkout.
 
@@ -346,8 +376,16 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
   rollback или свежий release и не пересекается с build/promotion.
 - Новый запуск не воссоздает `uq_source_snapshot_row_hash`.
 - Проверки спецификаций, manifest и релевантные pytest проходят.
+- Superseded bundle имеет immutable VersionId и полный readback до любого
+  удаления marts; restore создаёт read-only non-current report.
+- Трёхлетний S3 lifecycle фильтруется только по tag `raw-source` и не удаляет
+  manifest/receipt objects.
 
 ## Changelog
+
+- 2026-08-04: добавлен verified S3 archive superseded-ревизий старше 12
+  месяцев, read-only restore без переключения current и tagged raw lifecycle
+  1095 дней; удаление исходных marts остаётся запрещено до restore-smoke.
 
 - 2026-07-24: устранён конфликт с runtime-contours spec: scheduled S3 archive
   остаётся production-only; test допускает только явный ручной staff-запуск с

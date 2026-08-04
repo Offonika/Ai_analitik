@@ -69,7 +69,6 @@ from wb_unit_economics.web.database import (
     schema_version,
 )
 from wb_unit_economics.web.models import (
-    ClientCompany,
     ReportRun,
     SourceRefreshRun,
     User,
@@ -90,7 +89,6 @@ from wb_unit_economics.web.report_scope import (
     report_summary_for_last_closed_week,
     report_summary_for_period,
 )
-from wb_unit_economics.web.reports.excel import write_scenario_excel
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import (
     SourceRefreshBusyError,
@@ -469,6 +467,30 @@ class SourceRefreshRequest(BaseModel):
     period_end: date | None = None
     resume_mode: str = Field(default="auto", pattern="^(auto|never)$")
     resume_from_run_id: str | None = Field(default=None, max_length=160)
+
+
+class ClientRefreshScheduleRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    timezone: str = Field(default="Europe/Moscow", min_length=1, max_length=80)
+    enabled: bool = False
+    weekly_time: str = Field(default="06:15", alias="weeklyTime", max_length=5)
+    monthly_full_week: int = Field(default=1, alias="monthlyFullWeek")
+    monthly_full_time: str = Field(
+        default="02:00", alias="monthlyFullTime", max_length=5
+    )
+    priority: int = 100
+
+
+class ReportExportsRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    formats: list[str] = Field(min_length=1, max_length=4)
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=160,
+        alias="idempotencyKey",
+    )
 
 
 class MappingRebuildRequest(BaseModel):
@@ -1426,6 +1448,51 @@ def create_app(
             "periodEnd": default_period_end.isoformat(),
         }
         return payload
+
+    @app.get("/api/clients/{client_id}/refresh-schedule")
+    def get_client_refresh_schedule(
+        client_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            return repository.client_refresh_schedule(
+                db,
+                user=current,
+                client_id=client_id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+
+    @app.put("/api/clients/{client_id}/refresh-schedule")
+    def put_client_refresh_schedule(
+        client_id: str,
+        payload: ClientRefreshScheduleRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            schedule = repository.upsert_client_refresh_schedule(
+                db,
+                user=current,
+                client_id=client_id,
+                timezone=payload.timezone,
+                enabled=payload.enabled,
+                weekly_time=payload.weekly_time,
+                monthly_full_week=payload.monthly_full_week,
+                monthly_full_time=payload.monthly_full_time,
+                priority=payload.priority,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="staff role required") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return repository.client_refresh_schedule_payload(
+            schedule,
+            tenant_id=schedule.tenant_id,
+            client_id=schedule.client_id,
+        )
 
     @app.get("/api/reports/{report_id}/ozon-diagnostics")
     def report_ozon_diagnostics(
@@ -3928,6 +3995,56 @@ def create_app(
             raise HTTPException(status_code=404, detail="sku not found")
         return item
 
+    @app.post("/api/reports/{report_id}/exports")
+    def request_report_exports(
+        report_id: str,
+        payload: ReportExportsRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        report = _require_report_or_404(db, current, report_id)
+        formats = [item.strip().lower() for item in payload.formats]
+        if len(set(formats)) != len(formats):
+            raise HTTPException(status_code=400, detail="duplicate export format")
+        jobs = []
+        try:
+            for export_format in formats:
+                job, deduplicated = repository.create_report_export_job(
+                    db,
+                    user=current,
+                    report=report,
+                    export_format=export_format,
+                    idempotency_key=(
+                        f"{payload.idempotency_key}:{export_format}"
+                    ),
+                )
+                jobs.append(
+                    {
+                        **repository.report_export_job_payload(job),
+                        "deduplicated": deduplicated,
+                    }
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        db.commit()
+        return {"jobs": jobs}
+
+    @app.get("/api/report-export-jobs/{job_id}")
+    def get_report_export_job(
+        job_id: str,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            job = repository.require_report_export_job(
+                db,
+                user=current,
+                job_id=job_id,
+            )
+        except (LookupError, PermissionError) as exc:
+            raise HTTPException(status_code=404, detail="export job not found") from exc
+        return repository.report_export_job_payload(job)
+
     @app.get("/api/reports/{report_id}/export.xlsx")
     def export_excel(
         report_id: str,
@@ -3938,111 +4055,11 @@ def create_app(
         wb_cabinet_id: str = "",
     ) -> FileResponse:
         report = _require_report_or_404(db, current, report_id)
-        if report.report_kind in ACCOUNTING_REPORT_KINDS:
+        if (
+            report.report_kind in ACCOUNTING_REPORT_KINDS
+            or report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE
+        ):
             _require_staff_or_403(current, report.tenant_id)
-            payload = repository.scenario_payload_for_report(db, report)
-            contract_revision = _contract_revision_token(
-                str(payload.get("contractVersion") or report.methodology_version)
-            )
-            payload_sha256 = str(payload.pop("payloadSha256"))
-            output_dir = (
-                runtime_settings.export_root_path
-                / "accounting_reports"
-                / _safe_path_segment(report.client_id)
-            ).resolve()
-            allowed = runtime_settings.export_root_path.resolve()
-            if output_dir != allowed and allowed not in output_dir.parents:
-                raise HTTPException(
-                    status_code=400, detail="export path is outside reports"
-                )
-            path = output_dir / f"{_safe_path_segment(report.id)}.xlsx"
-            company = db.scalar(
-                select(ClientCompany)
-                .where(
-                    ClientCompany.tenant_id == report.tenant_id,
-                    ClientCompany.client_id == report.client_id,
-                    ClientCompany.onec_organization_id == report.organization_id,
-                )
-                .order_by(ClientCompany.status != "active", ClientCompany.id)
-                .limit(1)
-            )
-            write_scenario_excel(
-                payload,
-                payload_sha256,
-                path,
-                export_context={
-                    "clientName": report.client_name,
-                    "organizationName": company.display_name if company else "",
-                },
-            )
-            repository.audit(
-                db,
-                action="report_exported",
-                user=current,
-                tenant_id=report.tenant_id,
-                entity_type="report_run",
-                entity_id=report.id,
-                payload={
-                    "reportKind": report.report_kind,
-                    "payloadSha256": payload_sha256,
-                },
-            )
-            db.commit()
-            return FileResponse(
-                path,
-                media_type=(
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                ),
-                filename=(
-                    f"Налоговая_нагрузка_{report.period_start:%Y_%m}"
-                    f"{f'_{contract_revision}' if contract_revision else ''}.xlsx"
-                    if report.report_kind == "tax_load"
-                    else f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx"
-                ),
-            )
-        if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
-            _require_staff_or_403(current, report.tenant_id)
-            diagnostics = repository.ozon_draft_diagnostics_payload(
-                db,
-                report,
-                limit=repository.OZON_PNL_MAX_SOURCE_ROWS,
-                preview_max_rows=repository.OZON_PNL_MAX_SOURCE_ROWS,
-                period_start=period_start,
-                period_end=period_end,
-                wb_cabinet_id=wb_cabinet_id,
-            )
-            output_dir = (
-                runtime_settings.export_root_path
-                / "ozon_drafts"
-                / _safe_path_segment(report.client_id)
-            ).resolve()
-            allowed = runtime_settings.export_root_path.resolve()
-            if output_dir != allowed and allowed not in output_dir.parents:
-                raise HTTPException(
-                    status_code=400,
-                    detail="export path is outside reports",
-                )
-            output_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{_safe_path_segment(report.id)}.xlsx"
-            path = output_dir / filename
-            write_ozon_diagnostics_excel(diagnostics, path)
-            repository.audit(
-                db,
-                action="ozon_draft_excel_exported",
-                user=current,
-                tenant_id=report.tenant_id,
-                entity_type="report_run",
-                entity_id=report.id,
-            )
-            db.commit()
-            return FileResponse(
-                path,
-                media_type=(
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                ),
-                filename=f"ozon_unit_economics_{report.period_start:%Y%m%d}_"
-                f"{report.period_end:%Y%m%d}.xlsx",
-            )
         path = _report_excel_export_path(db, report, runtime_settings)
         if report.publication_status != "published":
             _require_staff_or_403(current, report.tenant_id)
@@ -4057,13 +4074,28 @@ def create_app(
             entity_id=report.id,
         )
         db.commit()
+        if report.lineage_type == repository.OZON_DRAFT_LINEAGE_TYPE:
+            download_filename = (
+                f"ozon_unit_economics_{report.period_start:%Y%m%d}_"
+                f"{report.period_end:%Y%m%d}.xlsx"
+            )
+        elif report.report_kind in ACCOUNTING_REPORT_KINDS:
+            contract_revision = _contract_revision_token(report.methodology_version)
+            download_filename = (
+                f"Налоговая_нагрузка_{report.period_start:%Y_%m}"
+                f"{f'_{contract_revision}' if contract_revision else ''}.xlsx"
+                if report.report_kind == "tax_load"
+                else f"{report.report_kind}_{report.period_start:%Y_%m}.xlsx"
+            )
+        else:
+            download_filename = (
+                f"shumeyko_wb_excel_{report.period_start:%Y%m%d}_"
+                f"{report.period_end:%Y%m%d}.xlsx"
+            )
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=(
-                f"shumeyko_wb_excel_{report.period_start:%Y%m%d}_"
-                f"{report.period_end:%Y%m%d}.xlsx"
-            ),
+            filename=download_filename,
             headers={"Cache-Control": "no-store"},
         )
 

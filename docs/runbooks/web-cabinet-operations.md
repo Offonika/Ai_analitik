@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-08-02"
+updated_at: "2026-08-04"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -804,8 +804,9 @@ SHUMEYKO_DATABASE_URL=... .venv/bin/python scripts/run_source_refresh.py \
   `--client-name`, повторяемые `--company` и `--cabinet`.
 
 Для production systemd использует отдельные timers: daily каждый час на 15-й
-минуте по МСК для rolling raw refresh и weekly/full во вторник в `06:15 MSK`
-для создания нового staff draft после закрытия недельных данных WB/1С. Test
+минуте по МСК для rolling raw refresh, кроме вторника `06:15`, и weekly/full
+во вторник в `06:15 MSK` для создания нового staff draft после закрытия
+недельных данных WB/1С. Test
 automatic timers запрещены; ручной test/full canary выполняется по
 `docs/runbooks/source-refresh-schedule.md`. Сырые snapshots не публикуются
 клиенту.

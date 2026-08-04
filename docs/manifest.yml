@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-02"
+updated_at: "2026-08-04"
 documents:
   - path: "AGENTS.md"
     title: "AGENTS.md"
@@ -524,3 +524,14 @@ documents:
     truth_scope: "source-refresh"
     truth_priority: 80
     summary: "Решение по read-only provider registry, blocked source_refresh statuses и dry-run-first raw snapshot retention."
+  - path: "docs/decisions/2026-08-04-scalable-source-refresh-pipeline.md"
+    title: "Scalable source refresh pipeline for 20 clients"
+    doc_type: "decision"
+    status: "accepted"
+    audience: ["engineering", "operations"]
+    source_of_truth: true
+    truth_scope: "source-refresh"
+    truth_priority: 90
+    summary: "Cross-scope решение по task queue, DB-first stages, ресурсным лимитам, расписанию 20 клиентов и архивному retention."
+    read_when: "Меняются очередь source refresh, dispatcher, stage metrics, расписание клиентов, потоковый Excel или архив старых report revisions."
+    search_terms: ["source refresh queue", "dispatcher", "20 клиентов", "streaming Excel", "refresh schedule", "report archive"]

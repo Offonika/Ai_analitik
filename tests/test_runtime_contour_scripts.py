@@ -147,9 +147,23 @@ def test_scheduled_refresh_builds_tuesday_report_in_production_roots() -> None:
     weekly_timer = (
         systemd_root / "shumeiko-source-refresh-weekly.timer"
     ).read_text(encoding="utf-8")
+    daily_timer = (
+        systemd_root / "shumeiko-source-refresh-daily.timer"
+    ).read_text(encoding="utf-8")
 
     assert "Tuesday morning" in weekly_timer
     assert "OnCalendar=Tue *-*-* 06:15:00" in weekly_timer
+    assert {
+        line
+        for line in daily_timer.splitlines()
+        if line.startswith("OnCalendar=")
+    } == {
+        "OnCalendar=Mon *-*-* *:15:00",
+        "OnCalendar=Tue *-*-* 00..05:15:00",
+        "OnCalendar=Tue *-*-* 07..23:15:00",
+        "OnCalendar=Wed..Sun *-*-* *:15:00",
+    }
+    assert "OnCalendar=Tue *-*-* 06:15:00" not in daily_timer
 
     for unit_name in (
         "shumeiko-source-refresh-daily.service",
