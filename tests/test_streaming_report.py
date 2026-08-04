@@ -278,6 +278,8 @@ def test_rebuild_report_cli_accepts_files_stream(
     )
     assert args.stream_cache_dir == Path("data/.cache/wb_stream_rebuild")
     assert args.keep_stream_cache is False
+    assert args.marketplace_daily_facts_enabled is False
+    assert args.report_marts_enabled is True
     assert args.draft_only is True
 
 

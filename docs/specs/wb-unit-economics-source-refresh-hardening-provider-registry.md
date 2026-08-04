@@ -82,7 +82,7 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # Implementation Status
@@ -794,6 +794,10 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-05: materialize-only больше не строит неиспользуемые report marts,
+  DB-first rebuild не создаёт второй набор daily facts, входные facts
+  освобождаются до записи marts, а persisted parity вычисляет полный digest
+  потоково по DB-порциям `5 000` без ORM-списка всего набора.
 - 2026-08-04: task-level retry collector оставляет orchestration run
   нетерминальным до второй попытки; добавлены отдельные heavy dispatcher slots
   `@1/@2`, включаемые только после performance-canary.

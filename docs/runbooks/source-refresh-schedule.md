@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # Назначение
@@ -171,6 +171,12 @@ timers. Ручной test/full canary запускается foreground/backgrou
 `SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000` и
 `SHUMEYKO_SOURCE_REFRESH_WORKER_BACKEND=background`. Production worker unit и
 production EnvironmentFile для него запрещены.
+
+Если test-БД была восстановлена data-only способом, до canary нужно отдельно
+сверить PostgreSQL sequences с фактическими `max(id)`. Полный `pg_restore`
+должен восстанавливать sequence state сам; отстающий sequence является дефектом
+test-копии и устраняется только в test до запуска, production этой процедурой
+не изменяется.
 
 Worker явно запускается с
 `SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000`. Это конечный бюджет новых
