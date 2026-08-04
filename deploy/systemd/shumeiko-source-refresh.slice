@@ -1,0 +1,6 @@
+[Unit]
+Description=Resource envelope for Shumeyko source refresh pipeline
+
+[Slice]
+MemoryMax=5G
+CPUQuota=500%

@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import re
+import resource
 import uuid
 from calendar import monthrange
 from collections import defaultdict
@@ -12,6 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from pathlib import Path
+from statistics import median
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -20,6 +22,7 @@ from sqlalchemy import (
     and_,
     case,
     delete,
+    exists,
     func,
     insert,
     literal,
@@ -48,6 +51,7 @@ from wb_unit_economics.config import (
 from wb_unit_economics.contracts import (
     AccountOrgMapping,
     InputVatPolicy,
+    OnecUnfCostSnapshot,
     TaxProfile,
     VatDeductionMode,
     VatMode,
@@ -95,6 +99,7 @@ from wb_unit_economics.web.models import (
     Client,
     ClientCompany,
     ClientCompanyAlias,
+    ClientRefreshSchedule,
     ConsultingFirm,
     DataRefreshJob,
     LiveCheckCache,
@@ -105,11 +110,13 @@ from wb_unit_economics.web.models import (
     MarketplaceOperationFact,
     MonthCloseControlReport,
     OnecMappingItem,
+    OnecUnfCostSnapshotFact,
     OrganizationInputVatPolicy,
     OrganizationTaxProfile,
     OrganizationTaxProfileOverride,
     ReportArtifact,
     ReportDocumentReconciliationRow,
+    ReportExportJob,
     ReportGenerationRequest,
     ReportLogisticsAnalysisContext,
     ReportLogisticsDimensionContext,
@@ -133,6 +140,8 @@ from wb_unit_economics.web.models import (
     SourceLoad,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceRefreshStageEvent,
+    SourceRefreshTask,
     SourceSnapshotRow,
     TaxLoadReport,
     Tenant,
@@ -167,7 +176,38 @@ ACTIVE_REFRESH_STATUSES = {
 }
 ACTIVE_SOURCE_REFRESH_STATUSES = set(ACTIVE_REFRESH_STATUSES)
 SOURCE_REFRESH_HEARTBEAT_STALE_AFTER = timedelta(minutes=5)
+SOURCE_REFRESH_TASK_TYPES = {
+    "collect_sources",
+    "materialize_facts",
+    "build_report",
+    "export_excel",
+    "export_optional",
+}
+SOURCE_REFRESH_TASK_STATUSES = {
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "cancelled",
+}
+SAFE_STAGE_METRIC_KEYS = {
+    "byteCount",
+    "cabinetCount",
+    "durationMs",
+    "pageCount",
+    "peakMemoryBytes",
+    "queueWaitMs",
+    "rowCount",
+}
 MARKETPLACE_STAGING_DELETE_BATCH_SIZE = 5_000
+MARKETPLACE_FACT_INSERT_BATCH_SIZE = 5_000
+SOURCE_REFRESH_STAGE_DEFAULT_SECONDS = {
+    "collect_sources": 30 * 60,
+    "materialize_facts": 4 * 60,
+    "build_report": 5 * 60,
+    "export_excel": 3 * 60,
+    "export_optional": 3 * 60,
+}
 CALCULABLE_OZON_REFRESH_STATUSES = {
     "source_loaded",
     "needs_review",
@@ -2571,6 +2611,205 @@ def require_client_access(db: Session, user: User, client_id: str) -> Client:
     return client
 
 
+def client_refresh_schedule_payload(
+    schedule: ClientRefreshSchedule | None,
+    *,
+    tenant_id: str,
+    client_id: str,
+) -> dict[str, Any]:
+    return {
+        "tenantId": tenant_id,
+        "clientId": client_id,
+        "timezone": schedule.timezone if schedule else "Europe/Moscow",
+        "enabled": bool(schedule.enabled) if schedule else False,
+        "weeklyTime": schedule.weekly_time if schedule else "06:15",
+        "monthlyFullWeek": schedule.monthly_full_week if schedule else 1,
+        "monthlyFullTime": schedule.monthly_full_time if schedule else "02:00",
+        "priority": schedule.priority if schedule else 100,
+        "updatedAt": schedule.updated_at.isoformat() if schedule else None,
+    }
+
+
+def client_refresh_schedule(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+) -> dict[str, Any]:
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    schedule = db.scalar(
+        select(ClientRefreshSchedule).where(
+            ClientRefreshSchedule.tenant_id == client.tenant_id,
+            ClientRefreshSchedule.client_id == client.id,
+        )
+    )
+    return client_refresh_schedule_payload(
+        schedule,
+        tenant_id=client.tenant_id,
+        client_id=client.id,
+    )
+
+
+def upsert_client_refresh_schedule(
+    db: Session,
+    *,
+    user: User,
+    client_id: str,
+    timezone: str,
+    enabled: bool,
+    weekly_time: str,
+    monthly_full_week: int,
+    monthly_full_time: str,
+    priority: int,
+) -> ClientRefreshSchedule:
+    client = require_client_access(db, user, client_id)
+    require_staff(user, client.tenant_id)
+    timezone = timezone.strip()
+    try:
+        ZoneInfo(timezone)
+    except (KeyError, ValueError) as exc:
+        raise ValueError("unsupported refresh schedule timezone") from exc
+    for value in (weekly_time, monthly_full_time):
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value.strip()):
+            raise ValueError("refresh schedule time must use HH:MM")
+    if not 1 <= int(monthly_full_week) <= 4:
+        raise ValueError("monthly full week must be between 1 and 4")
+    if not 0 <= int(priority) <= 1_000:
+        raise ValueError("refresh schedule priority must be between 0 and 1000")
+    schedule = db.scalar(
+        select(ClientRefreshSchedule).where(
+            ClientRefreshSchedule.tenant_id == client.tenant_id,
+            ClientRefreshSchedule.client_id == client.id,
+        )
+    )
+    now = security.utcnow()
+    if schedule is None:
+        if enabled:
+            _validate_monthly_full_capacity(
+                db,
+                monthly_full_week=int(monthly_full_week),
+                exclude_schedule_id=None,
+            )
+        schedule = ClientRefreshSchedule(
+            id=_stable_entity_id(
+                "client_refresh_schedule",
+                client.tenant_id,
+                client.id,
+            ),
+            tenant_id=client.tenant_id,
+            client_id=client.id,
+            timezone=timezone,
+            enabled=enabled,
+            weekly_weekday=1,
+            weekly_time=weekly_time.strip(),
+            monthly_full_week=int(monthly_full_week),
+            monthly_full_time=monthly_full_time.strip(),
+            priority=int(priority),
+            last_incremental_slot="",
+            last_full_slot="",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(schedule)
+    else:
+        if enabled:
+            _validate_monthly_full_capacity(
+                db,
+                monthly_full_week=int(monthly_full_week),
+                exclude_schedule_id=schedule.id,
+            )
+        schedule.timezone = timezone
+        schedule.enabled = enabled
+        schedule.weekly_weekday = 1
+        schedule.weekly_time = weekly_time.strip()
+        schedule.monthly_full_week = int(monthly_full_week)
+        schedule.monthly_full_time = monthly_full_time.strip()
+        schedule.priority = int(priority)
+        schedule.updated_at = now
+    audit(
+        db,
+        action="client_refresh_schedule_updated",
+        user=user,
+        tenant_id=client.tenant_id,
+        entity_type="client_refresh_schedule",
+        entity_id=schedule.id,
+        payload={
+            "clientId": client.id,
+            "enabled": enabled,
+            "timezone": timezone,
+            "weeklyTime": weekly_time.strip(),
+            "monthlyFullWeek": int(monthly_full_week),
+            "monthlyFullTime": monthly_full_time.strip(),
+            "priority": int(priority),
+        },
+    )
+    db.flush()
+    return schedule
+
+
+def _validate_monthly_full_capacity(
+    db: Session,
+    *,
+    monthly_full_week: int,
+    exclude_schedule_id: str | None,
+) -> None:
+    conditions = [
+        ClientRefreshSchedule.enabled.is_(True),
+        ClientRefreshSchedule.monthly_full_week == monthly_full_week,
+    ]
+    if exclude_schedule_id:
+        conditions.append(ClientRefreshSchedule.id != exclude_schedule_id)
+    assigned = int(
+        db.scalar(
+            select(func.count())
+            .select_from(ClientRefreshSchedule)
+            .where(*conditions)
+        )
+        or 0
+    )
+    if assigned >= 5:
+        raise ValueError("monthly full week already has five enabled clients")
+
+
+def due_client_refresh_schedule_slot(
+    schedule: ClientRefreshSchedule,
+    *,
+    now: datetime,
+) -> tuple[str, str] | None:
+    """Return one deterministic five-minute scheduler slot, if due."""
+    if not schedule.enabled:
+        return None
+    local_now = now.astimezone(ZoneInfo(schedule.timezone))
+
+    def due_at(value: str) -> bool:
+        hour, minute = (int(part) for part in value.split(":"))
+        scheduled_minute = hour * 60 + minute
+        actual_minute = local_now.hour * 60 + local_now.minute
+        return scheduled_minute <= actual_minute < scheduled_minute + 5
+
+    if local_now.weekday() == 1 and due_at(schedule.weekly_time):
+        slot = (
+            f"incremental:{local_now.date().isoformat()}:"
+            f"{schedule.weekly_time}:{schedule.timezone}"
+        )
+        if schedule.last_incremental_slot != slot:
+            return "incremental", slot
+    month_week = ((local_now.day - 1) // 7) + 1
+    if (
+        local_now.weekday() == 6
+        and month_week == schedule.monthly_full_week
+        and due_at(schedule.monthly_full_time)
+    ):
+        slot = (
+            f"full:{local_now.date().isoformat()}:"
+            f"{schedule.monthly_full_time}:{schedule.timezone}"
+        )
+        if schedule.last_full_slot != slot:
+            return "full", slot
+    return None
+
+
 def list_tenant_integrations(
     db: Session, user: User, *, tenant_id: str
 ) -> list[dict[str, Any]]:
@@ -4192,6 +4431,531 @@ def create_source_refresh_run(
     return refresh_run
 
 
+def create_source_refresh_task(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    task_type: str,
+    idempotency_key: str,
+    priority: int = 100,
+    not_before: datetime | None = None,
+    max_attempts: int = 1,
+    depends_on: SourceRefreshTask | None = None,
+    report_run_id: str | None = None,
+) -> tuple[SourceRefreshTask, bool]:
+    """Create one idempotent queue task without executing any work."""
+    task_type = task_type.strip()
+    if task_type not in SOURCE_REFRESH_TASK_TYPES:
+        raise ValueError("unsupported source refresh task type")
+    idempotency_key = idempotency_key.strip()
+    if not idempotency_key or len(idempotency_key) > 240:
+        raise ValueError("task idempotency key is required")
+    if depends_on is not None and depends_on.refresh_run_id != refresh_run.id:
+        raise ValueError("task dependency must belong to the same refresh run")
+    if not 1 <= max_attempts <= 2:
+        raise ValueError("source refresh task max attempts must be between 1 and 2")
+    existing = db.scalar(
+        select(SourceRefreshTask).where(
+            SourceRefreshTask.refresh_run_id == refresh_run.id,
+            SourceRefreshTask.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if (
+            existing.task_type != task_type
+            or existing.depends_on_task_id
+            != (depends_on.id if depends_on is not None else None)
+        ):
+            raise ValueError("task idempotency key was used for another task")
+        return existing, True
+    now = security.utcnow()
+    task = SourceRefreshTask(
+        id=new_id("source_refresh_task"),
+        refresh_run_id=refresh_run.id,
+        report_run_id=report_run_id,
+        tenant_id=refresh_run.tenant_id,
+        client_id=refresh_run.client_id,
+        task_type=task_type,
+        status="queued",
+        priority=max(-10_000, min(int(priority), 10_000)),
+        not_before=not_before or now,
+        attempt=0,
+        max_attempts=max_attempts,
+        idempotency_key=idempotency_key,
+        depends_on_task_id=depends_on.id if depends_on is not None else None,
+        worker_id="",
+        heartbeat_at=None,
+        safe_error_code="",
+        safe_error_message="",
+        metrics={},
+        created_at=now,
+        claimed_at=None,
+        started_at=None,
+        finished_at=None,
+        updated_at=now,
+    )
+    db.add(task)
+    db.flush()
+    return task, False
+
+
+def ensure_source_refresh_task_chain(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    priority: int = 100,
+    include_optional_export: bool = False,
+) -> list[SourceRefreshTask]:
+    """Create the canonical sequential pipeline for a run idempotently."""
+    task_types = [
+        "collect_sources",
+        "materialize_facts",
+        "build_report",
+        "export_excel",
+    ]
+    if include_optional_export:
+        task_types.append("export_optional")
+    tasks: list[SourceRefreshTask] = []
+    dependency: SourceRefreshTask | None = None
+    for task_type in task_types:
+        task, _deduplicated = create_source_refresh_task(
+            db,
+            refresh_run,
+            task_type=task_type,
+            idempotency_key=f"pipeline-v1:{task_type}",
+            priority=priority,
+            max_attempts=2 if task_type in {"collect_sources", "export_excel"} else 1,
+            depends_on=dependency,
+            report_run_id=refresh_run.new_report_run_id,
+        )
+        tasks.append(task)
+        dependency = task
+    return tasks
+
+
+def link_source_refresh_tasks_to_report(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    report: ReportRun,
+) -> None:
+    if (
+        report.tenant_id != refresh_run.tenant_id
+        or report.client_id != refresh_run.client_id
+    ):
+        raise ValueError("report scope differs from source refresh task scope")
+    db.execute(
+        update(SourceRefreshTask)
+        .where(SourceRefreshTask.refresh_run_id == refresh_run.id)
+        .values(report_run_id=report.id, updated_at=security.utcnow())
+    )
+    db.flush()
+
+
+def claim_next_source_refresh_task(
+    db: Session,
+    *,
+    worker_id: str,
+    allowed_task_types: Iterable[str],
+    now: datetime | None = None,
+    idempotency_prefix: str = "",
+) -> SourceRefreshTask | None:
+    """Atomically claim one dependency-ready task; PostgreSQL skips locked rows."""
+    worker_id = worker_id.strip()
+    if not worker_id:
+        raise ValueError("worker id is required")
+    allowed = sorted({item.strip() for item in allowed_task_types})
+    if not allowed or any(item not in SOURCE_REFRESH_TASK_TYPES for item in allowed):
+        raise ValueError("allowed task types are invalid")
+    now = now or security.utcnow()
+    dependency = aliased(SourceRefreshTask)
+    running_same_client = aliased(SourceRefreshTask)
+    active_same_client = aliased(SourceRefreshRun)
+    conditions = [
+        SourceRefreshTask.status == "queued",
+        SourceRefreshTask.not_before <= now,
+        SourceRefreshTask.task_type.in_(allowed),
+        or_(
+            SourceRefreshTask.depends_on_task_id.is_(None),
+            dependency.status == "succeeded",
+        ),
+        ~exists().where(
+            running_same_client.client_id == SourceRefreshTask.client_id,
+            running_same_client.refresh_run_id != SourceRefreshTask.refresh_run_id,
+            running_same_client.status == "running",
+        ),
+        ~exists().where(
+            active_same_client.client_id == SourceRefreshTask.client_id,
+            active_same_client.id != SourceRefreshTask.refresh_run_id,
+            active_same_client.status.in_(
+                {"running", "source_loaded", "rebuilding"}
+            ),
+            active_same_client.finished_at.is_(None),
+            active_same_client.worker_id != "",
+        ),
+    ]
+    if idempotency_prefix:
+        conditions.append(
+            SourceRefreshTask.idempotency_key.like(
+                f"{idempotency_prefix.replace('%', '')}%"
+            )
+        )
+    statement = (
+        select(SourceRefreshTask)
+        .outerjoin(
+            dependency,
+            dependency.id == SourceRefreshTask.depends_on_task_id,
+        )
+        .where(*conditions)
+        .order_by(
+            SourceRefreshTask.priority,
+            SourceRefreshTask.not_before,
+            SourceRefreshTask.created_at,
+            SourceRefreshTask.id,
+        )
+        .limit(1)
+    )
+    if db.get_bind().dialect.name == "postgresql":
+        statement = statement.with_for_update(skip_locked=True, of=SourceRefreshTask)
+    task = db.scalar(statement)
+    if task is None:
+        return None
+    task.status = "running"
+    task.worker_id = worker_id[:160]
+    task.attempt += 1
+    task.claimed_at = now
+    task.started_at = task.started_at or now
+    task.heartbeat_at = now
+    task.safe_error_code = ""
+    task.safe_error_message = ""
+    task.updated_at = now
+    db.flush()
+    return task
+
+
+def heartbeat_source_refresh_task(
+    db: Session,
+    task: SourceRefreshTask,
+    *,
+    worker_id: str,
+    at: datetime | None = None,
+) -> None:
+    if task.status != "running" or task.worker_id != worker_id:
+        raise ValueError("source refresh task is not owned by worker")
+    task.heartbeat_at = at or security.utcnow()
+    task.updated_at = task.heartbeat_at
+    db.flush()
+
+
+def complete_source_refresh_task(
+    db: Session,
+    task: SourceRefreshTask,
+    *,
+    metrics: Mapping[str, Any] | None = None,
+    finished_at: datetime | None = None,
+) -> SourceRefreshTask:
+    if task.status != "running":
+        raise ValueError("only a running source refresh task can succeed")
+    now = finished_at or security.utcnow()
+    task.status = "succeeded"
+    task.metrics = _safe_stage_metrics(metrics or {})
+    task.safe_error_code = ""
+    task.safe_error_message = ""
+    task.finished_at = now
+    task.heartbeat_at = now
+    task.updated_at = now
+    db.flush()
+    return task
+
+
+def fail_source_refresh_task(
+    db: Session,
+    task: SourceRefreshTask,
+    *,
+    safe_error_code: str,
+    transient: bool,
+    safe_error_message: str = "",
+    failed_at: datetime | None = None,
+) -> SourceRefreshTask:
+    if task.status != "running":
+        raise ValueError("only a running source refresh task can fail")
+    now = failed_at or security.utcnow()
+    code = _safe_error_code(safe_error_code)
+    message = _safe_task_message(safe_error_message)
+    if transient and task.attempt < task.max_attempts:
+        task.status = "queued"
+        task.not_before = now + timedelta(seconds=15 * (2 ** (task.attempt - 1)))
+        task.worker_id = ""
+        task.heartbeat_at = None
+        task.claimed_at = None
+        task.safe_error_code = code
+        task.safe_error_message = message
+        task.updated_at = now
+        db.flush()
+        return task
+    task.status = "failed"
+    task.safe_error_code = code
+    task.safe_error_message = message
+    task.finished_at = now
+    task.heartbeat_at = now
+    task.updated_at = now
+    _cancel_dependent_source_refresh_tasks(db, task, cancelled_at=now)
+    db.flush()
+    return task
+
+
+def requeue_transient_source_refresh_task(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    task_type: str,
+    safe_error_code: str,
+    safe_error_message: str = "",
+    failed_at: datetime | None = None,
+) -> bool:
+    """Requeue a running split task without terminally closing its run."""
+    task = _pipeline_task_for_stage(db, refresh_run, stage=task_type)
+    if task is None or task.status != "running":
+        return False
+    now = failed_at or security.utcnow()
+    fail_source_refresh_task(
+        db,
+        task,
+        safe_error_code=safe_error_code,
+        safe_error_message=safe_error_message,
+        transient=True,
+        failed_at=now,
+    )
+    if task.status != "queued":
+        return False
+    current_event = db.scalar(
+        select(SourceRefreshStageEvent)
+        .where(
+            SourceRefreshStageEvent.refresh_run_id == refresh_run.id,
+            SourceRefreshStageEvent.status == "running",
+            SourceRefreshStageEvent.finished_at.is_(None),
+        )
+        .order_by(SourceRefreshStageEvent.started_at.desc())
+        .limit(1)
+    )
+    if current_event is not None:
+        finish_source_refresh_stage(
+            db,
+            current_event,
+            status="failed",
+            safe_error_code=safe_error_code,
+            metrics=source_refresh_stage_completion_metrics(
+                db,
+                refresh_run,
+                stage=task_type,
+            ),
+            finished_at=now,
+        )
+    update_source_refresh_run(
+        db,
+        refresh_run,
+        status="queued",
+        worker_id="",
+        failure_code=_safe_error_code(safe_error_code),
+        error_message=_safe_task_message(safe_error_message),
+        heartbeat_at=now,
+    )
+    refresh_run.finished_at = None
+    db.flush()
+    return True
+
+
+def _cancel_dependent_source_refresh_tasks(
+    db: Session,
+    failed_task: SourceRefreshTask,
+    *,
+    cancelled_at: datetime,
+) -> None:
+    """Make an irrecoverable dependency failure explicit for the whole chain."""
+    dependency_ids = {failed_task.id}
+    while dependency_ids:
+        dependants = list(
+            db.scalars(
+                select(SourceRefreshTask).where(
+                    SourceRefreshTask.depends_on_task_id.in_(dependency_ids),
+                    SourceRefreshTask.status == "queued",
+                )
+            )
+        )
+        dependency_ids = {item.id for item in dependants}
+        for dependant in dependants:
+            dependant.status = "cancelled"
+            dependant.safe_error_code = "dependency_failed"
+            dependant.safe_error_message = "dependency failed"
+            dependant.finished_at = cancelled_at
+            dependant.updated_at = cancelled_at
+
+
+def begin_source_refresh_stage(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    stage: str,
+    task: SourceRefreshTask | None = None,
+    started_at: datetime | None = None,
+) -> SourceRefreshStageEvent:
+    stage = _safe_error_code(stage)
+    if not stage:
+        raise ValueError("stage is required")
+    if task is not None and task.refresh_run_id != refresh_run.id:
+        raise ValueError("stage task must belong to refresh run")
+    event = SourceRefreshStageEvent(
+        refresh_run_id=refresh_run.id,
+        task_id=task.id if task else None,
+        tenant_id=refresh_run.tenant_id,
+        client_id=refresh_run.client_id,
+        stage=stage,
+        status="running",
+        safe_error_code="",
+        row_count=None,
+        byte_count=None,
+        peak_memory_bytes=None,
+        safe_metrics={},
+        started_at=started_at or security.utcnow(),
+        finished_at=None,
+    )
+    db.add(event)
+    db.flush()
+    return event
+
+
+def transition_source_refresh_stage(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    stage: str,
+    transition_at: datetime | None = None,
+) -> SourceRefreshStageEvent:
+    now = transition_at or security.utcnow()
+    current = db.scalar(
+        select(SourceRefreshStageEvent)
+        .where(
+            SourceRefreshStageEvent.refresh_run_id == refresh_run.id,
+            SourceRefreshStageEvent.status == "running",
+            SourceRefreshStageEvent.finished_at.is_(None),
+        )
+        .order_by(SourceRefreshStageEvent.started_at.desc())
+        .limit(1)
+    )
+    if current is not None:
+        _finish_pipeline_task_for_stage(
+            db,
+            refresh_run,
+            stage=current.stage,
+            result="succeeded",
+            transition_at=now,
+        )
+        finish_source_refresh_stage(
+            db,
+            current,
+            status="succeeded",
+            metrics=source_refresh_stage_completion_metrics(
+                db,
+                refresh_run,
+                stage=current.stage,
+            ),
+            finished_at=now,
+        )
+    event = begin_source_refresh_stage(
+        db,
+        refresh_run,
+        stage=stage,
+        started_at=now,
+    )
+    _start_pipeline_task_for_stage(
+        db,
+        refresh_run,
+        stage=event.stage,
+        transition_at=now,
+    )
+    db.flush()
+    return event
+
+
+def finish_source_refresh_stage(
+    db: Session,
+    event: SourceRefreshStageEvent,
+    *,
+    status: str,
+    safe_error_code: str = "",
+    metrics: Mapping[str, Any] | None = None,
+    finished_at: datetime | None = None,
+) -> SourceRefreshStageEvent:
+    if event.status != "running" or event.finished_at is not None:
+        raise ValueError("source refresh stage is already finished")
+    if status not in {"succeeded", "failed", "cancelled"}:
+        raise ValueError("unsupported source refresh stage status")
+    finished_at = finished_at or security.utcnow()
+    measured_metrics: dict[str, Any] = dict(metrics or {})
+    started_at = event.started_at
+    if started_at.tzinfo is None and finished_at.tzinfo is not None:
+        started_at = started_at.replace(tzinfo=UTC)
+    elif started_at.tzinfo is not None and finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=UTC)
+    measured_metrics.setdefault(
+        "durationMs",
+        max(0, round((finished_at - started_at).total_seconds() * 1000)),
+    )
+    measured_metrics.setdefault("peakMemoryBytes", _process_peak_memory_bytes())
+    safe_metrics = _safe_stage_metrics(measured_metrics)
+    event.status = status
+    event.safe_error_code = _safe_error_code(safe_error_code)
+    event.row_count = _optional_nonnegative_int(safe_metrics.get("rowCount"))
+    event.byte_count = _optional_nonnegative_int(safe_metrics.get("byteCount"))
+    event.peak_memory_bytes = _optional_nonnegative_int(
+        safe_metrics.get("peakMemoryBytes")
+    )
+    event.safe_metrics = safe_metrics
+    event.finished_at = finished_at
+    db.flush()
+    return event
+
+
+def _process_peak_memory_bytes() -> int:
+    try:
+        peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (OSError, ValueError):
+        return 0
+    # Linux reports KiB; this production runtime is Linux/systemd based.
+    return max(0, peak * 1024)
+
+
+def _safe_error_code(value: str) -> str:
+    return re.sub(r"[^a-z0-9_:-]+", "_", str(value).strip().lower())[:160]
+
+
+def _safe_task_message(value: str) -> str:
+    message = str(value).strip()
+    if not message:
+        return ""
+    lowered = message.lower()
+    forbidden = ("token", "password", "secret", "connection", "/", "\\")
+    if any(marker in lowered for marker in forbidden):
+        return "task_failed"
+    return message[:500]
+
+
+def _safe_stage_metrics(values: Mapping[str, Any]) -> dict[str, int | float]:
+    safe: dict[str, int | float] = {}
+    for key, value in values.items():
+        if key not in SAFE_STAGE_METRIC_KEYS or isinstance(value, bool):
+            continue
+        if not isinstance(value, (int, float)) or value < 0:
+            continue
+        safe[key] = value
+    return safe
+
+
+def _optional_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
 def update_source_refresh_run(
     db: Session,
     refresh_run: SourceRefreshRun,
@@ -4207,6 +4971,7 @@ def update_source_refresh_run(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
 ) -> SourceRefreshRun:
+    previous_status = refresh_run.status
     if status is not None:
         refresh_run.status = status[:80]
     if root_dir is not None:
@@ -4228,8 +4993,251 @@ def update_source_refresh_run(
     if finished_at is not None:
         refresh_run.finished_at = finished_at
     refresh_run.updated_at = security.utcnow()
+    if status is not None and refresh_run.status != previous_status:
+        _sync_source_refresh_stage_for_status(
+            db,
+            refresh_run,
+            status=refresh_run.status,
+            transition_at=refresh_run.updated_at,
+            terminal=finished_at is not None,
+        )
     db.flush()
     return refresh_run
+
+
+def _sync_source_refresh_stage_for_status(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    status: str,
+    transition_at: datetime,
+    terminal: bool,
+) -> None:
+    """Add safe stage timing to the legacy monolithic worker during rollout."""
+    if db.get(Client, refresh_run.client_id) is None:
+        return
+    current = db.scalar(
+        select(SourceRefreshStageEvent)
+        .where(
+            SourceRefreshStageEvent.refresh_run_id == refresh_run.id,
+            SourceRefreshStageEvent.status == "running",
+            SourceRefreshStageEvent.finished_at.is_(None),
+        )
+        .order_by(SourceRefreshStageEvent.started_at.desc())
+        .limit(1)
+    )
+
+    def close_current(result: str) -> None:
+        nonlocal current
+        if current is None:
+            return
+        _finish_pipeline_task_for_stage(
+            db,
+            refresh_run,
+            stage=current.stage,
+            result=result,
+            transition_at=transition_at,
+        )
+        finish_source_refresh_stage(
+            db,
+            current,
+            status=result,
+            safe_error_code=(
+                refresh_run.failure_code if result == "failed" else ""
+            ),
+            metrics=source_refresh_stage_completion_metrics(
+                db,
+                refresh_run,
+                stage=current.stage,
+            ),
+            finished_at=transition_at,
+        )
+        current = None
+
+    def start(stage: str) -> None:
+        nonlocal current
+        if current is not None and current.stage == stage:
+            return
+        _start_pipeline_task_for_stage(
+            db,
+            refresh_run,
+            stage=stage,
+            transition_at=transition_at,
+        )
+        current = SourceRefreshStageEvent(
+            refresh_run_id=refresh_run.id,
+            task_id=None,
+            tenant_id=refresh_run.tenant_id,
+            client_id=refresh_run.client_id,
+            stage=stage,
+            status="running",
+            safe_error_code="",
+            row_count=None,
+            byte_count=None,
+            peak_memory_bytes=None,
+            safe_metrics={},
+            started_at=transition_at,
+            finished_at=None,
+        )
+        db.add(current)
+
+    if status == "running":
+        start("collect_sources")
+    elif status == "source_loaded":
+        close_current("succeeded")
+        if not terminal and not db.info.get("source_refresh_split_pipeline"):
+            start("materialize_facts")
+    elif status == "rebuilding":
+        close_current("succeeded")
+        if not db.info.get("source_refresh_split_pipeline"):
+            start("build_report")
+    elif status in {
+        "report_created",
+        "needs_review",
+        "dry_run_ready",
+        "completed",
+    }:
+        close_current("succeeded")
+    elif status in {
+        "failed",
+        "needs_configuration",
+        "needs_full_refresh",
+        "blocked_low_disk",
+        "blocked_active_refresh",
+    }:
+        close_current("failed")
+
+
+def _pipeline_task_for_stage(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    stage: str,
+) -> SourceRefreshTask | None:
+    return db.scalar(
+        select(SourceRefreshTask)
+        .where(
+            SourceRefreshTask.refresh_run_id == refresh_run.id,
+            SourceRefreshTask.task_type == stage,
+        )
+        .order_by(SourceRefreshTask.created_at, SourceRefreshTask.id)
+        .limit(1)
+    )
+
+
+def source_refresh_stage_completion_metrics(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    stage: str,
+) -> dict[str, int]:
+    metrics: dict[str, int] = {}
+    if stage == "collect_sources":
+        row_count, cabinet_count = db.execute(
+            select(
+                func.coalesce(func.sum(SourceRefreshCollection.row_count), 0),
+                func.count(
+                    func.distinct(
+                        func.nullif(SourceRefreshCollection.wb_cabinet_id, "")
+                    )
+                ),
+            ).where(SourceRefreshCollection.refresh_run_id == refresh_run.id)
+        ).one()
+        metrics["rowCount"] = int(row_count or 0)
+        metrics["cabinetCount"] = int(cabinet_count or 0)
+    elif stage == "materialize_facts":
+        metrics["rowCount"] = int(
+            db.scalar(
+                select(func.count())
+                .select_from(MarketplaceFinanceDailyFact)
+                .where(
+                    MarketplaceFinanceDailyFact.source_refresh_run_id
+                    == refresh_run.id
+                )
+            )
+            or 0
+        )
+    elif stage == "build_report" and refresh_run.new_report_run_id:
+        metrics["rowCount"] = int(
+            db.scalar(
+                select(func.count())
+                .select_from(ReportUnitRow)
+                .where(ReportUnitRow.report_run_id == refresh_run.new_report_run_id)
+            )
+            or 0
+        )
+    elif stage == "export_excel" and refresh_run.new_report_run_id:
+        metrics["byteCount"] = int(
+            db.scalar(
+                select(func.coalesce(func.sum(ReportArtifact.byte_size), 0)).where(
+                    ReportArtifact.report_run_id == refresh_run.new_report_run_id,
+                    ReportArtifact.artifact_type == "excel",
+                    ReportArtifact.status == "ready",
+                )
+            )
+            or 0
+        )
+    return metrics
+
+
+def _start_pipeline_task_for_stage(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    stage: str,
+    transition_at: datetime,
+) -> None:
+    task = _pipeline_task_for_stage(db, refresh_run, stage=stage)
+    if task is None or task.status != "queued":
+        return
+    task.status = "running"
+    task.worker_id = refresh_run.worker_id or "legacy-source-refresh-worker"
+    task.attempt += 1
+    task.claimed_at = transition_at
+    task.started_at = task.started_at or transition_at
+    task.heartbeat_at = transition_at
+    task.updated_at = transition_at
+
+
+def _finish_pipeline_task_for_stage(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    *,
+    stage: str,
+    result: str,
+    transition_at: datetime,
+) -> None:
+    task = _pipeline_task_for_stage(db, refresh_run, stage=stage)
+    if task is None:
+        return
+    if task.status == "queued":
+        _start_pipeline_task_for_stage(
+            db,
+            refresh_run,
+            stage=stage,
+            transition_at=transition_at,
+        )
+    if task.status != "running":
+        return
+    if result == "succeeded":
+        complete_source_refresh_task(
+            db,
+            task,
+            metrics=source_refresh_stage_completion_metrics(
+                db,
+                refresh_run,
+                stage=stage,
+            ),
+            finished_at=transition_at,
+        )
+        return
+    fail_source_refresh_task(
+        db,
+        task,
+        safe_error_code=refresh_run.failure_code or f"{stage}_failed",
+        transient=stage == "export_excel",
+        failed_at=transition_at,
+    )
 
 
 def ozon_draft_report_for_refresh(
@@ -4715,6 +5723,7 @@ def sync_organization_tax_profiles(
     ]
     source_profile_count = 0
     company_diagnostics: list[dict[str, Any]] = []
+    staged_profile_ids: set[str] = set()
     for company in companies:
         organization_id = company.onec_organization_id
         organization_row = organizations.get(organization_id)
@@ -4769,7 +5778,7 @@ def sync_organization_tax_profiles(
                 and refresh_run.period_start <= setting_date <= refresh_run.period_end
             ):
                 profile_dates.add(setting_date)
-        profiles_by_signature: dict[tuple[Any, ...], TaxProfile] = {}
+        profiles_by_storage_identity: dict[tuple[Any, ...], TaxProfile] = {}
         for profile_date in sorted(profile_dates):
             resolved_profiles = tax_profiles_from_account_org_mapping(
                 refresh_run.client_id,
@@ -4788,12 +5797,14 @@ def sync_organization_tax_profiles(
             )
             if resolved_profiles:
                 resolved_profile = resolved_profiles[0]
-                profiles_by_signature.setdefault(
-                    _tax_profile_signature(resolved_profile),
-                    resolved_profile,
+                storage_identity = (
+                    resolved_profile.organization_id,
+                    resolved_profile.valid_from,
+                    resolved_profile.source,
                 )
+                profiles_by_storage_identity[storage_identity] = resolved_profile
         profiles = sorted(
-            profiles_by_signature.values(),
+            profiles_by_storage_identity.values(),
             key=lambda item: (item.valid_from or date.min, item.source),
         )
         for index, profile in enumerate(profiles[:-1]):
@@ -4833,6 +5844,9 @@ def sync_organization_tax_profiles(
                 profile.valid_from.isoformat() if profile.valid_from else "",
                 profile.source,
             )
+            if profile_id in staged_profile_ids:
+                continue
+            staged_profile_ids.add(profile_id)
             if db.get(OrganizationTaxProfile, profile_id) is None:
                 db.add(
                     OrganizationTaxProfile(
@@ -5236,7 +6250,7 @@ def add_source_snapshot_rows(
 def replace_marketplace_finance_daily_facts(
     db: Session,
     refresh_run: SourceRefreshRun,
-    facts: list[MarketplaceFinanceDailyFactContract],
+    facts: Iterable[MarketplaceFinanceDailyFactContract],
     *,
     marketplace: str,
     cabinet_ids: Mapping[str, str] | None = None,
@@ -5259,8 +6273,39 @@ def replace_marketplace_finance_daily_facts(
             if str(seller_account_id).strip() and str(report_id).strip()
         }
     )
+    replacement_scope = [
+        MarketplaceFinanceDailyFact.source_refresh_run_id == refresh_run.id,
+        and_(
+            MarketplaceFinanceDailyFact.fact_date >= coverage_start,
+            MarketplaceFinanceDailyFact.fact_date <= coverage_end,
+        ),
+    ]
+    if replacement_report_keys:
+        replacement_scope.append(
+            or_(
+                *(
+                    and_(
+                        MarketplaceFinanceDailyFact.seller_account_id
+                        == seller_account_id,
+                        MarketplaceFinanceDailyFact.marketplace_report_id == report_id,
+                    )
+                    for seller_account_id, report_id in replacement_report_keys
+                )
+            )
+        )
+    db.execute(
+        delete(MarketplaceFinanceDailyFact).where(
+            MarketplaceFinanceDailyFact.tenant_id == refresh_run.tenant_id,
+            MarketplaceFinanceDailyFact.client_id == refresh_run.client_id,
+            MarketplaceFinanceDailyFact.marketplace == marketplace,
+            or_(*replacement_scope),
+        )
+    )
+
     loaded_at = security.utcnow()
-    values: list[dict[str, Any]] = []
+    expected_digest = hashlib.sha256()
+    expected_count = 0
+    batch: list[dict[str, Any]] = []
     for fact in facts:
         dimensions = {
             "clientId": fact.client_id,
@@ -5284,7 +6329,7 @@ def replace_marketplace_finance_daily_facts(
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
-        values.append(
+        batch.append(
             {
                 "tenant_id": refresh_run.tenant_id,
                 "client_id": refresh_run.client_id,
@@ -5329,62 +6374,111 @@ def replace_marketplace_finance_daily_facts(
                 "loaded_at": loaded_at,
             }
         )
-    staged_values = _stage_marketplace_values(
-        db,
-        fact_kind="daily_finance",
-        tenant_id=refresh_run.tenant_id,
-        client_id=refresh_run.client_id,
-        marketplace=marketplace,
-        values=values,
-        grain_field="grain_hash",
-    )
-    replacement_scope = [
-        MarketplaceFinanceDailyFact.source_refresh_run_id == refresh_run.id,
-        and_(
-            MarketplaceFinanceDailyFact.fact_date >= coverage_start,
-            MarketplaceFinanceDailyFact.fact_date <= coverage_end,
-        ),
-    ]
-    if replacement_report_keys:
-        replacement_scope.append(
-            or_(
-                *(
-                    and_(
-                        MarketplaceFinanceDailyFact.seller_account_id
-                        == seller_account_id,
-                        MarketplaceFinanceDailyFact.marketplace_report_id == report_id,
-                    )
-                    for seller_account_id, report_id in replacement_report_keys
-                )
-            )
-        )
-    db.execute(
-        delete(MarketplaceFinanceDailyFact).where(
+        expected_digest.update(grain_hash.encode("ascii"))
+        expected_digest.update(b"\n")
+        expected_count += 1
+        if len(batch) >= MARKETPLACE_FACT_INSERT_BATCH_SIZE:
+            db.execute(insert(MarketplaceFinanceDailyFact), batch)
+            batch.clear()
+    if batch:
+        db.execute(insert(MarketplaceFinanceDailyFact), batch)
+        batch.clear()
+    db.flush()
+    actual_digest = hashlib.sha256()
+    persisted_count = 0
+    persisted_hashes = db.scalars(
+        select(MarketplaceFinanceDailyFact.grain_hash)
+        .where(
             MarketplaceFinanceDailyFact.tenant_id == refresh_run.tenant_id,
             MarketplaceFinanceDailyFact.client_id == refresh_run.client_id,
             MarketplaceFinanceDailyFact.marketplace == marketplace,
-            or_(*replacement_scope),
+            MarketplaceFinanceDailyFact.source_refresh_run_id == refresh_run.id,
+        )
+        .order_by(MarketplaceFinanceDailyFact.id)
+        .execution_options(
+            stream_results=True,
+            yield_per=MARKETPLACE_FACT_INSERT_BATCH_SIZE,
+        )
+    ).yield_per(MARKETPLACE_FACT_INSERT_BATCH_SIZE)
+    for grain_hash in persisted_hashes:
+        actual_digest.update(str(grain_hash).encode("ascii"))
+        actual_digest.update(b"\n")
+        persisted_count += 1
+    if (
+        persisted_count != expected_count
+        or actual_digest.digest() != expected_digest.digest()
+    ):
+        raise ValueError("persisted daily facts differ from streamed input")
+    return expected_count
+
+
+def replace_onec_unf_cost_snapshots(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+    snapshots: Iterable[OnecUnfCostSnapshot],
+) -> int:
+    """Persist the existing 1C cost contract as typed, run-scoped facts."""
+    db.execute(
+        delete(OnecUnfCostSnapshotFact).where(
+            OnecUnfCostSnapshotFact.source_refresh_run_id == refresh_run.id
         )
     )
-    if staged_values:
-        db.execute(insert(MarketplaceFinanceDailyFact), staged_values)
+    loaded_at = security.utcnow()
+    count = 0
+    batch: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        if snapshot.client_id != refresh_run.client_id:
+            raise ValueError("1C cost snapshot client differs from refresh run")
+        if (
+            snapshot.effective_to is not None
+            and snapshot.effective_to < snapshot.effective_from
+        ):
+            raise ValueError("1C cost snapshot effective period is invalid")
+        batch.append(
+            {
+                "tenant_id": refresh_run.tenant_id,
+                "client_id": refresh_run.client_id,
+                "organization_id": snapshot.organization_id,
+                "onec_item_id": snapshot.onec_item_id,
+                "article": snapshot.article,
+                "barcode": snapshot.barcode,
+                "name": snapshot.name,
+                "characteristic": snapshot.characteristic,
+                "cost_value": snapshot.cost_value,
+                "extra_costs_value": snapshot.extra_costs_value,
+                "input_vat_value": snapshot.input_vat_value,
+                "input_vat_source": snapshot.input_vat_source,
+                "cost_currency": snapshot.cost_currency,
+                "cost_method": snapshot.cost_method,
+                "effective_from": snapshot.effective_from,
+                "effective_to": snapshot.effective_to,
+                "source_document_kind": snapshot.source_document_kind,
+                "source_document": snapshot.source_document,
+                "raw_payload_hash": snapshot.raw_payload_hash,
+                "source_snapshot_set_id": refresh_run.snapshot_set_id,
+                "source_refresh_run_id": refresh_run.id,
+                "loaded_at": loaded_at,
+            }
+        )
+        count += 1
+        if len(batch) >= MARKETPLACE_FACT_INSERT_BATCH_SIZE:
+            db.execute(insert(OnecUnfCostSnapshotFact), batch)
+            batch.clear()
+    if batch:
+        db.execute(insert(OnecUnfCostSnapshotFact), batch)
+        batch.clear()
     db.flush()
-    persisted_count = int(
+    persisted = int(
         db.scalar(
             select(func.count())
-            .select_from(MarketplaceFinanceDailyFact)
-            .where(
-                MarketplaceFinanceDailyFact.tenant_id == refresh_run.tenant_id,
-                MarketplaceFinanceDailyFact.client_id == refresh_run.client_id,
-                MarketplaceFinanceDailyFact.marketplace == marketplace,
-                MarketplaceFinanceDailyFact.source_refresh_run_id == refresh_run.id,
-            )
+            .select_from(OnecUnfCostSnapshotFact)
+            .where(OnecUnfCostSnapshotFact.source_refresh_run_id == refresh_run.id)
         )
         or 0
     )
-    if persisted_count != len(staged_values):
-        raise ValueError("persisted daily facts count differs from staging")
-    return persisted_count
+    if persisted != count:
+        raise ValueError("persisted 1C cost snapshot count differs from input")
+    return count
 
 
 def source_snapshot_row_count_for_run(
@@ -5691,6 +6785,233 @@ def _staging_digest(values: Iterable[dict[str, Any]]) -> str:
     return digest.hexdigest()
 
 
+def source_refresh_queue_payload(
+    db: Session,
+    refresh_run: SourceRefreshRun,
+) -> dict[str, Any]:
+    tasks = list(
+        db.scalars(
+            select(SourceRefreshTask)
+            .where(SourceRefreshTask.refresh_run_id == refresh_run.id)
+            .order_by(
+                SourceRefreshTask.priority,
+                SourceRefreshTask.created_at,
+                SourceRefreshTask.id,
+            )
+        )
+    )
+    active_task = next((item for item in tasks if item.status == "running"), None)
+    queued_task = next((item for item in tasks if item.status == "queued"), None)
+    latest_task = max(tasks, key=lambda item: item.updated_at) if tasks else None
+    stage_task = active_task or queued_task or latest_task
+    stage = (
+        stage_task.task_type
+        if stage_task is not None
+        else refresh_run.generation_stage
+        or refresh_run.status
+    )
+    stage_started_at = None
+    if stage_task is not None:
+        stage_started_at = stage_task.started_at or stage_task.claimed_at
+    if stage_started_at is None:
+        current_event = db.scalar(
+            select(SourceRefreshStageEvent)
+            .where(SourceRefreshStageEvent.refresh_run_id == refresh_run.id)
+            .order_by(SourceRefreshStageEvent.started_at.desc())
+            .limit(1)
+        )
+        stage_started_at = current_event.started_at if current_event else None
+    ready_task = None
+    if active_task is None and queued_task is not None:
+        dependency_status = {
+            item.id: item.status for item in tasks
+        }.get(queued_task.depends_on_task_id)
+        if queued_task.depends_on_task_id is None or dependency_status == "succeeded":
+            ready_task = queued_task
+    tasks_ahead = (
+        _source_refresh_tasks_ahead(db, ready_task)
+        if ready_task is not None
+        else []
+    )
+    queue_position = len({item.refresh_run_id for item in tasks_ahead}) + 1 \
+        if ready_task is not None else None
+    estimated_completion_at = _source_refresh_estimated_completion_at(
+        db,
+        refresh_run=refresh_run,
+        tasks=tasks,
+        tasks_ahead=tasks_ahead,
+    )
+    excel_task = next(
+        (item for item in tasks if item.task_type == "export_excel"),
+        None,
+    )
+    excel_status = (
+        excel_task.status
+        if excel_task is not None
+        else "ready"
+        if refresh_run.workbook_path
+        else "not_requested"
+    )
+    return {
+        "stage": stage,
+        "stageStartedAt": (
+            stage_started_at.isoformat() if stage_started_at is not None else None
+        ),
+        "queuePosition": queue_position,
+        "estimatedCompletionAt": (
+            estimated_completion_at.isoformat()
+            if estimated_completion_at is not None
+            else None
+        ),
+        "excelStatus": excel_status,
+    }
+
+
+def _source_refresh_tasks_ahead(
+    db: Session,
+    queued_task: SourceRefreshTask,
+) -> list[SourceRefreshTask]:
+    dependency = aliased(SourceRefreshTask)
+    now = security.utcnow()
+    earlier = or_(
+        SourceRefreshTask.priority < queued_task.priority,
+        and_(
+            SourceRefreshTask.priority == queued_task.priority,
+            or_(
+                SourceRefreshTask.created_at < queued_task.created_at,
+                and_(
+                    SourceRefreshTask.created_at == queued_task.created_at,
+                    SourceRefreshTask.id < queued_task.id,
+                ),
+            ),
+        ),
+    )
+    return list(
+        db.scalars(
+            select(SourceRefreshTask)
+            .outerjoin(
+                dependency,
+                dependency.id == SourceRefreshTask.depends_on_task_id,
+            )
+            .where(
+                SourceRefreshTask.refresh_run_id != queued_task.refresh_run_id,
+                or_(
+                    SourceRefreshTask.status == "running",
+                    and_(
+                        SourceRefreshTask.status == "queued",
+                        SourceRefreshTask.not_before <= now,
+                        or_(
+                            SourceRefreshTask.depends_on_task_id.is_(None),
+                            dependency.status == "succeeded",
+                        ),
+                        earlier,
+                    ),
+                ),
+            )
+            .order_by(
+                SourceRefreshTask.priority,
+                SourceRefreshTask.created_at,
+                SourceRefreshTask.id,
+            )
+        )
+    )
+
+
+def _source_refresh_estimated_completion_at(
+    db: Session,
+    *,
+    refresh_run: SourceRefreshRun,
+    tasks: Sequence[SourceRefreshTask],
+    tasks_ahead: Sequence[SourceRefreshTask],
+) -> datetime | None:
+    if refresh_run.finished_at is not None or not tasks:
+        return None
+    if any(item.status == "failed" for item in tasks):
+        return None
+    now = security.utcnow()
+    estimates = _source_refresh_task_duration_estimates(
+        db,
+        client_id=refresh_run.client_id,
+    )
+    remaining_seconds = _remaining_source_refresh_task_seconds(
+        tasks,
+        estimates=estimates,
+        now=now,
+    )
+    if tasks_ahead:
+        ahead_run_ids = {item.refresh_run_id for item in tasks_ahead}
+        ahead_tasks = list(
+            db.scalars(
+                select(SourceRefreshTask)
+                .where(SourceRefreshTask.refresh_run_id.in_(ahead_run_ids))
+                .order_by(SourceRefreshTask.created_at, SourceRefreshTask.id)
+            )
+        )
+        for run_id in ahead_run_ids:
+            remaining_seconds += _remaining_source_refresh_task_seconds(
+                [item for item in ahead_tasks if item.refresh_run_id == run_id],
+                estimates=estimates,
+                now=now,
+            )
+    return now + timedelta(seconds=max(0, round(remaining_seconds)))
+
+
+def _source_refresh_task_duration_estimates(
+    db: Session,
+    *,
+    client_id: str,
+) -> dict[str, float]:
+    history = list(
+        db.scalars(
+            select(SourceRefreshTask)
+            .where(
+                SourceRefreshTask.status == "succeeded",
+                SourceRefreshTask.started_at.is_not(None),
+                SourceRefreshTask.finished_at.is_not(None),
+            )
+            .order_by(SourceRefreshTask.finished_at.desc())
+            .limit(200)
+        )
+    )
+    client_samples: dict[str, list[float]] = defaultdict(list)
+    global_samples: dict[str, list[float]] = defaultdict(list)
+    for item in history:
+        if item.started_at is None or item.finished_at is None:
+            continue
+        duration = max(0.0, (item.finished_at - item.started_at).total_seconds())
+        if duration <= 0:
+            continue
+        global_samples[item.task_type].append(duration)
+        if item.client_id == client_id:
+            client_samples[item.task_type].append(duration)
+    estimates: dict[str, float] = {}
+    for task_type, fallback in SOURCE_REFRESH_STAGE_DEFAULT_SECONDS.items():
+        samples = client_samples.get(task_type) or global_samples.get(task_type)
+        estimates[task_type] = float(median(samples)) if samples else float(fallback)
+    return estimates
+
+
+def _remaining_source_refresh_task_seconds(
+    tasks: Sequence[SourceRefreshTask],
+    *,
+    estimates: Mapping[str, float],
+    now: datetime,
+) -> float:
+    total = 0.0
+    for task in tasks:
+        if task.status in {"succeeded", "failed", "cancelled"}:
+            continue
+        estimated = estimates.get(task.task_type, 0.0)
+        if task.status == "running" and task.started_at is not None:
+            started_at = task.started_at
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=UTC)
+            elapsed = max(0.0, (now - started_at).total_seconds())
+            estimated = max(0.0, estimated - elapsed)
+        total += estimated
+    return total
+
+
 def source_refresh_run_payload(
     refresh_run: SourceRefreshRun,
     *,
@@ -5862,10 +7183,13 @@ def latest_source_refresh_payload(
         )
     if refresh_run is None:
         return None
-    return source_refresh_run_payload(
-        refresh_run,
-        include_sensitive=include_sensitive,
-    )
+    return {
+        **source_refresh_run_payload(
+            refresh_run,
+            include_sensitive=include_sensitive,
+        ),
+        **source_refresh_queue_payload(db, refresh_run),
+    }
 
 
 def source_refresh_status_payload(
@@ -5918,11 +7242,12 @@ def source_refresh_status_payload(
     primary = active_run or latest_completed or latest_attempt
 
     def payload(item: SourceRefreshRun | None) -> dict[str, Any] | None:
-        return (
-            source_refresh_run_payload(item, include_sensitive=include_sensitive)
-            if item is not None
-            else None
-        )
+        if item is None:
+            return None
+        return {
+            **source_refresh_run_payload(item, include_sensitive=include_sensitive),
+            **source_refresh_queue_payload(db, item),
+        }
 
     return {
         "latest": payload(primary),
@@ -12419,13 +13744,44 @@ def _safe_source_refresh_message(refresh_run: SourceRefreshRun) -> str:
             "Инкрементальное обновление не запущено: нужна полная пересборка истории."
         )
     if refresh_run.status == "failed":
+        if _required_source_refresh_collection_failed(refresh_run):
+            return (
+                "Последнее обновление данных не создало отчёт: "
+                "один из обязательных источников не прошел проверку."
+            )
         return (
-            "Последнее обновление данных не создало отчёт: "
-            "один из обязательных источников не прошел проверку."
+            "Не удалось создать отчёт из-за внутренней ошибки обработки данных. "
+            "Загруженные источники сохранены."
         )
     if refresh_run.status == "dry_run_ready":
         return "Проверка обновления данных прошла без публикации отчёта."
     return "Последнее обновление данных не создало отчёт."
+
+
+def _required_source_refresh_collection_failed(
+    refresh_run: SourceRefreshRun,
+) -> bool:
+    accepted_statuses = {
+        "loaded",
+        "empty_expected",
+        "needs_review",
+        "stale",
+        "partial_source",
+    }
+    return any(
+        item.required
+        and (
+            item.status not in accepted_statuses
+            or (
+                item.status == "partial_source"
+                and (
+                    item.source_type == "wb_finance_detail"
+                    or item.source_type.startswith("onec_")
+                )
+            )
+        )
+        for item in refresh_run.collections
+    )
 
 
 def client_draft_payload(db: Session, report: ReportRun) -> dict[str, Any]:
@@ -20438,6 +21794,36 @@ def report_full_payload(
         "taxInputReconciliation": tax_input_reconciliation_rows,
         "latestSourceRefresh": latest_refresh,
     }
+
+
+def iter_report_unit_row_payloads(
+    db: Session,
+    report: ReportRun,
+    *,
+    page_size: int = 1_000,
+) -> Iterable[dict[str, Any]]:
+    """Read a report's largest mart with keyset pagination and bounded memory."""
+    page_size = max(1, min(int(page_size), 5_000))
+    last_id = 0
+    while True:
+        rows = list(
+            db.scalars(
+                select(ReportUnitRow)
+                .where(
+                    ReportUnitRow.report_run_id == report.id,
+                    ReportUnitRow.id > last_id,
+                )
+                .order_by(ReportUnitRow.id)
+                .limit(page_size)
+            )
+        )
+        if not rows:
+            return
+        for row in rows:
+            last_id = row.id
+            yield _row_payload(row)
+            db.expunge(row)
+        del rows
 
 
 def ozon_draft_report_summary_payload(
@@ -28632,6 +30018,135 @@ def record_report_artifact(
         report.source_workbook_path = resolved
     db.flush()
     return existing
+
+
+def create_report_export_job(
+    db: Session,
+    *,
+    user: User,
+    report: ReportRun,
+    export_format: str,
+    idempotency_key: str,
+) -> tuple[ReportExportJob, bool]:
+    require_report(db, user, report.id)
+    export_format = export_format.strip().lower()
+    if export_format not in {"xlsx", "docx", "html", "csv"}:
+        raise ValueError("unsupported report export format")
+    idempotency_key = idempotency_key.strip()
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise ValueError("export idempotency key is required")
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"reportId": report.id, "format": export_format},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    existing = db.scalar(
+        select(ReportExportJob).where(
+            ReportExportJob.tenant_id == report.tenant_id,
+            ReportExportJob.report_run_id == report.id,
+            ReportExportJob.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.request_fingerprint != fingerprint:
+            raise ValueError("export idempotency key was used for another format")
+        return existing, True
+
+    now = security.utcnow()
+    artifact_type = "excel" if export_format == "xlsx" else export_format
+    artifact = db.scalar(
+        select(ReportArtifact)
+        .where(
+            ReportArtifact.report_run_id == report.id,
+            ReportArtifact.artifact_type == artifact_type,
+            ReportArtifact.status == "ready",
+        )
+        .order_by(ReportArtifact.created_at.desc(), ReportArtifact.id.desc())
+    )
+    job = ReportExportJob(
+        id=new_id("report_export_job"),
+        tenant_id=report.tenant_id,
+        client_id=report.client_id,
+        report_run_id=report.id,
+        task_id=None,
+        artifact_id=artifact.id if artifact is not None else None,
+        export_format=export_format,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        status="succeeded" if artifact is not None else "queued",
+        safe_error_code="",
+        created_at=now,
+        started_at=now if artifact is not None else None,
+        finished_at=now if artifact is not None else None,
+        updated_at=now,
+    )
+    db.add(job)
+    db.flush()
+    if artifact is None:
+        refresh_run = db.scalar(
+            select(SourceRefreshRun)
+            .where(
+                SourceRefreshRun.tenant_id == report.tenant_id,
+                SourceRefreshRun.client_id == report.client_id,
+                SourceRefreshRun.new_report_run_id == report.id,
+            )
+            .order_by(SourceRefreshRun.created_at.desc())
+            .limit(1)
+        )
+        if refresh_run is not None:
+            task, _deduplicated = create_source_refresh_task(
+                db,
+                refresh_run,
+                task_type=(
+                    "export_excel" if export_format == "xlsx" else "export_optional"
+                ),
+                idempotency_key=f"export-job:{job.id}",
+                priority=100,
+                max_attempts=2,
+                report_run_id=report.id,
+            )
+            job.task_id = task.id
+    audit(
+        db,
+        action="report_export_requested",
+        user=user,
+        tenant_id=report.tenant_id,
+        entity_type="report_export_job",
+        entity_id=job.id,
+        payload={"reportId": report.id, "format": export_format},
+    )
+    db.flush()
+    return job, False
+
+
+def report_export_job_payload(job: ReportExportJob) -> dict[str, Any]:
+    return {
+        "jobId": job.id,
+        "reportId": job.report_run_id,
+        "format": job.export_format,
+        "status": job.status,
+        "safeErrorCode": job.safe_error_code,
+        "artifactReady": job.artifact_id is not None and job.status == "succeeded",
+        "createdAt": job.created_at.isoformat(),
+        "startedAt": job.started_at.isoformat() if job.started_at else None,
+        "finishedAt": job.finished_at.isoformat() if job.finished_at else None,
+        "updatedAt": job.updated_at.isoformat(),
+    }
+
+
+def require_report_export_job(
+    db: Session,
+    *,
+    user: User,
+    job_id: str,
+) -> ReportExportJob:
+    job = db.get(ReportExportJob, job_id)
+    if job is None:
+        raise LookupError("report export job not found")
+    require_report(db, user, job.report_run_id)
+    return job
 
 
 def report_artifact_path(

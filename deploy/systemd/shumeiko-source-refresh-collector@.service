@@ -1,0 +1,20 @@
+[Unit]
+Description=Shumeyko source refresh collector slot %i
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+Requires=postgresql@16-main.service
+RequiresMountsFor=/data/shumeyko/source_refresh
+
+[Service]
+Type=oneshot
+Slice=shumeiko-source-refresh.slice
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+Environment=SHUMEYKO_SOURCE_REFRESH_TASK_QUEUE_ENABLED=true
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh_pipeline_task.py --worker-class collector
+MemoryHigh=768M
+MemoryMax=1G
+MemorySwapMax=0
+OOMScoreAdjust=500
+NoNewPrivileges=true
+PrivateTmp=true

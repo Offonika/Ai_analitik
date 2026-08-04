@@ -19,6 +19,7 @@ from wb_unit_economics.onec_odata import (
     OnecODataSettings,
     OnecSampleCollection,
     check_onec_odata_metadata,
+    check_onec_odata_metadata_with_retry,
     export_collection_sample,
     export_onec_accounting_recordtype_balances,
     extract_odata_rows,
@@ -114,6 +115,85 @@ def test_metadata_check_rejects_unavailable_or_fake_metadata(
     assert result.ok is False
     assert result.status_code == status_code
     assert result.error == expected_error
+
+
+def test_scheduled_metadata_check_retries_transient_timeout() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            raise httpx.ReadTimeout("temporary 1C timeout", request=request)
+        return httpx.Response(
+            200,
+            content=VALID_EDMX,
+            headers={"content-type": "application/xml"},
+        )
+
+    result = check_onec_odata_metadata_with_retry(
+        OnecODataSettings(
+            base_url="https://onec.example/base/odata/standard.odata",
+            username="readonly",
+            password="secret",
+        ),
+        retry_delays_seconds=(0, 0),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.ok is True
+    assert result.attempt_count == 2
+    assert result.timeout_seconds == 60
+    assert len(requests) == 2
+    assert all(
+        request.extensions["timeout"]["read"] == 60 for request in requests
+    )
+
+
+def test_scheduled_metadata_check_stops_after_three_retryable_failures() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503, content=b"temporarily unavailable")
+
+    result = check_onec_odata_metadata_with_retry(
+        OnecODataSettings(
+            base_url="https://onec.example/base/odata/standard.odata",
+            username="readonly",
+            password="secret",
+        ),
+        retry_delays_seconds=(0, 0),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.ok is False
+    assert result.status_code == 503
+    assert result.error == "HTTP 503"
+    assert result.attempt_count == 3
+    assert len(requests) == 3
+
+
+def test_scheduled_metadata_check_does_not_retry_permanent_failure() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(401, content=b"unauthorized")
+
+    result = check_onec_odata_metadata_with_retry(
+        OnecODataSettings(
+            base_url="https://onec.example/base/odata/standard.odata",
+            username="readonly",
+            password="secret",
+        ),
+        retry_delays_seconds=(0, 0),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.ok is False
+    assert result.status_code == 401
+    assert result.attempt_count == 1
+    assert len(requests) == 1
 
 
 def test_extract_odata_rows_supports_v3_and_v4_payloads() -> None:

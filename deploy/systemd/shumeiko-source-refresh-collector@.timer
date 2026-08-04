@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll Shumeyko source refresh collector slot %i
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+Unit=shumeiko-source-refresh-collector@%i.service
+
+[Install]
+WantedBy=timers.target

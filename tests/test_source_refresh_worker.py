@@ -10,6 +10,8 @@ import pytest
 from scripts.check_source_refresh_worker import cli_worker_process_exists
 from scripts.run_source_refresh_worker import (
     WorkerInterrupted,
+    _start_heartbeat_process,
+    _stop_heartbeat_process,
     claim_next_run,
     process_run,
     recover_stale_worker_runs,
@@ -351,6 +353,70 @@ def test_fresh_file_heartbeat_protects_run_with_stale_db_heartbeat(
         assert refresh_run.finished_at is None
 
 
+def test_worker_heartbeat_uses_companion_process_without_database_url_in_argv(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    factory = _worker_factory(tmp_path)
+    source_root = tmp_path / "source-refresh"
+    with factory() as db:
+        refresh_run = _queued_run(db, suffix="heartbeat-process")
+        refresh_run_id = refresh_run.id
+        db.commit()
+    settings = WebSettings(
+        _env_file=None,
+        database_url=f"sqlite:///{tmp_path / 'worker.sqlite3'}",
+        source_refresh_root=str(source_root),
+    )
+    service = SimpleNamespace(settings=settings)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class _Process:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, *, timeout):
+            assert timeout == 5
+            return 0
+
+    process = _Process()
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return process
+
+    monkeypatch.setattr(
+        "scripts.run_source_refresh_worker.subprocess.Popen",
+        fake_popen,
+    )
+
+    started = _start_heartbeat_process(
+        factory,
+        service,
+        refresh_run_id,
+        heartbeat_seconds=30,
+    )
+
+    assert started is process
+    command, kwargs = calls[0]
+    assert command[1].endswith("scripts/run_source_refresh_heartbeat.py")
+    assert command[-2:] == ["--heartbeat-seconds", "30"]
+    assert settings.database_url not in command
+    assert kwargs["env"]["SHUMEYKO_DATABASE_URL"] == settings.database_url
+    assert kwargs["env"]["SHUMEYKO_SOURCE_REFRESH_ROOT"] == str(source_root)
+    marker = source_root / "snapshot-heartbeat-process" / ".worker-heartbeat"
+    assert marker.is_file()
+
+    _stop_heartbeat_process(started)
+
+    assert process.terminated is True
+
+
 def test_file_heartbeat_rejects_symlinked_run_root(tmp_path: Path) -> None:
     source_root = tmp_path / "source-refresh"
     outside = tmp_path / "outside"
@@ -478,9 +544,10 @@ def test_worker_unit_has_memory_limit_and_failure_repair() -> None:
     ).read_text(encoding="utf-8")
 
     assert "scripts/run_source_refresh_worker.py" in unit
-    assert "MemoryHigh=3G" in unit
-    assert "MemoryMax=4G" in unit
-    assert "MemorySwapMax=1G" in unit
+    assert "Slice=shumeiko-source-refresh.slice" in unit
+    assert "MemoryHigh=1536M" in unit
+    assert "MemoryMax=2G" in unit
+    assert "MemorySwapMax=0" in unit
     assert "ManagedOOMMemoryPressure=auto" in unit
     assert "OOMScoreAdjust=500" in unit
     assert "OOMPolicy=stop" in unit
@@ -492,8 +559,51 @@ def test_worker_unit_has_memory_limit_and_failure_repair() -> None:
         in unit
     )
     assert "SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000 " in unit
-    assert "RuntimeMaxSec=2h" in unit
+    assert "RuntimeMaxSec=4h" in unit
     assert "TimeoutStopSec=60" in unit
+
+    collector = (
+        project_root
+        / "deploy/systemd/shumeiko-source-refresh-collector@.service"
+    ).read_text(encoding="utf-8")
+    collector_timer = (
+        project_root / "deploy/systemd/shumeiko-source-refresh-collector@.timer"
+    ).read_text(encoding="utf-8")
+    dispatcher = (
+        project_root / "deploy/systemd/shumeiko-source-refresh-dispatcher.service"
+    ).read_text(encoding="utf-8")
+    dispatcher_slot = (
+        project_root
+        / "deploy/systemd/shumeiko-source-refresh-dispatcher@.service"
+    ).read_text(encoding="utf-8")
+    dispatcher_slot_timer = (
+        project_root / "deploy/systemd/shumeiko-source-refresh-dispatcher@.timer"
+    ).read_text(encoding="utf-8")
+    resource_slice = (
+        project_root / "deploy/systemd/shumeiko-source-refresh.slice"
+    ).read_text(encoding="utf-8")
+
+    assert "run_source_refresh_pipeline_task.py --worker-class collector" in collector
+    assert "MemoryHigh=768M" in collector
+    assert "MemoryMax=1G" in collector
+    assert "MemorySwapMax=0" in collector
+    assert "Unit=shumeiko-source-refresh-collector@%i.service" in collector_timer
+    assert "run_source_refresh_heavy_dispatcher.py" in dispatcher
+    assert "MemoryHigh=1536M" in dispatcher
+    assert "MemoryMax=2G" in dispatcher
+    assert "MemorySwapMax=0" in dispatcher
+    assert "SHUMEYKO_SOURCE_REFRESH_HEAVY_CONCURRENCY=1" in dispatcher
+    assert "run_source_refresh_heavy_dispatcher.py" in dispatcher_slot
+    assert "SHUMEYKO_SOURCE_REFRESH_HEAVY_CONCURRENCY=2" in dispatcher_slot
+    assert "MemoryHigh=1536M" in dispatcher_slot
+    assert "MemoryMax=2G" in dispatcher_slot
+    assert "MemorySwapMax=0" in dispatcher_slot
+    assert (
+        "Unit=shumeiko-source-refresh-dispatcher@%i.service"
+        in dispatcher_slot_timer
+    )
+    assert "MemoryMax=5G" in resource_slice
+    assert "CPUQuota=500%" in resource_slice
 
 
 def test_default_onec_page_budget_covers_heavy_sales_register() -> None:

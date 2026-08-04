@@ -3515,6 +3515,126 @@ button.action-insight-card {
   min-height: 42px;
 }
 
+.source-report-wizard {
+  width: min(760px, 100%);
+  gap: 10px;
+  padding: 16px;
+}
+
+.source-report-wizard .widget-header {
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.source-report-wizard .widget-header h2 {
+  margin: 2px 0 0;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.source-report-wizard .widget-header .eyebrow {
+  font-size: 10px;
+}
+
+.source-report-wizard .widget-header .muted {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.source-report-wizard .widget-actions button {
+  min-height: 36px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
+.source-report-wizard .report-wizard-steps {
+  gap: 6px;
+}
+
+.source-report-wizard .report-wizard-steps li {
+  min-height: 36px;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.source-report-wizard .report-wizard-steps b {
+  width: 22px;
+  height: 22px;
+  flex-basis: 22px;
+}
+
+.source-report-wizard .report-wizard-form {
+  gap: 10px;
+}
+
+.source-report-wizard .report-wizard-form > label,
+.source-report-wizard .report-wizard-period-fields label {
+  gap: 4px;
+  font-size: 12px;
+}
+
+.source-report-wizard .report-wizard-form select,
+.source-report-wizard .report-wizard-form input[type="date"] {
+  min-height: 40px;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+.source-report-wizard .report-wizard-form small {
+  font-size: 11px;
+}
+
+.source-report-wizard .report-wizard-context > div,
+.source-report-wizard .report-wizard-current {
+  padding: 8px 10px;
+}
+
+.source-report-wizard .report-wizard-context strong,
+.source-report-wizard .report-wizard-current strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.source-report-wizard .report-wizard-current {
+  gap: 10px;
+}
+
+.source-report-wizard .report-wizard-current span,
+.source-report-wizard .report-wizard-current small {
+  font-size: 11px;
+}
+
+.source-report-wizard .report-wizard-current .button-link {
+  min-height: 36px;
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
+.report-wizard-action-period {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.source-report-wizard .report-wizard-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-report-wizard .report-wizard-actions .button-link,
+.source-report-wizard .report-wizard-actions button {
+  min-height: 38px;
+  padding: 7px 12px;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: normal;
+}
+
 .new-client-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5537,6 +5657,10 @@ td {
   .report-wizard-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .source-report-wizard .report-wizard-action-period {
+    text-align: left;
   }
 
   .report-wizard-publication-actions {

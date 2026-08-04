@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll Shumeyko heavy dispatcher slot %i
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+Unit=shumeiko-source-refresh-dispatcher@%i.service
+
+[Install]
+WantedBy=timers.target

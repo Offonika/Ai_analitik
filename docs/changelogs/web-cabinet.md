@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-08-01"
+updated_at: "2026-08-04"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,13 @@ updated_at: "2026-08-01"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-04: export API переведён на idempotent background jobs; GET Excel
+  больше не выполняет расчёт в HTTP, добавлен staff-only client refresh
+  schedule и safe queue stage/position/Excel status.
+- 2026-08-04: устранена коллизия стабильных ID налоговых профилей, когда
+  несколько расчётных дат давали разные evidence-варианты одной storage-
+  identity; мастер теперь отличает внутренний сбой обработки от отказа
+  обязательного источника.
 - 2026-08-01: corrective v2.64 развёл `Дата начала` и `Дата конца` по
   полноширинным mobile-строкам, сохранил отдельную колонку меню действий и
   ограничил native date/select шириной контейнера. Исправление не меняет API,

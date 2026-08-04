@@ -1,0 +1,18 @@
+[Unit]
+Description=Execute queued Shumeyko heavy task in dispatcher slot %i
+After=postgresql@16-main.service
+Requires=postgresql@16-main.service
+
+[Service]
+Type=oneshot
+Slice=shumeiko-source-refresh.slice
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+Environment=SHUMEYKO_SOURCE_REFRESH_TASK_QUEUE_ENABLED=true
+Environment=SHUMEYKO_SOURCE_REFRESH_HEAVY_CONCURRENCY=2
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/run_source_refresh_heavy_dispatcher.py
+MemoryHigh=1536M
+MemoryMax=2G
+MemorySwapMax=0
+NoNewPrivileges=true
+PrivateTmp=true

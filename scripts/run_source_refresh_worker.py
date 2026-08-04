@@ -7,6 +7,7 @@ import os
 import signal
 import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -15,7 +16,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from wb_unit_economics.web import repository, security
 from wb_unit_economics.web.database import make_engine, make_session_factory
-from wb_unit_economics.web.models import SourceRefreshRun
+from wb_unit_economics.web.models import SourceRefreshRun, SourceRefreshTask
 from wb_unit_economics.web.settings import WebSettings
 from wb_unit_economics.web.source_refresh import SourceRefreshService
 
@@ -302,6 +303,17 @@ def _heartbeat_loop(
                     refresh_run,
                     heartbeat_at=security.utcnow(),
                 )
+                db.execute(
+                    update(SourceRefreshTask)
+                    .where(
+                        SourceRefreshTask.refresh_run_id == refresh_run.id,
+                        SourceRefreshTask.status == "running",
+                    )
+                    .values(
+                        heartbeat_at=security.utcnow(),
+                        updated_at=security.utcnow(),
+                    )
+                )
                 db.commit()
         except Exception:
             pass
@@ -347,6 +359,57 @@ def _prepare_run_heartbeat_marker(
         )
 
 
+def _start_heartbeat_process(
+    session_factory: sessionmaker[Session],
+    service: SourceRefreshService,
+    refresh_run_id: str,
+    *,
+    heartbeat_seconds: int,
+) -> subprocess.Popen[bytes]:
+    heartbeat_marker = _prepare_run_heartbeat_marker(
+        session_factory,
+        service,
+        refresh_run_id,
+    )
+    write_worker_heartbeat_marker(heartbeat_marker)
+    environment = os.environ.copy()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        environment["SHUMEYKO_DATABASE_URL"] = bind.url.render_as_string(
+            hide_password=False
+        )
+    settings = getattr(service, "settings", None)
+    source_refresh_root = getattr(settings, "source_refresh_root_path", None)
+    if source_refresh_root is not None:
+        environment["SHUMEYKO_SOURCE_REFRESH_ROOT"] = str(source_refresh_root)
+    command = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "run_source_refresh_heartbeat.py"),
+        "--run-id",
+        refresh_run_id,
+        "--heartbeat-seconds",
+        str(max(5, heartbeat_seconds)),
+    ]
+    return subprocess.Popen(
+        command,
+        cwd=PROJECT_ROOT,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+    )
+
+
+def _stop_heartbeat_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def process_run(
     session_factory: sessionmaker[Session],
     service: SourceRefreshService,
@@ -354,26 +417,14 @@ def process_run(
     *,
     heartbeat_seconds: int,
 ) -> None:
-    stop_event = threading.Event()
-    heartbeat_marker = _prepare_run_heartbeat_marker(
-        session_factory,
-        service,
-        refresh_run_id,
-    )
-    heartbeat = threading.Thread(
-        target=_heartbeat_loop,
-        kwargs={
-            "session_factory": session_factory,
-            "refresh_run_id": refresh_run_id,
-            "heartbeat_marker": heartbeat_marker,
-            "interval_seconds": heartbeat_seconds,
-            "stop_event": stop_event,
-        },
-        daemon=True,
-        name="source-refresh-heartbeat",
-    )
-    heartbeat.start()
+    heartbeat_process: subprocess.Popen[bytes] | None = None
     try:
+        heartbeat_process = _start_heartbeat_process(
+            session_factory,
+            service,
+            refresh_run_id,
+            heartbeat_seconds=heartbeat_seconds,
+        )
         with session_factory() as db:
             service.run_existing(db, refresh_run_id)
             db.commit()
@@ -393,8 +444,7 @@ def process_run(
             error_type=exc.__class__.__name__,
         )
     finally:
-        stop_event.set()
-        heartbeat.join(timeout=2)
+        _stop_heartbeat_process(heartbeat_process)
 
 
 def worker_loop(args: argparse.Namespace) -> int:

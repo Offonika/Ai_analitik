@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-08-01"
+updated_at: "2026-08-04"
 ---
 
 # Implementation Status
@@ -307,6 +307,16 @@ registration is introduced.
 `GET /api/clients/{client_id}/reports` returns report runs only for that client.
 The endpoint must reject a mismatched `client_id`/`tenant_id`/`report_id`
 combination even if the user has access to another client.
+
+`POST /api/reports/{report_id}/exports` создаёт idempotent jobs для
+`xlsx|docx|html|csv`, а `GET /api/report-export-jobs/{job_id}` возвращает только
+safe status. HTTP worker не строит artifact. Существующий
+`GET /api/reports/{report_id}/export.xlsx` только скачивает уже готовый
+зарегистрированный Excel и возвращает 404, если artifact ещё не сформирован.
+
+Staff-only `GET/PUT /api/clients/{client_id}/refresh-schedule` управляет
+timezone, enabled, временем вторничного incremental, воскресной full-неделей,
+слотом и priority. Client role получает 403; токены и raw paths не возвращаются.
 
 `GET /api/reports/{id}/summary` and `GET /api/reports/{id}/freshness` include:
 
@@ -819,6 +829,10 @@ UI readiness behavior:
   Excel как результат. DOCX/PDF можно подготовить или обновить в той же
   карточке; при их ошибке UI сообщает `Не удалось подготовить DOCX и PDF.
   Сформированный Excel остаётся доступен` без HTTP-кода;
+- `failed` различает отказ обязательного источника и внутреннюю ошибку
+  обработки после успешной загрузки источников. Внутренняя ошибка не
+  приписывается WB или 1С; safe-сообщение подтверждает сохранность уже
+  загруженных источников и не раскрывает SQL, raw payload или credentials;
 - шаги мастера являются семантическим списком с `aria-current`, после
   завершения фокус переносится на карточку результата. На мобильном обе кнопки
   полноширинные, основное действие идет первым;

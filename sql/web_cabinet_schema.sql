@@ -475,6 +475,88 @@ CREATE INDEX IF NOT EXISTS ix_source_refresh_runs_active
 CREATE INDEX IF NOT EXISTS ix_source_refresh_runs_snapshot
     ON wb_unit_economics.source_refresh_runs (tenant_id, snapshot_set_id);
 
+CREATE TABLE IF NOT EXISTS wb_unit_economics.source_refresh_tasks (
+    id text PRIMARY KEY,
+    refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE CASCADE,
+    report_run_id text REFERENCES wb_unit_economics.report_runs(id) ON DELETE SET NULL,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    task_type text NOT NULL,
+    status text NOT NULL DEFAULT 'queued',
+    priority integer NOT NULL DEFAULT 100,
+    not_before timestamptz NOT NULL DEFAULT now(),
+    attempt integer NOT NULL DEFAULT 0,
+    max_attempts integer NOT NULL DEFAULT 1,
+    idempotency_key text NOT NULL,
+    depends_on_task_id text REFERENCES wb_unit_economics.source_refresh_tasks(id) ON DELETE SET NULL,
+    worker_id text NOT NULL DEFAULT '',
+    heartbeat_at timestamptz,
+    safe_error_code text NOT NULL DEFAULT '',
+    safe_error_message text NOT NULL DEFAULT '',
+    metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    claimed_at timestamptz,
+    started_at timestamptz,
+    finished_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_source_refresh_task_key UNIQUE (refresh_run_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS ix_source_refresh_tasks_claim
+    ON wb_unit_economics.source_refresh_tasks (
+        status, not_before, priority, created_at
+    );
+
+CREATE INDEX IF NOT EXISTS ix_source_refresh_tasks_run
+    ON wb_unit_economics.source_refresh_tasks (
+        refresh_run_id, task_type, status
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.source_refresh_stage_events (
+    id bigserial PRIMARY KEY,
+    refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE CASCADE,
+    task_id text REFERENCES wb_unit_economics.source_refresh_tasks(id) ON DELETE SET NULL,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    stage text NOT NULL,
+    status text NOT NULL,
+    safe_error_code text NOT NULL DEFAULT '',
+    row_count integer,
+    byte_count bigint,
+    peak_memory_bytes bigint,
+    safe_metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+    started_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS ix_source_refresh_stage_events_run
+    ON wb_unit_economics.source_refresh_stage_events (
+        refresh_run_id, started_at
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.client_refresh_schedules (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    timezone text NOT NULL DEFAULT 'Europe/Moscow',
+    enabled boolean NOT NULL DEFAULT false,
+    weekly_weekday integer NOT NULL DEFAULT 1,
+    weekly_time text NOT NULL DEFAULT '06:15',
+    monthly_full_week integer NOT NULL DEFAULT 1,
+    monthly_full_time text NOT NULL DEFAULT '02:00',
+    priority integer NOT NULL DEFAULT 100,
+    last_incremental_slot text NOT NULL DEFAULT '',
+    last_full_slot text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_client_refresh_schedule_scope UNIQUE (tenant_id, client_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_client_refresh_schedules_due
+    ON wb_unit_economics.client_refresh_schedules (
+        enabled, weekly_weekday, priority
+    );
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.source_refresh_collections (
     id bigserial PRIMARY KEY,
     refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE CASCADE,
@@ -499,6 +581,73 @@ CREATE INDEX IF NOT EXISTS ix_source_refresh_collections_run
         refresh_run_id, source_type, status
     );
 
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_artifacts (
+    id bigserial PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    artifact_type text NOT NULL,
+    path text NOT NULL,
+    sha256 text NOT NULL DEFAULT '',
+    byte_size bigint NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT 'ready',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_report_artifact_path UNIQUE (report_run_id, artifact_type, path)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_artifacts_lookup
+    ON wb_unit_economics.report_artifacts (
+        tenant_id, report_run_id, artifact_type, status
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_export_jobs (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE CASCADE,
+    task_id text REFERENCES wb_unit_economics.source_refresh_tasks(id) ON DELETE SET NULL,
+    artifact_id bigint REFERENCES wb_unit_economics.report_artifacts(id) ON DELETE SET NULL,
+    export_format text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_fingerprint text NOT NULL,
+    status text NOT NULL DEFAULT 'queued',
+    safe_error_code text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    started_at timestamptz,
+    finished_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_report_export_job_key UNIQUE (
+        tenant_id, report_run_id, idempotency_key
+    )
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_export_jobs_lookup
+    ON wb_unit_economics.report_export_jobs (
+        tenant_id, report_run_id, status, created_at
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.report_archive_records (
+    id text PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    report_run_id text NOT NULL REFERENCES wb_unit_economics.report_runs(id) ON DELETE RESTRICT,
+    status text NOT NULL DEFAULT 'pending',
+    bundle_uri text NOT NULL DEFAULT '',
+    bundle_sha256 text NOT NULL DEFAULT '',
+    bundle_byte_size bigint NOT NULL DEFAULT 0,
+    s3_version_id text NOT NULL DEFAULT '',
+    methodology_version text NOT NULL DEFAULT '',
+    source_lineage jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    verified_at timestamptz,
+    restored_at timestamptz,
+    CONSTRAINT uq_report_archive_record_report UNIQUE (report_run_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_report_archive_records_status
+    ON wb_unit_economics.report_archive_records (
+        tenant_id, status, verified_at
+    );
+
 CREATE TABLE IF NOT EXISTS wb_unit_economics.source_snapshot_rows (
     id bigserial PRIMARY KEY,
     refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE CASCADE,
@@ -519,6 +668,47 @@ CREATE TABLE IF NOT EXISTS wb_unit_economics.source_snapshot_rows (
 CREATE INDEX IF NOT EXISTS ix_source_snapshot_rows_lookup
     ON wb_unit_economics.source_snapshot_rows (
         tenant_id, source_type, source_row_id
+    );
+
+CREATE TABLE IF NOT EXISTS wb_unit_economics.onec_unf_cost_snapshots (
+    id bigserial PRIMARY KEY,
+    tenant_id text NOT NULL REFERENCES wb_unit_economics.tenants(id) ON DELETE CASCADE,
+    client_id text NOT NULL REFERENCES wb_unit_economics.clients(id) ON DELETE CASCADE,
+    organization_id text NOT NULL,
+    onec_item_id text NOT NULL,
+    article text NOT NULL DEFAULT '',
+    barcode text NOT NULL DEFAULT '',
+    name text NOT NULL DEFAULT '',
+    characteristic text NOT NULL DEFAULT '',
+    cost_value numeric(20, 6) NOT NULL,
+    extra_costs_value numeric(20, 6) NOT NULL DEFAULT 0,
+    input_vat_value numeric(20, 6),
+    input_vat_source text NOT NULL DEFAULT '',
+    cost_currency text NOT NULL DEFAULT 'RUB',
+    cost_method text NOT NULL,
+    effective_from date NOT NULL,
+    effective_to date,
+    source_document_kind text NOT NULL DEFAULT '',
+    source_document text NOT NULL,
+    raw_payload_hash text NOT NULL,
+    source_snapshot_set_id text NOT NULL,
+    source_refresh_run_id text NOT NULL REFERENCES wb_unit_economics.source_refresh_runs(id) ON DELETE CASCADE,
+    loaded_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_onec_unf_cost_snapshot_grain UNIQUE (
+        source_refresh_run_id, organization_id, onec_item_id,
+        characteristic, effective_from, raw_payload_hash
+    )
+);
+
+CREATE INDEX IF NOT EXISTS ix_onec_unf_cost_snapshots_effective
+    ON wb_unit_economics.onec_unf_cost_snapshots (
+        tenant_id, client_id, organization_id, onec_item_id,
+        effective_from, effective_to
+    );
+
+CREATE INDEX IF NOT EXISTS ix_onec_unf_cost_snapshots_lineage
+    ON wb_unit_economics.onec_unf_cost_snapshots (
+        source_refresh_run_id, source_snapshot_set_id
     );
 
 CREATE TABLE IF NOT EXISTS wb_unit_economics.marketplace_finance_daily_facts (

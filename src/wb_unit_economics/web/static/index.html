@@ -2618,7 +2618,7 @@
         role="dialog"
         hidden
       >
-        <section class="panel widget-shell report-wizard">
+        <section class="panel widget-shell report-wizard source-report-wizard">
           <div class="panel-header widget-header">
             <div>
               <p class="eyebrow">Мастер формирования</p>
@@ -2707,16 +2707,23 @@
                 <input id="report-wizard-period-end" type="date" />
               </label>
             </div>
+            <p
+              id="report-wizard-action-period"
+              class="report-wizard-action-period"
+              aria-live="polite"
+            >
+              Получаем доступный период…
+            </p>
             <div class="report-wizard-actions">
               <button id="report-wizard-submit" type="submit">
-                Период загружается…
+                Создать черновик Excel
               </button>
               <button
                 id="report-wizard-check"
                 type="button"
                 class="secondary-button"
               >
-                Проверить источники без создания
+                Проверить источники
               </button>
               <button
                 id="report-wizard-reset"
