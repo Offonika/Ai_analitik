@@ -74,6 +74,32 @@ def test_daily_facts_replace_coverage_window_atomically() -> None:
     assert parity["status"] == "matched"
 
 
+def test_persisted_daily_facts_parity_detects_value_mismatch() -> None:
+    session_factory, refresh_run = _context()
+    expected = _daily_fact(net_revenue="100")
+
+    with session_factory() as db:
+        run = db.get(SourceRefreshRun, refresh_run.id)
+        assert run is not None
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            run,
+            [expected],
+            marketplace="wb",
+        )
+        persisted = db.scalar(select(MarketplaceFinanceDailyFactModel))
+        assert persisted is not None
+        persisted.net_revenue = Decimal("99.99")
+        db.commit()
+
+        parity = _persisted_daily_facts_parity(db, run, [expected])
+
+    assert parity["status"] == "mismatch"
+    assert parity["expectedRows"] == 1
+    assert parity["persistedRows"] == 1
+    assert parity["mismatches"] == ["dailyFacts"]
+
+
 def test_daily_fact_staging_cleanup_is_batched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

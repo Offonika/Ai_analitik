@@ -4987,15 +4987,16 @@ class SourceRefreshService:
             db, refresh_run
         )
         db.commit()
-        build = build_db_first_payload(
-            args,
-            tax_profiles=tax_profiles,
-            input_vat_policies=input_vat_policies,
-        )
         legacy_row_count = repository.source_snapshot_row_count_for_run(
             db,
             refresh_run_id=refresh_run.id,
             source_type="wb_finance_detail",
+        )
+        args.report_marts_enabled = legacy_row_count > 0
+        build = build_db_first_payload(
+            args,
+            tax_profiles=tax_profiles,
+            input_vat_policies=input_vat_policies,
         )
         calculation_parity = {
             "status": "not_run_no_legacy_rows",
@@ -5032,6 +5033,7 @@ class SourceRefreshService:
                 encoding="utf-8",
             )
             calculation_parity["artifactPath"] = str(parity_path)
+            legacy_build.clear()
         self._save_onec_cost_snapshots(db, refresh_run, build)
         self._save_wb_daily_facts(
             db,
@@ -5040,6 +5042,7 @@ class SourceRefreshService:
             calculation_parity=calculation_parity,
             replacement_summary_rows=replacement_summary_rows,
         )
+        build.clear()
         _commit_source_refresh_progress(db)
 
     def _save_wb_daily_facts(
@@ -5090,6 +5093,8 @@ class SourceRefreshService:
             )
             in replacement_report_keys
         ]
+        if daily_facts is not all_daily_facts:
+            all_daily_facts.clear()
         daily_fact_count = repository.replace_marketplace_finance_daily_facts(
             db,
             refresh_run,
@@ -5118,21 +5123,21 @@ class SourceRefreshService:
         )
         if finance_collection is None:
             return
+        first_fact_date = min(
+            (item.fact_date for item in daily_facts),
+            default=None,
+        )
+        last_fact_date = max(
+            (item.fact_date for item in daily_facts),
+            default=None,
+        )
         finance_collection.payload = {
             **(finance_collection.payload or {}),
             "dailyFacts": {
                 "status": "materialized",
                 "rowCount": daily_fact_count,
-                "periodStart": (
-                    min(item.fact_date for item in daily_facts).isoformat()
-                    if daily_facts
-                    else None
-                ),
-                "periodEnd": (
-                    max(item.fact_date for item in daily_facts).isoformat()
-                    if daily_facts
-                    else None
-                ),
+                "periodStart": first_fact_date.isoformat() if first_fact_date else None,
+                "periodEnd": last_fact_date.isoformat() if last_fact_date else None,
                 "parity": parity,
                 "persistedParity": persisted_parity,
             },
@@ -5420,6 +5425,9 @@ class SourceRefreshService:
             tax_profiles=tax_profiles,
             input_vat_policies=input_vat_policies,
         )
+        if wb_daily_facts is not None:
+            wb_daily_facts.clear()
+            args.wb_daily_facts = None
         self._save_onec_cost_snapshots(db, refresh_run, build)
         if self.settings.marketplace_daily_facts_enabled and wb_daily_facts is None:
             self._save_wb_daily_facts(
@@ -7491,37 +7499,56 @@ def _persisted_daily_facts_parity(
     refresh_run: SourceRefreshRun,
     generated_facts: list[MarketplaceFinanceDailyFactContract],
 ) -> dict[str, Any]:
-    persisted = list(
-        db.scalars(
-            select(MarketplaceFinanceDailyFactModel).where(
-                MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
-                MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
-                MarketplaceFinanceDailyFactModel.marketplace == "wb",
-                MarketplaceFinanceDailyFactModel.source_refresh_run_id
-                == refresh_run.id,
+    field_names = tuple(MarketplaceFinanceDailyFactContract.model_fields)
+    expected_hash = hashlib.sha256()
+    expected_count = 0
+    for item in generated_facts:
+        row_digest = _hash_payload(
+            _canonical_parity_value(
+                {name: getattr(item, name) for name in field_names}
             )
         )
-    )
-    field_names = tuple(MarketplaceFinanceDailyFactContract.model_fields)
-    expected = [
-        {name: getattr(item, name) for name in field_names} for item in generated_facts
+        expected_hash.update(row_digest.encode("ascii"))
+        expected_hash.update(b"\n")
+        expected_count += 1
+
+    columns = [
+        getattr(MarketplaceFinanceDailyFactModel, name).label(name)
+        for name in field_names
     ]
-    actual = [{name: getattr(item, name) for name in field_names} for item in persisted]
-    expected_value = sorted(
-        (_canonical_parity_value(item) for item in expected),
-        key=_hash_payload,
-    )
-    actual_value = sorted(
-        (_canonical_parity_value(item) for item in actual),
-        key=_hash_payload,
-    )
-    expected_digest = _hash_payload(expected_value)
-    actual_digest = _hash_payload(actual_value)
-    matched = len(expected) == len(actual) and expected_digest == actual_digest
+    persisted_rows = db.execute(
+        select(*columns)
+        .where(
+            MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
+            MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
+            MarketplaceFinanceDailyFactModel.marketplace == "wb",
+            MarketplaceFinanceDailyFactModel.source_refresh_run_id == refresh_run.id,
+        )
+        .order_by(MarketplaceFinanceDailyFactModel.id)
+        .execution_options(
+            stream_results=True,
+            yield_per=repository.MARKETPLACE_FACT_INSERT_BATCH_SIZE,
+        )
+    ).mappings()
+    actual_hash = hashlib.sha256()
+    actual_count = 0
+    for item in persisted_rows:
+        row_digest = _hash_payload(
+            _canonical_parity_value(
+                {name: item[name] for name in field_names}
+            )
+        )
+        actual_hash.update(row_digest.encode("ascii"))
+        actual_hash.update(b"\n")
+        actual_count += 1
+
+    expected_digest = expected_hash.hexdigest()
+    actual_digest = actual_hash.hexdigest()
+    matched = expected_count == actual_count and expected_digest == actual_digest
     return {
         "status": "matched" if matched else "mismatch",
-        "expectedRows": len(expected),
-        "persistedRows": len(actual),
+        "expectedRows": expected_count,
+        "persistedRows": actual_count,
         "expectedDigest": expected_digest,
         "persistedDigest": actual_digest,
         "mismatches": [] if matched else ["dailyFacts"],
