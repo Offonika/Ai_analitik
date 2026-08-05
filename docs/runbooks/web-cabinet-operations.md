@@ -1928,3 +1928,42 @@ Rollback — атомарно вернуть production pointer на
 `shumeiko-web-prod.service` и повторить local/public health, static build и
 safety smoke. Созданные source refresh runs, drafts и артефакты при runtime
 rollback не удаляются.
+
+## Corrective rollout возобновления приёмки draft — 5 августа 2026 года
+
+После закрытия или перезагрузки wizard-сессии сохранённый staff draft оставался
+в БД и скачивался из отдельной карточки, но финансовую приёмку можно было
+открыть повторно только через новую сборку. Из-за этого пользователи создавали
+повторные full refresh и воспринимали draft как пропавший. Исправление добавило
+к последнему готовому draft действие `Продолжить проверку`: оно восстанавливает
+результат по точному `report_id`, снова требует комментарий и checkbox и не
+запускает source refresh. Публикация по-прежнему выполняется только отдельным
+явным действием.
+
+Из commit `779560c1351a6cd1f8693dbf9bbcb6dc20d72d92` собран immutable
+release `runtime-779560c-v268-report-wizard-draft-resume-20260805` с
+`sourceDirty=false` и content SHA-256
+`4ffcce82bb44e64e720a0dea69b5aef92b88fe8415ce68db768f03bb7131e82d`.
+Полный `tests/test_web_app.py` завершился `250 passed`; Ruff, JavaScript syntax,
+`git diff --check`, пять обязательных doc validators и production-configured
+smoke на порту `18098` прошли. Smoke подтвердил новый build ID
+`20260805-v268-report-wizard-draft-resume`, действие возобновления и safety-
+коды `401`/`404`.
+
+Во время promotion уже выполнялся пользовательский full refresh. Он не был
+прерван: рабочий процесс имел cwd, закреплённый за предыдущим immutable release
+`runtime-8a0d26c-v267-report-wizard-draft-download-20260805`, отдельный
+heartbeat продолжал обновляться до и после web restart. Изменение было только
+UI/static, не меняло worker, schema или данные. Production pointer атомарно
+переключён на v268, перезапущен только `shumeiko-web-prod.service`.
+
+Локальный и публичный health вернули `status=ok`, совпадающие backend/static
+build ID и сохранили правдивый `latestSourceRefreshActive=true` для отдельного
+worker. Публичные HTML/JavaScript содержат `Продолжить проверку`; safety smoke,
+production health service и drift-check прошли. Published current и все
+существующие drafts не изменялись.
+
+Rollback — вернуть production pointer на
+`runtime-8a0d26c-v267-report-wizard-draft-download-20260805`, перезапустить
+только `shumeiko-web-prod.service` и повторить health/static/safety smoke.
+Активный worker и report artifacts при rollback не удалять.
