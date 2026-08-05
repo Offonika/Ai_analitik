@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,13 @@ updated_at: "2026-08-04"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-05: мастер формирования отчёта сохраняет отдельную прямую карточку
+  последнего готового staff draft во время следующей сборки и после перезагрузки
+  страницы и позволяет явно продолжить его финансовую проверку без повторной
+  сборки; приоритет имеет последний draft точного полного серверного периода,
+  поэтому более новый отчёт по узкому фильтру не подменяет кандидата на
+  публикацию. Session-specific результат, Ozon-диагностика и опубликованный
+  current остаются раздельными.
 - 2026-08-04: export API переведён на idempotent background jobs; GET Excel
   больше не выполняет расчёт в HTTP, добавлен staff-only client refresh
   schedule и safe queue stage/position/Excel status.

@@ -3605,7 +3605,8 @@ button.action-insight-card {
   font-size: 11px;
 }
 
-.source-report-wizard .report-wizard-current .button-link {
+.source-report-wizard .report-wizard-current .button-link,
+.source-report-wizard .report-wizard-current button {
   min-height: 36px;
   padding: 7px 11px;
   font-size: 12px;
@@ -5680,6 +5681,7 @@ td {
   .report-wizard-actions button,
   .report-wizard-publication-actions button,
   .report-wizard-current .button-link,
+  .report-wizard-current button,
   .client-report-actions .button-link,
   .client-report-actions button,
   .report-wizard-downloads .button-link,

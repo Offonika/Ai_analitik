@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # Implementation Status
@@ -812,6 +812,20 @@ UI readiness behavior:
   из списка отчетов только по одновременным признакам `isCurrent=true` и
   `publicationStatus=published`, явно помечен как не относящийся к настройкам
   нового отчета и никогда не считается результатом текущего запуска;
+- последний готовый staff draft показывается консультанту/администратору
+  отдельной карточкой с точным периодом и прямой ссылкой по его `report_id`.
+  Для штатного контура мастер сначала выбирает самый новый draft, чей период
+  точно совпадает с серверным `defaultFullPeriod`, и только при его отсутствии
+  использует самый новый иной draft; это не позволяет случайному отчёту по
+  верхнему фильтру вытеснить полный кандидат на финансовую публикацию.
+  Карточка остаётся доступной во время новой фоновой сборки и после перезагрузки
+  страницы, чтобы уже сформированный Excel не исчезал из мастера. Она не
+  подменяет session-specific результат текущего запуска, не выбирает Ozon-
+  диагностику и не меняет `published current` без финансовой приёмки. Из этой
+  карточки staff может возобновить финансовую проверку точного сохранённого
+  draft без повторного source refresh: мастер восстанавливает шаг результата,
+  comment/confirmation остаются обязательными, а публикация использует только
+  выбранный `report_id`;
 - рядом с current report мастер показывает, что hourly `daily` обновляет
   источники, но не переключает опубликованный отчёт. Для источников, staff
   draft и published current используются отдельные даты/статусы;
@@ -1471,9 +1485,13 @@ Large-report loading:
 - Consultant/admin can open `Сформировать отчет`, choose the report contour and
   period, run a readiness-only check or start generation and follow the exact
   wizard-session status. The current published Excel remains a separate neutral
-  download, while a green or warning result card and its direct download appear
-  only for that session's non-empty `newReportRunId`; background refreshes never
-  advance the wizard.
+  download. The latest completed staff draft is also available as a separate
+  exact-`report_id` download during a new build and after page reload. Staff can
+  explicitly resume that saved draft's result/publication step without another
+  refresh; the restored action keeps the exact report id and still requires an
+  audit comment plus confirmation. A green or warning result card otherwise
+  appears only for that session's non-empty `newReportRunId`; background
+  refreshes never advance the wizard or publish a draft.
 - The wizard defaults to the exact full refresh range through yesterday,
   exposes the current topbar filter as a separate explicit choice, and never
   silently turns that filter into custom report-generation dates. A generated
@@ -1489,6 +1507,10 @@ Large-report loading:
 - Multi-client API tests for `GET /api/clients`, client-scoped report lists,
   direct guessed-id denial, consultant access to assigned clients only and
   client-role isolation.
+- Static cabinet contract test verifies that the wizard keeps a separate latest
+  ready staff-draft download visible independently from the active session and
+  excludes Ozon diagnostic drafts; the same card can explicitly restore the
+  exact draft into the financial-review step without starting source refresh.
 - AI tests with mocked/fallback model path and whitelisted tool outputs: no
   external API call required.
 - Client-draft API tests for staff-only access, client denial, tenant boundary,
