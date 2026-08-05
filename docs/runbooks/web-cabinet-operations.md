@@ -1967,3 +1967,38 @@ Rollback — вернуть production pointer на
 `runtime-8a0d26c-v267-report-wizard-draft-download-20260805`, перезапустить
 только `shumeiko-web-prod.service` и повторить health/static/safety smoke.
 Активный worker и report artifacts при rollback не удалять.
+
+## Corrective rollout приоритета полного draft — 5 августа 2026 года
+
+После v268 отдельная карточка сохранённого draft оставалась доступной, но более
+новый отчёт по узкому пользовательскому периоду мог стать первым draft в списке
+и визуально вытеснить готовый полный кандидат на публикацию. Исправление сначала
+выбирает самый новый draft, чей период точно совпадает с серверным
+`defaultFullPeriod`, и только при отсутствии такого отчёта использует самый
+новый иной draft. Карточка переименована в `Последний готовый полный отчёт`;
+действие `Продолжить проверку` по-прежнему восстанавливает приёмку без новой
+сборки и не публикует отчёт автоматически.
+
+Из commit `2ac7ccf20a817eee9664902883a8b85b2c98bfa5` собран immutable
+release `runtime-2ac7ccf-v269-report-wizard-full-draft-resume-20260805` с
+`sourceDirty=false` и content SHA-256
+`c61dc672d9ef112149192fd8b1aa60791a4fa1425ded5c134d5d01e3dc4a0f19`.
+Полный `tests/test_web_app.py` завершился `250 passed`; Ruff, JavaScript syntax,
+`git diff --check`, пять обязательных doc validators и production-configured
+smoke на порту `18099` прошли. Smoke подтвердил совпадающий build ID
+`20260805-v269-report-wizard-full-draft-resume`, приоритет полного draft и
+safety-коды `401`/`404`.
+
+До promotion отдельный source refresh worker уже завершил работу, поэтому web
+restart не прерывал сборку. Production pointer атомарно переключён с
+`runtime-779560c-v268-report-wizard-draft-resume-20260805` на v269,
+перезапущен только `shumeiko-web-prod.service`; schema, integrations, snapshots,
+report artifacts и published current не изменялись. Локальный и публичный
+health вернули `status=ok` и совпадающие backend/static build ID. Публичные
+HTML/JavaScript содержат карточку полного отчёта, действие продолжения и новую
+логику выбора; safety smoke, production health service и drift-check прошли.
+
+Rollback — вернуть production pointer на
+`runtime-779560c-v268-report-wizard-draft-resume-20260805`, перезапустить только
+`shumeiko-web-prod.service` и повторить health/static/safety smoke. Сохранённые
+drafts и report artifacts при rollback не удалять.
