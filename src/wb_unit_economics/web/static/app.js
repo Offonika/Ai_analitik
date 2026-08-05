@@ -420,6 +420,9 @@ const els = {
   reportWizardLatestDraftDownload: document.querySelector(
     "#report-wizard-latest-draft-download",
   ),
+  reportWizardLatestDraftOpen: document.querySelector(
+    "#report-wizard-latest-draft-open",
+  ),
   reportWizardCurrent: document.querySelector("#report-wizard-current"),
   reportWizardCurrentPeriod: document.querySelector(
     "#report-wizard-current-period",
@@ -1163,6 +1166,10 @@ function init() {
   els.reportWizardForm.addEventListener("submit", onReportWizardSubmit);
   els.reportWizardCheck.addEventListener("click", onReportWizardCheck);
   els.reportWizardReset.addEventListener("click", resetReportWizardSession);
+  els.reportWizardLatestDraftOpen.addEventListener(
+    "click",
+    resumeLatestReportWizardDraft,
+  );
   els.accountingReportWizardClose.addEventListener(
     "click",
     closeAccountingReportWizard,
@@ -3730,6 +3737,42 @@ function renderReportWizardLatestDraft() {
     : "Черновик сохранён отдельно и не заменяет опубликованный отчёт до финансовой проверки.";
   els.reportWizardLatestDraftDownload.href =
     `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
+}
+
+function resumeLatestReportWizardDraft() {
+  const report = reportWizardLatestDraftReport();
+  if (!report?.id) {
+    return;
+  }
+  state.reportWizardRequest = {
+    dryRun: false,
+    mode: "full",
+    periodMode: "custom",
+    periodStart: report.periodStart || "",
+    periodEnd: report.periodEnd || "",
+  };
+  state.reportWizardRefresh = {
+    id: `saved-draft:${report.id}`,
+    status: "needs_review",
+    mode: "full",
+    dryRun: false,
+    periodStart: report.periodStart || null,
+    periodEnd: report.periodEnd || null,
+    newReportRunId: report.id,
+    finishedAt: report.generatedAt || null,
+  };
+  state.reportWizardBusy = false;
+  state.reportWizardPublishing = false;
+  state.reportWizardPublishedReportId = "";
+  els.reportWizardMode.value = "full";
+  els.reportWizardPeriodMode.value = "custom";
+  els.reportWizardPeriodStart.value = report.periodStart || "";
+  els.reportWizardPeriodEnd.value = report.periodEnd || "";
+  els.reportWizardPublicationReason.value = "";
+  els.reportWizardPublicationConfirm.checked = false;
+  els.reportWizardPublicationStatus.textContent = "";
+  els.reportWizardResult.dataset.focusedReportId = "";
+  renderReportWizardStatus();
 }
 
 function onReportWizardSettingsChange() {

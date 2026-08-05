@@ -817,7 +817,11 @@ UI readiness behavior:
   Карточка остаётся доступной во время новой фоновой сборки и после перезагрузки
   страницы, чтобы уже сформированный Excel не исчезал из мастера. Она не
   подменяет session-specific результат текущего запуска, не выбирает Ozon-
-  диагностику и не меняет `published current` без финансовой приёмки;
+  диагностику и не меняет `published current` без финансовой приёмки. Из этой
+  карточки staff может возобновить финансовую проверку точного сохранённого
+  draft без повторного source refresh: мастер восстанавливает шаг результата,
+  comment/confirmation остаются обязательными, а публикация использует только
+  выбранный `report_id`;
 - рядом с current report мастер показывает, что hourly `daily` обновляет
   источники, но не переключает опубликованный отчёт. Для источников, staff
   draft и published current используются отдельные даты/статусы;
@@ -1525,10 +1529,12 @@ Large-report loading:
   period, run a readiness-only check or start generation and follow the exact
   wizard-session status. The current published Excel remains a separate neutral
   download. The latest completed staff draft is also available as a separate
-  exact-`report_id` download during a new build and after page reload, while a
-  green or warning result card appears only for that session's non-empty
-  `newReportRunId`; background refreshes never advance the wizard or publish a
-  draft.
+  exact-`report_id` download during a new build and after page reload. Staff can
+  explicitly resume that saved draft's result/publication step without another
+  refresh; the restored action keeps the exact report id and still requires an
+  audit comment plus confirmation. A green or warning result card otherwise
+  appears only for that session's non-empty `newReportRunId`; background
+  refreshes never advance the wizard or publish a draft.
 - The wizard defaults to the exact full refresh range through yesterday,
   exposes the current topbar filter as a separate explicit choice, and never
   silently turns that filter into custom report-generation dates. A generated
@@ -1546,7 +1552,8 @@ Large-report loading:
   client-role isolation.
 - Static cabinet contract test verifies that the wizard keeps a separate latest
   ready staff-draft download visible independently from the active session and
-  excludes Ozon diagnostic drafts.
+  excludes Ozon diagnostic drafts; the same card can explicitly restore the
+  exact draft into the financial-review step without starting source refresh.
 - AI tests with mocked/fallback model path and whitelisted tool outputs: no
   external API call required. Intent tests cover loss, margin, readiness, cost
   quality, SKU, period, summary, explicit refresh, empty evidence and nullable
