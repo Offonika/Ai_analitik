@@ -407,6 +407,19 @@ const els = {
   reportWizardPeriodFields: document.querySelector("#report-wizard-period-fields"),
   reportWizardPeriodStart: document.querySelector("#report-wizard-period-start"),
   reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
+  reportWizardLatestDraft: document.querySelector("#report-wizard-latest-draft"),
+  reportWizardLatestDraftTitle: document.querySelector(
+    "#report-wizard-latest-draft-title",
+  ),
+  reportWizardLatestDraftPeriod: document.querySelector(
+    "#report-wizard-latest-draft-period",
+  ),
+  reportWizardLatestDraftHint: document.querySelector(
+    "#report-wizard-latest-draft-hint",
+  ),
+  reportWizardLatestDraftDownload: document.querySelector(
+    "#report-wizard-latest-draft-download",
+  ),
   reportWizardCurrent: document.querySelector("#report-wizard-current"),
   reportWizardCurrentPeriod: document.querySelector(
     "#report-wizard-current-period",
@@ -3582,6 +3595,22 @@ function reportWizardPublishedReport() {
   ) || null;
 }
 
+function reportWizardLatestDraftReport() {
+  return [...state.reports]
+    .filter(
+      (item) =>
+        Boolean(item.id) &&
+        !item.isCurrent &&
+        normalize(item.publicationStatus) === "draft" &&
+        normalize(item.lineageType) !== "ozon_mart_snapshot",
+    )
+    .sort((left, right) =>
+      String(right.generatedAt || "").localeCompare(
+        String(left.generatedAt || ""),
+      ),
+    )[0] || null;
+}
+
 function reportWizardGeneratedReportId() {
   return String(state.reportWizardRefresh?.newReportRunId || "");
 }
@@ -3668,6 +3697,38 @@ function renderReportWizardCurrent() {
     .join("–");
   els.reportWizardCurrentPeriod.textContent = period ? `Период: ${period}` : "";
   els.reportWizardCurrentDownload.href =
+    `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
+}
+
+function renderReportWizardLatestDraft() {
+  const report = reportWizardLatestDraftReport();
+  const generatedReportId = reportWizardGeneratedReportId();
+  const visible = Boolean(
+    report &&
+      report.id !== generatedReportId &&
+      els.reportWizardMode.value !== "ozon-only",
+  );
+  els.reportWizardLatestDraft.hidden = !visible;
+  if (!visible) {
+    els.reportWizardLatestDraftPeriod.textContent = "";
+    els.reportWizardLatestDraftDownload.href = "#";
+    return;
+  }
+  const period = [formatCompactDate(report.periodStart), formatCompactDate(report.periodEnd)]
+    .filter(Boolean)
+    .join("–");
+  const newBuildActive = Boolean(
+    isActiveSourceRefresh(state.reportWizardRefresh) ||
+      reportWizardHasExternalActiveRefresh(),
+  );
+  els.reportWizardLatestDraftTitle.textContent = newBuildActive
+    ? "Последний готовый черновик — доступен сейчас"
+    : "Последний готовый черновик";
+  els.reportWizardLatestDraftPeriod.textContent = period ? `Период: ${period}` : "";
+  els.reportWizardLatestDraftHint.textContent = newBuildActive
+    ? "Новый отчёт ещё формируется. Этот готовый Excel можно скачать сейчас."
+    : "Черновик сохранён отдельно и не заменяет опубликованный отчёт до финансовой проверки.";
+  els.reportWizardLatestDraftDownload.href =
     `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
 }
 
@@ -3780,6 +3841,7 @@ function renderReportWizardSettings() {
   els.reportWizardReset.hidden = !generatedReportId;
   els.reportWizardSubmit.disabled = locked || externalActive || !completePeriod;
   els.reportWizardCheck.disabled = locked || externalActive || !completePeriod;
+  renderReportWizardLatestDraft();
   renderReportWizardCurrent();
 }
 

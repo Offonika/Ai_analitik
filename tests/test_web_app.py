@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260804-v266-scalable-refresh"
+        "20260805-v267-report-wizard-draft-download"
     )
     assert health.json()["staticBuildId"] == (
-        "20260804-v266-scalable-refresh"
+        "20260805-v267-report-wizard-draft-download"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260804-v266-scalable-refresh" in cabinet.text
-    assert "app.js?v=20260804-v266-scalable-refresh" in cabinet.text
+    assert "styles.css?v=20260805-v267-report-wizard-draft-download" in cabinet.text
+    assert "app.js?v=20260805-v267-report-wizard-draft-download" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7621,7 +7621,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260804-v266-scalable-refresh" in cabinet.text
+    assert "20260805-v267-report-wizard-draft-download" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
@@ -8536,6 +8536,11 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
     assert cabinet.text.index('id="report-wizard-current"') < cabinet.text.index(
         'id="report-wizard-mode"'
     )
+    assert cabinet.text.index('id="report-wizard-latest-draft"') < cabinet.text.index(
+        'id="report-wizard-current"'
+    )
+    assert "Последний готовый черновик" in cabinet.text
+    assert "Скачать готовый Excel" in cabinet.text
     assert cabinet.text.index('id="report-wizard-submit"') < cabinet.text.index(
         'id="report-wizard-check"'
     )
@@ -8547,6 +8552,15 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
     assert "refresh.id !== state.reportWizardRefresh.id" in app_js.text
     assert "state.reportWizardRefresh = state.latestSourceRefresh" not in app_js.text
     assert "renderReportWizardStatus(state.latestSourceRefresh" not in app_js.text
+    assert "function reportWizardLatestDraftReport()" in app_js.text
+    assert "function renderReportWizardLatestDraft()" in app_js.text
+    assert 'normalize(item.publicationStatus) === "draft"' in app_js.text
+    assert 'normalize(item.lineageType) !== "ozon_mart_snapshot"' in app_js.text
+    assert "report.id !== generatedReportId" in app_js.text
+    assert (
+        "Новый отчёт ещё формируется. Этот готовый Excel можно скачать сейчас."
+        in app_js.text
+    )
     assert (
         "/api/reports/${encodeURIComponent(report.id)}/export.xlsx"
         in app_js.text
