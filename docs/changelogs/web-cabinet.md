@@ -16,6 +16,13 @@ updated_at: "2026-08-05"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-05: merge commit `bb87f8c` с intent-aware AI fallback и mobile/
+  accessibility корректировками развернут только в test как чистый immutable
+  runtime v271. OpenAI и ChatKit остались выключены, поэтому приёмка не
+  выполняла внешних AI-вызовов. Целевые AI/role-boundary/report-wizard тесты,
+  public safety/static smoke, штатный health, drift-check и десять проверок
+  rollback-window прошли; production runtime v269, БД, schema, source refresh,
+  drafts и published current не менялись.
 - 2026-08-05: мастер формирования отчёта сохраняет отдельную прямую карточку
   последнего готового staff draft во время следующей сборки и после перезагрузки
   страницы и позволяет явно продолжить его финансовую проверку без повторной
