@@ -2002,3 +2002,73 @@ Rollback — вернуть production pointer на
 `runtime-779560c-v268-report-wizard-draft-resume-20260805`, перезапустить только
 `shumeiko-web-prod.service` и повторить health/static/safety smoke. Сохранённые
 drafts и report artifacts при rollback не удалять.
+
+## Test-only rollout AI fallback из main — 5 августа 2026 года
+
+PR [#98](https://github.com/Offonika/Ai_analitik/pull/98) влит в `main`
+merge-коммитом `bb87f8c022ec7b97b64049114ac93b9fc5c4f573`. Оба обязательных
+post-merge job, `quality` и `tests`, успешно завершились в
+[GitHub Actions run 31038879894](https://github.com/Offonika/Ai_analitik/actions/runs/31038879894).
+Rollout ограничен test-контуром: production, БД/schema, source refresh,
+integrations, credentials, snapshots, report artifacts, drafts и published
+current не менялись.
+
+Из точного merge-коммита собран чистый immutable release
+`runtime-bb87f8c-v271-ai-chat-main-sync-clean-20260805`. Manifest подтверждает
+`sourceDirty=false` и content SHA-256
+`155a221ac6ddb3dc34719b861c5ba2567c0403dca047699e6dc6f73f666a0c67`;
+импорт пакета идёт из собственного `release/src`, writable files/directories
+отсутствуют. Первый одноимённый кандидат без суффикса `clean` после краткого
+предварительного promotion был безопасно возвращён на v266; последующий аудит
+обнаружил созданные запуском pytest от root writable cache и synthetic SQLite.
+Кандидат исключён из итогового rollout и пересобран из того же commit.
+
+Предварительные rollback не были runtime-сбоем: shell checker передал `jq`
+буквальный `$payload`, Python checker получил экранированный перенос строки, а
+первый JS controller перехватил собственный сигнал завершения уже после десяти
+успешных v271 health-checks. После каждого возврата v266 оставался healthy.
+Финальный promotion проверялся отдельными `curl` с явным `JSON.parse`, без
+трактовки незавершённой tool session как ошибки.
+
+Перед promotion test находился на
+`runtime-7a85c96-v266-scalable-refresh-memory-20260805`, production — на
+`runtime-2ac7ccf-v269-report-wizard-full-draft-resume-20260805`; активных
+source-refresh services не было. В отдельном чистом worktree exact commit
+следующий воспроизводимый набор завершился `8 passed`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider \
+  tests/test_web_app.py::test_report_wizard_keeps_published_report_and_new_run_separate \
+  tests/test_web_app.py::test_ai_fallback_plans_only_tools_for_primary_intent \
+  tests/test_web_app.py::test_ai_fallback_composes_answers_by_intent_without_zero_substitution \
+  tests/test_web_app.py::test_ai_fallback_service_uses_primary_intent_tools \
+  tests/test_web_app.py::test_ai_explicit_refresh_intent_remains_service_backed \
+  tests/test_web_app.py::test_ai_chat_static_contract_is_minimal_and_mobile_accessible \
+  tests/test_web_app.py::test_chatkit_protocol_is_disabled_by_default \
+  tests/test_web_app.py::test_ai_fallback_reason_is_hidden_from_client_role
+```
+
+Test pointer атомарно переключен на v271, перезапущен только
+`shumeiko-web-test.service`. Локальный и публичный health вернули `status=ok`,
+`runtimeEnvironment=test`, одинаковый
+`backendBuildId=staticBuildId=20260805-v271-ai-chat-main-sync`,
+`aiConfigured=false` и `chatkitEnabled=false`. Следовательно, deterministic
+fallback и role/accessibility контракты проверялись без реального OpenAI-вызова.
+Публичные `index.html`, `app.js` и `styles.css` побайтно совпали с immutable
+release. Неавторизованные `/api/reports`, `/api/ai/config` и `/api/chatkit`
+вернули `401`; `/.env`, неизвестный route, `/data/report.json` и
+`/downloads/report.xlsx` — `404`. `X-Robots-Tag` и `robots.txt` сохранили
+закрытие от индексации.
+
+Штатный `shumeiko-web-test-health.service` завершился с `Result=success`,
+runtime drift-check прошёл, test service остался active с `NRestarts=0`, а
+error-level журнал после rollout пуст. Rollback-window выполнило `10/10`
+успешных local/public health, pointer, service и journal checks с интервалом
+30 секунд. Production всё окно оставался на v269 с прежним PID, `NRestarts=0`
+и `status=ok`.
+
+Rollback test — атомарно вернуть pointer на
+`runtime-7a85c96-v266-scalable-refresh-memory-20260805`, перезапустить только
+`shumeiko-web-test.service` и повторить local/public health, safety, static
+build и drift smoke. Данные, drafts, snapshots и production при runtime
+rollback не изменять.
