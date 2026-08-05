@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -1888,3 +1888,43 @@ rollback не потребовался. Annotated tag
 [`v2.64`](https://github.com/Offonika/Ai_analitik/releases/tag/v2.64)
 указывает на deployed merge commit `30cc290ad3783af735787b00d2396a793ecaf20c`;
 GitHub Release опубликован по тому же тегу.
+
+## Corrective rollout скачивания готового draft — 5 августа 2026 года
+
+Мастер формирования скрывал уже готовый staff draft, когда пользователь
+запускал следующую сборку или заново открывал страницу: session-specific
+карточка появлялась только после `newReportRunId` текущего запуска, а отдельно
+показывался лишь старый published current. Исправление добавило независимую
+карточку последнего готового draft с точным периодом и прямым Excel export по
+его `report_id`. Во время новой сборки готовый файл остаётся доступным;
+Ozon-диагностика, результат текущей wizard-сессии и published current не
+смешиваются. Автоматической финансовой публикации нет.
+
+Из commit `8a0d26cb9112c3d65bdfac33e18ba355dd308102` собран чистый immutable
+release `runtime-8a0d26c-v267-report-wizard-draft-download-20260805`.
+Manifest подтвердил `sourceDirty=false` и content SHA-256
+`c57f4fe1a4c88bcef06a4b1958f7bf9022a917e39a1c17dffa98ad8e065409e2`;
+release не содержит writable files. До promotion полный `tests/test_web_app.py`
+завершился `250 passed`, Ruff, `node --check`, `git diff --check` и все пять
+обязательных валидаторов документации прошли. Отдельный production-configured
+smoke на порту `18097` вернул `status=ok`, совпадающий build ID
+`20260805-v267-report-wizard-draft-download`, новую HTML/JavaScript-карточку и
+safety-коды `401`, `404`, `404`.
+
+Перед переключением завершился активный full refresh; worker не прерывался.
+Production pointer атомарно переключен с
+`runtime-7a85c96-v266-scalable-refresh-memory-20260805` на новый release,
+перезапущен только `shumeiko-web-prod.service`. Миграции, integrations,
+snapshots, report artifacts и published current не изменялись. Локальный и
+публичный health вернули `status=ok`, `runtimeEnvironment=production`,
+совпадающие backend/static build ID и `latestSourceRefreshActive=false`.
+Публичные HTML и `app.js` содержат новую карточку и cache-busting ID; safety
+smoke сохранил `401` для неавторизованного `/api/reports` и `404` для `/.env`
+и неизвестного route. Штатный production health service и drift-check
+завершились успешно.
+
+Rollback — атомарно вернуть production pointer на
+`runtime-7a85c96-v266-scalable-refresh-memory-20260805`, перезапустить только
+`shumeiko-web-prod.service` и повторить local/public health, static build и
+safety smoke. Созданные source refresh runs, drafts и артефакты при runtime
+rollback не удаляются.
