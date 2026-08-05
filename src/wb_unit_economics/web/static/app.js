@@ -398,6 +398,9 @@ const els = {
   reportWizardModeHint: document.querySelector("#report-wizard-mode-hint"),
   reportWizardPeriodMode: document.querySelector("#report-wizard-period-mode"),
   reportWizardPeriodHint: document.querySelector("#report-wizard-period-hint"),
+  reportWizardActionPeriod: document.querySelector(
+    "#report-wizard-action-period",
+  ),
   reportWizardPeriodFields: document.querySelector("#report-wizard-period-fields"),
   reportWizardPeriodStart: document.querySelector("#report-wizard-period-start"),
   reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
@@ -3660,86 +3663,6 @@ function onReportWizardSettingsChange() {
   renderReportWizardStatus();
 }
 
-function initializeReportWizardSettings() {
-  const selectedCabinet = selectedMarketplaceCabinet();
-  els.reportWizardMode.value =
-    selectedCabinet && isOzonMarketplaceCabinet(selectedCabinet)
-      ? "ozon-only"
-      : "full";
-  const hasSelectedPeriod = Boolean(
-    els.topbarPeriodStart.value || els.topbarPeriodEnd.value,
-  );
-  els.reportWizardPeriodMode.value = hasSelectedPeriod ? "custom" : "default";
-  els.reportWizardPeriodStart.value = els.topbarPeriodStart.value || "";
-  els.reportWizardPeriodEnd.value = els.topbarPeriodEnd.value || "";
-}
-
-function reportWizardPublishedReport() {
-  return state.reports.find(
-    (item) =>
-      Boolean(item.isCurrent) && normalize(item.publicationStatus) === "published",
-  ) || null;
-}
-
-function reportWizardGeneratedReportId() {
-  return String(state.reportWizardRefresh?.newReportRunId || "");
-}
-
-function reportWizardRequestFromSettings({ dryRun = false } = {}) {
-  const customPeriod = els.reportWizardPeriodMode.value === "custom";
-  return {
-    dryRun: Boolean(dryRun),
-    mode: els.reportWizardMode.value || "full",
-    periodStart: customPeriod ? els.reportWizardPeriodStart.value : "",
-    periodEnd: customPeriod ? els.reportWizardPeriodEnd.value : "",
-  };
-}
-
-function reportWizardPeriodLabel(request = state.reportWizardRequest) {
-  if (!request?.periodStart && !request?.periodEnd) {
-    return "";
-  }
-  return [formatCompactDate(request.periodStart), formatCompactDate(request.periodEnd)]
-    .filter(Boolean)
-    .join("–");
-}
-
-function reportWizardHasExternalActiveRefresh() {
-  const active = state.activeSourceRefresh || state.latestSourceRefresh;
-  return Boolean(
-    isActiveSourceRefresh(active) &&
-      active?.id &&
-      active.id !== state.reportWizardRefresh?.id,
-  );
-}
-
-function renderReportWizardCurrent() {
-  const report = reportWizardPublishedReport();
-  const visible = Boolean(report && els.reportWizardMode.value !== "ozon-only");
-  els.reportWizardCurrent.hidden = !visible;
-  if (!visible) {
-    els.reportWizardCurrentDownload.href = "#";
-    els.reportWizardCurrentPeriod.textContent = "";
-    return;
-  }
-  const period = [formatCompactDate(report.periodStart), formatCompactDate(report.periodEnd)]
-    .filter(Boolean)
-    .join("–");
-  els.reportWizardCurrentPeriod.textContent = period ? `Период: ${period}` : "";
-  els.reportWizardCurrentDownload.href =
-    `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
-}
-
-function onReportWizardSettingsChange() {
-  const refresh = state.reportWizardRefresh;
-  if (refresh && !isActiveSourceRefresh(refresh) && !refresh.newReportRunId) {
-    state.reportWizardRefresh = null;
-    state.reportWizardRequest = null;
-  }
-  renderReportWizardSettings();
-  renderReportWizardStatus();
-}
-
 function renderReportWizardSettings() {
   const mode = els.reportWizardMode.value || "full";
   const periodMode = els.reportWizardPeriodMode.value || "default";
@@ -3815,16 +3738,25 @@ function renderReportWizardSettings() {
   const request = reportWizardRequestFromSettings();
   const periodLabel = reportWizardPeriodLabel(request);
   const completePeriod = reportWizardHasCompletePeriod(request);
-  els.reportWizardSubmit.textContent = mode === "ozon-only"
-    ? completePeriod
-      ? `Запустить диагностику Ozon за ${periodLabel}`
-      : "Период диагностики загружается…"
-    : completePeriod
-      ? `Создать предварительный Excel за ${periodLabel}`
-      : "Период отчёта загружается…";
-  els.reportWizardCheck.textContent = completePeriod
+  const primaryAction = mode === "ozon-only"
+    ? "Запустить диагностику Ozon"
+    : "Создать черновик Excel";
+  const actionPeriod = mode === "ozon-only"
+    ? `Период диагностики: ${periodLabel}`
+    : `Период нового отчёта: ${periodLabel}`;
+  els.reportWizardActionPeriod.textContent = completePeriod
+    ? actionPeriod
+    : "Получаем доступный период…";
+  els.reportWizardSubmit.textContent = primaryAction;
+  els.reportWizardCheck.textContent = "Проверить источники";
+  els.reportWizardSubmit.title = completePeriod
+    ? `${primaryAction} за ${periodLabel}`
+    : "Сначала дождитесь определения периода";
+  els.reportWizardCheck.title = completePeriod
     ? `Проверить источники за ${periodLabel}`
-    : "Период проверки загружается…";
+    : "Сначала дождитесь определения периода";
+  els.reportWizardSubmit.setAttribute("aria-label", els.reportWizardSubmit.title);
+  els.reportWizardCheck.setAttribute("aria-label", els.reportWizardCheck.title);
   els.reportWizardSubmit.hidden = Boolean(generatedReportId);
   els.reportWizardCheck.hidden = Boolean(generatedReportId);
   els.reportWizardReset.hidden = !generatedReportId;

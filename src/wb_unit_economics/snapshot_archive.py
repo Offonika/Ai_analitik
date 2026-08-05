@@ -65,7 +65,10 @@ def archive_snapshot(
                 str(local_path),
                 config.bucket,
                 key,
-                ExtraArgs={"Metadata": {"sha256": str(record["sha256"])}},
+                ExtraArgs={
+                    "Metadata": {"sha256": str(record["sha256"])},
+                    "Tagging": "archive-class=raw-source",
+                },
             )
             head = client.head_object(Bucket=config.bucket, Key=key)
         except Exception as exc:
@@ -112,6 +115,7 @@ def archive_snapshot(
             Body=receipt_bytes,
             ContentType="application/json",
             Metadata={"manifest-sha256": manifest_hash},
+            Tagging="archive-class=manifest",
         )
         receipt_version = str(response.get("VersionId") or "")
         remote = client.get_object(

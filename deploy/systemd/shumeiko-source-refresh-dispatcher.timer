@@ -1,0 +1,10 @@
+[Unit]
+Description=Dispatch queued Shumeyko source refreshes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+Unit=shumeiko-source-refresh-dispatcher.service
+
+[Install]
+WantedBy=timers.target

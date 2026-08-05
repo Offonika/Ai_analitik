@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,7 @@ from wb_unit_economics.report_exports import (
     write_csv_marts,
     write_docx_summary,
     write_excel_from_marts,
+    write_excel_from_marts_streaming,
     write_html_summary,
 )
 from wb_unit_economics.web import repository
@@ -78,6 +80,7 @@ def export_report_artifacts(
     pdf: bool,
     html: bool,
     csv: bool,
+    unit_rows_factory: Callable[[], Iterable[dict]] | None = None,
 ) -> list[tuple[str, dict]]:
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +88,15 @@ def export_report_artifacts(
     records: list[tuple[str, dict]] = []
     docx_path: Path | None = None
     if excel:
-        path = write_excel_from_marts(summary, excel_path.resolve())
+        path = (
+            write_excel_from_marts_streaming(
+                summary,
+                excel_path.resolve(),
+                unit_rows_factory=unit_rows_factory,
+            )
+            if unit_rows_factory is not None
+            else write_excel_from_marts(summary, excel_path.resolve())
+        )
         records.append(("excel", artifact_record(path)))
     if csv:
         for path in write_csv_marts(summary, output_dir / "csv"):

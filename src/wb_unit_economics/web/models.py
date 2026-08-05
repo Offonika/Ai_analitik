@@ -673,6 +673,97 @@ class ReportArtifact(Base):
     report: Mapped[ReportRun] = relationship(back_populates="artifacts")
 
 
+class ReportExportJob(Base):
+    __tablename__ = "report_export_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "report_run_id",
+            "idempotency_key",
+            name="uq_report_export_job_key",
+        ),
+        Index(
+            "ix_report_export_jobs_lookup",
+            "tenant_id",
+            "report_run_id",
+            "status",
+            "created_at",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id", ondelete="CASCADE")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id", ondelete="CASCADE")
+    )
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id", ondelete="CASCADE")
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_tasks.id", ondelete="SET NULL")
+    )
+    artifact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("wb_unit_economics.report_artifacts.id", ondelete="SET NULL")
+    )
+    export_format: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    safe_error_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class ReportArchiveRecord(Base):
+    __tablename__ = "report_archive_records"
+    __table_args__ = (
+        UniqueConstraint("report_run_id", name="uq_report_archive_record_report"),
+        Index(
+            "ix_report_archive_records_status",
+            "tenant_id",
+            "status",
+            "verified_at",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id", ondelete="CASCADE")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id", ondelete="CASCADE")
+    )
+    report_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id", ondelete="RESTRICT")
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    bundle_uri: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    bundle_sha256: Mapped[str] = mapped_column(String, nullable=False, default="")
+    bundle_byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    s3_version_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    methodology_version: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_lineage: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ReportUnitRow(Base):
     __tablename__ = "report_unit_rows"
     __table_args__ = (
@@ -2247,6 +2338,157 @@ class SourceRefreshRun(Base):
     )
 
 
+class SourceRefreshTask(Base):
+    __tablename__ = "source_refresh_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "refresh_run_id",
+            "idempotency_key",
+            name="uq_source_refresh_task_key",
+        ),
+        Index(
+            "ix_source_refresh_tasks_claim",
+            "status",
+            "not_before",
+            "priority",
+            "created_at",
+        ),
+        Index(
+            "ix_source_refresh_tasks_run",
+            "refresh_run_id",
+            "task_type",
+            "status",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    refresh_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id", ondelete="CASCADE")
+    )
+    report_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.report_runs.id", ondelete="SET NULL")
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id", ondelete="CASCADE")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id", ondelete="CASCADE")
+    )
+    task_type: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    not_before: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    depends_on_task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_tasks.id", ondelete="SET NULL")
+    )
+    worker_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    safe_error_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    safe_error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class SourceRefreshStageEvent(Base):
+    __tablename__ = "source_refresh_stage_events"
+    __table_args__ = (
+        Index(
+            "ix_source_refresh_stage_events_run",
+            "refresh_run_id",
+            "started_at",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    refresh_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id", ondelete="CASCADE")
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_tasks.id", ondelete="SET NULL")
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id", ondelete="CASCADE")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id", ondelete="CASCADE")
+    )
+    stage: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    safe_error_code: Mapped[str] = mapped_column(String, nullable=False, default="")
+    row_count: Mapped[int | None] = mapped_column(Integer)
+    byte_count: Mapped[int | None] = mapped_column(Integer)
+    peak_memory_bytes: Mapped[int | None] = mapped_column(Integer)
+    safe_metrics: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClientRefreshSchedule(Base):
+    __tablename__ = "client_refresh_schedules"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "client_id",
+            name="uq_client_refresh_schedule_scope",
+        ),
+        Index(
+            "ix_client_refresh_schedules_due",
+            "enabled",
+            "weekly_weekday",
+            "priority",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id", ondelete="CASCADE")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id", ondelete="CASCADE")
+    )
+    timezone: Mapped[str] = mapped_column(
+        String, nullable=False, default="Europe/Moscow"
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    weekly_weekday: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    weekly_time: Mapped[str] = mapped_column(String, nullable=False, default="06:15")
+    monthly_full_week: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    monthly_full_time: Mapped[str] = mapped_column(
+        String, nullable=False, default="02:00"
+    )
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    last_incremental_slot: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    last_full_slot: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class ReportGenerationRequest(Base):
     __tablename__ = "report_generation_requests"
     __table_args__ = (
@@ -2348,6 +2590,74 @@ class SourceSnapshotRow(Base):
     raw_payload_hash: Mapped[str] = mapped_column(String, nullable=False)
     row_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OnecUnfCostSnapshotFact(Base):
+    __tablename__ = "onec_unf_cost_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_refresh_run_id",
+            "organization_id",
+            "onec_item_id",
+            "characteristic",
+            "effective_from",
+            "raw_payload_hash",
+            name="uq_onec_unf_cost_snapshot_grain",
+        ),
+        Index(
+            "ix_onec_unf_cost_snapshots_effective",
+            "tenant_id",
+            "client_id",
+            "organization_id",
+            "onec_item_id",
+            "effective_from",
+            "effective_to",
+        ),
+        Index(
+            "ix_onec_unf_cost_snapshots_lineage",
+            "source_refresh_run_id",
+            "source_snapshot_set_id",
+        ),
+        {"schema": "wb_unit_economics"},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.tenants.id", ondelete="CASCADE")
+    )
+    client_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.clients.id", ondelete="CASCADE")
+    )
+    organization_id: Mapped[str] = mapped_column(String, nullable=False)
+    onec_item_id: Mapped[str] = mapped_column(String, nullable=False)
+    article: Mapped[str] = mapped_column(String, nullable=False, default="")
+    barcode: Mapped[str] = mapped_column(String, nullable=False, default="")
+    name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    characteristic: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cost_value: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    extra_costs_value: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=Decimal("0")
+    )
+    input_vat_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    input_vat_source: Mapped[str] = mapped_column(String, nullable=False, default="")
+    cost_currency: Mapped[str] = mapped_column(
+        String, nullable=False, default="RUB"
+    )
+    cost_method: Mapped[str] = mapped_column(String, nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    source_document_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default=""
+    )
+    source_document: Mapped[str] = mapped_column(String, nullable=False)
+    raw_payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_set_id: Mapped[str] = mapped_column(String, nullable=False)
+    source_refresh_run_id: Mapped[str] = mapped_column(
+        ForeignKey("wb_unit_economics.source_refresh_runs.id", ondelete="CASCADE")
+    )
+    loaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class MarketplaceFinanceDailyFact(Base):

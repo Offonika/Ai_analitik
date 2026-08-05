@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Shumeyko client refresh schedules every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=shumeiko-source-refresh-scheduler.service
+
+[Install]
+WantedBy=timers.target

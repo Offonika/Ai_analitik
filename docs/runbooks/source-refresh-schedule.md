@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md"
-updated_at: "2026-07-31"
+updated_at: "2026-08-05"
 ---
 
 # Назначение
@@ -30,14 +30,30 @@ staff draft, а публикация current выполняется отдель
 
 # Расписание
 
-- Daily refresh: каждый час в `*:15 MSK`, режим `daily`.
+> Переходное состояние 04.08.2026: текущий production full 11.08.2026 в
+> `06:15 MSK` остаётся контрольным запуском heartbeat. Новые
+> `source-refresh-scheduler` и `source-refresh-dispatcher` timers не включать до
+> frozen-source queue/performance canary на test. Наличие unit templates в
+> release не является доказательством их включения.
+
+- Daily refresh: каждый час в `*:15 MSK`, кроме вторника `06:15`, режим
+  `daily`.
 - Weekly full refresh: вторник в `06:15 MSK`, режим `full`.
+
+После queue canary единый weekly full timer заменяется client schedules:
+вторничный `06:15` создаёт incremental для enabled клиентов, а monthly full
+распределяется по первым четырём воскресным неделям максимум по пять клиентов.
+Пятая неделя используется только для повторов. Scheduler каждые пять минут
+создаёт idempotent queued runs; dispatcher первоначально допускает один heavy
+worker и не выполняет расчёт внутри web.
 
 Weekly full refresh полностью перечитывает обязательные WB/1С источники,
 формирует новый immutable staff-черновик и экспортирует готовый Excel в
 production reports root. Запуск в `06:15 MSK` оставляет запас до начала
 рабочего дня. Публикация `current` остается отдельной финансовой операцией:
 до приёмки клиент продолжает видеть предыдущий опубликованный отчёт.
+Слот daily во вторник `06:15` намеренно пропущен: weekly/full получает
+эксклюзивный старт, а следующий hourly daily запускается в `07:15`.
 
 `incremental` — ручной staff-режим между ними. Он повторно читает последние
 `28` дней WB, свежую 1C за полный отчетный период, атомарно заменяет окно daily
@@ -71,6 +87,15 @@ deploy/systemd/shumeiko-source-refresh-weekly.timer
 deploy/systemd/shumeiko-source-refresh-worker@.service
 deploy/systemd/shumeiko-source-refresh-worker@.service.d/incremental-refresh.conf
 deploy/systemd/shumeiko-source-refresh-worker@.service.d/marketplace-facts.conf
+deploy/systemd/shumeiko-source-refresh.slice
+deploy/systemd/shumeiko-source-refresh-scheduler.service
+deploy/systemd/shumeiko-source-refresh-scheduler.timer
+deploy/systemd/shumeiko-source-refresh-dispatcher.service
+deploy/systemd/shumeiko-source-refresh-dispatcher.timer
+deploy/systemd/shumeiko-source-refresh-dispatcher@.service
+deploy/systemd/shumeiko-source-refresh-dispatcher@.timer
+deploy/systemd/shumeiko-source-refresh-collector@.service
+deploy/systemd/shumeiko-source-refresh-collector@.timer
 deploy/systemd/shumeiko-source-refresh-watchdog.service
 deploy/systemd/shumeiko-source-refresh-watchdog.timer
 deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf
@@ -83,19 +108,75 @@ deploy/systemd/shumeiko-web-prod.service.d/incremental-refresh.conf
 - `EnvironmentFile=/etc/shumeiko-web-prod.env`;
 - `SHUMEYKO_SOURCE_REFRESH_TENANT=shumeyko` как безопасный tenant по умолчанию.
 
-Ручной запуск из web, совместимая кнопка 1С, AI-команда, пересборка после
-загрузки сопоставления и production daily/weekly выполняют отдельный шаблон
-`shumeiko-source-refresh-worker@<run_id>.service`. Web-процесс только создаёт
-`queued` run и запускает unit; чтение источников и сборка отчёта внутри
-`shumeiko-web-prod.service` запрещены. Watchdog раз в минуту проверяет heartbeat.
-Локальный `cli:<pid>:<run_id>` fallback разрешён только для SQLite/dev; stale
-CLI run восстанавливается лишь после подтверждения отсутствия процесса.
+До queue rollout ручной web, совместимая кнопка 1С, AI-команда и старые
+daily/weekly используют `shumeiko-source-refresh-worker@<run_id>.service`.
+После включения `SHUMEYKO_SOURCE_REFRESH_TASK_QUEUE_ENABLED=true` web только
+создаёт run и task chain; collector/heavy timers забирают стадии через
+`FOR UPDATE SKIP LOCKED`. В обоих режимах чтение источников и сборка отчёта
+внутри `shumeiko-web-prod.service` запрещены. Watchdog раз в минуту проверяет
+heartbeat. Локальный `cli:<pid>:<run_id>` fallback разрешён только для
+SQLite/dev; stale CLI run восстанавливается лишь после подтверждения отсутствия
+процесса.
 
-Фоновый worker ограничен `MemoryHigh=3G`, `MemoryMax=4G` и
-`MemorySwapMax=1G`. На production он включён в systemd-oomd как приоритетный
-кандидат на завершение при давлении памяти. Поэтому тяжёлый refresh может
-завершиться управляемой ошибкой и быть продолжен по checkpoint, но не должен
-забирать память у SSH, PostgreSQL и базовых системных служб.
+Task-queue разделяет нагрузку. Collector slot выполняет только внешние чтения и
+immutable raw (`MemoryHigh=768M`, `MemoryMax=1G`); heavy slot выполняет facts,
+marts или Excel (`MemoryHigh=1536M`, `MemoryMax=2G`). Swap для обоих запрещён.
+Общий `shumeiko-source-refresh.slice` имеет `MemoryMax=5G` и `CPUQuota=500%`.
+Два collector slot создаются экземплярами timer `@1` и `@2`. На первом rollout
+обычный dispatcher разрешает один heavy. После performance-canary он заменяется
+двумя экземплярами dispatcher timer `@1` и `@2`, каждый с admission limit `2`.
+Admission control допускает два heavy без collectors либо один heavy и до двух
+collectors. Обычный и instance timers одновременно не используются.
+Каждая стадия имеет отдельный DB/task heartbeat, а companion process обновляет
+его независимо от GIL-bound расчёта или записи Excel.
+
+Старый live full-run 04.08.2026 с обычным openpyxl удерживал около `3.2 GiB` и
+обосновал отказ от монолитного экспорта. Новый Excel строится `write_only` из
+keyset-порций, поэтому лимит `1.5/2G` является обязательным критерием canary, а
+не утверждением о уже подтверждённом production-пике.
+
+Общий runtime-лимит worker равен `4h`. Это временное операционное окно для
+полного refresh: live запуск 2026-08-04 сохранил `48` коллекций и дошёл до
+`rebuilding`, но прежний `2h` лимит остановил его до формирования черновика.
+Свежий heartbeat не отменяет общий лимит; действительно зависшие процессы
+по-прежнему раньше останавливает watchdog, а `ExecStopPost` сохраняет failed
+статус и checkpoint для нового immutable run с `resume_mode=auto`.
+
+Heartbeat marker и best-effort DB heartbeat поддерживает отдельный companion
+process внутри того же worker cgroup. Это обязательно для `rebuilding`: запись
+большого XLSX может надолго удерживать GIL основного Python-процесса, поэтому
+thread в том же процессе недостаточен. Companion наследует database URL только
+через environment, не получает его в argv и завершается вместе с worker.
+
+Worker явно запускается с
+`SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000`. Это конечный бюджет новых
+страниц на одну 1С-коллекцию: при странице `Продажи=2` он покрывает до `2000`
+верхнеуровневых `Recorder/RecordSet`. Достигнутый предел остается
+`partial_source`; worker не публикует неполный отчет и следующий run может
+продолжить сохраненный checkpoint.
+
+Критичные production paths передаются повторно через `/usr/bin/env` в
+`ExecStart` web, его corporate-proxy login-shell drop-in, scheduled
+daily/weekly services и worker:
+`ALLOWED_EXPORT_ROOT`, `DEFAULT_REPORT_WORKBOOK`, `SOURCE_REFRESH_ROOT` и disk
+guard. Это намеренно: systemd `EnvironmentFile` имеет приоритет над
+`Environment=`, а drop-in дополнительно переопределяет `ExecStart`. Старое
+значение `reports` иначе записывает Excel в release/workspace, после чего
+защищенный `/api/reports/.../export.xlsx` возвращает `export not found`.
+Секреты таким способом не дублируются.
+
+Test не использует production scheduler и не имеет automatic source-refresh
+timers. Ручной test/full canary запускается foreground/background worker из
+`/opt/shumeyko-runtime/test/current`, явно задаёт test report/source roots,
+`SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000` и
+`SHUMEYKO_SOURCE_REFRESH_WORKER_BACKEND=background`. Production worker unit и
+production EnvironmentFile для него запрещены.
+
+Если test-БД была восстановлена data-only способом, до canary нужно отдельно
+сверить PostgreSQL sequences с фактическими `max(id)`. Полный `pg_restore`
+должен восстанавливать sequence state сам; отстающий sequence является дефектом
+test-копии и устраняется только в test до запуска, production этой процедурой
+не изменяется.
 
 Worker явно запускается с
 `SHUMEYKO_SOURCE_REFRESH_ONEC_MAX_PAGES=1000`. Это конечный бюджет новых
@@ -129,6 +210,7 @@ refresh доступы должны приходить из encrypted tenant int
 ```bash
 sudo cp deploy/systemd/shumeiko-source-refresh-*.service /etc/systemd/system/
 sudo cp deploy/systemd/shumeiko-source-refresh-*.timer /etc/systemd/system/
+sudo cp deploy/systemd/shumeiko-source-refresh.slice /etc/systemd/system/
 sudo install -d /etc/systemd/system/shumeiko-source-refresh-worker@.service.d
 sudo install -d /etc/systemd/system/shumeiko-web-prod.service.d
 sudo cp deploy/systemd/shumeiko-source-refresh-worker@.service.d/*.conf \
@@ -140,6 +222,41 @@ sudo systemctl restart shumeiko-web-prod.service
 sudo systemctl enable --now shumeiko-source-refresh-watchdog.timer
 sudo systemctl enable --now shumeiko-source-refresh-daily.timer
 sudo systemctl enable --now shumeiko-source-refresh-weekly.timer
+```
+
+Команды выше сохраняют действующее расписание до контрольного full
+11.08.2026. Новые scheduler/queue timers до frozen-source canary не включать.
+После успешного test canary и отдельного rollout-решения старые daily/weekly
+timers отключаются, затем включаются новые слоты:
+
+```bash
+sudo systemctl disable --now shumeiko-source-refresh-daily.timer
+sudo systemctl disable --now shumeiko-source-refresh-weekly.timer
+sudo systemctl enable --now shumeiko-source-refresh-scheduler.timer
+sudo systemctl enable --now shumeiko-source-refresh-dispatcher.timer
+sudo systemctl enable --now shumeiko-source-refresh-collector@1.timer
+sudo systemctl enable --now shumeiko-source-refresh-collector@2.timer
+```
+
+Одновременное включение старых и новых scheduler timers запрещено. Второй heavy
+slot не включается этим шагом и требует отдельного performance-canary.
+
+После успешного performance-canary одиночный dispatcher атомарно заменяется
+двумя слотами:
+
+```bash
+sudo systemctl disable --now shumeiko-source-refresh-dispatcher.timer
+sudo systemctl enable --now shumeiko-source-refresh-dispatcher@1.timer
+sudo systemctl enable --now shumeiko-source-refresh-dispatcher@2.timer
+```
+
+Если суммарный peak превышает `3G`, web/PostgreSQL используют swap либо API P95
+превышает `500 ms`, немедленно вернуть один slot:
+
+```bash
+sudo systemctl disable --now shumeiko-source-refresh-dispatcher@1.timer
+sudo systemctl disable --now shumeiko-source-refresh-dispatcher@2.timer
+sudo systemctl enable --now shumeiko-source-refresh-dispatcher.timer
 ```
 
 Если tenant id отличается от `shumeyko`, переопределить переменную через drop-in:
@@ -353,6 +470,12 @@ protection: ошибка чтения lineage завершает запуск б
 
 # Поведение при ошибках
 
+- Перед внешними collectors scheduled refresh проверяет 1С `$metadata` до трех
+  раз с timeout `60` секунд на попытку и паузами `5/15` секунд. Повторяются
+  только временные transport errors и `HTTP 408/429/500/502/503/504`.
+  `HTTP 401/403/404`, другой постоянный статус, невалидный XML/EDMX завершают
+  проверку сразу. После исчерпания попыток run остается `failed`, новый draft
+  не создается, предыдущий published report не меняется.
 - Если интеграции не настроены или находятся в `hash_only`, запуск завершается
   статусом `needs_configuration`, новый отчет не публикуется.
 - Если свободного места меньше guard-порога, запуск завершается

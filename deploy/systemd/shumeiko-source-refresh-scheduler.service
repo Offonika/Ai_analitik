@@ -1,0 +1,15 @@
+[Unit]
+Description=Enqueue due Shumeyko client refresh schedules
+After=postgresql@16-main.service
+Requires=postgresql@16-main.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shumeyko-runtime/prod/current
+EnvironmentFile=/etc/shumeiko-web-prod.env
+Environment=SHUMEYKO_SOURCE_REFRESH_TASK_QUEUE_ENABLED=true
+ExecStart=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/enqueue_due_source_refreshes.py
+MemoryHigh=256M
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true

@@ -25,6 +25,7 @@ from wb_unit_economics.web.database import (
     LOGISTICS_RETURN_REASONS_SCHEMA_VERSION,
     LOGISTICS_ROUTES_SCHEMA_VERSION,
     LOGISTICS_TARIFFS_SCHEMA_VERSION,
+    SOURCE_REFRESH_QUEUE_SCHEMA_VERSION,
     init_db,
     make_engine,
     make_session_factory,
@@ -51,8 +52,9 @@ def test_factor_marts_created_with_nullable_facts(tmp_path: Path) -> None:
         LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
         != LOGISTICS_MEASUREMENTS_SCHEMA_VERSION
     )
-    assert DB_FIRST_SCHEMA_VERSION == LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
-    assert schema_version(engine) == LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
+    assert SOURCE_REFRESH_QUEUE_SCHEMA_VERSION > LOGISTICS_RETURN_REASONS_SCHEMA_VERSION
+    assert DB_FIRST_SCHEMA_VERSION == SOURCE_REFRESH_QUEUE_SCHEMA_VERSION
+    assert schema_version(engine) == SOURCE_REFRESH_QUEUE_SCHEMA_VERSION
 
     inspector = inspect(engine)
 

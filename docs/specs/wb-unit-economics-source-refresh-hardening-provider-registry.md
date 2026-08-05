@@ -10,6 +10,16 @@ source_of_truth: true
 truth_scope: source-refresh
 truth_priority: 100
 related_code:
+  - deploy/systemd/shumeiko-source-refresh-daily.timer
+  - deploy/systemd/shumeiko-source-refresh-weekly.timer
+  - deploy/systemd/shumeiko-source-refresh.slice
+  - deploy/systemd/shumeiko-source-refresh-scheduler.timer
+  - deploy/systemd/shumeiko-source-refresh-dispatcher.service
+  - deploy/systemd/shumeiko-source-refresh-dispatcher.timer
+  - deploy/systemd/shumeiko-source-refresh-dispatcher@.service
+  - deploy/systemd/shumeiko-source-refresh-dispatcher@.timer
+  - deploy/systemd/shumeiko-source-refresh-collector@.service
+  - deploy/systemd/shumeiko-source-refresh-collector@.timer
   - src/wb_unit_economics/calculation.py
   - src/wb_unit_economics/contracts.py
   - src/wb_unit_economics/config.py
@@ -23,6 +33,13 @@ related_code:
   - src/wb_unit_economics/web/static/index.html
   - src/wb_unit_economics/web/static/styles.css
   - scripts/check_source_refresh_worker.py
+  - scripts/dispatch_source_refresh_tasks.py
+  - scripts/enqueue_due_source_refreshes.py
+  - scripts/run_report_export_jobs.py
+  - scripts/run_source_refresh_export_task.py
+  - scripts/run_source_refresh_heavy_dispatcher.py
+  - scripts/run_source_refresh_pipeline_task.py
+  - scripts/run_source_refresh_heartbeat.py
   - scripts/run_source_refresh_worker.py
   - scripts/rebuild_report_from_sources.py
   - scripts/materialize_ozon_typed_facts.py
@@ -31,6 +48,8 @@ related_code:
   - scripts/migrate_ozon_tax_profiles.py
   - scripts/prune_source_refresh.py
 related_tests:
+  - tests/test_onec_odata.py
+  - tests/test_runtime_contour_scripts.py
   - tests/test_calculation.py
   - tests/test_marketplace_daily_facts.py
   - tests/test_ozon_typed_parity.py
@@ -41,6 +60,7 @@ related_tests:
   - tests/test_web_app.py
   - tests/test_source_refresh.py
   - tests/test_source_refresh_worker.py
+  - tests/test_source_refresh_queue.py
   - tests/test_provider_registry.py
   - tests/test_source_refresh_prune.py
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report]
@@ -48,6 +68,7 @@ ai_sections:
   status: "Implementation Status"
   goal: "Goal"
   scope: "Scope"
+  pipeline: "Scalable Pipeline Contract"
   guards: "Runtime Guards"
   providers: "Provider Registry"
   collectors: "Source Collectors"
@@ -61,15 +82,16 @@ depends_on:
   - docs/specs/marketplace-1c-mapping-service.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-05"
 ---
 
 # Implementation Status
 
-Статус остается `accepted`. Worker, provider registry, guards и retention CLI
-реализованы, однако безопасный документационный прогон не запускает полный
-production refresh, watchdog и recovery. Для `implemented` требуется отдельная
-матрица acceptance criteria с локальными тестами и live evidence.
+Статус остается `accepted`. Task queue, split collector/heavy stages,
+stage metrics/ETA, client schedules, streaming Excel, provider registry, guards
+и retention CLI реализованы локально и защищены тестами. Production timers и
+feature flag не включены. Для `implemented` требуются frozen-source parity,
+пятиминутный test canary, performance evidence и поэтапный production rollout.
 
 # Goal
 
@@ -96,6 +118,8 @@ production refresh, watchdog и recovery. Для `implemented` требуетс�
   runs.
 - адаптивная постраничная загрузка тяжелых 1С OData коллекций с immutable
   checkpoint и продолжением в новом `source_refresh_run`.
+- PostgreSQL task queue, измеримые стадии, client schedules и раздельные
+  повторяемые source/materialization/report/export этапы для 20 клиентов.
 
 Не входит:
 
@@ -104,6 +128,58 @@ production refresh, watchdog и recovery. Для `implemented` требуетс�
 - изменение расчетной методики;
 - автоматическое удаление snapshots успешных runs или snapshots, связанных с
   опубликованными отчетами.
+
+# Scalable Pipeline Contract
+
+`source_refresh_runs` остаётся совместимым orchestration root и lineage.
+Внутренние `source_refresh_tasks` имеют типы `collect_sources`,
+`materialize_facts`, `build_report`, `export_excel`, `export_optional` и
+состояния `queued`, `running`, `succeeded`, `failed`, `cancelled`. Каждая задача
+содержит run/report identity, priority, `not_before`, attempt, max attempts,
+idempotency key, dependency, worker, heartbeat, safe error code и timestamps.
+
+Готовая задача захватывается PostgreSQL `FOR UPDATE SKIP LOCKED`. Succeeded
+dependency обязательна; один idempotency key внутри run/task type создаёт не
+более одной логической задачи. Transient API/transport ошибка получает всего
+две попытки с backoff. Авторизация, mapping и `partial_source` не повторяются
+автоматически. Ошибка Excel оставляет сохранённые facts, marts и staff draft и
+повторяет только `export_excel`.
+Между попытками collector task и orchestration run возвращаются в `queued` без
+`finished_at`; зависимые задачи остаются queued. После исчерпания второй
+попытки run становится terminal failed, а незапущенные dependants — cancelled.
+
+Каждый переход стадии записывает `source_refresh_stage_events`: queue wait,
+WB, 1С, normalization, facts, marts, Excel и completion. Event хранит только
+время, безопасные counts/bytes, peak memory и error code; raw payload, raw path,
+account id, token и connection string запрещены. Safe status API дополнительно
+возвращает `stage`, `stageStartedAt`, `queuePosition`,
+`estimatedCompletionAt`, `excelStatus`.
+
+Web endpoint создаёт queued run/export job и не выполняет расчёт или export.
+`GET /api/reports/{report_id}/export.xlsx` скачивает только готовый проверенный
+artifact. Optional DOCX/HTML/CSV создаются через
+`POST /api/reports/{report_id}/exports`; состояние читается через
+`GET /api/report-export-jobs/{job_id}`.
+
+Facts записываются пакетами по 5 000 строк с потоковым digest. Большой Excel
+лист читает report rows из PostgreSQL keyset-порциями по 1 000, использует
+write-only workbook, проверяет временный ZIP/openpyxl artifact и атомарно
+переименовывает его. После facts исходные коллекции освобождаются до marts и
+Excel. Scheduled run автоматически создаёт только Excel.
+
+Staff-only `client_refresh_schedules` хранит timezone, enabled, weekly time,
+monthly full week/slot и priority. Scheduler каждые пять минут только создаёт
+idempotent queued runs. Вторник `06:15` запускает 28-дневный incremental;
+monthly full распределяется по воскресным слотам не более пяти клиентов в
+неделю, пятая неделя используется для retry. До test queue canary остаётся
+старое расписание; production full 11.08.2026 служит heartbeat-control.
+
+Dispatcher сначала разрешает один heavy worker; два heavy включаются только
+после performance-canary. Один heavy ограничен `MemoryHigh=1.5G`,
+`MemoryMax=2G`, общий `source-refresh.slice` — 5 ГБ и 500% CPU. Разрешены два
+heavy либо один heavy и два collector, при сохранении per-client lock. Первый
+rollout использует обычный `dispatcher.timer` с concurrency `1`; после canary
+он заменяется двумя экземплярами `dispatcher@1/@2` с admission limit `2`.
 
 # Runtime Guards
 
@@ -131,11 +207,25 @@ CLI `run_source_refresh.py` завершает управляемые blocked st
 
 До внешних collectors для WB/Ozon `source_refresh` выполняет read-only
 `GET .../$metadata` для обязательной 1С OData интеграции. Успешным считается
-только `HTTP 200` с валидным EDMX XML и `EntityContainer`. При `404`, сетевой
-ошибке или HTML вместо metadata run завершается `failed` до тяжелых загрузок
-WB/Ozon. Результат сохраняется как обязательная коллекция
+только `HTTP 200` с валидным EDMX XML и `EntityContainer`. Scheduled/full,
+daily, onec-only и accounting generation используют до трех попыток с timeout
+`60` секунд на попытку и паузами `5/15` секунд. Повтор разрешен только для
+временных транспортных ошибок (`ReadTimeout`, connect/read/write/pool errors,
+remote protocol error) и `HTTP 408/429/500/502/503/504`. `HTTP 401/403/404`,
+другие HTTP-статусы, невалидный XML или EDMX завершают проверку после первой
+попытки. Ручная проверка интеграции в UI сохраняет отдельный короткий timeout и
+не наследует scheduled retries.
+
+Если все допустимые попытки исчерпаны, run завершается `failed` до тяжелых
+загрузок WB/Ozon. Результат сохраняется как обязательная коллекция
 `onec_odata_metadata` и как безопасный `lastRuntimeCheck` интеграции без URL,
-логина, пароля и response body.
+логина, пароля и response body; payload дополнительно фиксирует только
+безопасные `attemptCount` и `timeoutSeconds`.
+
+Production weekly/full запускается во вторник в `06:15 MSK`. Daily timer
+сохраняет hourly `*:15`, но исключает вторник `06:15`, поэтому два scheduler
+entry не конкурируют за один tenant; следующий daily остается во вторник
+`07:15`.
 
 Ручной `lastCheck` и автоматический `lastRuntimeCheck` — разные сигналы. UI
 показывает более новый из них: успешная ручная проверка не должна скрывать
@@ -351,12 +441,16 @@ WB finance также сохраняется постранично. После 
 - блок показывает последний `source_refresh` выбранного клиента: статус, режим,
   период, safe-сообщение, новый report id и статусы коллекций без raw payloads,
   секретов и connection strings;
-- production web только создает immutable run со статусом `queued` и запускает
-  отдельный systemd worker `shumeiko-source-refresh-worker@<run_id>`; рестарт
-  web не прерывает WB/1С чтение, а worker выполняет существующий run вне cgroup
-  web с `MemoryHigh=2G`, `MemoryMax=3G` и `MemorySwapMax=1G`; при давлении
-  памяти systemd-oomd завершает этот фоновый worker раньше SSH, PostgreSQL и
-  системных служб, а `ExecStopPost` сохраняет управляемый статус ошибки;
+- production web только создаёт immutable `queued` run. При включённом
+  task-queue collector slots забирают только `collect_sources`, останавливаются
+  после сохранения immutable raw и передают run отдельным heavy стадиям
+  `materialize_facts`, `build_report`, `export_excel`; рестарт web не прерывает
+  ни одну из стадий. Два collector slots ограничены по `1G`, один heavy —
+  `MemoryHigh=1.5G`, `MemoryMax=2G`, swap запрещён; общий
+  `shumeiko-source-refresh.slice` ограничен `5G` и `500%` CPU. Второй heavy slot
+  допускается только после performance-canary и не совмещается с уже работающим
+  heavy при активных collectors. До queue rollout совместимый
+  `shumeiko-source-refresh-worker@<run_id>` остаётся legacy/control путём;
 - это правило распространяется на основной source-refresh API, совместимую
   кнопку дозагрузки 1С, AI-команду, автоматическую пересборку после загрузки
   сопоставления и production daily/weekly CLI. Синхронный
@@ -367,6 +461,9 @@ WB finance также сохраняется постранично. После 
   остановки процесса переводит run в `failed`, не удаляя snapshots и
   collections. Worker до потенциально блокирующего DB heartbeat атомарно
   обновляет локальный heartbeat marker внутри проверенного `root_dir`;
+  marker обновляет отдельный companion process, а не Python-thread основного
+  worker, чтобы длительная GIL-bound сериализация Excel не останавливала оба
+  heartbeat-сигнала одновременно;
   watchdog считает свежим любой из двух независимых сигналов — DB heartbeat
   или marker — и никогда не следует symlink/пути вне `source_refresh_root`;
 - API сохраняет совместимое поле `latest` и отдельно возвращает `activeRun`,
@@ -393,6 +490,15 @@ WB finance также сохраняется постранично. После 
   настройки «настройками клиента», не наследует период верхнего фильтра без
   явного выбора и предлагает отдельные варианты `до вчера`, `текущий фильтр`
   и `указать даты`;
+- мастер формирования сохраняет период отдельной компактной строкой над
+  действиями и не дублирует даты в подписях кнопок. Основные действия имеют
+  короткие однозначные названия, помещаются рядом на широком экране и
+  перестраиваются в вертикальный список на узком; пока серверный период не
+  получен, ожидание показывается в строке периода, а кнопки остаются
+  узнаваемыми и недоступными;
+- клиентский JavaScript содержит единственную реализацию функций настроек
+  мастера. Серверный диапазон `defaultFullPeriod` должен сразу активировать
+  ручное создание черновика и проверку источников, если обе даты получены;
 - staff UI отдельно показывает период последней загрузки источников, период
   открытого staff draft и период текущего опубликованного отчёта. Hourly
   `daily` не называется обновлением отчёта и после завершения прямо предлагает
@@ -580,6 +686,11 @@ mutual-settlement сохраняет документные строки, а buy
 
 - Low-disk guard не вызывает WB/1C exporters.
 - Недоступная или невалидная 1С `$metadata` не вызывает WB/Ozon exporters.
+- Временный `ReadTimeout` или retryable HTTP-status 1С `$metadata` допускает до
+  трех попыток с timeout `60` секунд и паузами `5/15`; постоянная ошибка не
+  повторяется, а исчерпание попыток остается fail-closed.
+- Production daily timer не имеет события во вторник `06:15 MSK`, когда
+  запускается weekly/full; остальные hourly события `*:15` сохраняются.
 - Runtime-status 1С показывает более новый автоматический сбой отдельно от
   последней ручной проверки.
 - `/api/health` показывает `degraded` при свежем завершенном failed refresh,
@@ -603,6 +714,13 @@ mutual-settlement сохраняет документные строки, а buy
   `needs_full_refresh` и отдельное действие полной пересборки, не скрытый full;
 - production `full` из web продолжает выполняться после рестарта web-сервиса;
   повторный worker не может одновременно забрать уже выполняющийся run.
+- Живой full worker со свежим heartbeat не прерывается общим runtime-лимитом
+  после двух часов; production unit предоставляет окно `4h`, сохраняя
+  watchdog-контроль зависших процессов и `ExecStopPost` для аварийной остановки.
+- Heavy worker имеет `MemoryHigh=1.5G`, `MemoryMax=2G` и `MemorySwapMax=0`;
+  collector — `768M/1G`, общий slice — `5G/500% CPU`. Проверка двух heavy
+  выполняется только после подтверждения, что один heavy остаётся ниже
+  `1.5G`, два — ниже `3G`, PostgreSQL/web не используют swap.
 - full-refresh не выполняется через FastAPI `BackgroundTasks`; health и статика
   отвечают во время пересборки, а PostgreSQL-транзакция завершается перед
   файловой сборкой и экспортом артефактов.
@@ -614,13 +732,19 @@ mutual-settlement сохраняет документные строки, а buy
   не существует;
 - во время длительного `rebuilding` свежий heartbeat marker защищает живой
   systemd worker от ложного `worker_heartbeat_stale`, даже если UPDATE поля
-  `heartbeat_at` временно блокируется основной DB-транзакцией;
+  `heartbeat_at` временно блокируется основной DB-транзакцией или основной
+  Python-процесс удерживает GIL при сериализации Excel; companion heartbeat не
+  получает database URL в argv и завершается вместе с worker cgroup;
 - активный WB manifest отражается в safe `progress` без account ids, имен
   кабинетов, путей и raw payloads.
 - UI главной страницы перед KPI содержит `Данные и расчёт` с fallback upload
   mapping, dry-run, full refresh и статусом коллекций; раздел `Интеграции`
   содержит только настройки подключений, а интерактивный mapping service вынесен
   в отдельный виджет основной очереди `Что разобрать первым`.
+- Мастер ручного формирования использует серверный `defaultFullPeriod` для
+  активных действий, выводит точный период отдельной строкой, не помещает даты
+  и состояние загрузки в названия кнопок, а на узком экране складывает действия
+  вертикально. Ключевые функции настроек мастера объявлены по одному разу.
 - `prune_source_refresh.py` dry-run ничего не удаляет.
 - Автоочистка failed snapshots сохраняет минимум два последних failed runs и
   не выходит за direct children `source_refresh_root`.
@@ -670,6 +794,33 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-05: materialize-only больше не строит неиспользуемые report marts,
+  DB-first rebuild не создаёт второй набор daily facts, входные facts
+  освобождаются до записи marts, а persisted parity вычисляет полный digest
+  потоково по DB-порциям `5 000` без ORM-списка всего набора.
+- 2026-08-04: task-level retry collector оставляет orchestration run
+  нетерминальным до второй попытки; добавлены отдельные heavy dispatcher slots
+  `@1/@2`, включаемые только после performance-canary.
+- 2026-08-04: принят scalable pipeline для 20 клиентов: дочерняя PostgreSQL
+  task queue, безопасные stage metrics, раздельные retries, client schedules,
+  streaming Excel, resource limits и запрет автоматической публикации.
+- 2026-08-04: raised the independent worker memory soft/hard limits to 4/5 GiB
+  after a live full XLSX rebuild at about 3.2 GiB repeatedly entered direct
+  reclaim under the former 3 GiB soft threshold; oomd preference and the
+  1 GiB swap ceiling remain in force.
+- 2026-08-04: файловый и DB heartbeat вынесены в отдельный companion process,
+  чтобы GIL-bound этап `rebuilding` не останавливал marker и не вызывал ложную
+  остановку живого worker через пять минут; секреты не передаются в argv.
+- 2026-08-04: production worker получил временное окно `RuntimeMaxSec=4h`
+  после live full, который дошёл до `rebuilding`, но был остановлен прежним
+  двухчасовым лимитом; heartbeat/watchdog и fail-closed публикация сохранены.
+- 2026-08-04: мастер ручного формирования стал компактнее: точный период
+  вынесен из кнопок в отдельную строку, короткие действия адаптируются к ширине
+  окна, а дублирующая JavaScript-реализация больше не обнуляет серверный период.
+- 2026-08-04: scheduled metadata guard 1С получил три ограниченные попытки с
+  timeout `60` секунд и паузами `5/15` только для transient errors; daily timer
+  исключает weekly-слот вторника `06:15`, fail-closed и отдельная финансовая
+  публикация сохранены.
 - 2026-07-31: ручной test/full canary обязан явно повторять бюджет `1000` и
   test-only writable roots после `EnvironmentFile`; production worker и timers
   для test по-прежнему запрещены.

@@ -14,7 +14,12 @@ from cryptography.fernet import Fernet
 from openpyxl import Workbook
 from sqlalchemy.exc import OperationalError
 
-from wb_unit_economics.contracts import MarketplaceFinanceDailyFact
+from wb_unit_economics.contracts import (
+    MarketplaceFinanceDailyFact,
+    TaxProfile,
+    VatDeductionMode,
+    VatMode,
+)
 from wb_unit_economics.onec_odata import (
     OnecODataMetadataCheckResult,
     OnecSampleExportResult,
@@ -45,6 +50,7 @@ from wb_unit_economics.web.models import (
     SourceLoad,
     SourceRefreshCollection,
     SourceRefreshRun,
+    SourceRefreshTask,
     SourceSnapshotRow,
     TenantIntegration,
     WbCabinet,
@@ -3535,11 +3541,13 @@ def test_operational_error_fails_immutable_run_and_next_run_uses_checkpoint(
 def successful_onec_metadata_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         source_refresh,
-        "check_onec_odata_metadata",
+        "check_onec_odata_metadata_with_retry",
         lambda _settings: OnecODataMetadataCheckResult(
             ok=True,
             status_code=200,
             content_type="application/xml",
+            attempt_count=1,
+            timeout_seconds=60,
         ),
     )
 
@@ -3683,9 +3691,90 @@ def test_source_refresh_fails_fast_on_onec_metadata_before_marketplace_reads(
     assert metadata_collection.required is True
     assert metadata_collection.status == "failed"
     assert metadata_collection.payload["metadataValid"] is False
+    assert metadata_collection.payload["attemptCount"] == 1
     assert integration.status == "configured"
     assert integration_payload["runtimeStatus"] == "check_failed"
     assert integration_payload["lastRuntimeCheck"]["httpStatus"] == 404
+
+
+def test_split_collector_retries_transient_metadata_failure_then_stops(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.source_refresh_task_queue_enabled = True
+    external_calls: list[str] = []
+
+    def exporter_should_not_run(*_args: object, **_kwargs: object) -> list[object]:
+        external_calls.append("called")
+        raise AssertionError("heavy external exporter should not run")
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=exporter_should_not_run,
+            wb_product_cards_exporter=exporter_should_not_run,
+            onec_exporter=exporter_should_not_run,
+            onec_metadata_checker=lambda _settings: OnecODataMetadataCheckResult(
+                ok=False,
+                status_code=503,
+                error="ServiceUnavailable",
+                content_type="application/json",
+            ),
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        queued = service.enqueue(
+            db,
+            tenant_id="shumeyko",
+            mode="daily",
+            user=user,
+            source_report=report,
+        )
+        run = db.get(SourceRefreshRun, queued["id"])
+        assert run is not None
+        tasks = repository.ensure_source_refresh_task_chain(db, run)
+        db.commit()
+
+        for attempt in (1, 2):
+            collector = repository.claim_next_source_refresh_task(
+                db,
+                worker_id=f"collector:{attempt}",
+                allowed_task_types={"collect_sources"},
+                now=tasks[0].not_before,
+            )
+            assert collector is tasks[0]
+            db.commit()
+            db.info["source_refresh_split_pipeline"] = True
+            try:
+                payload = service.run_existing(
+                    db,
+                    run.id,
+                    worker_id=f"collector:{attempt}",
+                    stop_after_sources=True,
+                )
+            finally:
+                db.info.pop("source_refresh_split_pipeline", None)
+            db.refresh(run)
+            db.refresh(collector)
+            if attempt == 1:
+                assert payload["status"] == "queued"
+                assert collector.status == "queued"
+                assert run.finished_at is None
+
+        assert payload["status"] == "failed"
+        assert collector.status == "failed"
+        assert collector.attempt == 2
+        assert run.finished_at is not None
+        assert [item.status for item in tasks[1:]] == [
+            "cancelled",
+            "cancelled",
+            "cancelled",
+        ]
+        assert external_calls == []
 
 
 def test_failed_snapshot_cleanup_keeps_latest_and_published_snapshot(
@@ -5761,9 +5850,173 @@ def test_source_refresh_db_first_branch_keeps_staff_draft_and_artifact(
     assert all(item.source_refresh_run_id == payload["id"] for item in source_loads)
     assert "db_first_report_marts" not in {item.source_type for item in source_loads}
     artifact_types = {item.artifact_type for item in artifacts}
-    assert {"excel", "csv", "html", "docx"} <= artifact_types
+    assert artifact_types == {"excel"}
     assert all(Path(item.path).exists() for item in artifacts)
     assert all(item.sha256 for item in artifacts)
+
+
+def test_split_pipeline_resumes_from_raw_to_marts_without_recollecting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.rebuild_report_from_sources as rebuild_script
+    import scripts.run_source_refresh_export_task as export_task_script
+
+    seen: dict[str, object] = {}
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    settings.db_first_reports_enabled = True
+    settings.source_refresh_task_queue_enabled = True
+    settings.marketplace_daily_facts_enabled = False
+
+    def fake_build_db_first_payload(
+        args,
+        *,
+        tax_profiles=None,
+        input_vat_policies=None,
+    ):
+        seen["build_calls"] = int(seen.get("build_calls") or 0) + 1
+        assert args.wb_finance_source == "files-stream"
+        assert tax_profiles is not None
+        assert input_vat_policies == []
+        return {"payload": minimal_payload()}
+
+    monkeypatch.setattr(
+        rebuild_script,
+        "build_db_first_payload",
+        fake_build_db_first_payload,
+    )
+    monkeypatch.setattr(rebuild_script, "_validate_marts", lambda _payload: None)
+
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        _save_encrypted_integrations(db, settings=settings, user=user)
+        service = SourceRefreshService(
+            settings,
+            wb_finance_exporter=_fake_wb_finance_exporter(seen),
+            wb_report_list_exporter=_fake_report_list_exporter(seen),
+            wb_product_cards_exporter=_fake_wb_product_cards_exporter(seen),
+            onec_exporter=_fake_onec_exporter(seen),
+            workbook_builder=_builder_should_not_run,
+            dashboard_payload_builder=lambda _path: minimal_payload(),
+        )
+        queued = service.enqueue(
+            db,
+            tenant_id="shumeyko",
+            mode="full",
+            user=user,
+            source_report=report,
+        )
+        refresh_run = db.get(SourceRefreshRun, queued["id"])
+        assert refresh_run is not None
+        repository.ensure_source_refresh_task_chain(db, refresh_run)
+        db.commit()
+
+        collector = repository.claim_next_source_refresh_task(
+            db,
+            worker_id="collector:test",
+            allowed_task_types={"collect_sources"},
+        )
+        assert collector is not None
+        db.commit()
+        db.info["source_refresh_split_pipeline"] = True
+        try:
+            service.run_existing(
+                db,
+                refresh_run.id,
+                worker_id="collector:test",
+                stop_after_sources=True,
+            )
+        finally:
+            db.info.pop("source_refresh_split_pipeline", None)
+
+        db.refresh(refresh_run)
+        db.refresh(collector)
+        assert refresh_run.status == "source_loaded"
+        assert collector.status == "succeeded"
+        assert refresh_run.new_report_run_id is None
+
+        materialize = repository.claim_next_source_refresh_task(
+            db,
+            worker_id="heavy:materialize",
+            allowed_task_types={"materialize_facts"},
+        )
+        assert materialize is not None
+        db.commit()
+        service.run_split_materialize_task(
+            db,
+            materialize,
+            worker_id="heavy:materialize",
+        )
+
+        build = repository.claim_next_source_refresh_task(
+            db,
+            worker_id="heavy:build",
+            allowed_task_types={"build_report"},
+        )
+        assert build is not None
+        db.commit()
+        build_payload = service.run_split_build_report_task(
+            db,
+            build,
+            worker_id="heavy:build",
+        )
+        assert build_payload["status"] == "rebuilding", (
+            build_payload["failureCode"],
+            build_payload["errorMessage"],
+        )
+
+        db.refresh(refresh_run)
+        tasks = list(
+            db.query(SourceRefreshTask)
+            .filter_by(refresh_run_id=refresh_run.id)
+            .order_by(SourceRefreshTask.created_at, SourceRefreshTask.id)
+        )
+        draft = db.get(ReportRun, refresh_run.new_report_run_id)
+        artifacts = (
+            db.query(ReportArtifact)
+            .filter_by(report_run_id=refresh_run.new_report_run_id)
+            .all()
+        )
+        assert artifacts == []
+        monkeypatch.setattr(
+            export_task_script,
+            "_start_heartbeat_process",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            export_task_script,
+            "_stop_heartbeat_process",
+            lambda _process: None,
+        )
+        assert export_task_script.execute_one(db, settings) is True
+        db.refresh(refresh_run)
+        tasks = list(
+            db.query(SourceRefreshTask)
+            .filter_by(refresh_run_id=refresh_run.id)
+            .order_by(SourceRefreshTask.created_at, SourceRefreshTask.id)
+        )
+        artifacts = (
+            db.query(ReportArtifact)
+            .filter_by(report_run_id=refresh_run.new_report_run_id)
+            .all()
+        )
+
+    assert seen["build_calls"] == 1
+    assert [item.status for item in tasks] == [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+    assert draft is not None
+    assert draft.publication_status == "draft"
+    assert draft.is_current is False
+    assert refresh_run.status == "needs_review"
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_type == "excel"
+    assert Path(artifacts[0].path).is_file()
 
 
 def test_source_refresh_db_first_post_build_failure_does_not_publish_report(
@@ -6203,6 +6456,102 @@ def test_source_refresh_builds_usn_profile_from_accounting_evidence(
     assert source_profile.rate_basis_kind == "regional_preference"
     assert source_profile.basis_document == "Региональный закон о льготной ставке УСН"
     assert source_profile.confirmed_by == "Бухгалтер"
+
+
+def test_source_refresh_deduplicates_tax_profiles_by_storage_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        company = (
+            db.query(repository.ClientCompany)
+            .filter_by(client_id="shumeyko", status="active")
+            .first()
+        )
+        assert company is not None
+        company.onec_organization_id = "ORG-USN"
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            mode="onec-only",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="tax-profile-storage-identity",
+            period_start=date(2026, 7, 27),
+            period_end=date(2026, 8, 2),
+            user=user,
+            source_report=report,
+            reason="tax profile storage identity regression",
+        )
+        organization_collection = repository.add_source_refresh_collection(
+            db,
+            run,
+            source_type="onec_organizations",
+            source_label="Catalog_Организации",
+            required=True,
+            status="loaded",
+            row_count=1,
+        )
+        repository.add_source_snapshot_row(
+            db,
+            organization_collection,
+            row_number=1,
+            raw_payload_hash="organization-hash",
+            row_payload={"Ref_Key": "ORG-USN"},
+            source_row_id="ORG-USN",
+        )
+        repository.add_source_refresh_collection(
+            db,
+            run,
+            source_type="onec_tax_special_regime_notifications",
+            source_label="Document_УведомлениеОСпецрежимахНалогообложения",
+            required=False,
+            status="empty_expected",
+            row_count=0,
+        )
+
+        def profiles_for_date(
+            *_args: object,
+            calculation_date=None,
+            **_kwargs: object,
+        ):
+            assert calculation_date is not None
+            return [
+                TaxProfile(
+                    client_id="shumeyko",
+                    organization_id="ORG-USN",
+                    tax_system="УСН Доходы",
+                    vat_rate=Decimal("5"),
+                    vat_mode=VatMode.INCLUDED,
+                    vat_deduction_mode=VatDeductionMode.NOT_ALLOWED,
+                    revenue_tax_rate=Decimal("0.01"),
+                    valid_from=date(2026, 1, 1),
+                    source="1C:tax_accruals+vat_sales+audited_rate",
+                    basis_document=calculation_date.isoformat(),
+                )
+            ]
+
+        monkeypatch.setattr(
+            repository,
+            "tax_profiles_from_account_org_mapping",
+            profiles_for_date,
+        )
+
+        tax_collection = repository.sync_organization_tax_profiles(db, run, user=user)
+        profiles = (
+            db.query(OrganizationTaxProfile)
+            .filter_by(source_refresh_run_id=run.id)
+            .all()
+        )
+
+    assert tax_collection.payload["profileCount"] == 1
+    assert len(profiles) == 1
+    assert profiles[0].basis_document == "2026-08-02"
 
 
 def test_accounting_evidence_snapshot_query_uses_run_collection_index(

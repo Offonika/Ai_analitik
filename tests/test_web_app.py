@@ -7073,7 +7073,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
         "Ежечасное обновление источников не меняет этот опубликованный"
         in cabinet.text
     )
-    assert "Проверить источники без создания" in cabinet.text
+    assert "Проверить источники" in cabinet.text
     assert "Сформировать другой период" in cabinet.text
     assert 'id="report-wizard-result"' in cabinet.text
     assert 'id="report-wizard-excel-download"' in cabinet.text
@@ -7678,8 +7678,9 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert 'customPeriod ? value.periodStart || "" : ""' in app_js.text
     assert 'customPeriod ? value.periodEnd || "" : ""' in app_js.text
     assert "Последняя закрытая неделя в текущем отчёте" in cabinet.text
-    assert "Проверить источники без создания" in cabinet.text
-    assert "Создать предварительный Excel за ${periodLabel}" in app_js.text
+    assert "Проверить источники" in cabinet.text
+    assert '"Создать черновик Excel"' in app_js.text
+    assert "Период нового отчёта: ${periodLabel}" in app_js.text
     assert "els.reportWizardPeriodHint.hidden = customPeriod" in app_js.text
     assert "По настройкам клиента" not in cabinet.text
     assert "по настройкам клиента" not in app_js.text
@@ -7820,7 +7821,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "sourceRefreshBlockedAttemptMessage" in app_js.text
     assert 'mode: "ozon-only"' in app_js.text
     assert "Загружаем служебную витрину Ozon + 1C без обязательного WB" in app_js.text
-    assert "Проверить источники без создания" in cabinet.text
+    assert "Проверить источники" in cabinet.text
     assert "Запустите refresh" not in app_js.text
     assert "Отправляем файл и запускаем пересборку" in app_js.text
     assert "FormData" in app_js.text
@@ -8509,6 +8510,13 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
     assert cabinet.status_code == 200
     assert app_js.status_code == 200
     assert styles.status_code == 200
+    assert (
+        'class="panel widget-shell report-wizard source-report-wizard"'
+        in cabinet.text
+    )
+    assert 'id="report-wizard-action-period"' in cabinet.text
+    assert "Создать черновик Excel" in cabinet.text
+    assert "Проверить источники" in cabinet.text
     assert cabinet.text.index('id="report-wizard-current"') < cabinet.text.index(
         'id="report-wizard-mode"'
     )
@@ -8534,6 +8542,19 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
     assert 'normalize(refresh?.status) === "needs_review"' in app_js.text
     assert "Опубликованный отчёт пока не изменён" in app_js.text
     assert "Служебная диагностика готова для скачивания" in app_js.text
+    assert app_js.text.count("function initializeReportWizardSettings()") == 1
+    assert app_js.text.count("function reportWizardRequestFromSettings(") == 1
+    assert app_js.text.count("function renderReportWizardCurrent()") == 1
+    assert app_js.text.count("function onReportWizardSettingsChange()") == 1
+    assert "const defaultPeriod = state.defaultFullPeriod || {};" in app_js.text
+    assert "const selectedPeriod =" in app_js.text
+    assert 'els.reportWizardSubmit.textContent = primaryAction;' in app_js.text
+    assert 'els.reportWizardCheck.textContent = "Проверить источники";' in app_js.text
+    assert "Период нового отчёта: ${periodLabel}" in app_js.text
+    assert "Период отчёта загружается…" not in app_js.text
+    assert ".source-report-wizard {" in styles.text
+    assert ".report-wizard-action-period {" in styles.text
+    assert "white-space: normal;" in styles.text
     mobile_actions = styles.text.rsplit(".report-wizard-actions {", 1)[1].split(
         "}", 1
     )[0]
@@ -9736,8 +9757,8 @@ def test_client_ozon_diagnostics_returns_safe_latest_ozon_only_snapshot(
     assert pinned_diagnostics.status_code == 200
     assert pinned_diagnostics.json()["latestRun"]["id"] == refresh_run.id
     draft_export = client.get(f"/api/reports/{ozon_draft_id}/export.xlsx")
-    assert draft_export.status_code == 200
-    assert "ozon_unit_economics" in draft_export.headers["content-disposition"]
+    assert draft_export.status_code == 404
+    assert draft_export.json()["detail"] == "export not found"
 
     export = client.get("/api/clients/shumeyko/ozon-diagnostics/export.xlsx")
     assert export.status_code == 200
@@ -14440,6 +14461,41 @@ def test_report_summary_includes_latest_source_refresh_safely(
     assert client_refresh["collections"][0]["rawPath"] == ""
     assert client_refresh["collections"][0]["payload"] == {}
     assert "HTTP 401" not in str(client_refresh)
+
+
+def test_safe_source_refresh_message_distinguishes_processing_failure() -> None:
+    internal_failure = SimpleNamespace(
+        status="failed",
+        new_report_run_id=None,
+        finished_at=repository.security.utcnow(),
+        collections=[
+            SimpleNamespace(
+                required=True,
+                status="loaded",
+                source_type="onec_nomenclature",
+            )
+        ],
+    )
+    source_failure = SimpleNamespace(
+        status="failed",
+        new_report_run_id=None,
+        finished_at=repository.security.utcnow(),
+        collections=[
+            SimpleNamespace(
+                required=True,
+                status="failed",
+                source_type="onec_odata_metadata",
+            )
+        ],
+    )
+
+    assert repository._safe_source_refresh_message(internal_failure) == (
+        "Не удалось создать отчёт из-за внутренней ошибки обработки данных. "
+        "Загруженные источники сохранены."
+    )
+    assert "обязательных источников" in repository._safe_source_refresh_message(
+        source_failure
+    )
 
 
 def test_analytical_report_artifact_requires_auth_and_downloads(

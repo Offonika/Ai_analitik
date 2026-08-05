@@ -234,6 +234,10 @@ def build_db_first_payload(
     tax_profiles: list[TaxProfile] | None = None,
     input_vat_policies: list[InputVatPolicy] | None = None,
 ) -> dict:
+    collect_daily_facts = bool(
+        getattr(args, "marketplace_daily_facts_enabled", False)
+    )
+    report_marts_enabled = bool(getattr(args, "report_marts_enabled", True))
     wb_finance_dir = args.wb_finance_dir or excel_mvp._latest_dir(
         Path("data/wb_finance")
     )
@@ -460,15 +464,20 @@ def build_db_first_payload(
             sales_rows=load_sales_register_rows(sales_register_dir),
             marketplace_counterparties_only=True,
         )
-        if sales_register_dir
+        if report_marts_enabled
+        and sales_register_dir
         and (sales_register_dir / "sales_register.raw.json").exists()
         else []
     )
-    onec_opiu_summary = load_onec_opiu_summary(
-        getattr(args, "onec_opiu_dir", None) or onec_dir,
-        period_start=report_period_start,
-        period_end=report_period_end,
-        config_path=getattr(args, "onec_opiu_config", None),
+    onec_opiu_summary = (
+        load_onec_opiu_summary(
+            getattr(args, "onec_opiu_dir", None) or onec_dir,
+            period_start=report_period_start,
+            period_end=report_period_end,
+            config_path=getattr(args, "onec_opiu_config", None),
+        )
+        if report_marts_enabled
+        else None
     )
     generated_at = datetime.now(tz=excel_mvp.MOSCOW_TZ)
     if args.wb_finance_source == "files-stream":
@@ -490,9 +499,7 @@ def build_db_first_payload(
             generated_at=generated_at,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
-            collect_daily_facts=bool(
-                getattr(args, "marketplace_daily_facts_enabled", True)
-            ),
+            collect_daily_facts=collect_daily_facts,
         )
         report = streamed.report
         wb_row_count = streamed.wb_rows
@@ -515,7 +522,7 @@ def build_db_first_payload(
             generated_at=generated_at,
             report_period_start=report_period_start,
             report_period_end=report_period_end,
-            daily_facts_sink=daily_facts,
+            daily_facts_sink=daily_facts if collect_daily_facts else None,
         )
         wb_row_count = len(wb_snapshots)
         wb_source_row_count = sum(
@@ -528,27 +535,31 @@ def build_db_first_payload(
             <= week_bounds(item.period_start)[1]
             <= report_period_end
         )
-    marts = build_report_marts(
-        report,
-        cost_snapshots=cost_snapshots,
-        sku_mappings=sku_mappings,
-        stock_history_dir=wb_stock_history_dir,
-        onec_stock_dir=onec_stock_dir,
-        account_labels=account_labels,
-        organization_labels=organization_labels,
-        onec_gross_profit_rows=onec_gross_profit_rows,
-        onec_marketplace_service_rows=marketplace_service_rows,
-        onec_opiu_summary=onec_opiu_summary,
-        wb_sales_report_summary_rows=wb_summary_rows,
-        source_run_id=getattr(args, "source_refresh_run_id", ""),
-        client_name=args.tenant_name,
-    )
+    payload: dict = {}
+    if report_marts_enabled:
+        marts = build_report_marts(
+            report,
+            cost_snapshots=cost_snapshots,
+            sku_mappings=sku_mappings,
+            stock_history_dir=wb_stock_history_dir,
+            onec_stock_dir=onec_stock_dir,
+            account_labels=account_labels,
+            organization_labels=organization_labels,
+            onec_gross_profit_rows=onec_gross_profit_rows,
+            onec_marketplace_service_rows=marketplace_service_rows,
+            onec_opiu_summary=onec_opiu_summary,
+            wb_sales_report_summary_rows=wb_summary_rows,
+            source_run_id=getattr(args, "source_refresh_run_id", ""),
+            client_name=args.tenant_name,
+        )
+        payload = marts.to_dashboard_payload()
     if not report.rows:
         raise SystemExit("No WB Finance rows found in report period.")
     return {
-        "payload": marts.to_dashboard_payload(),
+        "payload": payload,
         "report": report,
         "daily_facts": daily_facts,
+        "cost_snapshots": cost_snapshots,
         "wb_rows": wb_row_count,
         "wb_source_rows": wb_source_row_count,
         "wb_report_period_rows": wb_report_period_row_count,
@@ -657,6 +668,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tenant-id", default="shumeyko")
     parser.add_argument("--tenant-name", default="Шумейко и Партнеры")
     parser.add_argument("--report-id", required=True)
+    parser.set_defaults(
+        marketplace_daily_facts_enabled=False,
+        report_marts_enabled=True,
+    )
     parser.add_argument("--source-snapshot-set-id", default="")
     parser.add_argument("--client-id", default=excel_mvp.CLIENT_ID)
     parser.add_argument("--wb-finance-dir", type=Path, default=None)

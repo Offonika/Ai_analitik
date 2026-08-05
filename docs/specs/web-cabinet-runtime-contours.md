@@ -26,13 +26,18 @@ related_code:
   - deploy/systemd/shumeiko-web-prod-health.service
   - deploy/systemd/shumeiko-web-test-health.service
   - deploy/systemd/shumeiko-web-prod.service.d/corporate-proxy-login-shell.conf
+  - deploy/systemd/shumeiko-source-refresh.slice
+  - deploy/systemd/shumeiko-source-refresh-dispatcher.service
+  - deploy/systemd/shumeiko-source-refresh-dispatcher@.service
+  - deploy/systemd/shumeiko-source-refresh-dispatcher@.timer
+  - deploy/systemd/shumeiko-source-refresh-collector@.service
   - deploy/nginx/analitika.offonika.ru.conf
   - deploy/nginx/shumeiko.offonika.ru.conf
 related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, tests/test_runtime_contour_drift.py, tests/test_runtime_release_retention.py]
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-04"
 ---
 
 # Goal
@@ -149,6 +154,16 @@ manifest и в общий content hash.
 Rollback меняет production symlink на предыдущий проверенный immutable release;
 клиентская БД не восстанавливается без отдельного решения об откате данных.
 
+Production queue units входят в общий `shumeiko-source-refresh.slice` с
+`MemoryMax=5G` и `CPUQuota=500%`. Collector instances `@1/@2` имеют предел
+`1G`, heavy dispatcher — `MemoryHigh=1536M`, `MemoryMax=2G`, swap запрещён.
+До performance-canary используется только обычный dispatcher с concurrency
+`1`. После canary он отключается и заменяется экземплярами dispatcher `@1/@2`
+с общим admission limit `2`; одновременно держать оба варианта timers нельзя.
+В test эти timers автоматически не включаются: frozen-source canary запускает
+их команды вручную с test database/source/report roots. Наличие unit-файлов в
+immutable release не является свидетельством активного rollout.
+
 # Acceptance Criteria
 
 - оба local health endpoint отвечают `200`, правильным environment и build ID;
@@ -174,6 +189,8 @@ Rollback меняет production symlink на предыдущий провер�
 
 # Changelog
 
+- 2026-08-04: оформлены два независимых heavy dispatcher slots `@1/@2`; второй
+  допускается только после performance-canary и замены одиночного timer.
 - 2026-07-31: основной test unit и test-only `ExecStart` overrides закрепляют
   environment, cookie, integration master-switch и writable roots после
   secret-bearing `EnvironmentFile`; R-6 сохраняет только явно разрешенное
