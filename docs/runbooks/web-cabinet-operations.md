@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -1888,3 +1888,117 @@ rollback не потребовался. Annotated tag
 [`v2.64`](https://github.com/Offonika/Ai_analitik/releases/tag/v2.64)
 указывает на deployed merge commit `30cc290ad3783af735787b00d2396a793ecaf20c`;
 GitHub Release опубликован по тому же тегу.
+
+## Corrective rollout скачивания готового draft — 5 августа 2026 года
+
+Мастер формирования скрывал уже готовый staff draft, когда пользователь
+запускал следующую сборку или заново открывал страницу: session-specific
+карточка появлялась только после `newReportRunId` текущего запуска, а отдельно
+показывался лишь старый published current. Исправление добавило независимую
+карточку последнего готового draft с точным периодом и прямым Excel export по
+его `report_id`. Во время новой сборки готовый файл остаётся доступным;
+Ozon-диагностика, результат текущей wizard-сессии и published current не
+смешиваются. Автоматической финансовой публикации нет.
+
+Из commit `8a0d26cb9112c3d65bdfac33e18ba355dd308102` собран чистый immutable
+release `runtime-8a0d26c-v267-report-wizard-draft-download-20260805`.
+Manifest подтвердил `sourceDirty=false` и content SHA-256
+`c57f4fe1a4c88bcef06a4b1958f7bf9022a917e39a1c17dffa98ad8e065409e2`;
+release не содержит writable files. До promotion полный `tests/test_web_app.py`
+завершился `250 passed`, Ruff, `node --check`, `git diff --check` и все пять
+обязательных валидаторов документации прошли. Отдельный production-configured
+smoke на порту `18097` вернул `status=ok`, совпадающий build ID
+`20260805-v267-report-wizard-draft-download`, новую HTML/JavaScript-карточку и
+safety-коды `401`, `404`, `404`.
+
+Перед переключением завершился активный full refresh; worker не прерывался.
+Production pointer атомарно переключен с
+`runtime-7a85c96-v266-scalable-refresh-memory-20260805` на новый release,
+перезапущен только `shumeiko-web-prod.service`. Миграции, integrations,
+snapshots, report artifacts и published current не изменялись. Локальный и
+публичный health вернули `status=ok`, `runtimeEnvironment=production`,
+совпадающие backend/static build ID и `latestSourceRefreshActive=false`.
+Публичные HTML и `app.js` содержат новую карточку и cache-busting ID; safety
+smoke сохранил `401` для неавторизованного `/api/reports` и `404` для `/.env`
+и неизвестного route. Штатный production health service и drift-check
+завершились успешно.
+
+Rollback — атомарно вернуть production pointer на
+`runtime-7a85c96-v266-scalable-refresh-memory-20260805`, перезапустить только
+`shumeiko-web-prod.service` и повторить local/public health, static build и
+safety smoke. Созданные source refresh runs, drafts и артефакты при runtime
+rollback не удаляются.
+
+## Corrective rollout возобновления приёмки draft — 5 августа 2026 года
+
+После закрытия или перезагрузки wizard-сессии сохранённый staff draft оставался
+в БД и скачивался из отдельной карточки, но финансовую приёмку можно было
+открыть повторно только через новую сборку. Из-за этого пользователи создавали
+повторные full refresh и воспринимали draft как пропавший. Исправление добавило
+к последнему готовому draft действие `Продолжить проверку`: оно восстанавливает
+результат по точному `report_id`, снова требует комментарий и checkbox и не
+запускает source refresh. Публикация по-прежнему выполняется только отдельным
+явным действием.
+
+Из commit `779560c1351a6cd1f8693dbf9bbcb6dc20d72d92` собран immutable
+release `runtime-779560c-v268-report-wizard-draft-resume-20260805` с
+`sourceDirty=false` и content SHA-256
+`4ffcce82bb44e64e720a0dea69b5aef92b88fe8415ce68db768f03bb7131e82d`.
+Полный `tests/test_web_app.py` завершился `250 passed`; Ruff, JavaScript syntax,
+`git diff --check`, пять обязательных doc validators и production-configured
+smoke на порту `18098` прошли. Smoke подтвердил новый build ID
+`20260805-v268-report-wizard-draft-resume`, действие возобновления и safety-
+коды `401`/`404`.
+
+Во время promotion уже выполнялся пользовательский full refresh. Он не был
+прерван: рабочий процесс имел cwd, закреплённый за предыдущим immutable release
+`runtime-8a0d26c-v267-report-wizard-draft-download-20260805`, отдельный
+heartbeat продолжал обновляться до и после web restart. Изменение было только
+UI/static, не меняло worker, schema или данные. Production pointer атомарно
+переключён на v268, перезапущен только `shumeiko-web-prod.service`.
+
+Локальный и публичный health вернули `status=ok`, совпадающие backend/static
+build ID и сохранили правдивый `latestSourceRefreshActive=true` для отдельного
+worker. Публичные HTML/JavaScript содержат `Продолжить проверку`; safety smoke,
+production health service и drift-check прошли. Published current и все
+существующие drafts не изменялись.
+
+Rollback — вернуть production pointer на
+`runtime-8a0d26c-v267-report-wizard-draft-download-20260805`, перезапустить
+только `shumeiko-web-prod.service` и повторить health/static/safety smoke.
+Активный worker и report artifacts при rollback не удалять.
+
+## Corrective rollout приоритета полного draft — 5 августа 2026 года
+
+После v268 отдельная карточка сохранённого draft оставалась доступной, но более
+новый отчёт по узкому пользовательскому периоду мог стать первым draft в списке
+и визуально вытеснить готовый полный кандидат на публикацию. Исправление сначала
+выбирает самый новый draft, чей период точно совпадает с серверным
+`defaultFullPeriod`, и только при отсутствии такого отчёта использует самый
+новый иной draft. Карточка переименована в `Последний готовый полный отчёт`;
+действие `Продолжить проверку` по-прежнему восстанавливает приёмку без новой
+сборки и не публикует отчёт автоматически.
+
+Из commit `2ac7ccf20a817eee9664902883a8b85b2c98bfa5` собран immutable
+release `runtime-2ac7ccf-v269-report-wizard-full-draft-resume-20260805` с
+`sourceDirty=false` и content SHA-256
+`c61dc672d9ef112149192fd8b1aa60791a4fa1425ded5c134d5d01e3dc4a0f19`.
+Полный `tests/test_web_app.py` завершился `250 passed`; Ruff, JavaScript syntax,
+`git diff --check`, пять обязательных doc validators и production-configured
+smoke на порту `18099` прошли. Smoke подтвердил совпадающий build ID
+`20260805-v269-report-wizard-full-draft-resume`, приоритет полного draft и
+safety-коды `401`/`404`.
+
+До promotion отдельный source refresh worker уже завершил работу, поэтому web
+restart не прерывал сборку. Production pointer атомарно переключён с
+`runtime-779560c-v268-report-wizard-draft-resume-20260805` на v269,
+перезапущен только `shumeiko-web-prod.service`; schema, integrations, snapshots,
+report artifacts и published current не изменялись. Локальный и публичный
+health вернули `status=ok` и совпадающие backend/static build ID. Публичные
+HTML/JavaScript содержат карточку полного отчёта, действие продолжения и новую
+логику выбора; safety smoke, production health service и drift-check прошли.
+
+Rollback — вернуть production pointer на
+`runtime-779560c-v268-report-wizard-draft-resume-20260805`, перезапустить только
+`shumeiko-web-prod.service` и повторить health/static/safety smoke. Сохранённые
+drafts и report artifacts при rollback не удалять.

@@ -404,6 +404,22 @@ const els = {
   reportWizardPeriodFields: document.querySelector("#report-wizard-period-fields"),
   reportWizardPeriodStart: document.querySelector("#report-wizard-period-start"),
   reportWizardPeriodEnd: document.querySelector("#report-wizard-period-end"),
+  reportWizardLatestDraft: document.querySelector("#report-wizard-latest-draft"),
+  reportWizardLatestDraftTitle: document.querySelector(
+    "#report-wizard-latest-draft-title",
+  ),
+  reportWizardLatestDraftPeriod: document.querySelector(
+    "#report-wizard-latest-draft-period",
+  ),
+  reportWizardLatestDraftHint: document.querySelector(
+    "#report-wizard-latest-draft-hint",
+  ),
+  reportWizardLatestDraftDownload: document.querySelector(
+    "#report-wizard-latest-draft-download",
+  ),
+  reportWizardLatestDraftOpen: document.querySelector(
+    "#report-wizard-latest-draft-open",
+  ),
   reportWizardCurrent: document.querySelector("#report-wizard-current"),
   reportWizardCurrentPeriod: document.querySelector(
     "#report-wizard-current-period",
@@ -1144,6 +1160,10 @@ function init() {
   els.reportWizardForm.addEventListener("submit", onReportWizardSubmit);
   els.reportWizardCheck.addEventListener("click", onReportWizardCheck);
   els.reportWizardReset.addEventListener("click", resetReportWizardSession);
+  els.reportWizardLatestDraftOpen.addEventListener(
+    "click",
+    resumeLatestReportWizardDraft,
+  );
   els.accountingReportWizardClose.addEventListener(
     "click",
     closeAccountingReportWizard,
@@ -3564,6 +3584,31 @@ function reportWizardPublishedReport() {
   ) || null;
 }
 
+function reportWizardLatestDraftReport() {
+  const drafts = [...state.reports]
+    .filter(
+      (item) =>
+        Boolean(item.id) &&
+        !item.isCurrent &&
+        normalize(item.publicationStatus) === "draft" &&
+        normalize(item.lineageType) !== "ozon_mart_snapshot",
+    )
+    .sort((left, right) =>
+      String(right.generatedAt || "").localeCompare(
+        String(left.generatedAt || ""),
+      ),
+    );
+  const defaultPeriod = state.defaultFullPeriod || {};
+  const defaultDraft = drafts.find(
+    (item) =>
+      defaultPeriod.periodStart &&
+      defaultPeriod.periodEnd &&
+      item.periodStart === defaultPeriod.periodStart &&
+      item.periodEnd === defaultPeriod.periodEnd,
+  );
+  return defaultDraft || drafts[0] || null;
+}
+
 function reportWizardGeneratedReportId() {
   return String(state.reportWizardRefresh?.newReportRunId || "");
 }
@@ -3651,6 +3696,74 @@ function renderReportWizardCurrent() {
   els.reportWizardCurrentPeriod.textContent = period ? `Период: ${period}` : "";
   els.reportWizardCurrentDownload.href =
     `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
+}
+
+function renderReportWizardLatestDraft() {
+  const report = reportWizardLatestDraftReport();
+  const generatedReportId = reportWizardGeneratedReportId();
+  const visible = Boolean(
+    report &&
+      report.id !== generatedReportId &&
+      els.reportWizardMode.value !== "ozon-only",
+  );
+  els.reportWizardLatestDraft.hidden = !visible;
+  if (!visible) {
+    els.reportWizardLatestDraftPeriod.textContent = "";
+    els.reportWizardLatestDraftDownload.href = "#";
+    return;
+  }
+  const period = [formatCompactDate(report.periodStart), formatCompactDate(report.periodEnd)]
+    .filter(Boolean)
+    .join("–");
+  const newBuildActive = Boolean(
+    isActiveSourceRefresh(state.reportWizardRefresh) ||
+      reportWizardHasExternalActiveRefresh(),
+  );
+  els.reportWizardLatestDraftTitle.textContent = newBuildActive
+    ? "Последний готовый полный отчёт — доступен сейчас"
+    : "Последний готовый полный отчёт";
+  els.reportWizardLatestDraftPeriod.textContent = period ? `Период: ${period}` : "";
+  els.reportWizardLatestDraftHint.textContent = newBuildActive
+    ? "Новый отчёт ещё формируется. Этот готовый Excel можно скачать сейчас."
+    : "Черновик сохранён отдельно и не заменяет опубликованный отчёт до финансовой проверки.";
+  els.reportWizardLatestDraftDownload.href =
+    `/api/reports/${encodeURIComponent(report.id)}/export.xlsx`;
+}
+
+function resumeLatestReportWizardDraft() {
+  const report = reportWizardLatestDraftReport();
+  if (!report?.id) {
+    return;
+  }
+  state.reportWizardRequest = {
+    dryRun: false,
+    mode: "full",
+    periodMode: "custom",
+    periodStart: report.periodStart || "",
+    periodEnd: report.periodEnd || "",
+  };
+  state.reportWizardRefresh = {
+    id: `saved-draft:${report.id}`,
+    status: "needs_review",
+    mode: "full",
+    dryRun: false,
+    periodStart: report.periodStart || null,
+    periodEnd: report.periodEnd || null,
+    newReportRunId: report.id,
+    finishedAt: report.generatedAt || null,
+  };
+  state.reportWizardBusy = false;
+  state.reportWizardPublishing = false;
+  state.reportWizardPublishedReportId = "";
+  els.reportWizardMode.value = "full";
+  els.reportWizardPeriodMode.value = "custom";
+  els.reportWizardPeriodStart.value = report.periodStart || "";
+  els.reportWizardPeriodEnd.value = report.periodEnd || "";
+  els.reportWizardPublicationReason.value = "";
+  els.reportWizardPublicationConfirm.checked = false;
+  els.reportWizardPublicationStatus.textContent = "";
+  els.reportWizardResult.dataset.focusedReportId = "";
+  renderReportWizardStatus();
 }
 
 function onReportWizardSettingsChange() {
@@ -3762,6 +3875,7 @@ function renderReportWizardSettings() {
   els.reportWizardReset.hidden = !generatedReportId;
   els.reportWizardSubmit.disabled = locked || externalActive || !completePeriod;
   els.reportWizardCheck.disabled = locked || externalActive || !completePeriod;
+  renderReportWizardLatestDraft();
   renderReportWizardCurrent();
 }
 
