@@ -201,6 +201,7 @@ SAFE_STAGE_METRIC_KEYS = {
 }
 MARKETPLACE_STAGING_DELETE_BATCH_SIZE = 5_000
 MARKETPLACE_FACT_INSERT_BATCH_SIZE = 5_000
+REPORT_UNIT_ROW_INSERT_BATCH_SIZE = 500
 SOURCE_REFRESH_STAGE_DEFAULT_SECONDS = {
     "collect_sources": 30 * 60,
     "materialize_facts": 4 * 60,
@@ -14076,18 +14077,11 @@ def import_dashboard_payload(
         )
         db.add(report)
     db.flush()
-    for item in payload.get("unitRows", []):
-        ids = _row_entity_ids(db, report, item)
-        row_item = _row_item_with_resolved_cabinet(item, ids)
-        db.add(
-            _unit_row(
-                report.id,
-                row_item,
-                client_id=ids["client_id"],
-                client_company_id=ids["client_company_id"],
-                wb_cabinet_id=ids["wb_cabinet_id"],
-            )
-        )
+    unit_row_count = _persist_report_unit_rows(
+        db,
+        report,
+        payload.get("unitRows", []),
+    )
     for item in payload.get("lostSales", []):
         ids = _row_entity_ids(db, report, item)
         row_item = _row_item_with_resolved_cabinet(item, ids)
@@ -14136,7 +14130,7 @@ def import_dashboard_payload(
             source_label=report.source_workbook or lineage_type,
             status="loaded",
             snapshot_hash="",
-            row_count=len(payload.get("unitRows", [])),
+            row_count=unit_row_count,
             loaded_at=generated_at,
         )
     )
@@ -14154,7 +14148,7 @@ def import_dashboard_payload(
             "source": report.source_workbook,
             "lineageType": lineage_type,
             "publicationStatus": publication_status,
-            "rows": len(payload.get("unitRows", [])),
+            "rows": unit_row_count,
         },
     )
     if publish and publication_status == "published":
@@ -21227,16 +21221,53 @@ def _row_item_with_resolved_cabinet(
     return row_item
 
 
-def _unit_row(
+def _persist_report_unit_rows(
+    db: Session,
+    report: ReportRun,
+    rows: Iterable[dict[str, Any]],
+) -> int:
+    batch: list[dict[str, Any]] = []
+    row_count = 0
+    for item in rows:
+        ids = _row_entity_ids(db, report, item)
+        row_item = _row_item_with_resolved_cabinet(item, ids)
+        batch.append(
+            _unit_row_values(
+                report.id,
+                row_item,
+                client_id=ids["client_id"],
+                client_company_id=ids["client_company_id"],
+                wb_cabinet_id=ids["wb_cabinet_id"],
+            )
+        )
+        if len(batch) >= REPORT_UNIT_ROW_INSERT_BATCH_SIZE:
+            _insert_report_unit_row_batch(db, batch)
+            row_count += len(batch)
+            batch.clear()
+    if batch:
+        _insert_report_unit_row_batch(db, batch)
+        row_count += len(batch)
+    return row_count
+
+
+def _insert_report_unit_row_batch(
+    db: Session,
+    rows: Sequence[dict[str, Any]],
+) -> None:
+    if rows:
+        db.execute(insert(ReportUnitRow.__table__), list(rows))
+
+
+def _unit_row_values(
     report_id: str,
     item: dict[str, Any],
     *,
     client_id: str,
     client_company_id: str,
     wb_cabinet_id: str,
-) -> ReportUnitRow:
+) -> dict[str, Any]:
     week = item.get("week")
-    return ReportUnitRow(
+    return dict(
         report_run_id=report_id,
         client_id=client_id,
         client_company_id=client_company_id,
@@ -21315,6 +21346,25 @@ def _unit_row(
         loss_class=as_text(item.get("lossClass")),
         loss_driver=as_text(item.get("lossDriver")),
         source_snapshot_hashes=item.get("sourceSnapshotHashes") or [],
+    )
+
+
+def _unit_row(
+    report_id: str,
+    item: dict[str, Any],
+    *,
+    client_id: str,
+    client_company_id: str,
+    wb_cabinet_id: str,
+) -> ReportUnitRow:
+    return ReportUnitRow(
+        **_unit_row_values(
+            report_id,
+            item,
+            client_id=client_id,
+            client_company_id=client_company_id,
+            wb_cabinet_id=wb_cabinet_id,
+        )
     )
 
 

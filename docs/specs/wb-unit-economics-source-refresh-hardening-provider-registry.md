@@ -167,6 +167,16 @@ write-only workbook, проверяет временный ZIP/openpyxl artifact
 переименовывает его. После facts исходные коллекции освобождаются до marts и
 Excel. Scheduled run автоматически создаёт только Excel.
 
+`build_report` читает `marketplace_finance_daily_facts` проекцией контрактных
+колонок через server-side/streaming result с DB-порциями не более 5 000 и не
+гидратит полный набор ORM-моделей. Самая большая витрина `unitRows` сохраняется
+в той же транзакции Core insert-порциями не более 500 строк; полный набор ORM-
+объектов `ReportUnitRow` не удерживается в session identity map. После mart
+validation и успешной записи payload, расчетный `UnitEconomicsReport`, daily-
+facts iterator и промежуточные списки освобождаются до построения logistics-
+витрин. Ошибка любой порции откатывает весь незавершённый `build_report` и не
+меняет `published/current`.
+
 Staff-only `client_refresh_schedules` хранит timezone, enabled, weekly time,
 monthly full week/slot и priority. Scheduler каждые пять минут только создаёт
 idempotent queued runs. Вторник `06:15` запускает 28-дневный incremental;
@@ -721,6 +731,12 @@ mutual-settlement сохраняет документные строки, а buy
   collector — `768M/1G`, общий slice — `5G/500% CPU`. Проверка двух heavy
   выполняется только после подтверждения, что один heavy остаётся ниже
   `1.5G`, два — ниже `3G`, PostgreSQL/web не используют swap.
+- Выборка daily facts не оставляет `MarketplaceFinanceDailyFact` ORM-объекты в
+  identity map; persistence синтетической витрины из 13 500 `unitRows`
+  использует порции не более 500, сохраняет row/value parity и не удерживает
+  полный набор `ReportUnitRow`. Локальный benchmark фиксирует command, commit,
+  row count, Python peak и RSS; окончательный лимит `1.5G` подтверждается только
+  отдельным frozen-source test canary.
 - full-refresh не выполняется через FastAPI `BackgroundTasks`; health и статика
   отвечают во время пересборки, а PostgreSQL-транзакция завершается перед
   файловой сборкой и экспортом артефактов.
@@ -794,6 +810,9 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-05: bounded `build_report` закрепил streaming projection daily facts,
+  Core batch persistence `unitRows` по 500 строк, освобождение полного payload
+  до logistics и локальный memory benchmark без подмены test canary.
 - 2026-08-05: materialize-only больше не строит неиспользуемые report marts,
   DB-first rebuild не создаёт второй набор daily facts, входные facts
   освобождаются до записи marts, а persisted parity вычисляет полный digest

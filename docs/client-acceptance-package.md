@@ -6,8 +6,8 @@ audience: ["client", "consultant", "engineering"]
 status: draft
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-db-first-report-marts.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-db-first-report-marts.md @ 2026-08-04"
-updated_at: "2026-08-04"
+last_reconciled_with: "docs/specs/wb-unit-economics-db-first-report-marts.md @ 2026-08-05"
+updated_at: "2026-08-05"
 ---
 
 # Пакет приемки пилота AI-аналитика отчетов
