@@ -62,6 +62,8 @@ const state = {
   aiThreadId: null,
   aiHistoryRequestKey: "",
   aiBusy: false,
+  aiRetryQuestion: "",
+  aiStreamError: "",
   chatkitEnabled: false,
   onecReconciliationLoaded: false,
   rowPreset: "",
@@ -153,6 +155,7 @@ const LOGISTICS_SCHEME_OPTIONS = [
 ];
 
 const FOCUSABLE_WIDGET_SELECTOR = [
+  "summary",
   "a[href]",
   "button:not([disabled])",
   "input:not([disabled])",
@@ -716,20 +719,23 @@ const els = {
   clientReportDocxDownload: document.querySelector("#client-report-docx-download"),
   clientReportPdfDownload: document.querySelector("#client-report-pdf-download"),
   aiPanel: document.querySelector("#ai-panel"),
-  aiSourceStatus: document.querySelector("#ai-source-status"),
+  aiContextLine: document.querySelector("#ai-context-line"),
   aiMessages: document.querySelector("#ai-messages"),
   aiEvents: document.querySelector("#ai-events"),
+  aiQuickQuestions: document.querySelector("#ai-quick-questions"),
+  aiLiveStatus: document.querySelector("#ai-live-status"),
+  aiTrace: document.querySelector("#ai-trace"),
+  aiTraceCount: document.querySelector("#ai-trace-count"),
   aiForm: document.querySelector("#ai-form"),
   aiInput: document.querySelector("#ai-input"),
   aiSendButton: document.querySelector("#ai-send-button"),
+  aiRetry: document.querySelector("#ai-retry"),
+  aiRetryMessage: document.querySelector("#ai-retry-message"),
+  aiRetryButton: document.querySelector("#ai-retry-button"),
   aiError: document.querySelector("#ai-error"),
   aiWorkspace: document.querySelector(".ai-workspace"),
   chatkitShell: document.querySelector("#chatkit-shell"),
   chatkitElement: document.querySelector("#chatkit-element"),
-  aiContextReadiness: document.querySelector("#ai-context-readiness"),
-  aiContextMetrics: document.querySelector("#ai-context-metrics"),
-  aiContextBars: document.querySelector("#ai-context-bars"),
-  aiContextEmpty: document.querySelector("#ai-context-empty"),
   integrationsPanel: document.querySelector("#integrations-panel"),
   integrationsStatus: document.querySelector("#integrations-status"),
   integrationProviderTabButtons: document.querySelectorAll(
@@ -1425,9 +1431,15 @@ function init() {
     event.preventDefault();
     sendAiQuestion(els.aiInput.value);
   });
-  document.querySelectorAll("[data-ai-question]").forEach((button) => {
-    button.addEventListener("click", () => sendAiQuestion(button.dataset.aiQuestion || ""));
+  els.aiQuickQuestions.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-ai-question]");
+    if (button) {
+      sendAiQuestion(button.dataset.aiQuestion || "");
+    }
   });
+  els.aiRetryButton.addEventListener("click", () =>
+    sendAiQuestion(state.aiRetryQuestion),
+  );
   bindAutoApplyingFilters();
   bindOnecReconciliationFilters();
   els.rowsFilterForm.addEventListener("submit", (event) => {
@@ -2930,13 +2942,19 @@ function reportTopbarTone(readiness = {}, refresh = null) {
   return "is-info";
 }
 
+function setAiError(message = "") {
+  const text = String(message || "").trim();
+  els.aiError.textContent = text;
+  els.aiError.hidden = !text;
+}
+
 function openAiWidget(options = {}) {
   openWidgetOverlay(els.aiWidgetOverlay);
   if (!state.reportId) {
-    els.aiError.textContent = "Сначала выберите клиента и отчет.";
+    setAiError("Сначала выберите клиента и отчет.");
     return;
   }
-  els.aiError.textContent = "";
+  setAiError();
   if (options.focus !== false) {
     window.setTimeout(() => els.aiInput.focus(), 0);
   }
@@ -6047,8 +6065,7 @@ async function restoreAiThread(
   state.aiHistoryRequestKey = requestKey;
   els.aiInput.disabled = true;
   els.aiSendButton.disabled = true;
-  els.aiSourceStatus.textContent = "Загружаем историю…";
-  els.aiSourceStatus.classList.remove("ok", "fallback", "bad");
+  els.aiLiveStatus.textContent = "Загружаю историю…";
   try {
     const payload = await api(
       `/api/ai/threads?report_id=${encodeURIComponent(reportId)}&limit=1`,
@@ -6058,7 +6075,7 @@ async function restoreAiThread(
     }
     const thread = (payload.items || [])[0];
     if (!thread) {
-      els.aiSourceStatus.textContent = "Не запускался";
+      renderAiStartState(state.summary || {});
       return;
     }
     state.aiThreadId = thread.id;
@@ -6067,11 +6084,14 @@ async function restoreAiThread(
     if (!isCurrentClientLoad(context) || state.reportId !== reportId) {
       return;
     }
-    els.aiSourceStatus.textContent = "История недоступна";
-    els.aiSourceStatus.classList.add("bad");
+    renderAiStartState(state.summary || {});
+    els.aiLiveStatus.textContent = "История временно недоступна. Можно начать новый вопрос.";
   } finally {
     if (state.aiHistoryRequestKey === requestKey) {
       state.aiHistoryRequestKey = "";
+      if (els.aiLiveStatus.textContent === "Загружаю историю…") {
+        els.aiLiveStatus.textContent = "";
+      }
       els.aiInput.disabled = state.aiBusy;
       els.aiSendButton.disabled = state.aiBusy;
     }
@@ -6080,21 +6100,24 @@ async function restoreAiThread(
 
 function renderAiThread(thread) {
   els.aiMessages.replaceChildren();
-  els.aiEvents.replaceChildren();
-  (thread.messages || []).forEach((message) =>
-    appendAiMessage(message.role, message.content),
-  );
-  (thread.events || []).forEach(appendAiEvent);
-  const sourceEvent = [...(thread.events || [])]
+  const messages = asArray(thread.messages);
+  const answerEvents = lastCompletedAiAnswerEvents(thread.events);
+  const lastAssistantIndex = messages.map((message) => message.role).lastIndexOf("assistant");
+  const sourceEvent = [...answerEvents]
     .reverse()
     .find((event) => event.payload?.answerSource);
-  if (sourceEvent) {
-    renderAiSource(sourceEvent.payload);
-  } else if ((thread.messages || []).some((message) => message.role === "assistant")) {
-    els.aiSourceStatus.textContent = "История восстановлена";
-  } else {
-    els.aiSourceStatus.textContent = "Не запускался";
+  messages.forEach((message, index) =>
+    appendAiMessage({
+      ...message,
+      ...(index === lastAssistantIndex ? sourceEvent?.payload || {} : {}),
+    }),
+  );
+  renderAiTraceEvents(answerEvents);
+  els.aiQuickQuestions.hidden = messages.length > 0;
+  if (!messages.length) {
+    renderAiStartState(state.summary || {});
   }
+  els.aiLiveStatus.textContent = "";
 }
 
 async function sendAiQuestion(rawQuestion) {
@@ -6102,23 +6125,30 @@ async function sendAiQuestion(rawQuestion) {
   if (!question || state.aiBusy || state.aiHistoryRequestKey || !state.reportId) {
     return;
   }
+  const retrying = !els.aiRetry.hidden && question === state.aiRetryQuestion;
   if (state.chatkitEnabled) {
     try {
       await els.chatkitElement.sendUserMessage({ text: question });
     } catch (error) {
-      els.aiError.textContent =
-        "Не удалось получить ответ AI. Данные WB/1С не менялись.";
+      setAiError("Не удалось получить ответ AI. Данные WB/1С не менялись.");
     }
     return;
   }
   state.aiBusy = true;
-  els.aiError.textContent = "";
+  state.aiRetryQuestion = "";
+  state.aiStreamError = "";
+  setAiError();
+  els.aiRetryMessage.textContent = "";
+  els.aiRetry.hidden = true;
   els.aiInput.value = "";
   els.aiInput.disabled = true;
   els.aiSendButton.disabled = true;
-  els.aiSourceStatus.textContent = "Анализирую…";
-  els.aiSourceStatus.classList.remove("ok", "fallback", "bad");
-  appendAiMessage("user", question);
+  els.aiQuickQuestions.hidden = true;
+  els.aiLiveStatus.textContent = "Анализирую…";
+  resetAiTrace();
+  if (!retrying) {
+    appendAiMessage({ role: "user", content: question });
+  }
   try {
     const threadId = await ensureAiThread();
     const response = await fetch(
@@ -6131,16 +6161,31 @@ async function sendAiQuestion(rawQuestion) {
       },
     );
     if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
+      let publicMessage = "";
+      try {
+        publicMessage = String((await response.json()).detail || "");
+      } catch (parseError) {
+        publicMessage = "";
+      }
+      const error = new Error(publicMessage || `HTTP ${response.status}`);
+      error.publicMessage = publicMessage;
+      throw error;
     }
     const terminalEvent = await readAiStream(response);
     if (terminalEvent !== "final") {
-      throw new Error("AI stream ended without a final answer");
+      const error = new Error("AI stream ended without a final answer");
+      error.publicMessage = state.aiStreamError;
+      throw error;
     }
   } catch (error) {
-    els.aiError.textContent = "Не удалось получить ответ AI. Данные WB/1С не менялись.";
-    els.aiSourceStatus.textContent = "Ошибка ответа";
-    els.aiSourceStatus.classList.add("bad");
+    const message = error.publicMessage
+      || "Не удалось получить ответ AI. Данные WB/1С не менялись.";
+    setAiError();
+    els.aiRetryMessage.textContent = message;
+    els.aiLiveStatus.textContent = "";
+    state.aiRetryQuestion = question;
+    els.aiInput.value = question;
+    els.aiRetry.hidden = false;
   } finally {
     state.aiBusy = false;
     els.aiInput.disabled = false;
@@ -6186,66 +6231,336 @@ function handleSseChunk(chunk) {
     return "";
   }
   if (eventName === "final") {
-    appendAiMessage("assistant", payload.content || "");
-    renderAiSource(payload);
+    appendAiMessage({ role: "assistant", ...payload });
+    els.aiLiveStatus.textContent = "";
     return "final";
   }
   if (eventName === "error") {
-    els.aiError.textContent = payload.message || "AI временно недоступен.";
+    state.aiStreamError = payload.message || "AI временно недоступен.";
+    els.aiLiveStatus.textContent = "";
     return "error";
   }
   appendAiEvent(payload);
-  if (payload.payload) {
-    renderAiSource(payload.payload);
-  }
+  els.aiLiveStatus.textContent = payload.message || payload.title || "Анализирую…";
   return "";
 }
 
-function appendAiMessage(role, content) {
+function appendAiMessage(message) {
+  const role = String(message?.role || "assistant");
+  const content = String(message?.content || "");
   if (!content) {
     return;
   }
   const item = document.createElement("div");
   item.className = `ai-message ${role}`;
-  item.textContent = content;
+  if (message.local) {
+    item.classList.add("is-local-intro");
+  }
+  const copy = document.createElement("div");
+  copy.className = "ai-message-copy";
+  copy.textContent = content;
+  item.append(copy);
+  if (role === "assistant") {
+    appendAiEvidence(item, message);
+    const action = aiMessageAction(message);
+    if (action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary-button ai-message-action";
+      button.textContent = action.label;
+      button.addEventListener("click", () => runAiMessageAction(action));
+      item.append(button);
+    }
+  }
   els.aiMessages.append(item);
   els.aiMessages.scrollTop = els.aiMessages.scrollHeight;
 }
 
-function appendAiEvent(event) {
-  const item = document.createElement("li");
-  const title = document.createElement("strong");
-  title.textContent = event.title || "AI";
-  const message = document.createElement("small");
-  message.textContent = event.message || event.status || "";
-  item.append(title, message);
-  els.aiEvents.append(item);
-}
-
-function renderAiSource(payload) {
-  const source = payload.answerSource;
-  if (!source) {
+function appendAiEvidence(item, message) {
+  const citations = asArray(message.citations);
+  const answerSource = String(message.answerSource || "");
+  if (!citations.length && !answerSource) {
     return;
   }
-  els.aiSourceStatus.classList.remove("ok", "fallback");
-  if (source === "openai") {
-    els.aiSourceStatus.textContent = `OpenAI · ${payload.model || ""}`.trim();
-    els.aiSourceStatus.classList.add("ok");
+  const details = document.createElement("details");
+  details.className = "ai-evidence";
+  const summary = document.createElement("summary");
+  summary.textContent = `Источники · ${citations.length || 1}`;
+  const list = document.createElement("ul");
+  if (answerSource) {
+    const source = document.createElement("li");
+    source.textContent = answerSource === "openai" && isStaffUser()
+      ? "Ответ AI по расчётной витрине"
+      : "Расчётная витрина";
+    list.append(source);
+  }
+  citations.forEach((citation) => {
+    const row = document.createElement("li");
+    if (citation.type === "report_row") {
+      const identity = citation.product
+        || citation.nmId
+        || citation.article1c
+        || citation.barcode
+        || "Строка товара";
+      row.textContent = `Товар/SKU: ${identity}`;
+    } else {
+      row.textContent = "Сводка текущего отчёта";
+    }
+    list.append(row);
+  });
+  details.append(summary, list);
+  item.append(details);
+}
+
+function aiMessageAction(message) {
+  const citations = asArray(message.citations);
+  const content = String(message.content || "");
+  const tools = new Set([
+    ...asArray(message.toolNames),
+    ...citations.map((citation) => citation.tool).filter(Boolean),
+  ]);
+  if (
+    tools.has("get_loss_drivers")
+    && content.includes("Откройте убыточные продажи")
+  ) {
+    return { kind: "losses", label: "Открыть убыточные товары" };
+  }
+  if (
+    tools.has("get_data_quality_issues")
+    && content.includes("Откройте проверку себестоимости")
+    && Number(state.summary?.quality?.missingCostRows || 0) > 0
+  ) {
+    return { kind: "missingCost", label: "Открыть себестоимость" };
+  }
+  const productCitation = citations.find((citation) => citation.type === "report_row");
+  if (productCitation && tools.has("search_sku")) {
+    return {
+      kind: "product",
+      label: "Открыть товар",
+      query: productCitation.product
+        || productCitation.nmId
+        || productCitation.article1c
+        || productCitation.barcode
+        || "",
+    };
+  }
+  if (tools.has("get_report_summary")) {
+    return { kind: "summary", label: "Открыть сводку" };
+  }
+  return null;
+}
+
+function runAiMessageAction(action) {
+  closeAiWidget({ restoreFocus: false });
+  if (action.kind === "losses") {
+    openProductsPreset("losses");
+    return;
+  }
+  if (action.kind === "missingCost") {
+    openMissingCostAction();
+    return;
+  }
+  if (action.kind === "product") {
+    selectTableScenario("products", { updateLocation: true, focus: true });
+    els.filterQuery.value = action.query || "";
+    state.rowsOffset = 0;
+    applyRowsFilters();
+    return;
+  }
+  selectTableScenario("summary", { updateLocation: true, focus: true });
+}
+
+function lastCompletedAiAnswerEvents(events) {
+  const items = asArray(events);
+  const lastDoneIndex = items.map((event) => event.type).lastIndexOf("assistant_done");
+  if (lastDoneIndex < 0) {
+    return [];
+  }
+  const previousDoneIndex = items
+    .slice(0, lastDoneIndex)
+    .map((event) => event.type)
+    .lastIndexOf("assistant_done");
+  return items.slice(previousDoneIndex + 1, lastDoneIndex + 1);
+}
+
+function renderAiTraceEvents(events) {
+  resetAiTrace();
+  asArray(events).forEach(appendAiEvent);
+}
+
+function resetAiTrace() {
+  els.aiEvents.replaceChildren();
+  els.aiTrace.hidden = true;
+  els.aiTraceCount.textContent = "";
+}
+
+function aiTraceEventKey(event) {
+  if (["tool_started", "tool_progress", "tool_completed"].includes(event.type)) {
+    return `tool:${event.toolName || event.title || "unknown"}`;
+  }
+  if (event.type === "answer_source") {
+    return "answer-source";
+  }
+  return "";
+}
+
+function appendAiEvent(event) {
+  const key = aiTraceEventKey(event);
+  if (!key) {
+    return;
+  }
+  let item = [...els.aiEvents.children]
+    .find((candidate) => candidate.dataset.aiTraceKey === key);
+  if (!item) {
+    item = document.createElement("li");
+    item.dataset.aiTraceKey = key;
+    item.append(document.createElement("strong"), document.createElement("small"));
+    els.aiEvents.append(item);
+  }
+  item.dataset.status = event.status || "";
+  const title = item.querySelector("strong");
+  const message = item.querySelector("small");
+  title.textContent = event.title || "Проверяю данные";
+  message.textContent = event.message || event.status || "";
+  const count = els.aiEvents.children.length;
+  els.aiTrace.hidden = count === 0;
+  els.aiTraceCount.textContent = count ? String(count) : "";
+}
+
+function aiReportPeriod(summary = {}) {
+  const meta = summary.meta || {};
+  return meta.reportPeriod
+    || meta.period
+    || [meta.periodStart, meta.periodEnd].filter(Boolean).join(" — ")
+    || "текущий период";
+}
+
+function aiStartMessage(summary = {}) {
+  if (!state.reportId || !Object.keys(summary || {}).length) {
+    return "Выберите клиента и отчёт — я помогу разобрать прибыль, SKU и качество данных.";
+  }
+  const readiness = summary.readiness || {};
+  const quality = summary.quality || {};
+  const period = aiReportPeriod(summary);
+  const status = trimSentenceEnding(readiness.label || "статус ещё не рассчитан");
+  const readinessTitle = isStaffUser()
+    ? "Внутренняя готовность"
+    : "Готовность отчёта";
+  const reasons = [
+    ...asArray(readiness.blockingReasons),
+    ...asArray(readiness.reviewReasons),
+  ];
+  const mainReason = reasons
+    .map((reason) => (
+      typeof reason === "string"
+        ? reason
+        : reason?.message || reason?.label || reason?.title || ""
+    ))
+    .find(Boolean);
+  const missingCost = Number(quality.missingCostRows || 0);
+  if (normalize(readiness.status) === "ready") {
+    return `${readinessTitle} за ${period}: ${status}. Могу найти убыточные товары, объяснить показатели или собрать главный вывод.`;
+  }
+  const mainIssue = mainReason
+    || (missingCost ? `нет себестоимости у ${number(missingCost)} строк` : "нужно проверить качество данных");
+  return `${readinessTitle} за ${period}: ${status}. Главное ограничение — ${trimSentenceEnding(mainIssue)}. Что разобрать сначала?`;
+}
+
+function trimSentenceEnding(value) {
+  return String(value || "").trim().replace(/[.!?…。]+$/u, "");
+}
+
+function aiQuickQuestionItems(summary = {}) {
+  if (!state.reportId || !Object.keys(summary || {}).length) {
+    return [];
+  }
+  const readiness = summary.readiness || {};
+  const missingCost = Number(summary.quality?.missingCostRows || 0);
+  const items = [];
+  const add = (label, question) => {
+    if (!items.some((item) => item.question === question)) {
+      items.push({ label, question });
+    }
+  };
+  if (isStaffUser()) {
+    if (missingCost) {
+      add("Нет себестоимости", "Где в отчёте нет себестоимости 1С?");
+    }
+    if (normalize(readiness.status) !== "ready") {
+      add("Почему не готов?", "Что мешает готовности текущего отчёта?");
+    }
+    add("Что убыточно?", "Что самое важное по убыточности?");
+    add("Главный вывод", "Сформулируй главный вывод по текущему отчёту.");
   } else {
-    els.aiSourceStatus.textContent = isStaffUser()
-      ? "Резервный ответ · расчётная витрина"
-      : "Расчетная витрина";
-    els.aiSourceStatus.classList.add("fallback");
+    add("Главный вывод", "Что самое важное в текущем отчёте?");
+    add("Что убыточно?", "Какие товары убыточны и почему?");
+    add("Объяснить маржу", "Объясни маржу текущего отчёта простыми словами.");
+  }
+  return items.slice(0, 3);
+}
+
+function renderAiQuickQuestions(summary = {}) {
+  const buttons = aiQuickQuestionItems(summary).map((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.aiQuestion = item.question;
+    button.textContent = item.label;
+    return button;
+  });
+  els.aiQuickQuestions.replaceChildren(...buttons);
+  els.aiQuickQuestions.hidden = buttons.length === 0;
+}
+
+function renderAiStartState(summary = {}) {
+  els.aiMessages.replaceChildren();
+  els.aiEvents.replaceChildren();
+  els.aiTrace.hidden = true;
+  els.aiTraceCount.textContent = "";
+  appendAiMessage({ role: "assistant", content: aiStartMessage(summary), local: true });
+  renderAiQuickQuestions(summary);
+}
+
+function renderAiContext(summary = {}) {
+  const hasReport = Boolean(state.reportId && Object.keys(summary || {}).length);
+  if (!hasReport) {
+    els.aiContextLine.textContent = "Выберите отчёт";
+    els.aiContextLine.removeAttribute("title");
+  } else {
+    const readiness = summary.readiness || {};
+    const readinessTitle = isStaffUser()
+      ? "Внутренняя готовность"
+      : "Готовность отчёта";
+    const hasScore = ![null, undefined, ""].includes(readiness.score)
+      && Number.isFinite(Number(readiness.score));
+    const score = hasScore
+      ? ` ${number(readiness.score)}/100`
+      : "";
+    const status = trimSentenceEnding(readiness.label || "Статус не рассчитан");
+    els.aiContextLine.textContent = `${aiReportPeriod(summary)} · ${readinessTitle}${score} · ${status}`;
+    if (isStaffUser()) {
+      els.aiContextLine.title = "Учитывает внутренние проверки и готовность клиентского черновика.";
+    } else {
+      els.aiContextLine.removeAttribute("title");
+    }
+  }
+  if (!state.aiThreadId && !state.aiBusy && !state.aiHistoryRequestKey) {
+    renderAiStartState(summary);
   }
 }
 
 function resetAiPanel() {
   els.aiMessages.replaceChildren();
   els.aiEvents.replaceChildren();
-  els.aiSourceStatus.textContent = "Не запускался";
-  els.aiSourceStatus.classList.remove("ok", "fallback");
-  els.aiError.textContent = "";
-  renderAiContext(state.summary || {});
+  els.aiQuickQuestions.replaceChildren();
+  els.aiLiveStatus.textContent = "";
+  els.aiTrace.hidden = true;
+  els.aiTraceCount.textContent = "";
+  setAiError();
+  els.aiRetry.hidden = true;
+  els.aiRetryMessage.textContent = "";
+  state.aiRetryQuestion = "";
+  state.aiStreamError = "";
+  renderAiContext({});
 }
 
 function renderClientSelect() {
@@ -13781,61 +14096,6 @@ function toggleCostReviewAcknowledgement() {
     return;
   }
   setTaskReviewed(reason, !isTaskReviewed(reason));
-}
-
-function renderAiContext(summary = {}) {
-  const hasReport = Boolean(state.reportId && summary && Object.keys(summary).length);
-  els.aiContextEmpty.hidden = hasReport;
-  els.aiContextMetrics.hidden = !hasReport;
-  els.aiContextBars.hidden = !hasReport;
-  if (!hasReport) {
-    els.aiContextReadiness.textContent = "Нет отчёта";
-    renderMetrics(els.aiContextMetrics, []);
-    els.aiContextBars.replaceChildren();
-    return;
-  }
-  const readiness = summary.readiness || {};
-  const quality = summary.quality || {};
-  const kpis = summary.kpis || {};
-  const revenue = Number(kpis.revenueWithoutVat ?? kpis.revenue ?? 0);
-  const profitValue = numberOrNull(kpis.profit ?? kpis.profitBeforeTax);
-  const marginValue = numberOrNull(kpis.margin ?? kpis.profitMargin);
-  const missingCost = Number(quality.missingCostRows || 0);
-  els.aiContextReadiness.textContent = readiness.label || "Статус не рассчитан";
-  renderMetrics(els.aiContextMetrics, [
-    ["Выручка", money(revenue)],
-    ["Прибыль до налогов", profitValue === null ? "Нет данных" : signedMoney(profitValue), "", profitValue !== null && profitValue < 0 ? "blocked" : "ready"],
-    ["Проверка себестоимости", number(missingCost), "строк", missingCost ? "review" : "ready"],
-  ]);
-  const total = Number(quality.rowCount || 0);
-  const okRows = Number(quality.okRows || 0);
-  const qualityShare = total ? Math.max(0, Math.min(1, okRows / total)) : 0;
-  const readinessShare = Math.max(0, Math.min(1, Number(readiness.score || 0) / 100));
-  const normalizedMargin = marginValue === null
-    ? 0
-    : Math.max(0, Math.min(1, Math.abs(marginValue) > 1 ? Math.abs(marginValue) / 100 : Math.abs(marginValue)));
-  els.aiContextBars.replaceChildren(
-    aiContextBar("Готовность", readinessShare, `${number(readiness.score || 0)}/100`, readinessShare < 0.85),
-    aiContextBar("Качество строк", qualityShare, `${Math.round(qualityShare * 100)}%`, qualityShare < 0.95),
-    aiContextBar("Маржа", normalizedMargin, marginValue === null ? "—" : percent(Math.abs(marginValue) > 1 ? marginValue / 100 : marginValue), marginValue !== null && marginValue < 0),
-  );
-}
-
-function aiContextBar(label, value, displayValue, warning = false) {
-  const row = document.createElement("div");
-  row.className = `ai-context-bar${warning ? " is-warning" : ""}`;
-  const title = document.createElement("span");
-  title.textContent = label;
-  const track = document.createElement("span");
-  track.className = "ai-context-bar-track";
-  const fill = document.createElement("span");
-  fill.className = "ai-context-bar-fill";
-  fill.style.width = `${Math.max(3, Math.min(100, Number(value || 0) * 100))}%`;
-  track.append(fill);
-  const result = document.createElement("strong");
-  result.textContent = displayValue;
-  row.append(title, track, result);
-  return row;
 }
 
 function renderKpis(kpis, taxContext = {}, lostSalesCoverage = {}) {

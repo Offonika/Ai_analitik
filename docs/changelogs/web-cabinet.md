@@ -30,6 +30,31 @@ updated_at: "2026-08-05"
   несколько расчётных дат давали разные evidence-варианты одной storage-
   identity; мастер теперь отличает внутренний сбой обработки от отказа
   обязательного источника.
+- 2026-08-03: test-only rollout v2.65 опубликован из commit
+  `bcb66b8c8e4178a3c4cea8c9a369358689c0f5bb` как immutable release
+  `runtime-bcb66b8-ai-chat-v265-20260803`. Локальный и публичный test health
+  вернули `status=ok`, `runtimeEnvironment=test` и совпадающие
+  `backendBuildId=staticBuildId=20260803-ai-chat-v265`; test service активен,
+  в журнале после rollout нет новых 5xx/traceback. На test, где
+  `aiConfigured=false`, authenticated browser-smoke подтвердил deterministic
+  intent-aware ответы, role-aware readiness, trace только последнего ответа,
+  restore, единственную retry-ошибку без дубля вопроса, focus trap/Escape,
+  mobile targets и отсутствие overflow. Production runtime и service не
+  менялись: локальный и публичный production health сохранили `status=ok`,
+  `runtimeEnvironment=production` и build `20260801-v264-news-guide-v3` на
+  release `runtime-main-30cc290-v264-news-guide-v3-20260801`. Rollback test —
+  вернуть pointer на этот production-compatible release и перезапустить только
+  `shumeiko-web-test.service`.
+- 2026-08-03: v2.65 сделал deterministic fallback intent-aware, сохранил
+  role-dependent readiness с явными подписями, свернул started/completed в
+  уникальные проверки последнего ответа и закрепил единственную retry-ошибку,
+  короткий mobile placeholder, доступные target areas и focus trap для
+  раскрываемых блоков trace/citations; пустой неретраимый alert скрыт из
+  accessibility tree без изменения API/БД.
+- 2026-08-02: v2.64 перевёл AI-аналитика в минималистичный chat-first widget:
+  локальное резюме не вызывает OpenAI и не создает thread, до первого вопроса
+  видны не более трех role-aware подсказок, а citations, источник ответа и
+  safe tool trace раскрываются по запросу рядом с сообщениями.
 - 2026-08-01: corrective v2.64 развёл `Дата начала` и `Дата конца` по
   полноширинным mobile-строкам, сохранил отдельную колонку меню действий и
   ограничил native date/select шириной контейнера. Исправление не меняет API,
