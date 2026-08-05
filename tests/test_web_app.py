@@ -6990,10 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["backendBuildId"] == (
-        "20260805-v268-report-wizard-draft-resume"
+        "20260805-v269-report-wizard-full-draft-resume"
     )
     assert health.json()["staticBuildId"] == (
-        "20260805-v268-report-wizard-draft-resume"
+        "20260805-v269-report-wizard-full-draft-resume"
     )
 
     page = client.get("/")
@@ -7146,8 +7146,8 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
     assert "Ozon + 1C" in cabinet.text
     assert "Выкупы Ozon" in cabinet.text
     assert "Ozon + 1C" in cabinet.text
-    assert "styles.css?v=20260805-v268-report-wizard-draft-resume" in cabinet.text
-    assert "app.js?v=20260805-v268-report-wizard-draft-resume" in cabinet.text
+    assert "styles.css?v=20260805-v269-report-wizard-full-draft-resume" in cabinet.text
+    assert "app.js?v=20260805-v269-report-wizard-full-draft-resume" in cabinet.text
     assert "Очередь аналитика" in cabinet.text
     assert "не выбирает номенклатуру 1C автоматически" in cabinet.text
     assert "Источники и сопоставление" in cabinet.text
@@ -7621,7 +7621,7 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert cabinet.text.index(
         'id="logistics-return-reasons"'
     ) < cabinet.text.index('id="logistics-orders-section"')
-    assert "20260805-v268-report-wizard-draft-resume" in cabinet.text
+    assert "20260805-v269-report-wizard-full-draft-resume" in cabinet.text
     assert "Что проверить сначала" in cabinet.text
     assert "Артикул WB" in app_js.text
     assert "Возвратов:" in app_js.text
@@ -8539,7 +8539,7 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
     assert cabinet.text.index('id="report-wizard-latest-draft"') < cabinet.text.index(
         'id="report-wizard-current"'
     )
-    assert "Последний готовый черновик" in cabinet.text
+    assert "Последний готовый полный отчёт" in cabinet.text
     assert "Скачать готовый Excel" in cabinet.text
     assert "Продолжить проверку" in cabinet.text
     assert cabinet.text.index('id="report-wizard-submit"') < cabinet.text.index(
@@ -8554,6 +8554,8 @@ def test_report_wizard_keeps_published_report_and_new_run_separate(
     assert "state.reportWizardRefresh = state.latestSourceRefresh" not in app_js.text
     assert "renderReportWizardStatus(state.latestSourceRefresh" not in app_js.text
     assert "function reportWizardLatestDraftReport()" in app_js.text
+    assert "const defaultPeriod = state.defaultFullPeriod || {};" in app_js.text
+    assert "return defaultDraft || drafts[0] || null;" in app_js.text
     assert "function renderReportWizardLatestDraft()" in app_js.text
     assert "function resumeLatestReportWizardDraft()" in app_js.text
     assert 'normalize(item.publicationStatus) === "draft"' in app_js.text

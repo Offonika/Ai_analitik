@@ -3603,7 +3603,7 @@ function reportWizardPublishedReport() {
 }
 
 function reportWizardLatestDraftReport() {
-  return [...state.reports]
+  const drafts = [...state.reports]
     .filter(
       (item) =>
         Boolean(item.id) &&
@@ -3615,7 +3615,16 @@ function reportWizardLatestDraftReport() {
       String(right.generatedAt || "").localeCompare(
         String(left.generatedAt || ""),
       ),
-    )[0] || null;
+    );
+  const defaultPeriod = state.defaultFullPeriod || {};
+  const defaultDraft = drafts.find(
+    (item) =>
+      defaultPeriod.periodStart &&
+      defaultPeriod.periodEnd &&
+      item.periodStart === defaultPeriod.periodStart &&
+      item.periodEnd === defaultPeriod.periodEnd,
+  );
+  return defaultDraft || drafts[0] || null;
 }
 
 function reportWizardGeneratedReportId() {
@@ -3729,8 +3738,8 @@ function renderReportWizardLatestDraft() {
       reportWizardHasExternalActiveRefresh(),
   );
   els.reportWizardLatestDraftTitle.textContent = newBuildActive
-    ? "Последний готовый черновик — доступен сейчас"
-    : "Последний готовый черновик";
+    ? "Последний готовый полный отчёт — доступен сейчас"
+    : "Последний готовый полный отчёт";
   els.reportWizardLatestDraftPeriod.textContent = period ? `Период: ${period}` : "";
   els.reportWizardLatestDraftHint.textContent = newBuildActive
     ? "Новый отчёт ещё формируется. Этот готовый Excel можно скачать сейчас."
