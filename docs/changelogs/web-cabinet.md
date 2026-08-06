@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-08-05"
+updated_at: "2026-08-06"
 ---
 
 # AI web cabinet changelog
@@ -16,6 +16,13 @@ updated_at: "2026-08-05"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-06: browser accessibility acceptance v271 закрепила обязательные
+  modal boundaries: overlay не перекрывается runtime banner на 320/390 px,
+  фон становится inert, Escape/Close возвращают фокус на видимый opener,
+  включая `summary` автоматически закрытого action menu. Client
+  download больше не объявляет staff dialog, интерактивный SVG использует
+  container semantics, а подтвержденные contrast и touch-target нарушения
+  входят в единый regression contract.
 - 2026-08-05: merge commit `bb87f8c` с intent-aware AI fallback и mobile/
   accessibility корректировками развернут только в test как чистый immutable
   runtime v271. OpenAI и ChatKit остались выключены, поэтому приёмка не

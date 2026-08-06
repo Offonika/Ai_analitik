@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-08-05"
+updated_at: "2026-08-06"
 ---
 
 # Implementation Status
@@ -1488,6 +1488,21 @@ Large-report loading:
   отдельную непрерывную колонку. Native date/select controls имеют
   `min-width: 0`, `max-width: 100%`, touch-высоту не менее 44 px и не создают
   overlap или page-level overflow на 320/390 px.
+- Любой modal widget находится выше runtime banner и на 320/390 px сохраняет
+  видимыми заголовок, `Закрыть` и основные действия. Пока диалог открыт,
+  фоновый cabinet получает `inert`; `Tab` остается внутри диалога, а
+  `Escape`, кнопка закрытия и click-outside синхронно возвращают фокус на
+  исходный opener без фокуса в скрытом DOM. Если opener находится внутри
+  автоматически закрывающегося `details`-меню, фокус возвращается на его
+  видимый `summary`, а не на скрытую кнопку меню.
+- Интерактивный SVG-график использует контейнерную семантику, допускающую
+  именованные focusable элементы, а не вкладывает `role=button` в
+  `role=img`. Текст интерфейса проходит WCAG AA contrast для обычного текста,
+  а раскрывающиеся touch targets имеют высоту не менее 24 px.
+- Когда client-действие является прямым скачиванием опубликованного Excel, оно
+  не объявляет `aria-haspopup=dialog` и не ссылается через `aria-controls` на
+  staff-only мастер; при возврате к staff-роли dialog semantics
+  восстанавливаются.
 - Бухгалтерский report kind показывает контекстную инструкцию без
   marketplace-only шагов, не дублирует заголовок общей шапкой, сохраняет
   доступное действие AI и синхронизирует badge/текст `Проверки` с `issues[]`.
@@ -1599,6 +1614,11 @@ Large-report loading:
 - Frontend responsive contract фиксирует mobile topbar grid areas, полную
   ширину обеих дат, ограничение native date/select шириной контейнера и
   touch-высоту не менее 44 px; browser gate проверяет 320/390/760/920/1440 px.
+- Frontend modal accessibility contract проверяет `inert` фон, удержание и
+  синхронный возврат фокуса по Escape/Close, приоритет overlay над runtime
+  banner на 320/390 px, возврат на видимый `summary` после открытия modal из
+  закрывающегося `details`-меню, отсутствие client-only ссылок на staff wizard,
+  допустимую SVG-семантику, AA contrast и disclosure target не менее 24 px.
 - Frontend Playwright tests for client switcher, default all-cabinets view,
   cabinet/organization filters and no stale data after switching clients.
 - Live-check tests for disabled source, cached source, timeout/unavailable

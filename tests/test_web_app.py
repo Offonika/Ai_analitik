@@ -8094,7 +8094,8 @@ def test_cabinet_static_assets_use_readiness_api_and_safe_rendering(
     assert "clientOutputWidgetOverlay" in app_js.text
     assert "integrationsWidgetOverlay" in app_js.text
     assert "mappingWidgetOverlay" in app_js.text
-    assert 'body.classList.add("widget-open")' in app_js.text
+    assert 'document.body.classList.toggle("widget-open", widgetOpen)' in app_js.text
+    assert "els.cabinetView.inert = widgetOpen" in app_js.text
     assert "renderIntegrationsEmpty" in app_js.text
     assert "integrationsBackLink" not in app_js.text
     assert "aiWidgetOverlay" in app_js.text
@@ -8726,7 +8727,12 @@ def test_frontend_login_and_widget_accessibility_regressions(tmp_path: Path) -> 
     assert "trapWidgetFocus" in text
     assert 'const FOCUSABLE_WIDGET_SELECTOR = [\n  "summary",' in text
     assert 'function setAiError(message = "")' in text
-    assert "!els.newClientWidgetOverlay.hidden" in text
+    open_overlays = text.split("function currentOpenWidgetOverlay()", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "els.newClientWidgetOverlay" in open_overlays
+    assert "els.cabinetView.inert = widgetOpen" in text
+    assert "target.focus({ preventScroll: true })" in text
 
     cabinet = client.get("/cabinet")
     assert cabinet.status_code == 200
