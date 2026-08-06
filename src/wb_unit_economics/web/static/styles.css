@@ -4,14 +4,14 @@
   --surface: #ffffff;
   --surface-muted: #f1f5f8;
   --text: #172033;
-  --muted: #667486;
+  --muted: #5f6d7f;
   --line: #d9e1ea;
   --brand: #236a70;
   --brand-dark: #143f45;
   --brand-bg: #e6f3f1;
   --ready: #167449;
   --ready-bg: #e8f4ee;
-  --review: #9a6500;
+  --review: #875800;
   --review-bg: #fff3d2;
   --blocked: #a43a32;
   --blocked-bg: #fde9e6;
@@ -265,7 +265,7 @@ select:focus-visible {
 }
 
 .brand-lockup .eyebrow {
-  opacity: 0.88;
+  opacity: 1;
 }
 
 .report-load-retry {
@@ -1811,6 +1811,9 @@ button.action-insight-card {
 }
 
 .upload-help summary {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
   cursor: pointer;
   font-weight: 800;
   font-size: 12px;
@@ -2859,7 +2862,7 @@ button.action-insight-card {
 .widget-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 1100;
   display: grid;
   place-items: center;
   padding: 24px;

@@ -5151,34 +5151,35 @@ function closeAllWidgets() {
 }
 
 function updateWidgetBodyState() {
-  document.body.classList.toggle(
-    "widget-open",
-      !els.aiWidgetOverlay.hidden ||
-      !els.clientOutputWidgetOverlay.hidden ||
-      !els.reportWizardOverlay.hidden ||
-      !els.accountingReportWizardOverlay.hidden ||
-      !els.integrationsWidgetOverlay.hidden ||
-      !els.mappingWidgetOverlay.hidden ||
-      !els.newClientWidgetOverlay.hidden ||
-      !els.drilldownWidgetOverlay.hidden ||
-      !els.marginCalculatorOverlay.hidden,
-  );
+  const widgetOpen = Boolean(currentOpenWidgetOverlay());
+  document.body.classList.toggle("widget-open", widgetOpen);
+  if (els.cabinetView) {
+    els.cabinetView.inert = widgetOpen;
+  }
 }
 
 function openWidgetOverlay(overlay) {
   if (overlay.hidden) {
-    state.widgetReturnFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    state.widgetReturnFocus = widgetReturnFocusTarget();
   }
   overlay.hidden = false;
   state.activeWidgetOverlay = overlay;
-  document.body.classList.add("widget-open");
+  updateWidgetBodyState();
   window.requestAnimationFrame(() => {
     const focusTarget = overlay.querySelector(
       "[autofocus], [data-widget-initial-focus], h1[tabindex='-1'], h2[tabindex='-1'], button:not([disabled])",
     );
     focusTarget?.focus({ preventScroll: true });
   });
+}
+
+function widgetReturnFocusTarget() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) {
+    return null;
+  }
+  const menuSummary = active.closest("details")?.querySelector("summary");
+  return menuSummary instanceof HTMLElement ? menuSummary : active;
 }
 
 function closeWidgetOverlay(overlay, options = {}) {
@@ -5210,7 +5211,7 @@ function restoreWidgetFocus() {
   const target = state.widgetReturnFocus;
   state.widgetReturnFocus = null;
   if (target?.isConnected && typeof target.focus === "function") {
-    window.setTimeout(() => target.focus(), 0);
+    target.focus({ preventScroll: true });
   }
 }
 
@@ -10606,8 +10607,11 @@ function updateReportBuildButton(refresh = state.latestSourceRefresh) {
     els.reportBuildButton.dataset.tooltip =
       "Скачать текущий опубликованный Excel-отчёт.";
     els.reportBuildButton.disabled = !reportId;
+    els.reportBuildButton.removeAttribute("aria-haspopup");
+    els.reportBuildButton.removeAttribute("aria-controls");
     return;
   }
+  els.reportBuildButton.setAttribute("aria-haspopup", "dialog");
   if (isAccountingReportKind()) {
     els.reportBuildButton.textContent = "Открыть мастер отчёта";
     els.reportBuildButton.dataset.tooltip =
@@ -16161,7 +16165,7 @@ function renderMoneyTrendChart(target, monthly) {
   const svg = document.createElementNS(svgNs, "svg");
   svg.classList.add("sales-trend-svg");
   svg.setAttribute("viewBox", "0 0 1040 360");
-  svg.setAttribute("role", "img");
+  svg.setAttribute("role", "group");
   svg.setAttribute(
     "aria-label",
     "График выручки, маржинального дохода, маржи и количества продаж по месяцам",
