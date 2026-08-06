@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections.abc import Iterable
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -569,7 +570,7 @@ def build_db_first_payload(
 
 
 def _wb_snapshots_from_daily_facts(
-    facts: list[MarketplaceFinanceDailyFact],
+    facts: Iterable[MarketplaceFinanceDailyFact],
 ) -> list[WbApiSnapshot]:
     """Recreate the calculation grain without rereading immutable WB raw pages."""
     loaded_at = datetime.now().astimezone()

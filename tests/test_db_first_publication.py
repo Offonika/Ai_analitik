@@ -3,7 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+import pytest
+from sqlalchemy import func, inspect, select, text
 
 from wb_unit_economics.report_exports import file_sha256
 from wb_unit_economics.web import repository
@@ -15,7 +16,7 @@ from wb_unit_economics.web.database import (
     make_session_factory,
     schema_version,
 )
-from wb_unit_economics.web.models import ReportRun
+from wb_unit_economics.web.models import ReportRun, ReportUnitRow
 from wb_unit_economics.web.repository import save_report_marts, upsert_user
 
 
@@ -212,6 +213,131 @@ def test_db_first_publication_keeps_single_current_report_and_rollback(
     assert new.source_coverage_end is not None
     assert new.source_coverage_end.isoformat() == "2026-06-17"
     assert artifact_path == artifact.resolve()
+
+
+def test_unit_rows_are_inserted_in_bounded_core_batches_with_value_parity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    payload = _payload()
+    template = payload["unitRows"][0]
+    payload["unitRows"] = [
+        {
+            **deepcopy(template),
+            "id": f"unit-{index}",
+            "product": f"Товар {index}",
+            "revenue": 1000 + index,
+        }
+        for index in range(1, 6)
+    ]
+    batch_sizes: list[int] = []
+    original_insert_batch = repository._insert_report_unit_row_batch
+
+    def record_insert_batch(db, rows) -> None:
+        batch_sizes.append(len(rows))
+        original_insert_batch(db, rows)
+
+    monkeypatch.setattr(repository, "REPORT_UNIT_ROW_INSERT_BATCH_SIZE", 2)
+    monkeypatch.setattr(
+        repository,
+        "_insert_report_unit_row_batch",
+        record_insert_batch,
+    )
+
+    with session_factory() as db:
+        report = save_report_marts(
+            db,
+            payload,
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-batched-unit-rows",
+        )
+        db.flush()
+        assert not any(
+            isinstance(instance, ReportUnitRow)
+            for instance in db.identity_map.values()
+        )
+        rows = list(
+            db.scalars(
+                select(ReportUnitRow)
+                .where(ReportUnitRow.report_run_id == report.id)
+                .order_by(ReportUnitRow.row_uid)
+            )
+        )
+
+    assert batch_sizes == [2, 2, 1]
+    assert [(row.row_uid, row.product, row.revenue) for row in rows] == [
+        (f"unit-{index}", f"Товар {index}", 1000 + index)
+        for index in range(1, 6)
+    ]
+
+
+def test_unit_row_batch_failure_rolls_back_report_and_keeps_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'web.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    with session_factory() as db:
+        current = save_report_marts(
+            db,
+            _payload(),
+            tenant_id="shumeyko",
+            tenant_name="Шумейко и Партнеры",
+            report_id="report-current",
+        )
+        db.commit()
+        current_id = current.id
+
+    payload = _payload()
+    template = payload["unitRows"][0]
+    payload["unitRows"] = [
+        {**deepcopy(template), "id": f"failing-unit-{index}"}
+        for index in range(1, 6)
+    ]
+    original_insert_batch = repository._insert_report_unit_row_batch
+    insert_calls = 0
+
+    def fail_second_insert_batch(db, rows) -> None:
+        nonlocal insert_calls
+        insert_calls += 1
+        if insert_calls == 2:
+            raise RuntimeError("synthetic batch failure")
+        original_insert_batch(db, rows)
+
+    monkeypatch.setattr(repository, "REPORT_UNIT_ROW_INSERT_BATCH_SIZE", 2)
+    monkeypatch.setattr(
+        repository,
+        "_insert_report_unit_row_batch",
+        fail_second_insert_batch,
+    )
+
+    with session_factory() as db:
+        with pytest.raises(RuntimeError, match="synthetic batch failure"):
+            save_report_marts(
+                db,
+                payload,
+                tenant_id="shumeyko",
+                tenant_name="Шумейко и Партнеры",
+                report_id="report-must-rollback",
+            )
+        db.rollback()
+        current = db.get(ReportRun, current_id)
+        failed = db.get(ReportRun, "report-must-rollback")
+        failed_row_count = db.scalar(
+            select(func.count())
+            .select_from(ReportUnitRow)
+            .where(ReportUnitRow.report_run_id == "report-must-rollback")
+        )
+
+    assert insert_calls == 2
+    assert current is not None and current.is_current is True
+    assert failed is None
+    assert failed_row_count == 0
 
 
 def test_logistics_financial_revenue_migration_is_idempotent(

@@ -16,7 +16,7 @@ depends_on: [workspace-shumeyko-partners-wb-unit-economics-excel-mvp-implementat
 related_specs: [workspace-shumeyko-partners-wb-unit-economics-ai-web-cabinet-implementation]
 supersedes: [legacy_excel_import_as_regular_build_path]
 rollout_required: true
-updated_at: "2026-08-04"
+updated_at: "2026-08-05"
 ---
 
 # Implementation Status
@@ -96,6 +96,12 @@ Read-only WB, 1С и mapping lineage сохраняются как raw/source с
 
 Web не считает прибыль на лету. Web читает только сохраненные строки и summary
 payload из БД.
+
+Входные daily facts читаются проекцией контрактных колонок потоковыми DB-
+порциями не более 5 000 без полной ORM-гидратации. `unitRows` записывается
+атомарно Core insert-порциями не более 500 строк; DB-first persistence не
+создаёт и не удерживает полный ORM-набор `ReportUnitRow`. После validation и
+записи большой payload освобождается до расчёта зависимых logistics-витрин.
 
 `reconciliationMonthly` сохраняет и отдает все рассчитанные стороны сверки и
 дельты независимо от результата контроля. Расхождение, неполный месяц или
@@ -187,6 +193,9 @@ Legacy recovery import:
   остаются `null`, а `monthly_reconciliation_unresolved` выводится как
   предупреждение, не как публикационный блокер.
 - Web summary/rows/lostSales читаются из БД.
+- Высокообъёмный `unitRows` persistence ограничен порциями по 500 строк,
+  сохраняет точное число и значения строк, не оставляет полный набор
+  `ReportUnitRow` в identity map и откатывается целиком при ошибке порции.
 - Web summary показывает `reportPeriod`, `sourceCoverage`,
   `sourceCoverageStart`, `sourceCoverageEnd` из опубликованного `report_run`
   даже если отчет опубликован вручную без нового `source_refresh_run`.
@@ -218,6 +227,7 @@ Unit:
 
 - `tests/test_report_marts.py`;
 - `tests/test_db_first_publication.py`;
+- bounded batch persistence и value parity для высокообъёмного `unitRows`;
 - KPI parity с текущей методикой.
 - monthly reconciliation с расхождением или отсутствующим источником сохраняет
   рассчитанные значения и появляется в `reviewReasons`, но не в
@@ -280,6 +290,9 @@ Parity-решение и источник старого ориентира `188
 
 # Changelog
 
+- 2026-08-05: daily facts переведены на streaming column projection, а
+  `unitRows` — на атомарную Core batch persistence по 500 строк с освобождением
+  полного payload до logistics.
 - 2026-08-04: scheduled artifact ограничен Excel, добавлены keyset/write-only
   atomic export и idempotent optional export jobs; ошибка Excel больше не
   повторяет source collection или расчёт marts.

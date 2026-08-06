@@ -2548,7 +2548,7 @@ class SourceRefreshService:
             repository.update_source_refresh_run(db, refresh_run, status="rebuilding")
             _commit_source_refresh_progress(db)
             contributing_runs: list[SourceRefreshRun] = []
-            wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None
+            wb_daily_facts: Iterable[MarketplaceFinanceDailyFactContract] | None = None
             wb_summary_rows: list[WbSalesReportSummaryRow] | None = None
             if mode == "incremental":
                 contributing_runs = self._daily_fact_contributing_runs(db, refresh_run)
@@ -5182,7 +5182,7 @@ class SourceRefreshService:
         refresh_run: SourceRefreshRun,
         *,
         wb_summary_rows: Iterable[WbSalesReportSummaryRow] = (),
-    ) -> list[MarketplaceFinanceDailyFactContract]:
+    ) -> Iterable[MarketplaceFinanceDailyFactContract]:
         report_keys = sorted(
             {
                 (
@@ -5212,32 +5212,39 @@ class SourceRefreshService:
                     for seller_account_id, report_id in report_keys
                 ),
             )
-        rows = list(
-            db.scalars(
-                select(MarketplaceFinanceDailyFactModel)
-                .where(
-                    MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
-                    MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
-                    MarketplaceFinanceDailyFactModel.marketplace == "wb",
-                    report_scope,
-                )
-                .order_by(
-                    MarketplaceFinanceDailyFactModel.fact_date,
-                    MarketplaceFinanceDailyFactModel.grain_hash,
-                )
+        field_names = tuple(MarketplaceFinanceDailyFactContract.model_fields)
+        columns = tuple(
+            getattr(MarketplaceFinanceDailyFactModel, name) for name in field_names
+        )
+        statement = (
+            select(*columns)
+            .where(
+                MarketplaceFinanceDailyFactModel.tenant_id == refresh_run.tenant_id,
+                MarketplaceFinanceDailyFactModel.client_id == refresh_run.client_id,
+                MarketplaceFinanceDailyFactModel.marketplace == "wb",
+                report_scope,
+            )
+            .order_by(
+                MarketplaceFinanceDailyFactModel.fact_date,
+                MarketplaceFinanceDailyFactModel.grain_hash,
+            )
+            .execution_options(
+                stream_results=True,
+                yield_per=repository.MARKETPLACE_FACT_INSERT_BATCH_SIZE,
             )
         )
-        if not rows:
-            raise SourceRefreshConfigError(
-                "incremental daily-facts report input is empty"
-            )
-        field_names = MarketplaceFinanceDailyFactContract.model_fields
-        return [
-            MarketplaceFinanceDailyFactContract.model_validate(
-                {name: getattr(row, name) for name in field_names}
-            )
-            for row in rows
-        ]
+
+        def iter_facts() -> Iterable[MarketplaceFinanceDailyFactContract]:
+            found = False
+            for row in db.execute(statement).mappings():
+                found = True
+                yield MarketplaceFinanceDailyFactContract.model_validate(row)
+            if not found:
+                raise SourceRefreshConfigError(
+                    "incremental daily-facts report input is empty"
+                )
+
+        return iter_facts()
 
     def _incremental_wb_summary_rows(
         self,
@@ -5307,7 +5314,7 @@ class SourceRefreshService:
         source_snapshot_set_id: str,
         base_refresh_run: SourceRefreshRun | None,
         contributing_runs: Iterable[SourceRefreshRun] = (),
-        wb_daily_facts: list[MarketplaceFinanceDailyFactContract] | None = None,
+        wb_daily_facts: Iterable[MarketplaceFinanceDailyFactContract] | None = None,
         wb_summary_rows: list[WbSalesReportSummaryRow] | None = None,
     ) -> tuple[ReportRun, Path]:
         from scripts.rebuild_report_from_sources import (
@@ -5420,32 +5427,45 @@ class SourceRefreshService:
                 "confirmed 1C tax profiles were not resolved for report rebuild"
             )
         db.commit()
+        daily_facts_supplied = wb_daily_facts is not None
         build = build_db_first_payload(
             args,
             tax_profiles=tax_profiles,
             input_vat_policies=input_vat_policies,
         )
-        if wb_daily_facts is not None:
-            wb_daily_facts.clear()
-            args.wb_daily_facts = None
-        self._save_onec_cost_snapshots(db, refresh_run, build)
-        if self.settings.marketplace_daily_facts_enabled and wb_daily_facts is None:
-            self._save_wb_daily_facts(
+        payload = build["payload"]
+        try:
+            _validate_marts(payload)
+            self._save_onec_cost_snapshots(db, refresh_run, build)
+            if (
+                self.settings.marketplace_daily_facts_enabled
+                and not daily_facts_supplied
+            ):
+                self._save_wb_daily_facts(
+                    db,
+                    refresh_run,
+                    build,
+                    replacement_summary_rows=wb_summary_rows,
+                )
+            report = repository.save_report_marts(
                 db,
-                refresh_run,
-                build,
-                replacement_summary_rows=wb_summary_rows,
+                payload,
+                tenant_id=refresh_run.tenant_id,
+                tenant_name=self._tenant_name(db, refresh_run.tenant_id),
+                report_id=self._new_report_id(source_report, refresh_run),
+                publication_status="draft",
+                publish=False,
+                source_snapshot_set_id=source_snapshot_set_id,
             )
-        report = repository.save_report_marts(
-            db,
-            build["payload"],
-            tenant_id=refresh_run.tenant_id,
-            tenant_name=self._tenant_name(db, refresh_run.tenant_id),
-            report_id=self._new_report_id(source_report, refresh_run),
-            publication_status="draft",
-            publish=False,
-            source_snapshot_set_id=source_snapshot_set_id,
-        )
+        finally:
+            args.wb_daily_facts = None
+            args.sku_mappings = None
+            wb_daily_facts = None
+            sku_mappings.clear()
+            tax_profiles.clear()
+            input_vat_policies.clear()
+            build.clear()
+            del payload
         repository.replace_source_loads_from_refresh(
             db,
             report,
@@ -5507,7 +5527,6 @@ class SourceRefreshService:
                         base_refresh_run=base_refresh_run,
                         contributing_runs=contributing_runs,
                     )
-        _validate_marts(build["payload"])
         db.commit()
         return report, excel_path
 

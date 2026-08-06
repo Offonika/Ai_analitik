@@ -12,6 +12,7 @@ from zipfile import ZipFile
 import pytest
 from cryptography.fernet import Fernet
 from openpyxl import Workbook
+from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 
 from wb_unit_economics.contracts import (
@@ -38,6 +39,9 @@ from wb_unit_economics.wb_return_claims import WbReturnClaimsExportResult
 from wb_unit_economics.wb_stocks import WbStockExportResult
 from wb_unit_economics.web import integrations, repository, source_refresh
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
+from wb_unit_economics.web.models import (
+    MarketplaceFinanceDailyFact as MarketplaceFinanceDailyFactModel,
+)
 from wb_unit_economics.web.models import (
     MarketplaceOperationFact,
     OrganizationTaxProfile,
@@ -4467,15 +4471,93 @@ def test_daily_facts_report_selection_includes_opening_partial_week(
             coverage_start=date(2026, 2, 22),
             coverage_end=date(2026, 6, 17),
         )
-        selected = SourceRefreshService(settings)._daily_facts_for_report(
-            db,
-            refresh_run,
+        selected = list(
+            SourceRefreshService(settings)._daily_facts_for_report(
+                db,
+                refresh_run,
+            )
         )
 
     assert [item.fact_date for item in selected] == [
         date(2026, 2, 23),
         date(2026, 3, 1),
     ]
+
+
+def test_daily_facts_report_selection_streams_projection_without_orm_hydration(
+    tmp_path: Path,
+) -> None:
+    settings, session_factory, user, report, _mapping_dir = _source_refresh_context(
+        tmp_path
+    )
+    with session_factory() as db:
+        user, report = _session_user_report(db, user, report)
+        refresh_run = repository.create_source_refresh_run(
+            db,
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            mode="incremental",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="streaming-daily-facts",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 3, 25),
+            user=user,
+            source_report=report,
+            reason="streaming daily facts",
+        )
+        repository.replace_marketplace_finance_daily_facts(
+            db,
+            refresh_run,
+            [
+                MarketplaceFinanceDailyFact(
+                    client_id=report.client_id,
+                    seller_account_id="seller",
+                    organization_id="org",
+                    fact_date=date(2026, 3, day),
+                    marketplace_report_id=f"report-{day}",
+                    document_kind="commissioner_report",
+                    source_row_count=1,
+                    source_hash_digest=f"{day:064d}",
+                    methodology_version="test-v1",
+                )
+                for day in range(1, 26)
+            ],
+            marketplace="wb",
+            coverage_start=date(2026, 3, 1),
+            coverage_end=date(2026, 3, 25),
+        )
+        hydrated_models: list[type[object]] = []
+        execution_options: list[dict[str, object]] = []
+
+        def record_loaded(_session, instance) -> None:
+            if isinstance(instance, MarketplaceFinanceDailyFactModel):
+                hydrated_models.append(type(instance))
+
+        def record_execute(state) -> None:
+            if state.is_select:
+                execution_options.append(dict(state.execution_options))
+
+        event.listen(db, "loaded_as_persistent", record_loaded)
+        event.listen(db, "do_orm_execute", record_execute)
+        try:
+            selected = list(
+                SourceRefreshService(settings)._daily_facts_for_report(
+                    db,
+                    refresh_run,
+                )
+            )
+        finally:
+            event.remove(db, "loaded_as_persistent", record_loaded)
+            event.remove(db, "do_orm_execute", record_execute)
+
+    assert len(selected) == 25
+    assert hydrated_models == []
+    assert any(
+        options.get("stream_results") is True
+        and options.get("yield_per") == repository.MARKETPLACE_FACT_INSERT_BATCH_SIZE
+        for options in execution_options
+    )
 
 
 def test_large_onec_snapshot_stays_file_authoritative(tmp_path: Path) -> None:
@@ -5760,7 +5842,9 @@ def test_source_refresh_db_first_branch_keeps_staff_draft_and_artifact(
         assert tax_profiles[0].source == "manual_override"
         assert input_vat_policies == []
         seen["tax_profile_source"] = tax_profiles[0].source
-        return {"payload": minimal_payload()}
+        build_result = {"payload": minimal_payload()}
+        seen["build_result"] = build_result
+        return build_result
 
     monkeypatch.setattr(
         rebuild_script,
@@ -5853,6 +5937,7 @@ def test_source_refresh_db_first_branch_keeps_staff_draft_and_artifact(
     assert artifact_types == {"excel"}
     assert all(Path(item.path).exists() for item in artifacts)
     assert all(item.sha256 for item in artifacts)
+    assert seen["build_result"] == {}
 
 
 def test_split_pipeline_resumes_from_raw_to_marts_without_recollecting(
