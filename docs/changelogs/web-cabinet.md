@@ -16,6 +16,12 @@ updated_at: "2026-08-06"
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
 
+- 2026-08-06: merge commit `4f72f0f` с accessibility-fix развернут только в
+  test как чистый immutable corrective release v271. Manifest, `24` целевых
+  теста, browser gate `11/11`, public static/safety smoke, штатный health,
+  drift-check и rollback-window `10/10` прошли; OpenAI/ChatKit, source refresh,
+  report artifacts и production v269 не менялись. Предыдущий чистый test v271
+  сохранен как точная rollback-цель.
 - 2026-08-06: browser accessibility acceptance v271 закрепила обязательные
   modal boundaries: overlay не перекрывается runtime banner на 320/390 px,
   фон становится inert, Escape/Close возвращают фокус на видимый opener,

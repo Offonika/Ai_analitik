@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-08-05"
+updated_at: "2026-08-06"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -2072,3 +2072,75 @@ Rollback test — атомарно вернуть pointer на
 `shumeiko-web-test.service` и повторить local/public health, safety, static
 build и drift smoke. Данные, drafts, snapshots и production при runtime
 rollback не изменять.
+
+## Corrective test-only rollout accessibility fix v271 — 6 августа 2026 года
+
+PR [#100](https://github.com/Offonika/Ai_analitik/pull/100) влит в `main`
+merge-коммитом `4f72f0fe332b334a5b70df7eedad1eaeedc2775e`. Оба обязательных
+post-merge job, `quality` и `tests`, успешно завершились в
+[GitHub Actions run 31073630360](https://github.com/Offonika/Ai_analitik/actions/runs/31073630360).
+Это corrective release v271: отдельный номер v272 не присваивался, потому что
+merge-коммит сохранил versioned build ID
+`20260805-v271-ai-chat-main-sync`, а canonical release notes не определяли
+новую версию. Rollout ограничен test-контуром; production, БД/schema,
+интеграции, credentials, source refresh, snapshots, report artifacts, drafts и
+published current не менялись.
+
+До сборки авторизованная browser accessibility-приёмка прошла `11/11`
+состояний с `0` axe violations и `0` внешних origins. Она подтвердила focus
+trap/restore, `inert` фона, mobile overlay stacking, client-role ARIA boundary,
+SVG container semantics, contrast и disclosure touch target. OpenAI и ChatKit
+на test оставались выключены. После merge в отдельном чистом worktree следующий
+воспроизводимый набор завершился `24 passed`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider \
+  tests/test_runtime_contour_scripts.py \
+  tests/test_runtime_contour_drift.py \
+  tests/test_runtime_release_retention.py \
+  tests/test_web_static.py \
+  tests/test_web_app.py::test_cabinet_static_assets_use_readiness_api_and_safe_rendering \
+  tests/test_web_app.py::test_frontend_login_and_widget_accessibility_regressions
+```
+
+Из точного merge-коммита собран immutable release
+`runtime-4f72f0f-v271-accessibility-fix-20260806`. Manifest подтверждает
+`sourceDirty=false` и content SHA-256
+`51ff5bffe69a64426fd9c96de56c4b58450c82477a1d9f70c113b01dbbb00a68`.
+Archive и dependency-freeze hashes независимо совпали с manifest, пакет
+импортируется из собственного `release/src`, writable entries отсутствуют.
+Перед promotion test находился на чистом
+`runtime-bb87f8c-v271-ai-chat-main-sync-clean-20260805`, production — на
+`runtime-2ac7ccf-v269-report-wizard-full-draft-resume-20260805`; runtime lock
+был свободен, фактические source-refresh workers отсутствовали, health и
+runtime drift-check прошли.
+
+Test pointer атомарно переключен на accessibility-fix release, перезапущен
+только `shumeiko-web-test.service`. Локальный и публичный health вернули
+`status=ok`, `runtimeEnvironment=test`, совпадающие
+`backendBuildId=staticBuildId=20260805-v271-ai-chat-main-sync`,
+`aiConfigured=false`, `chatkitEnabled=false` и
+`latestSourceRefreshActive=false`. Публичные `app.js` и `styles.css` побайтно
+совпали с новым immutable release, отличались от предыдущего v271 artifact и
+отдавались с `Cache-Control: no-store`.
+
+Неавторизованные `GET /api/reports`, `GET /api/ai/config` и
+`POST /api/chatkit` вернули `401`; `/.env`, неизвестный route,
+`/data/report.json` и `/downloads/report.xlsx` — `404`. `X-Robots-Tag` и
+`robots.txt` сохранили закрытие от индексации. Штатный
+`shumeiko-web-test-health.service` дважды завершился с `Result=success`,
+runtime drift-check прошёл, test service остался active с PID `4083189` и
+`NRestarts=0`.
+
+Rollback-window выполнило `10/10` успешных local/public test и production
+health, pointer, PID, service и refresh-worker checks с интервалом 30 секунд с
+`08:52:21` до `08:56:55 MSK`. После окна test-журнал содержал `0` error-level
+записей, `0` traceback и `0` ответов 5xx; в test report/source roots не
+появилось новых файлов. Production всё окно сохранил v269, PID `1746696`,
+`NRestarts=0` и `status=ok`; production service и pointer не менялись.
+
+Rollback test — атомарно вернуть pointer на
+`runtime-bb87f8c-v271-ai-chat-main-sync-clean-20260805`, перезапустить только
+`shumeiko-web-test.service` и повторить local/public health, static-byte,
+safety, health-service и drift smoke. Данные, drafts, snapshots, reports,
+source refresh и production при runtime rollback не изменять.
