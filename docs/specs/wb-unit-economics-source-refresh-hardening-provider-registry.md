@@ -96,10 +96,10 @@ feature flag не включены. Для `implemented` требуются froz
 08.08.2026 frozen-source canary в test выполнен на снимке
 `full-20260805-093650` без внешних вызовов: `materialize_facts` и
 `build_report` завершились, staff draft создан, current не менялся,
-`persistedParity` matched, aggregate parity без расхождений. Performance
-evidence отрицательный: heavy стадии требуют больше памяти, чем закреплено
-ниже, поэтому второй heavy slot остается заблокированным, а статус
-`implemented` не достигнут. Числа и процедура — в
+`persistedParity` matched, aggregate parity без расхождений. Прежний бюджет
+heavy `1.5G/2G` канарейка не подтвердила; envelope приведён к измеренному
+`2560M/3G`, а два одновременных heavy сняты с плана отдельным ADR. Статус
+`implemented` требует поэтапного production rollout. Числа и процедура — в
 `docs/runbooks/source-refresh-schedule.md`.
 
 # Goal
@@ -193,12 +193,15 @@ monthly full распределяется по воскресным слотам
 неделю, пятая неделя используется для retry. До test queue canary остаётся
 старое расписание; production full 11.08.2026 служит heartbeat-control.
 
-Dispatcher сначала разрешает один heavy worker; два heavy включаются только
-после performance-canary. Один heavy ограничен `MemoryHigh=1.5G`,
-`MemoryMax=2G`, общий `source-refresh.slice` — 5 ГБ и 500% CPU. Разрешены два
-heavy либо один heavy и два collector, при сохранении per-client lock. Первый
-rollout использует обычный `dispatcher.timer` с concurrency `1`; после canary
-он заменяется двумя экземплярами `dispatcher@1/@2` с admission limit `2`.
+Dispatcher разрешает один heavy worker. Один heavy ограничен
+`MemoryHigh=2560M`, `MemoryMax=3G` и `MemorySwapMax=0`, общий
+`source-refresh.slice` — 5 ГБ и 500% CPU. Разрешены один heavy и два collector
+при сохранении per-client lock. Rollout использует обычный `dispatcher.timer`
+с concurrency `1`. Frozen-source canary 08.08.2026 показал, что одного слота
+хватает на 20 клиентов в weekly-окне, поэтому переход на `dispatcher@1/@2`
+снят с плана и требует отдельного ADR вместе с оценкой памяти двух
+одновременных heavy стадий; см.
+`docs/decisions/2026-08-08-single-heavy-slot-memory-envelope.md`.
 
 # Runtime Guards
 
@@ -736,25 +739,27 @@ mutual-settlement сохраняет документные строки, а buy
 - Живой full worker со свежим heartbeat не прерывается общим runtime-лимитом
   после двух часов; production unit предоставляет окно `4h`, сохраняя
   watchdog-контроль зависших процессов и `ExecStopPost` для аварийной остановки.
-- Heavy worker имеет `MemoryHigh=1.5G`, `MemoryMax=2G` и `MemorySwapMax=0`;
-  collector — `768M/1G`, общий slice — `5G/500% CPU`. Проверка двух heavy
-  выполняется только после подтверждения, что один heavy остаётся ниже
-  `1.5G`, два — ниже `3G`, PostgreSQL/web не используют swap.
+- Heavy dispatcher имеет `MemoryHigh=2560M`, `MemoryMax=3G` и
+  `MemorySwapMax=0`; collector — `768M/1G`, общий slice — `5G/500% CPU`. Лимит
+  heavy обязан оставаться выше измеренного пика стадии; понижение лимита
+  допускается только с новым frozen-source canary. Два одновременных heavy не
+  включаются: решение и его основания — в
+  `docs/decisions/2026-08-08-single-heavy-slot-memory-envelope.md`.
 - Выборка daily facts не оставляет `MarketplaceFinanceDailyFact` ORM-объекты в
   identity map; persistence синтетической витрины из 13 500 `unitRows`
   использует порции не более 500, сохраняет row/value parity и не удерживает
   полный набор `ReportUnitRow`. Локальный benchmark фиксирует command, commit,
-  row count, Python peak и RSS; окончательный лимит `1.5G` подтверждается только
+  row count, Python peak и RSS; действующий лимит heavy подтверждается только
   отдельным frozen-source test canary.
-- Frozen-source canary 08.08.2026 лимит `1.5G` не подтвердил. На production
-  объеме одного клиента (`740 706` строк WB Finance) `materialize_facts` дал
-  `peakMemoryBytes` `1 769 758 720`, `build_report` — `1 902 358 528`. При
-  спековых `MemoryHigh=1.5G` и `MemorySwapMax=0` `build_report` не завершается:
-  прогон уперся в `RuntimeMaxSec` через `2h 52m`, израсходовав `1m 13s` CPU,
-  то есть ушел в reclaim-трэшинг вместо расчета. Тот же расчет при
-  `MemoryHigh=3G` занял `1m 43s`. До оптимизации heavy стадий второй heavy slot
-  не включается, а `MemorySwapMax=0` вместе с `MemoryHigh=1.5G` считается
-  неисполнимой парой лимитов.
+- Frozen-source canary 08.08.2026 лимит `1.5G` не подтвердил и привёл к
+  действующему envelope `2560M/3G`. На production объеме одного клиента
+  (`740 706` строк WB Finance) `materialize_facts` дал `peakMemoryBytes`
+  `1 769 758 720`, `build_report` — `1 902 358 528`. При прежних
+  `MemoryHigh=1.5G` и `MemorySwapMax=0` `build_report` не завершался: прогон
+  уперся в `RuntimeMaxSec` через `2h 52m`, израсходовав `1m 13s` CPU, то есть
+  ушел в reclaim-трэшинг вместо расчета. Тот же расчет при `MemoryHigh=3G`
+  занял `1m 43s` и swap не использовал. Лимит ниже рабочего набора вместе с
+  `MemorySwapMax=0` останавливает прогресс, а не замедляет его.
 - cgroup `MemoryPeak` не является доказательством для лимита heavy: он включает
   page cache и на этой задаче завышает результат почти вдвое. Evidence берется
   из `peakMemoryBytes` в `source_refresh_stage_events` и `anon` из
@@ -832,11 +837,14 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-08: heavy envelope приведён к измеренному `MemoryHigh=2560M`,
+  `MemoryMax=3G` при сохранении `MemorySwapMax=0`; переход на два heavy slot
+  снят с плана, поскольку одного слота хватает на 20 клиентов в weekly-окне.
 - 2026-08-08: frozen-source test canary выполнен и зафиксирован как
   отрицательный performance evidence: heavy стадии требуют `1.65-1.81G`, при
   `MemoryHigh=1.5G` с `MemorySwapMax=0` `build_report` не сходится за `2h`.
-  Второй heavy slot остается заблокированным; cgroup `MemoryPeak` исключен из
-  доказательной базы в пользу `peakMemoryBytes` и `anon`.
+  cgroup `MemoryPeak` исключен из доказательной базы в пользу
+  `peakMemoryBytes` и `anon`.
 - 2026-08-05: bounded `build_report` закрепил streaming projection daily facts,
   Core batch persistence `unitRows` по 500 строк, освобождение полного payload
   до logistics и локальный memory benchmark без подмены test canary.
