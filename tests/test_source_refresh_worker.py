@@ -589,14 +589,14 @@ def test_worker_unit_has_memory_limit_and_failure_repair() -> None:
     assert "MemorySwapMax=0" in collector
     assert "Unit=shumeiko-source-refresh-collector@%i.service" in collector_timer
     assert "run_source_refresh_heavy_dispatcher.py" in dispatcher
-    assert "MemoryHigh=1536M" in dispatcher
-    assert "MemoryMax=2G" in dispatcher
+    assert "MemoryHigh=2560M" in dispatcher
+    assert "MemoryMax=3G" in dispatcher
     assert "MemorySwapMax=0" in dispatcher
     assert "SHUMEYKO_SOURCE_REFRESH_HEAVY_CONCURRENCY=1" in dispatcher
     assert "run_source_refresh_heavy_dispatcher.py" in dispatcher_slot
     assert "SHUMEYKO_SOURCE_REFRESH_HEAVY_CONCURRENCY=2" in dispatcher_slot
-    assert "MemoryHigh=1536M" in dispatcher_slot
-    assert "MemoryMax=2G" in dispatcher_slot
+    assert "MemoryHigh=2560M" in dispatcher_slot
+    assert "MemoryMax=3G" in dispatcher_slot
     assert "MemorySwapMax=0" in dispatcher_slot
     assert (
         "Unit=shumeiko-source-refresh-dispatcher@%i.service"
