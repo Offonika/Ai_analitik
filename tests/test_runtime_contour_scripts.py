@@ -152,18 +152,18 @@ def test_scheduled_refresh_builds_tuesday_report_in_production_roots() -> None:
     ).read_text(encoding="utf-8")
 
     assert "Tuesday morning" in weekly_timer
-    assert "OnCalendar=Tue *-*-* 06:15:00" in weekly_timer
+    assert "OnCalendar=Tue *-*-* 09:15:00" in weekly_timer
     assert {
         line
         for line in daily_timer.splitlines()
         if line.startswith("OnCalendar=")
     } == {
-        "OnCalendar=Mon *-*-* *:15:00",
-        "OnCalendar=Tue *-*-* 00..05:15:00",
-        "OnCalendar=Tue *-*-* 07..23:15:00",
-        "OnCalendar=Wed..Sun *-*-* *:15:00",
+        "OnCalendar=Mon *-*-* 08..22:15:00",
+        "OnCalendar=Tue *-*-* 08:15:00",
+        "OnCalendar=Tue *-*-* 10..22:15:00",
+        "OnCalendar=Wed..Sun *-*-* 08..22:15:00",
     }
-    assert "OnCalendar=Tue *-*-* 06:15:00" not in daily_timer
+    assert "OnCalendar=Tue *-*-* 09:15:00" not in daily_timer
 
     for unit_name in (
         "shumeiko-source-refresh-daily.service",
