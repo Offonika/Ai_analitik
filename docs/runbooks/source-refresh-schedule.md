@@ -357,6 +357,87 @@ Canary может создать только staff draft. Публикация 
 отдельно после финансовой приёмки; production database, worker и report root
 команда не использует.
 
+## Canary на замороженном источнике
+
+Когда read-only test-интеграции не настроены, canary выполняется на уже
+собранном снимке и не делает ни одного внешнего вызова. Снимок и его lineage
+переносятся в test заранее; подделывать lineage запрещено.
+
+Запускать через split-pipeline, а не через `scripts/rebuild_report_from_sources.py`:
+CLI берет sku mapping из файлов `data/onec_marketplace_mapping`, которых нет ни в
+одном runtime-релизе, а worker — из `mapping_service`, поэтому CLI измеряет не
+тот путь. Для зарегистрированного run создаются только задачи
+`materialize_facts` и `build_report` с ключами `pipeline-v1:<task_type>`;
+`collect_sources` намеренно не создается, именно она ходит во внешние API.
+
+```bash
+systemd-run --unit=shumeiko-test-frozen-canary \
+  --property=User=shumeyko-test --property=Group=shumeyko-test \
+  --property=WorkingDirectory=/data/shumeyko/test/canary \
+  --property=EnvironmentFile=/etc/shumeiko-web-test.env \
+  --property=NoNewPrivileges=true --property=PrivateTmp=true \
+  --property=ProtectSystem=full --property=ProtectHome=true \
+  --property=ReadWritePaths=/data/shumeyko/test \
+  --property='InaccessiblePaths=/data/shumeyko/source_refresh /data/shumeyko/prod' \
+  --property=MemoryAccounting=yes --property=MemoryHigh=3G \
+  --property=MemoryMax=4G --property=MemorySwapMax=1G \
+  --property=RuntimeMaxSec=2h --property=OOMPolicy=stop \
+  /usr/bin/env SHUMEYKO_RUNTIME_ENVIRONMENT=test \
+  SHUMEYKO_EXTERNAL_INTEGRATIONS_ENABLED=false \
+  SHUMEYKO_SOURCE_REFRESH_TASK_QUEUE_ENABLED=true \
+  SHUMEYKO_MARKETPLACE_DAILY_FACTS_ENABLED=true \
+  SHUMEYKO_DB_FIRST_REPORTS_ENABLED=true \
+  SHUMEYKO_SOURCE_REFRESH_ROOT=/data/shumeyko/test/source_refresh \
+  SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/test/reports \
+  /opt/shumeyko-runtime/test/current/.venv/bin/python \
+  /opt/shumeyko-runtime/test/current/scripts/run_source_refresh_pipeline_task.py \
+  --worker-class heavy
+```
+
+`WorkingDirectory` обязан быть writable: stream cache пишется в
+`data/.cache/source_refresh_stream/<run_id>` относительно cwd, а каталог релиза
+под `User=shumeyko-test` доступен только на чтение. Три флага
+(`SOURCE_REFRESH_TASK_QUEUE_ENABLED`, `MARKETPLACE_DAILY_FACTS_ENABLED`,
+`DB_FIRST_REPORTS_ENABLED`) в test выключены и включаются только для процесса
+canary; `EXTERNAL_INTEGRATIONS_ENABLED` остается `false`.
+
+Перенесенный снимок несет ожидание подтвержденных налоговых профилей 1С:
+`build_report` fail-closed отклоняет сборку, если резолв дает меньше
+`profileCount` из коллекции `onec_tax_profiles`. Профили привязаны к
+`source_refresh_run_id`, поэтому вместе со снимком переносится и его налоговый
+lineage. Занижать `profileCount` или подставлять профили вручную запрещено.
+
+Память измеряется по `peakMemoryBytes` в `source_refresh_stage_events` и `anon`
+из `memory.stat` соответствующего cgroup. Показатель `Memory peak` из
+`systemd-run` включает page cache и для лимита heavy не годится.
+
+Если процесс остановлен принудительно, задача остается `running`, а stage event
+не закрыт. `scripts/repair_source_refresh_run.py` в этом случае не помогает: он
+выходит с `Run is already finished`, когда у run заполнен `finished_at`, и не
+трогает queue. Такую стадию закрывают адресно: stage event переводят в `failed`
+с safe кодом, задачу возвращают в `queued` с `attempt=0`.
+
+### Результат canary 08.08.2026
+
+Снимок `full-20260805-093650`, релиз v272 в test, один клиент, `740 706` строк
+WB Finance, `48` зарегистрированных коллекций.
+
+| Стадия | Итог | Длительность | CPU | `peakMemoryBytes` |
+| --- | --- | --- | --- | --- |
+| `materialize_facts` | succeeded | `5m 17s` | `5m 02s` | `1 769 758 720` |
+| `build_report`, `MemoryHigh=1.5G`, swap `0` | timeout | `2h 52m 55s` | `1m 13s` | не снят |
+| `build_report`, `MemoryHigh=3G` | succeeded | `1m 43s` | `1m 30s` | `1 902 358 528` |
+
+Результаты корректности: `dailyFacts.status=materialized`, `134 242` строки,
+`persistedParity=matched` при совпавших expected/persisted digest, aggregate
+parity по `12` проверкам без расхождений, staff draft на `13 430`
+`report_unit_rows`, `is_current=false`, прежний published current не изменился,
+watchdog за весь прогон отдавал `Stale source refresh workers: 0`.
+
+Вывод: лимит `MemoryHigh=1.5G` не подтвержден. Пара `MemoryHigh=1.5G` плюс
+`MemorySwapMax=0` неисполнима — стадия уходит в reclaim-трэшинг и не
+прогрессирует. Второй heavy slot не включается до оптимизации heavy стадий.
+
 Проверка timers:
 
 ```bash

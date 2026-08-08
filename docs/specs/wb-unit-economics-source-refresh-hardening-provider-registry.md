@@ -93,6 +93,15 @@ stage metrics/ETA, client schedules, streaming Excel, provider registry, guards
 feature flag не включены. Для `implemented` требуются frozen-source parity,
 пятиминутный test canary, performance evidence и поэтапный production rollout.
 
+08.08.2026 frozen-source canary в test выполнен на снимке
+`full-20260805-093650` без внешних вызовов: `materialize_facts` и
+`build_report` завершились, staff draft создан, current не менялся,
+`persistedParity` matched, aggregate parity без расхождений. Performance
+evidence отрицательный: heavy стадии требуют больше памяти, чем закреплено
+ниже, поэтому второй heavy slot остается заблокированным, а статус
+`implemented` не достигнут. Числа и процедура — в
+`docs/runbooks/source-refresh-schedule.md`.
+
 # Goal
 
 Стабилизировать регулярный `source_refresh` перед расширением read-only
@@ -737,6 +746,19 @@ mutual-settlement сохраняет документные строки, а buy
   полный набор `ReportUnitRow`. Локальный benchmark фиксирует command, commit,
   row count, Python peak и RSS; окончательный лимит `1.5G` подтверждается только
   отдельным frozen-source test canary.
+- Frozen-source canary 08.08.2026 лимит `1.5G` не подтвердил. На production
+  объеме одного клиента (`740 706` строк WB Finance) `materialize_facts` дал
+  `peakMemoryBytes` `1 769 758 720`, `build_report` — `1 902 358 528`. При
+  спековых `MemoryHigh=1.5G` и `MemorySwapMax=0` `build_report` не завершается:
+  прогон уперся в `RuntimeMaxSec` через `2h 52m`, израсходовав `1m 13s` CPU,
+  то есть ушел в reclaim-трэшинг вместо расчета. Тот же расчет при
+  `MemoryHigh=3G` занял `1m 43s`. До оптимизации heavy стадий второй heavy slot
+  не включается, а `MemorySwapMax=0` вместе с `MemoryHigh=1.5G` считается
+  неисполнимой парой лимитов.
+- cgroup `MemoryPeak` не является доказательством для лимита heavy: он включает
+  page cache и на этой задаче завышает результат почти вдвое. Evidence берется
+  из `peakMemoryBytes` в `source_refresh_stage_events` и `anon` из
+  `memory.stat`; оба источника обязаны сходиться.
 - full-refresh не выполняется через FastAPI `BackgroundTasks`; health и статика
   отвечают во время пересборки, а PostgreSQL-транзакция завершается перед
   файловой сборкой и экспортом артефактов.
@@ -810,6 +832,11 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-08: frozen-source test canary выполнен и зафиксирован как
+  отрицательный performance evidence: heavy стадии требуют `1.65-1.81G`, при
+  `MemoryHigh=1.5G` с `MemorySwapMax=0` `build_report` не сходится за `2h`.
+  Второй heavy slot остается заблокированным; cgroup `MemoryPeak` исключен из
+  доказательной базы в пользу `peakMemoryBytes` и `anon`.
 - 2026-08-05: bounded `build_report` закрепил streaming projection daily facts,
   Core batch persistence `unitRows` по 500 строк, освобождение полного payload
   до logistics и локальный memory benchmark без подмены test canary.
