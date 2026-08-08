@@ -43,6 +43,7 @@ from wb_unit_economics.wb_return_claims import normalize_claim_source_row
 from wb_unit_economics.web import dashboard_payload, integrations, repository
 from wb_unit_economics.web.ai import AiAnalyst
 from wb_unit_economics.web.app import (
+    WEB_BUILD_ID,
     UnitEconomicsCalculateRequest,
     _unit_economics_calculation_payload,
     _validate_logistics_factor_view,
@@ -6989,12 +6990,10 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["backendBuildId"] == (
-        "20260805-v271-ai-chat-main-sync"
-    )
-    assert health.json()["staticBuildId"] == (
-        "20260805-v271-ai-chat-main-sync"
-    )
+    # Сверяем с самой константой, а не с литералом: значение меняется каждый
+    # выпуск, а проверять нужно то, что health отдаёт актуальную метку сборки.
+    assert health.json()["backendBuildId"] == WEB_BUILD_ID
+    assert health.json()["staticBuildId"] == WEB_BUILD_ID
 
     page = client.get("/")
     assert page.status_code == 200
@@ -7404,24 +7403,30 @@ def test_release_news_and_linked_guide_assets_are_served(tmp_path: Path) -> None
     assert notes.status_code == 200
     assert core.status_code == 200
     payload = notes.json()
-    assert payload["currentVersion"] == "v2.64"
-    assert [release["version"] for release in payload["releases"]] == [
-        "v2.64",
-        "v2.63",
-        "v2.62",
-        "v2.61",
-    ]
-    for item in payload["releases"][0]["items"]:
+    versions = [release["version"] for release in payload["releases"]]
+    # Конкретные номера версий намеренно не фиксируются: каждый выпуск добавляет
+    # запись, и литерал заставлял бы править тест вместо проверки контракта.
+    assert payload["currentVersion"] == versions[0]
+    assert len(versions) == len(set(versions))
+    assert versions == sorted(
+        versions,
+        key=lambda item: [int(part) for part in item.removeprefix("v").split(".")],
+        reverse=True,
+    )
+    assert "v2.64" in versions
+    all_items = [item for release in payload["releases"] for item in release["items"]]
+    # Проверяем по всем релизам, а не только по свежему: иначе выпуск без
+    # скриншотов молча отключил бы проверку отдаваемых медиа.
+    served_media = 0
+    for item in all_items:
         if "media" not in item:
             continue
         media = client.get(item["media"]["src"])
         assert media.status_code == 200
         assert media.headers["content-type"] == "image/webp"
-    assert any(
-        item["title"] == "Поиск инструкции больше не сбрасывается"
-        and "media" not in item
-        for item in payload["releases"][0]["items"]
-    )
+        served_media += 1
+    assert served_media
+    assert any("media" not in item for item in all_items)
     assert 'id="news-nav-count"' in cabinet.text
     assert 'id="guide-search-input"' in cabinet.text
     assert 'id="guide-return-banner"' in cabinet.text

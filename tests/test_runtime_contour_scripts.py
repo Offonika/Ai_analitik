@@ -532,3 +532,23 @@ def test_test_database_sanitizer_deletes_raw_snapshot_rows(tmp_path: Path) -> No
 
         assert deleted == 1
         assert db.scalar(select(func.count()).select_from(SourceSnapshotRow)) == 0
+
+
+def test_runtime_release_bootstrap_drops_editable_dev_path(tmp_path: Path) -> None:
+    """Editable-хуки dev-венва не должны переезжать в immutable release."""
+
+    release = tmp_path / "runtime-release"
+    site_packages = release / ".venv/lib/python3.12/site-packages"
+    site_packages.mkdir(parents=True)
+    (release / "src").mkdir()
+
+    editable_pth = site_packages / "__editable__.shumeyko_wb_unit_economics-0.1.0.pth"
+    editable_pth.write_text("/opt/shumeyko-partners-wb-unit-economics/src\n")
+    finder = site_packages / "__editable___shumeyko_wb_unit_economics_0_1_0_finder.py"
+    finder.write_text("# editable finder\n")
+
+    _install_release_source_bootstrap(release / ".venv")
+
+    assert not editable_pth.exists()
+    assert not finder.exists()
+    assert (site_packages / RELEASE_SITE_PTH).exists()

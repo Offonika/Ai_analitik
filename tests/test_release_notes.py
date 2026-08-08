@@ -65,3 +65,21 @@ def test_release_notes_reject_guide_link_to_unknown_release(tmp_path: Path) -> N
     failures = validate_release_notes(NOTES_PATH, index_path, STATIC_ROOT)
 
     assert any("unknown updated release v9.99" in failure for failure in failures)
+
+
+def test_web_build_id_matches_current_release_version() -> None:
+    """Метка сборки обязана нести текущую версию из release notes.
+
+    Без этой связи `WEB_BUILD_ID` молча отстаёт от выпущенной версии, и
+    `/api/health` перестаёт различать контуры после promote.
+    """
+
+    from wb_unit_economics.web.app import WEB_BUILD_ID
+
+    payload = json.loads(NOTES_PATH.read_text(encoding="utf-8"))
+    current_version = payload["currentVersion"]
+
+    assert current_version in WEB_BUILD_ID, (
+        f"WEB_BUILD_ID={WEB_BUILD_ID!r} не содержит currentVersion="
+        f"{current_version!r}: обновите метку вместе с release notes"
+    )
