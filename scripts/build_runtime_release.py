@@ -61,12 +61,33 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _remove_editable_install_artifacts(site_packages: Path) -> list[str]:
+    """Drop editable-install hooks that point back at the build worktree.
+
+    Копируемый dev-venv установлен в editable-режиме, поэтому несёт `.pth` с
+    абсолютным путём до рабочего каталога сборки. Release bootstrap ставит свой
+    `src` первым, но dev-путь остаётся в `sys.path` как fallback: модуль,
+    существующий в worktree и отсутствующий в релизе, импортировался бы мимо
+    immutable release. Удаляем такие хуки вместе с их finder-модулями.
+    """
+
+    removed: list[str] = []
+    for pth in sorted(site_packages.glob("__editable__*.pth")):
+        pth.unlink()
+        removed.append(pth.name)
+    for finder in sorted(site_packages.glob("__editable___*_finder.py")):
+        finder.unlink()
+        removed.append(finder.name)
+    return removed
+
+
 def _install_release_source_bootstrap(venv: Path) -> str:
     """Force the copied venv to import the package from its own release."""
 
     site_packages = sorted((venv / "lib").glob("python*/site-packages"))
     if len(site_packages) != 1:
         raise SystemExit("Copied runtime venv must contain one site-packages directory")
+    _remove_editable_install_artifacts(site_packages[0])
     module = site_packages[0] / RELEASE_SITE_MODULE
     pth = site_packages[0] / RELEASE_SITE_PTH
     module_content = (
