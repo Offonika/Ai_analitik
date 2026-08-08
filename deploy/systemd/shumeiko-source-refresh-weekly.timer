@@ -2,7 +2,7 @@
 Description=Run Shumeyko weekly full source refresh on Tuesday morning
 
 [Timer]
-OnCalendar=Tue *-*-* 06:15:00
+OnCalendar=Tue *-*-* 09:15:00
 Persistent=true
 Unit=shumeiko-source-refresh-weekly.service
 

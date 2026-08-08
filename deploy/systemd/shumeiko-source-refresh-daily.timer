@@ -1,11 +1,11 @@
 [Unit]
-Description=Run Shumeyko rolling daily source refresh outside the weekly slot
+Description=Run Shumeyko rolling daily source refresh during the 1C daytime window
 
 [Timer]
-OnCalendar=Mon *-*-* *:15:00
-OnCalendar=Tue *-*-* 00..05:15:00
-OnCalendar=Tue *-*-* 07..23:15:00
-OnCalendar=Wed..Sun *-*-* *:15:00
+OnCalendar=Mon *-*-* 08..22:15:00
+OnCalendar=Tue *-*-* 08:15:00
+OnCalendar=Tue *-*-* 10..22:15:00
+OnCalendar=Wed..Sun *-*-* 08..22:15:00
 Persistent=true
 Unit=shumeiko-source-refresh-daily.service
 
