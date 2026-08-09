@@ -767,6 +767,15 @@ mutual-settlement сохраняет документные строки, а buy
   page cache и на этой задаче завышает результат почти вдвое. Evidence берется
   из `peakMemoryBytes` в `source_refresh_stage_events` и `anon` из
   `memory.stat`; оба источника обязаны сходиться.
+- Метрики объема и памяти хранятся 64-битными. `peak_memory_bytes` и
+  `byte_count` в `source_refresh_stage_events`, `byte_size` в
+  `report_artifacts` и `accounting_workflow_attachments`, `bundle_byte_size` в
+  `report_archive_records` объявлены `BigInteger`. 32-bit `INTEGER`
+  переполняется на `2 147 483 647` байт: production-run 09.08.2026 успешно
+  собрал `790 014` строк, израсходовал `3 343 896 576` и упал с
+  `NumericValueOutOfRange` на записи собственной метрики, потеряв всю
+  выполненную работу. Отказ масштабируется с объемом клиента, поэтому узкий тип
+  для байтовых метрик считается регрессией.
 - full-refresh не выполняется через FastAPI `BackgroundTasks`; health и статика
   отвечают во время пересборки, а PostgreSQL-транзакция завершается перед
   файловой сборкой и экспортом артефактов.
@@ -840,6 +849,10 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-09: байтовые метрики переведены на `BigInteger` и мигрированы на
+  существующих базах. Узкий `INTEGER` ронял полный refresh с
+  `NumericValueOutOfRange` при пике heavy стадии выше `2 GiB` уже после
+  успешной загрузки источников.
 - 2026-08-08: daily timer ограничен окном `08:15-22:15`, weekly перенесён на
   вторник `09:15`. Основание — измеренная доступность 1С: `87` из `769`
   daily-запусков за `32` дня падали с `onec_odata_metadata_unavailable`, и все

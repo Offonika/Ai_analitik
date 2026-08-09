@@ -260,3 +260,79 @@ def test_accounting_evidence_migration_backfills_deduplicates_and_maps_keys(
         )
         assert key is not None
         assert key.generation_run_id == run_id
+
+
+def test_byte_metrics_survive_values_above_int32(tmp_path: Path) -> None:
+    """Пик памяти heavy стадии не должен переполнять колонку метрики.
+
+    32-bit INTEGER держит максимум 2 147 483 647 байт. Реальный production-run
+    08.08.2026 израсходовал 3 343 896 576 и падал с NumericValueOutOfRange уже
+    после успешной загрузки источников, теряя всю выполненную работу.
+    """
+
+    from wb_unit_economics.web import security
+    from wb_unit_economics.web.models import SourceRefreshStageEvent
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'byte-metrics.sqlite3'}")
+    init_db(engine)
+    session_factory = make_session_factory(engine)
+    over_int32 = 3_343_896_576
+
+    with session_factory() as db:
+        repository.ensure_tenant(db, "tenant-a", "Tenant A")
+        repository.ensure_client_company(
+            db,
+            tenant_id="tenant-a",
+            client_id="tenant-a",
+            display_name="Tenant A",
+        )
+        run = repository.create_source_refresh_run(
+            db,
+            tenant_id="tenant-a",
+            client_id="tenant-a",
+            mode="full",
+            credential_source="tenant",
+            dry_run=False,
+            snapshot_set_id="full-byte-metrics",
+            period_start=date(2026, 3, 1),
+            period_end=date(2026, 8, 8),
+        )
+        db.flush()
+        now = security.utcnow()
+        db.add(
+            SourceRefreshStageEvent(
+                refresh_run_id=run.id,
+                tenant_id="tenant-a",
+                client_id="tenant-a",
+                stage="collect_sources",
+                status="succeeded",
+                row_count=790_014,
+                byte_count=over_int32,
+                peak_memory_bytes=over_int32,
+                started_at=now,
+                finished_at=now,
+            )
+        )
+        db.commit()
+
+    with session_factory() as db:
+        stored = db.scalars(select(SourceRefreshStageEvent)).one()
+        assert stored.peak_memory_bytes == over_int32
+        assert stored.byte_count == over_int32
+
+
+def test_byte_metric_columns_are_declared_wide() -> None:
+    """Модель обязана объявлять байтовые метрики 64-битными."""
+
+    from sqlalchemy import BigInteger
+
+    from wb_unit_economics.web.database import BYTE_METRIC_COLUMNS
+    from wb_unit_economics.web.models import Base
+
+    for table_name, columns in BYTE_METRIC_COLUMNS.items():
+        table = Base.metadata.tables[f"wb_unit_economics.{table_name}"]
+        for column_name in columns:
+            column = table.columns[column_name]
+            assert isinstance(column.type, BigInteger), (
+                f"{table_name}.{column_name} должен быть BigInteger"
+            )
