@@ -19,9 +19,9 @@ ExecStart=/usr/bin/env SHUMEYKO_ALLOWED_EXPORT_ROOT=/data/shumeyko/prod/reports 
 ExecStopPost=/opt/shumeyko-runtime/prod/current/.venv/bin/python scripts/repair_source_refresh_run.py --run-id %i --failure-code worker_interrupted --apply
 RuntimeMaxSec=4h
 TimeoutStopSec=60
-MemoryHigh=1536M
-MemoryMax=2G
-MemorySwapMax=0
+MemoryHigh=4G
+MemoryMax=5G
+MemorySwapMax=1G
 ManagedOOMSwap=kill
 ManagedOOMMemoryPressure=auto
 OOMScoreAdjust=500
