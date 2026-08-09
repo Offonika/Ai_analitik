@@ -122,6 +122,7 @@ def init_db(engine: Engine, *, run_backfill: bool = True) -> None:
     _ensure_multi_client_columns(engine)
     _ensure_ai_thread_scope_columns(engine)
     _ensure_multi_client_indexes(engine)
+    _ensure_byte_metric_columns_are_wide(engine)
     if run_backfill and schema_version(engine) != DB_FIRST_SCHEMA_VERSION:
         if not _schema_migration_at_least(engine, MULTI_CLIENT_BACKFILL_VERSION):
             _backfill_multi_client_hierarchy(engine)
@@ -1583,3 +1584,49 @@ def _stable_key(value: str) -> str:
 
 def _provider_base(provider: str) -> str:
     return provider.split(":", 1)[0]
+
+
+BYTE_METRIC_COLUMNS: dict[str, tuple[str, ...]] = {
+    "report_artifacts": ("byte_size",),
+    "report_archive_records": ("bundle_byte_size",),
+    "source_refresh_stage_events": ("byte_count", "peak_memory_bytes"),
+    "accounting_workflow_attachments": ("byte_size",),
+}
+
+
+def _ensure_byte_metric_columns_are_wide(engine: Engine) -> None:
+    """Widen byte/memory metrics to BIGINT on an existing deployment.
+
+    32-bit INTEGER переполняется на `2 147 483 647` байт, то есть чуть выше
+    `2 GiB`. Heavy стадия на реальном объёме клиента расходует больше, и запись
+    собственной метрики роняла весь run с `NumericValueOutOfRange` уже после
+    успешной загрузки источников. Размеры архивов и артефактов упираются в тот
+    же предел.
+    """
+
+    if str(engine.url).startswith("sqlite"):
+        # SQLite хранит целые динамически, INTEGER там уже 64-битный.
+        return
+    schema = _schema(engine)
+    inspector = inspect(engine)
+    available = set(inspector.get_table_names(schema=schema))
+    for table, columns in BYTE_METRIC_COLUMNS.items():
+        if table not in available:
+            continue
+        current = {
+            column["name"]: column["type"]
+            for column in inspector.get_columns(table, schema=schema)
+        }
+        narrow = [
+            column
+            for column in columns
+            if column in current and "BIGINT" not in str(current[column]).upper()
+        ]
+        if not narrow:
+            continue
+        table_name = _table_name(engine, table)
+        with engine.begin() as connection:
+            for column in narrow:
+                connection.execute(
+                    text(f"ALTER TABLE {table_name} ALTER COLUMN {column} TYPE BIGINT")
+                )

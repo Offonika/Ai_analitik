@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -664,7 +665,7 @@ class ReportArtifact(Base):
     artifact_type: Mapped[str] = mapped_column(String, nullable=False)
     path: Mapped[str] = mapped_column(String, nullable=False)
     sha256: Mapped[str] = mapped_column(String, nullable=False, default="")
-    byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String, nullable=False, default="ready")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -749,7 +750,7 @@ class ReportArchiveRecord(Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     bundle_uri: Mapped[str] = mapped_column(Text, nullable=False, default="")
     bundle_sha256: Mapped[str] = mapped_column(String, nullable=False, default="")
-    bundle_byte_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bundle_byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     s3_version_id: Mapped[str] = mapped_column(String, nullable=False, default="")
     methodology_version: Mapped[str] = mapped_column(
         String, nullable=False, default=""
@@ -2431,8 +2432,8 @@ class SourceRefreshStageEvent(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     safe_error_code: Mapped[str] = mapped_column(String, nullable=False, default="")
     row_count: Mapped[int | None] = mapped_column(Integer)
-    byte_count: Mapped[int | None] = mapped_column(Integer)
-    peak_memory_bytes: Mapped[int | None] = mapped_column(Integer)
+    byte_count: Mapped[int | None] = mapped_column(BigInteger)
+    peak_memory_bytes: Mapped[int | None] = mapped_column(BigInteger)
     safe_metrics: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
@@ -3403,7 +3404,7 @@ class AccountingWorkflowAttachment(Base):
     storage_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     original_name: Mapped[str] = mapped_column(String, nullable=False)
     content_type: Mapped[str] = mapped_column(String, nullable=False)
-    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     sha256: Mapped[str] = mapped_column(String, nullable=False)
     uploaded_by_user_id: Mapped[str] = mapped_column(
         ForeignKey("wb_unit_economics.users.id"), nullable=False
