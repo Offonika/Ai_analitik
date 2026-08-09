@@ -545,9 +545,11 @@ def test_worker_unit_has_memory_limit_and_failure_repair() -> None:
 
     assert "scripts/run_source_refresh_worker.py" in unit
     assert "Slice=shumeiko-source-refresh.slice" in unit
-    assert "MemoryHigh=1536M" in unit
-    assert "MemoryMax=2G" in unit
-    assert "MemorySwapMax=0" in unit
+    # Legacy worker выполняет collect/materialize/build/export в одном процессе,
+    # поэтому его пик выше, чем у отдельной heavy-стадии split pipeline.
+    assert "MemoryHigh=4G" in unit
+    assert "MemoryMax=5G" in unit
+    assert "MemorySwapMax=1G" in unit
     assert "ManagedOOMMemoryPressure=auto" in unit
     assert "OOMScoreAdjust=500" in unit
     assert "OOMPolicy=stop" in unit

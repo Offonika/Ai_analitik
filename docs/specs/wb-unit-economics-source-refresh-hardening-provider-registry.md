@@ -748,6 +748,14 @@ mutual-settlement сохраняет документные строки, а buy
   допускается только с новым frozen-source canary. Два одновременных heavy не
   включаются: решение и его основания — в
   `docs/decisions/2026-08-08-single-heavy-slot-memory-envelope.md`.
+- Legacy `shumeiko-source-refresh-worker@` выполняет `collect_sources`,
+  `materialize_facts`, `build_report` и `export_excel` в одном процессе, поэтому
+  его envelope шире envelope отдельной heavy-стадии: `MemoryHigh=4G`,
+  `MemoryMax=5G`, `MemorySwapMax=1G`. Значения соответствуют фактически
+  работающему production-юниту; успешный `full` 09.08.2026 дал пик `1 847 MiB`
+  на `build_report` при `790 014` собранных строках. Понижать их до envelope
+  split pipeline нельзя, пока legacy-путь остаётся рабочим: лимит ниже пика
+  вместе с запретом swap уже приводил к незавершаемым прогонам.
 - Выборка daily facts не оставляет `MarketplaceFinanceDailyFact` ORM-объекты в
   identity map; persistence синтетической витрины из 13 500 `unitRows`
   использует порции не более 500, сохраняет row/value parity и не удерживает
@@ -849,6 +857,10 @@ mutual-settlement сохраняет документные строки, а buy
 
 # Changelog
 
+- 2026-08-09: envelope legacy `source-refresh-worker@` в репозитории приведён к
+  фактически работающему production-юниту (`4G/5G/1G`). Прежние `1536M/2G/0`
+  были заведомо ниже пика однопроцессного прогона: установка юнита из
+  репозитория вернула бы незавершаемые полные пересборки.
 - 2026-08-09: байтовые метрики переведены на `BigInteger` и мигрированы на
   существующих базах. Узкий `INTEGER` ронял полный refresh с
   `NumericValueOutOfRange` при пике heavy стадии выше `2 GiB` уже после
