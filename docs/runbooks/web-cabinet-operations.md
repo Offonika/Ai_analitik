@@ -1615,8 +1615,28 @@ WHERE report_run_id = :'report_id';
 без расхождений. Публичный production `/api/health` также возвращает
 `status=ok`; production report, runtime symlink и web PID не менялись.
 
-Rollback test — атомарно вернуть `/opt/shumeyko-runtime/test/current` на
-`runtime-main-f5cf057-mapping-alias-fix-20260724` через
+25 июля 2026 года full live draft опубликован только в test после повторной
+проверки отсутствия активного source refresh и publication blockers. Реальные
+report IDs, source hashes, объёмы клиентских данных и пути к артефактам в Git не
+фиксируются; их нужно получать непосредственно из локального test runtime и БД
+во время повторной проверки.
+
+`scripts/check_db_first_publication.py` запускался с явными путями к
+зарегистрированным артефактам опубликованного отчёта. Проверка DB-first
+публикации завершилась успешно: Excel и контрольные CSV совпали с DB по числу
+строк, а все обязательные артефакты имели допустимые статусы. Явные пути
+обязательны: значения по умолчанию этого скрипта относятся к файлам внутри
+immutable runtime, а не к артефактам конкретного source refresh.
+
+После публикации локальный и публичный test health имели `status=ok`, активный
+refresh отсутствовал, client login оставался выключенным. Safety smoke сохранил
+ожидаемые ответы для неизвестного маршрута, запроса `/.env` и
+неавторизованного `/api/reports`. Локальный и публичный production health также
+имели `status=ok`; production runtime и current report в ходе test-only
+публикации не изменялись.
+
+Rollback test — атомарно вернуть test symlink на предварительно подтверждённый
+предыдущий immutable runtime через
 `scripts/promote_runtime_release.py --environment test`, перезапустить только
 `shumeiko-web-test.service` и повторить test health/safety smoke. Draft reports,
 source snapshots и production при runtime rollback не изменяются.
