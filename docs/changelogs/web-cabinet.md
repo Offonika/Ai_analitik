@@ -6,7 +6,7 @@ audience: ["engineering", "operations"]
 status: active
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-updated_at: "2026-08-06"
+updated_at: "2026-08-11"
 ---
 
 # AI web cabinet changelog
@@ -15,6 +15,14 @@ updated_at: "2026-08-06"
 нормативные требования остаются в
 `docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md`; этот файл
 хранит только хронологию изменений.
+
+- 2026-08-11: AI core v2.42 закрепил grounded Structured Outputs по server fact
+  ids, полные SQL-агрегаты loss/quality по текущим фильтрам отчёта,
+  дедупликацию function calls, настоящий progressive SSE, runtime
+  status/circuit breaker/token-latency telemetry,
+  redaction/rate-limit/retention/feedback и отдельное staff-подтверждение перед
+  read-only refresh. Rollout ограничен test-контуром; production credentials,
+  runtime pointer, report data и published current не входят в изменение.
 
 - 2026-08-06: merge commit `4f72f0f` с accessibility-fix развернут только в
   test как чистый immutable corrective release v271. Manifest, `24` целевых

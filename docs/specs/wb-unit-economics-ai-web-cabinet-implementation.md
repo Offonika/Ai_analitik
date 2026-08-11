@@ -9,8 +9,8 @@ audience: ["engineering", "operations"]
 source_of_truth: true
 truth_scope: web-cabinet
 truth_priority: 100
-related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/release-notes-core.js, src/wb_unit_economics/web/static/release-notes.json, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/styles.css, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
-related_tests: [tests/test_web_app.py, tests/test_release_notes.py, tests/test_documentation_validators.py, tests/js/release-notes-core.test.cjs]
+related_code: [src/wb_unit_economics/web/app.py, src/wb_unit_economics/web/ai.py, src/wb_unit_economics/web/chatkit_server.py, src/wb_unit_economics/web/models.py, src/wb_unit_economics/web/repository.py, src/wb_unit_economics/web/refresh.py, src/wb_unit_economics/web/settings.py, src/wb_unit_economics/web/static/app.js, src/wb_unit_economics/web/static/release-notes-core.js, src/wb_unit_economics/web/static/release-notes.json, src/wb_unit_economics/web/static/index.html, src/wb_unit_economics/web/static/styles.css, sql/web_cabinet_schema.sql, scripts/import_web_report_from_excel.py, scripts/manage_web_users.py]
+related_tests: [tests/test_ai_analyst.py, tests/test_web_app.py, tests/test_release_notes.py, tests/test_documentation_validators.py, tests/js/release-notes-core.test.cjs]
 contracts: [wb_api_snapshot, onec_unf_cost_snapshot, sku_mapping, unit_economics_report, ai_analysis_summary]
 depends_on: [docs/specs/wb-unit-economics-excel-mvp-implementation.md, docs/specs/wb-unit-economics-db-first-report-marts.md]
 related_specs: [docs/specs/marketplace-1c-mapping-service.md, docs/specs/web-cabinet-runtime-contours.md]
@@ -29,7 +29,7 @@ ai_sections:
   tests: "Test Plan"
 supersedes: [docs/specs/wb-unit-economics-client-web-cabinet.md]
 rollout_required: true
-updated_at: "2026-08-06"
+updated_at: "2026-08-11"
 ---
 
 # Implementation Status
@@ -1201,6 +1201,68 @@ explicit refresh intent.
 - `/api/health` публикует только безопасные AI runtime metadata: факт настройки,
   имя модели и состояние feature flag ChatKit, но не ключи или prompts.
 
+### AI core hardening v2.42
+
+- Наличие ключа больше не считается доказательством работоспособности AI.
+  `/api/health` сохраняет совместимый `aiConfigured` и дополнительно возвращает
+  безопасное состояние `aiStatus=ready|degraded|unavailable`, причину состояния,
+  время последнего успешного вызова, категорию последней ошибки, состояние
+  circuit breaker и накопительные latency/token counters текущего процесса.
+  HTTP-коды, response body, proxy details, ключи и prompts в health не входят.
+- Ошибки аутентификации/доступа OpenAI `401/403` считаются постоянными. После
+  настраиваемого числа последовательных постоянных ошибок circuit breaker
+  временно прекращает внешние вызовы и сразу использует deterministic fallback;
+  по истечении cooldown разрешается пробный вызов. Сетевые/timeout/5xx ошибки
+  переводят runtime в `degraded`, но не маскируются как успешный OpenAI-ответ.
+- Фактический OpenAI-ответ формируется через Responses Structured Outputs. Модель
+  выбирает только server-generated `fact_id` и `next_step_id`; отображаемые
+  числа, SKU-факты, вывод и citations собираются сервером из tool output.
+  Неизвестный id, лишнее поле, нарушенная схема или неподтвержденное число
+  отклоняют модельный текст и переводят ответ в grounded fallback. Raw output
+  модели при этом не сохраняется и не показывается пользователю.
+- Строки из отчета и внешних tool payload считаются недоверенными данными, а не
+  инструкциями. Product names, status reasons и другие evidence strings не могут
+  менять developer rules, выбирать произвольный tool или попадать в ответ вне
+  server-generated fact catalog.
+- Повторный function call уже выполненного tool в рамках одного ответа не
+  выполняет Python/SQL/external side effect повторно. Для нового `call_id`
+  Responses получает тот же сохраненный function output; audit и visible trace
+  содержат одно фактическое выполнение.
+- `get_loss_drivers` и `get_data_quality_issues` считают количества, суммы и
+  группировки в SQL по полному текущему thread/report scope: query, status,
+  month/period, WB cabinet, client company/organization, scheme, loss class и
+  активный preset. Тот же канонический набор SQL-условий используется для KPI,
+  totals и ограниченных примеров/top rows; выборка примеров не выдается за
+  полный aggregate.
+- Штатный SSE transport запускает анализ в отдельной server-side задаче с новой
+  DB session и отправляет `tool_started`, `tool_progress`, `tool_completed` и
+  `answer_source` по мере их появления, до `assistant_done` и `final`. Один и
+  тот же event id не отправляется повторно; завершенный ответ и safe events
+  сохраняются даже после разрыва клиентского соединения.
+- `refresh_onec_and_rebuild_report` в AI planning является только подготовкой
+  подтверждения. Он не запускает refresh сам. Для staff UI показывает отдельное
+  действие подтверждения, которое вызывает существующий report-scoped refresh
+  API; client не получает это действие. До отдельного клика report run и
+  внешние системы не меняются.
+- Перед записью истории и отправкой в OpenAI пользовательский вопрос проходит
+  server-side redaction для secret-like assignments, bearer/API keys, JWT и
+  credentials in URLs. Сохраняется только redacted text, а safe event сообщает
+  факт редактирования без совпавшего значения. Действует per-user rate limit;
+  retry с тем же request id не создает второй user message и не расходует новый
+  лимит.
+- История AI имеет настраиваемый retention (по умолчанию 90 дней). При работе с
+  AI удаляются только истекшие threads текущего пользователя по времени
+  последнего сообщения; tenant/owner boundary сохраняется. `/api/ai/config`
+  сообщает retention и rate-limit без внутренних путей или секретов.
+- Авторизованный пользователь может поставить сохраненному assistant message
+  оценку `up`/`down` и необязательный короткий комментарий. Feedback хранится
+  как safe AI event и audit без prompt/tool payload и проверяется через
+  thread-owner/tenant boundary.
+- Test-контур не наследует production OpenAI key или proxy credentials. Без
+  отдельно настроенного test key приемка подтверждает `aiStatus=unavailable`
+  и deterministic fallback; реальный OpenAI canary выполняется только после
+  отдельной безопасной настройки test credentials.
+
 ### ChatKit boundary v2.41
 
 ChatKit является опциональной заменой только UI/transport слоя. По умолчанию
@@ -1424,6 +1486,10 @@ Large-report loading:
 - Admin can create, reset and disable users without public registration.
 - Consultant/admin can review audit events.
 - AI chat returns answers based on report tools and logs tool calls.
+- OpenAI answers expose grounded server-rendered facts only; malformed,
+  hallucinated or unknown fact ids fall back without persisting raw model text.
+- AI health distinguishes configured, ready, degraded and unavailable states;
+  repeated permanent authorization failures open a bounded circuit breaker.
 - AI widget shows a local no-call start summary or restored messages, at most
   three role-aware quick questions, one live safe status, collapsed
   `OpenAI`/fallback trace, citations and read-only evidence actions.
@@ -1432,6 +1498,13 @@ Large-report loading:
   intents; the visible trace contains unique checks of the latest completed
   answer, role-dependent readiness is explicitly named, and retry shows one
   error without duplicating the user message.
+- Loss/data-quality totals cover the complete filtered report scope while row
+  examples stay bounded; SSE emits tool progress before the final answer.
+- AI never starts a report refresh from model planning alone: staff must confirm
+  it through a separate explicit UI/API action, and client role cannot confirm.
+- Secret-like input is redacted before persistence/OpenAI, per-user rate limits
+  return `429`, expired owner-scoped history follows the configured retention,
+  and feedback cannot cross thread/tenant boundaries.
 - Consultant/admin can save, check and disable tenant integrations without full
   secrets being returned by API or audit.
 - Tenant integrations with encrypted storage run real read-only WB Finance ping
@@ -1601,6 +1674,11 @@ Large-report loading:
   contain raw tool names/debug labels.
 - AI streaming tests for `status`, `tool_completed`, `answer_source`, `final`,
   event persistence, answer source visibility and client-safe payload redaction.
+- AI hardening tests cover repeated function calls, malformed/hallucinated
+  structured output, prompt injection inside product evidence, complete-vs-
+  sample aggregates, permanent-error circuit breaker, live SSE ordering,
+  refresh confirmation, role/tenant leakage, secret redaction, idempotent retry,
+  rate limiting, retention and feedback ownership.
 - Integrations tests for staff-only access, add multiple connections,
   save/check/disable, tenant boundary, masked secret payloads and secret-free
   audit entries.

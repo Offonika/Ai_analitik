@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from chatkit.server import ChatKitServer
@@ -22,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from wb_unit_economics.web import repository, security
-from wb_unit_economics.web.ai import AiAnalyst
+from wb_unit_economics.web.ai import AiAnalyst, AiRateLimitError
 from wb_unit_economics.web.models import AiMessage, AiThread, User
 
 
@@ -153,13 +154,38 @@ class CabinetChatKitStore(Store[CabinetChatKitContext]):
     ) -> None:
         thread = repository.require_thread(context.db, context.user, thread_id)
         if isinstance(item, UserMessageItem):
-            repository.add_ai_message(
+            safe_text, redacted = context.analyst.prepare_question(
+                self._user_text(item)
+            )
+            existing = repository.ai_user_message_by_request_id(
                 context.db,
                 thread=thread,
-                role="user",
-                content=self._user_text(item),
-                chatkit_item_id=item.id,
+                request_id=item.id,
             )
+            if existing is None:
+                recent = repository.ai_user_message_count_since(
+                    context.db,
+                    user=context.user,
+                    since=security.utcnow() - timedelta(minutes=1),
+                )
+                if (
+                    recent
+                    >= context.analyst.settings.ai_rate_limit_requests_per_minute
+                ):
+                    raise AiRateLimitError("AI rate limit exceeded")
+                repository.add_ai_message(
+                    context.db,
+                    thread=thread,
+                    role="user",
+                    content=safe_text,
+                    chatkit_item_id=item.id,
+                )
+                if redacted:
+                    context.analyst.record_input_redaction(
+                        context.db,
+                        user=context.user,
+                        thread=thread,
+                    )
         elif isinstance(item, AssistantMessageItem):
             repository.add_ai_message(
                 context.db,
@@ -179,7 +205,9 @@ class CabinetChatKitStore(Store[CabinetChatKitContext]):
     ) -> None:
         message = self._load_message(context, thread_id, item.id)
         if isinstance(item, UserMessageItem):
-            message.content = self._user_text(item)
+            message.content = context.analyst.prepare_question(
+                self._user_text(item)
+            )[0]
         elif isinstance(item, AssistantMessageItem):
             message.content = "\n".join(part.text for part in item.content)
 
@@ -284,6 +312,7 @@ class CabinetChatKitServer(ChatKitServer[CabinetChatKitContext]):
                 if input_user_message is not None
                 else self._latest_user_question(context, db_thread)
             )
+            question, _redacted = context.analyst.prepare_question(question)
             answer = context.analyst.answer(
                 context.db,
                 user=context.user,
@@ -303,6 +332,7 @@ class CabinetChatKitServer(ChatKitServer[CabinetChatKitContext]):
                     "model": answer.model,
                     "fallbackReason": answer.fallback_reason,
                     "toolNames": list(answer.tool_names),
+                    "action": answer.action,
                 },
             )
             item_id = self.store.generate_item_id("message", thread, context)

@@ -63,6 +63,7 @@ const state = {
   aiHistoryRequestKey: "",
   aiBusy: false,
   aiRetryQuestion: "",
+  aiRetryRequestId: "",
   aiStreamError: "",
   chatkitEnabled: false,
   onecReconciliationLoaded: false,
@@ -1823,14 +1824,18 @@ function currentAiScope() {
     reportKind: state.reportKind,
     organizationId: state.organizationId,
     periodMonth: state.periodMonth,
-    query: els.filterQuery?.value || "",
+    query: els.filterQuery?.value.trim() || "",
     status: els.filterStatus?.value || "",
     preset: state.rowPreset || "",
     periodStart: els.filterPeriodStart?.value || "",
     periodEnd: els.filterPeriodEnd?.value || "",
+    month: els.filterMonth?.value || "",
     cabinet: els.filterCabinet?.value || "",
     organization: els.filterOrganization?.value || "",
+    wbCabinetId: els.filterCabinet?.value || "",
+    clientCompanyId: els.filterOrganization?.value || "",
     scheme: els.filterScheme?.value || "",
+    lossClass: els.filterLossClass?.value || "",
     analysisSurface: logisticsSurface ? "logistics" : "unit_economics",
     logisticsRequestedPeriodStart: logisticsSurface
       ? logisticsRequested.periodStart || els.topbarPeriodStart?.value || ""
@@ -6127,6 +6132,9 @@ async function sendAiQuestion(rawQuestion) {
     return;
   }
   const retrying = !els.aiRetry.hidden && question === state.aiRetryQuestion;
+  const requestId = retrying && state.aiRetryRequestId
+    ? state.aiRetryRequestId
+    : (globalThis.crypto?.randomUUID?.() || `ai-${Date.now()}-${Math.random()}`);
   if (state.chatkitEnabled) {
     try {
       await els.chatkitElement.sendUserMessage({ text: question });
@@ -6137,6 +6145,7 @@ async function sendAiQuestion(rawQuestion) {
   }
   state.aiBusy = true;
   state.aiRetryQuestion = "";
+  state.aiRetryRequestId = "";
   state.aiStreamError = "";
   setAiError();
   els.aiRetryMessage.textContent = "";
@@ -6158,7 +6167,11 @@ async function sendAiQuestion(rawQuestion) {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: question, scope: currentAiScope() }),
+        body: JSON.stringify({
+          content: question,
+          scope: currentAiScope(),
+          request_id: requestId,
+        }),
       },
     );
     if (!response.ok || !response.body) {
@@ -6185,6 +6198,7 @@ async function sendAiQuestion(rawQuestion) {
     els.aiRetryMessage.textContent = message;
     els.aiLiveStatus.textContent = "";
     state.aiRetryQuestion = question;
+    state.aiRetryRequestId = requestId;
     els.aiInput.value = question;
     els.aiRetry.hidden = false;
   } finally {
@@ -6272,6 +6286,7 @@ function appendAiMessage(message) {
       button.addEventListener("click", () => runAiMessageAction(action));
       item.append(button);
     }
+    appendAiFeedbackControls(item, message);
   }
   els.aiMessages.append(item);
   els.aiMessages.scrollTop = els.aiMessages.scrollHeight;
@@ -6320,6 +6335,13 @@ function aiMessageAction(message) {
     ...asArray(message.toolNames),
     ...citations.map((citation) => citation.tool).filter(Boolean),
   ]);
+  if (message.action?.kind === "confirm_refresh" && isStaffUser()) {
+    return {
+      ...message.action,
+      kind: "confirm_refresh",
+      label: message.action.label || "Подтвердить обновление 1С",
+    };
+  }
   if (
     tools.has("get_loss_drivers")
     && content.includes("Откройте убыточные продажи")
@@ -6351,7 +6373,35 @@ function aiMessageAction(message) {
   return null;
 }
 
-function runAiMessageAction(action) {
+async function runAiMessageAction(action) {
+  if (action.kind === "confirm_refresh") {
+    setAiError();
+    try {
+      const result = await api(
+        `/api/reports/${encodeURIComponent(action.reportId || state.reportId)}/refresh/onec-auto`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reason: action.reason || "Подтверждено сотрудником в AI-аналитике",
+          }),
+        },
+      );
+      const newReport = result.newReportRunId || result.new_report_run_id || "";
+      appendAiMessage({
+        role: "assistant",
+        local: true,
+        content: newReport
+          ? `Обновление подтверждено. Создан новый расчёт ${newReport}.`
+          : "Обновление подтверждено и поставлено в очередь. Текущий отчёт не изменён.",
+      });
+    } catch (error) {
+      setAiError(
+        error.publicMessage
+          || "Не удалось подтвердить обновление. Текущий отчёт не изменён.",
+      );
+    }
+    return;
+  }
   closeAiWidget({ restoreFocus: false });
   if (action.kind === "losses") {
     openProductsPreset("losses");
@@ -6369,6 +6419,44 @@ function runAiMessageAction(action) {
     return;
   }
   selectTableScenario("summary", { updateLocation: true, focus: true });
+}
+
+function appendAiFeedbackControls(item, message) {
+  const messageId = Number(message.messageId || message.id || 0);
+  if (!messageId || message.local) {
+    return;
+  }
+  const controls = document.createElement("div");
+  controls.className = "ai-feedback";
+  const label = document.createElement("span");
+  label.textContent = "Ответ помог?";
+  controls.append(label);
+  [
+    { rating: "up", label: "Да" },
+    { rating: "down", label: "Нет" },
+  ].forEach(({ rating, label: buttonLabel }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button ai-feedback-button";
+    button.textContent = buttonLabel;
+    button.setAttribute("aria-label", `${buttonLabel}: оценить ответ AI`);
+    button.addEventListener("click", async () => {
+      try {
+        await api(`/api/ai/messages/${encodeURIComponent(messageId)}/feedback`, {
+          method: "POST",
+          body: JSON.stringify({ rating, comment: "" }),
+        });
+        controls.querySelectorAll("button").forEach((candidate) => {
+          candidate.disabled = true;
+        });
+        label.textContent = "Спасибо за оценку";
+      } catch (error) {
+        label.textContent = "Оценку не удалось сохранить";
+      }
+    });
+    controls.append(button);
+  });
+  item.append(controls);
 }
 
 function lastCompletedAiAnswerEvents(events) {
@@ -6560,6 +6648,7 @@ function resetAiPanel() {
   els.aiRetry.hidden = true;
   els.aiRetryMessage.textContent = "";
   state.aiRetryQuestion = "";
+  state.aiRetryRequestId = "";
   state.aiStreamError = "";
   renderAiContext({});
 }

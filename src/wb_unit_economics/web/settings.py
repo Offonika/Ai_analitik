@@ -27,6 +27,10 @@ class WebSettings(BaseSettings):
     openai_model: str = "gpt-5.5"
     openai_api_key: str = ""
     openai_timeout_seconds: float = 60.0
+    openai_circuit_failure_threshold: int = Field(default=2, ge=1, le=10)
+    openai_circuit_cooldown_seconds: float = Field(default=300.0, ge=1, le=3600)
+    ai_rate_limit_requests_per_minute: int = Field(default=12, ge=1, le=120)
+    ai_retention_days: int = Field(default=90, ge=1, le=365)
     chatkit_enabled: bool = False
     integration_secret_key: str = ""
     client_login_enabled: bool = True
@@ -103,7 +107,10 @@ class WebSettings(BaseSettings):
 
     @property
     def resolved_openai_api_key(self) -> str:
-        return os.getenv("OPENAI_API_KEY") or self.openai_api_key
+        configured = self.openai_api_key.strip()
+        if self.runtime_environment == "test":
+            return configured
+        return os.getenv("OPENAI_API_KEY", "").strip() or configured
 
     @property
     def export_root_path(self) -> Path:

@@ -27098,8 +27098,30 @@ def unit_economics_calculator_context(
     }
 
 
-def query_report_rows(
-    db: Session,
+def _append_report_row_preset_conditions(
+    conditions: list[Any],
+    preset: str,
+) -> None:
+    if preset == "losses":
+        conditions.extend((ReportUnitRow.profit < 0, ~_penalty_only_condition()))
+    if preset == "penaltyOnly":
+        conditions.append(_penalty_only_condition())
+    if preset == "missingCost":
+        conditions.extend((ReportUnitRow.status != "ОК", _missing_cost_condition()))
+    if preset == "missingMapping":
+        conditions.append(ReportUnitRow.status.ilike("%сопостав%"))
+    if preset == "review":
+        conditions.append(ReportUnitRow.status != "ОК")
+    if preset == "returns":
+        conditions.append(
+            or_(
+                ReportUnitRow.returns > 0,
+                ReportUnitRow.return_rate > 0,
+            )
+        )
+
+
+def _report_row_conditions(
     report: ReportRun,
     *,
     query: str = "",
@@ -27115,13 +27137,10 @@ def query_report_rows(
     loss_class: str = "",
     document_report: str = "",
     preset: str = "",
-    sort_by: str = "",
-    sort_direction: str = "",
-    limit: int = 250,
-    offset: int = 0,
-) -> dict[str, Any]:
-    limit = max(1, min(limit, REPORT_ROWS_MAX_LIMIT))
-    offset = max(0, offset)
+    required_preset: str = "",
+) -> list[Any]:
+    """Build one canonical condition set for row pages and AI aggregates."""
+
     conditions: list[Any] = [ReportUnitRow.report_run_id == report.id]
     if status:
         conditions.append(ReportUnitRow.status == status)
@@ -27162,23 +27181,8 @@ def query_report_rows(
         conditions.append(ReportUnitRow.loss_class == loss_class)
     if document_report:
         conditions.append(ReportUnitRow.document_report == document_report)
-    if preset == "losses":
-        conditions.extend((ReportUnitRow.profit < 0, ~_penalty_only_condition()))
-    if preset == "penaltyOnly":
-        conditions.append(_penalty_only_condition())
-    if preset == "missingCost":
-        conditions.extend((ReportUnitRow.status != "ОК", _missing_cost_condition()))
-    if preset == "missingMapping":
-        conditions.append(ReportUnitRow.status.ilike("%сопостав%"))
-    if preset == "review":
-        conditions.append(ReportUnitRow.status != "ОК")
-    if preset == "returns":
-        conditions.append(
-            or_(
-                ReportUnitRow.returns > 0,
-                ReportUnitRow.return_rate > 0,
-            )
-        )
+    for selected_preset in dict.fromkeys((preset, required_preset)):
+        _append_report_row_preset_conditions(conditions, selected_preset)
     if query:
         like = f"%{query}%"
         conditions.append(
@@ -27191,6 +27195,51 @@ def query_report_rows(
                 ReportUnitRow.document_report.ilike(like),
             )
         )
+    return conditions
+
+
+def query_report_rows(
+    db: Session,
+    report: ReportRun,
+    *,
+    query: str = "",
+    status: str = "",
+    period_start: date | None = None,
+    period_end: date | None = None,
+    month: str = "",
+    cabinet: str = "",
+    organization: str = "",
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    loss_class: str = "",
+    document_report: str = "",
+    preset: str = "",
+    required_preset: str = "",
+    sort_by: str = "",
+    sort_direction: str = "",
+    limit: int = 250,
+    offset: int = 0,
+) -> dict[str, Any]:
+    limit = max(1, min(limit, REPORT_ROWS_MAX_LIMIT))
+    offset = max(0, offset)
+    conditions = _report_row_conditions(
+        report,
+        query=query,
+        status=status,
+        period_start=period_start,
+        period_end=period_end,
+        month=month,
+        cabinet=cabinet,
+        organization=organization,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        loss_class=loss_class,
+        document_report=document_report,
+        preset=preset,
+        required_preset=required_preset,
+    )
     statement = select(ReportUnitRow).where(*conditions)
     total = _count_rows(db, *conditions)
     if sort_by:
@@ -27211,7 +27260,7 @@ def query_report_rows(
     else:
         order_column = (
             func.abs(ReportUnitRow.revenue).desc()
-            if preset == "missingCost"
+            if preset == "missingCost" and required_preset != "losses"
             else ReportUnitRow.profit.asc()
         )
         ordering = (order_column, ReportUnitRow.id.asc())
@@ -27341,6 +27390,126 @@ def query_report_rows(
             "byReason": _missing_cost_reason_breakdown(db, *conditions),
         }
     return payload
+
+
+def ai_loss_driver_aggregates(
+    db: Session,
+    report: ReportRun,
+    *,
+    query: str = "",
+    status: str = "",
+    period_start: date | None = None,
+    period_end: date | None = None,
+    month: str = "",
+    cabinet: str = "",
+    organization: str = "",
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    loss_class: str = "",
+    document_report: str = "",
+    preset: str = "",
+) -> list[dict[str, Any]]:
+    """Return loss-driver aggregates for the complete filtered report scope."""
+
+    conditions = _report_row_conditions(
+        report,
+        query=query,
+        status=status,
+        period_start=period_start,
+        period_end=period_end,
+        month=month,
+        cabinet=cabinet,
+        organization=organization,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        loss_class=loss_class,
+        document_report=document_report,
+        preset=preset,
+        required_preset="losses",
+    )
+    driver = func.coalesce(
+        func.nullif(func.trim(func.coalesce(ReportUnitRow.loss_driver, "")), ""),
+        "Нужно уточнить",
+    )
+    rows = db.execute(
+        select(
+            driver.label("driver"),
+            func.count().label("row_count"),
+            func.sum(ReportUnitRow.profit).label("profit"),
+        )
+        .where(*conditions)
+        .group_by(driver)
+        .order_by(func.sum(ReportUnitRow.profit).asc(), driver.asc())
+    ).mappings()
+    return [
+        {
+            "driver": as_text(row["driver"]),
+            "rows": int(row["row_count"] or 0),
+            "profit": as_float(row["profit"]),
+        }
+        for row in rows
+    ]
+
+
+def ai_data_quality_status_aggregates(
+    db: Session,
+    report: ReportRun,
+    *,
+    query: str = "",
+    status: str = "",
+    period_start: date | None = None,
+    period_end: date | None = None,
+    month: str = "",
+    cabinet: str = "",
+    organization: str = "",
+    wb_cabinet_id: str = "",
+    client_company_id: str = "",
+    scheme: str = "",
+    loss_class: str = "",
+    document_report: str = "",
+    preset: str = "",
+) -> list[dict[str, Any]]:
+    """Return non-OK status counts for the complete filtered report scope."""
+
+    status_value = func.coalesce(
+        func.nullif(func.trim(func.coalesce(ReportUnitRow.status, "")), ""),
+        "Не указан",
+    )
+    conditions = _report_row_conditions(
+        report,
+        query=query,
+        status=status,
+        period_start=period_start,
+        period_end=period_end,
+        month=month,
+        cabinet=cabinet,
+        organization=organization,
+        wb_cabinet_id=wb_cabinet_id,
+        client_company_id=client_company_id,
+        scheme=scheme,
+        loss_class=loss_class,
+        document_report=document_report,
+        preset=preset,
+        required_preset="review",
+    )
+    rows = db.execute(
+        select(
+            status_value.label("status"),
+            func.count().label("row_count"),
+        )
+        .where(*conditions)
+        .group_by(status_value)
+        .order_by(func.count().desc(), status_value.asc())
+    ).mappings()
+    return [
+        {
+            "status": as_text(row["status"]),
+            "rows": int(row["row_count"] or 0),
+        }
+        for row in rows
+    ]
 
 
 def _missing_cost_reason_breakdown(
@@ -29903,6 +30072,137 @@ def add_ai_message(
     return message
 
 
+def ai_user_message_by_request_id(
+    db: Session,
+    *,
+    thread: AiThread,
+    request_id: str,
+) -> AiMessage | None:
+    normalized = request_id.strip()[:80]
+    if not normalized:
+        return None
+    return db.scalar(
+        select(AiMessage)
+        .where(
+            AiMessage.thread_id == thread.id,
+            AiMessage.role == "user",
+            AiMessage.chatkit_item_id == normalized,
+        )
+        .order_by(AiMessage.id.desc())
+    )
+
+
+def ai_user_message_count_since(
+    db: Session,
+    *,
+    user: User,
+    since: datetime,
+) -> int:
+    return int(
+        db.scalar(
+            select(func.count(AiMessage.id))
+            .join(AiThread, AiThread.id == AiMessage.thread_id)
+            .where(
+                AiThread.user_id == user.id,
+                AiMessage.role == "user",
+                AiMessage.created_at >= since,
+            )
+        )
+        or 0
+    )
+
+
+def prune_expired_ai_threads(
+    db: Session,
+    *,
+    user: User,
+    retention_days: int,
+    limit: int = 100,
+) -> int:
+    """Delete only the current owner's threads whose latest activity expired."""
+
+    cutoff = security.utcnow() - timedelta(days=max(1, retention_days))
+    latest_message = (
+        select(func.max(AiMessage.created_at))
+        .where(AiMessage.thread_id == AiThread.id)
+        .correlate(AiThread)
+        .scalar_subquery()
+    )
+    expired = list(
+        db.scalars(
+            select(AiThread)
+            .where(
+                AiThread.user_id == user.id,
+                func.coalesce(latest_message, AiThread.created_at) < cutoff,
+            )
+            .order_by(AiThread.created_at.asc())
+            .limit(max(1, min(limit, 500)))
+        )
+    )
+    for thread in expired:
+        db.execute(
+            update(AiClientDraft)
+            .where(AiClientDraft.thread_id == thread.id)
+            .values(thread_id=None)
+        )
+        db.execute(delete(AiEvent).where(AiEvent.thread_id == thread.id))
+        db.execute(delete(AiToolCall).where(AiToolCall.thread_id == thread.id))
+        db.execute(delete(AiMessage).where(AiMessage.thread_id == thread.id))
+        db.delete(thread)
+    return len(expired)
+
+
+def require_ai_assistant_message(
+    db: Session,
+    *,
+    user: User,
+    message_id: int,
+) -> tuple[AiMessage, AiThread]:
+    message = db.get(AiMessage, message_id)
+    if message is None or message.role != "assistant":
+        raise PermissionError("assistant message access denied")
+    thread = require_thread(db, user, message.thread_id)
+    return message, thread
+
+
+def add_ai_feedback(
+    db: Session,
+    *,
+    user: User,
+    thread: AiThread,
+    message: AiMessage,
+    rating: str,
+    comment: str,
+) -> AiEvent:
+    if rating not in {"up", "down"}:
+        raise ValueError("unsupported AI feedback rating")
+    event = add_ai_event(
+        db,
+        thread=thread,
+        user=user,
+        event_type="ai_feedback",
+        title="Оценка ответа сохранена",
+        message="Спасибо, оценка поможет проверить качество AI-аналитика.",
+        status="recorded",
+        payload={
+            "messageId": message.id,
+            "rating": rating,
+            "comment": comment.strip()[:500],
+        },
+        visibility="staff" if rating == "down" else "client",
+    )
+    audit(
+        db,
+        action="ai_feedback_recorded",
+        user=user,
+        tenant_id=thread.tenant_id,
+        entity_type="ai_message",
+        entity_id=str(message.id),
+        payload={"rating": rating, "hasComment": bool(comment.strip())},
+    )
+    return event
+
+
 def add_ai_tool_call(
     db: Session,
     *,
@@ -30008,6 +30308,8 @@ def _client_safe_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "answerSource",
         "model",
         "toolNames",
+        "action",
+        "messageId",
     }
     return {key: value for key, value in payload.items() if key in allowed}
 

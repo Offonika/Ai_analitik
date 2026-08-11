@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -301,6 +302,11 @@ def test_health_exposes_safe_runtime_contour_and_maintenance_message(
     assert payload["runtimeEnvironment"] == "test"
     assert payload["maintenanceMessage"] == "Проверяем новую версию до 18:00."
     assert payload["chatkitEnabled"] is True
+    assert payload["aiConfigured"] is False
+    assert payload["aiStatus"] == "unavailable"
+    assert payload["aiStatusReason"] == "not_configured"
+    assert payload["aiRuntime"]["apiCalls"] == 0
+    assert payload["aiRuntime"]["totalTokens"] == 0
     assert "chatkitDomainKey" not in payload
 
 
@@ -1448,7 +1454,7 @@ def make_client(
         session_factory=session_factory,
         auto_refresh_service=auto_refresh_service,
     )
-    return TestClient(app)
+    return TestClient(app, backend_options={"use_uvloop": True})
 
 
 def login(client: TestClient) -> None:
@@ -6997,6 +7003,7 @@ def test_cabinet_shell_serves_login_without_report_data(tmp_path: Path) -> None:
 
     page = client.get("/")
     assert page.status_code == 200
+    assert f'content="{WEB_BUILD_ID}"' in page.text
     assert "Кабинет отчета" in page.text
     assert 'id="runtime-banner"' in page.text
     assert "Убыточный товар" not in page.text
@@ -15542,6 +15549,36 @@ def test_ai_fallback_composes_answers_by_intent_without_zero_substitution() -> N
     assert "товар или SKU не найден" in unknown_sku
     assert "нет месячной динамики" in empty_period
 
+    unavailable_scope = {
+        **summary,
+        "rows": None,
+        "loss_rows": None,
+        "profit": None,
+        "margin": None,
+        "quality": {},
+    }
+    unavailable_loss = analyst._fallback_answer(
+        {
+            "get_report_summary": unavailable_scope,
+            "get_loss_drivers": {"loss_rows": None, "top_losses": []},
+        },
+        "Что убыточно?",
+    )
+    unavailable_cost = analyst._fallback_answer(
+        {
+            "get_report_summary": unavailable_scope,
+            "get_data_quality_issues": {
+                "review_rows": None,
+                "statuses": [],
+            },
+        },
+        "Где нет себестоимости?",
+    )
+    assert "не рассчитана" in unavailable_loss
+    assert "убыточных строк нет" not in unavailable_loss
+    assert "не рассчитано" in unavailable_cost
+    assert "не найдено" not in unavailable_cost
+
 
 def test_ai_fallback_service_uses_primary_intent_tools(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -15592,7 +15629,9 @@ def test_ai_fallback_service_uses_primary_intent_tools(tmp_path: Path) -> None:
     assert len({loss.content, margin.content, readiness.content, cost.content}) == 4
 
 
-def test_ai_explicit_refresh_intent_remains_service_backed(tmp_path: Path) -> None:
+def test_ai_explicit_refresh_intent_requires_separate_confirmation(
+    tmp_path: Path,
+) -> None:
     fake_service = FakeAutoRefreshService(
         tmp_path / "reports" / "auto-refresh.xlsx"
     )
@@ -15629,15 +15668,19 @@ def test_ai_explicit_refresh_intent_remains_service_backed(tmp_path: Path) -> No
             if item["type"] == "tool_completed"
         }
 
-    assert "report-1-refresh" in result.content
+    assert "требуется отдельное подтверждение" in result.content
+    assert result.action == {
+        "kind": "confirm_refresh",
+        "reportId": "report-1",
+        "reason": "Дозагрузи 1С себестоимость и пересобери отчёт",
+        "label": "Подтвердить обновление 1С",
+    }
     assert tools == {
         "get_report_summary",
         "get_data_quality_issues",
         "refresh_onec_and_rebuild_report",
     }
-    assert fake_service.last_reason == (
-        "Дозагрузи 1С себестоимость и пересобери отчёт"
-    )
+    assert fake_service.last_reason == ""
 
 
 def test_ai_chat_static_contract_is_minimal_and_mobile_accessible() -> None:
@@ -15652,11 +15695,19 @@ def test_ai_chat_static_contract_is_minimal_and_mobile_accessible() -> None:
     assert 'openProductsPreset("losses")' in app_js
     assert "Внутренняя готовность" in app_js
     assert "Готовность отчёта" in app_js
+    assert 'wbCabinetId: els.filterCabinet?.value || ""' in app_js
+    assert 'clientCompanyId: els.filterOrganization?.value || ""' in app_js
+    assert 'lossClass: els.filterLossClass?.value || ""' in app_js
     assert 'id="ai-retry-message"' in index_html
     assert 'role="alert" aria-live="assertive"' in index_html
     assert 'id="ai-error" class="error-text" role="alert" hidden' in index_html
     assert 'placeholder="Спросите по отчёту…"' in index_html
-    assert ".ai-message-action {\n    min-height: 44px;" in styles
+    assert ".ai-message-action {\n  min-height: 34px;" in styles
+    assert ".ai-feedback-button" in styles
+    assert (
+        ".ai-message-action,\n  .ai-feedback-button {\n    min-height: 44px;"
+        in styles
+    )
     assert ".ai-trace summary {\n    min-height: 32px;" in styles
 
 
@@ -15664,7 +15715,10 @@ def test_ai_openai_source_is_visible_when_model_answers(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    def fake_openai_answer(self, db, user, thread, report, question):
+    def fake_openai_answer(
+        self, db, user, thread, report, question, *, event_callback=None
+    ):
+        del event_callback
         return "OpenAI: главный риск — себестоимость и убыточные SKU.", ""
 
     monkeypatch.setattr(AiAnalyst, "_openai_answer", fake_openai_answer)
@@ -15767,9 +15821,11 @@ def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
     class FakeCall:
         type = "function_call"
         name = "get_report_summary"
-        call_id = "call-summary"
         arguments = "{}"
         status = "completed"
+
+        def __init__(self, call_id: str) -> None:
+            self.call_id = call_id
 
     class FakeResponse:
         def __init__(self, output, output_text=""):
@@ -15777,12 +15833,22 @@ def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
             self.output_text = output_text
 
     requests = []
+    grounded = json.dumps(
+        {
+            "conclusion_fact_id": "summary.profit",
+            "fact_ids": ["summary.profit", "summary.margin"],
+            "next_step_id": "open_summary",
+        }
+    )
     responses = iter(
         [
-            FakeResponse([FakeCall()]),
-            FakeResponse([], "Главный вывод собран по расчетной витрине."),
-            FakeResponse([FakeCall()]),
-            FakeResponse([], "Продолжение учитывает историю диалога."),
+            FakeResponse([FakeCall("call-summary-1")]),
+            FakeResponse([FakeCall("call-summary-duplicate")]),
+            FakeResponse([], "Этот свободный текст не должен попасть в ответ."),
+            FakeResponse([], grounded),
+            FakeResponse([FakeCall("call-summary-2")]),
+            FakeResponse([], "Ещё один непроверенный текст."),
+            FakeResponse([], grounded),
         ]
     )
 
@@ -15805,14 +15871,24 @@ def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
         json={"content": "Что главное?"},
     ).json()
 
-    assert len(requests) == 2
+    assert len(requests) == 4
     assert requests[0]["tool_choice"] == "required"
     assert all(request["store"] is False for request in requests)
     assert all(
         request["include"] == ["reasoning.encrypted_content"]
         for request in requests
     )
-    assert isinstance(requests[1]["input"][2], FakeCall)
+    assert requests[3]["text"]["format"]["type"] == "json_schema"
+    function_outputs = [
+        item
+        for item in requests[2]["input"]
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+    ]
+    assert [item["call_id"] for item in function_outputs] == [
+        "call-summary-1",
+        "call-summary-duplicate",
+    ]
+    assert function_outputs[0]["output"] == function_outputs[1]["output"]
     completed = [
         item
         for item in answer["events"]
@@ -15820,15 +15896,23 @@ def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
         and item["toolName"] == "get_report_summary"
     ]
     assert len(completed) == 1
+    assistant_content = [
+        item["content"]
+        for item in answer["messages"]
+        if item["role"] == "assistant"
+    ][-1]
+    assert "Прибыль до налогов" in assistant_content
+    assert "Этот свободный текст" not in assistant_content
 
     client.post(
         f"/api/ai/threads/{thread['id']}/messages",
         json={"content": "А что было в прошлом ответе?"},
     )
-    second_input = requests[2]["input"]
+    assert len(requests) == 7
+    second_input = requests[4]["input"]
     assert any(
         item.get("role") == "assistant"
-        and item.get("content") == "Главный вывод собран по расчетной витрине."
+        and item.get("content") == assistant_content
         for item in second_input
         if isinstance(item, dict)
     )
@@ -15839,6 +15923,230 @@ def test_ai_responses_tool_loop_is_stateless_typed_and_runs_tool_once(
         and item.get("role") == "user"
         and item.get("content") == "А что было в прошлом ответе?"
     ) == 1
+
+
+def test_ai_rejects_unknown_structured_fact_ids_and_reuses_tool_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import openai
+
+    class FakeCall:
+        type = "function_call"
+        name = "get_report_summary"
+        call_id = "call-summary"
+        arguments = "{}"
+
+    class FakeResponse:
+        def __init__(self, output, output_text=""):
+            self.output = output
+            self.output_text = output_text
+
+    requests = []
+    responses = iter(
+        [
+            FakeResponse([FakeCall()]),
+            FakeResponse([], "Непроверенный промежуточный текст 987654."),
+            FakeResponse(
+                [],
+                json.dumps(
+                    {
+                        "conclusion_fact_id": "made.up.fact",
+                        "fact_ids": ["made.up.fact"],
+                        "next_step_id": "open_summary",
+                    }
+                ),
+            ),
+        ]
+    )
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            return next(responses)
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    client = make_client(tmp_path, settings_overrides={"openai_api_key": "test-key"})
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+
+    answer = client.post(
+        f"/api/ai/threads/{thread['id']}/messages",
+        json={"content": "Что главное?"},
+    ).json()
+
+    assistant = [
+        item for item in answer["messages"] if item["role"] == "assistant"
+    ][-1]
+    assert "made.up.fact" not in assistant["content"]
+    assert "987654" not in assistant["content"]
+    assert assistant["citations"]
+    completed = [
+        item
+        for item in answer["events"]
+        if item["type"] == "tool_completed"
+        and item["toolName"] == "get_report_summary"
+    ]
+    assert len(completed) == 1
+    done = [item for item in answer["events"] if item["type"] == "assistant_done"][-1]
+    assert done["payload"]["answerSource"] == "fallback"
+    assert done["payload"]["fallbackReason"] == "ungrounded_model_output"
+    assert len(requests) == 3
+
+
+def test_ai_full_scope_aggregates_are_not_limited_to_example_rows(
+    tmp_path: Path,
+) -> None:
+    payload = deepcopy(sample_payload())
+    template = payload["unitRows"][0]
+    rows = []
+    for index in range(32):
+        target_scope = index < 7
+        rows.append(
+            {
+                **template,
+                "id": f"aggregate-{index}",
+                "product": f"Убыточный товар {index}",
+                "nmId": f"aggregate-nm-{index}",
+                "articleWb": f"WB-{index}",
+                "article1c": f"1C-{index}",
+                "barcode": f"BAR-{index}",
+                "profitBeforeTax": -(index + 1) * 90,
+                "profit": -(index + 1) * 100,
+                "margin": -0.1,
+                "lossDriver": f"Драйвер {index % 12}",
+                "lossClass": "Целевой класс" if target_scope else "Другой класс",
+                "cabinet": "Целевой кабинет" if target_scope else "Другой кабинет",
+                "organization": (
+                    "Целевая организация" if target_scope else "Другая организация"
+                ),
+                "scheme": "FBO" if target_scope else "FBS",
+                "status": "Проверка A" if index < 18 else "Проверка B",
+                "statusReason": "Нужна проверка исходных данных",
+            }
+        )
+    payload["unitRows"] = rows
+    client = make_client(tmp_path, payload=payload)
+    analyst = client.app.state.analyst
+
+    with client.app.state.session_factory() as db:
+        report = db.get(repository.ReportRun, "report-1")
+        assert report is not None
+        target_row = db.scalar(
+            select(repository.ReportUnitRow).where(
+                repository.ReportUnitRow.report_run_id == report.id,
+                repository.ReportUnitRow.row_uid == "aggregate-0",
+            )
+        )
+        assert target_row is not None
+        summary = repository.report_summary_payload(db, report)
+        losses = analyst._loss_drivers(db, report, summary)
+        quality = analyst._data_quality(db, report, summary)
+        thread = SimpleNamespace(
+            scope={
+                "analysisSurface": "unit_economics",
+                "query": "Убыточный товар",
+                "status": "Проверка A",
+                "month": "Апрель 2026",
+                "periodStart": "2026-04-01",
+                "periodEnd": "2026-04-30",
+                "wbCabinetId": target_row.wb_cabinet_id,
+                "clientCompanyId": target_row.client_company_id,
+                "scheme": "FBO",
+                "lossClass": "Целевой класс",
+                "preset": "review",
+            }
+        )
+        row_filters = analyst._thread_row_filters(thread)
+        filtered_summary = analyst._thread_report_summary(
+            db,
+            thread=thread,
+            report=report,
+            include_staff_readiness=True,
+            logistics_analysis=None,
+        )
+        filtered_losses = analyst._loss_drivers(
+            db,
+            report,
+            filtered_summary,
+            row_filters=row_filters,
+        )
+        filtered_quality = analyst._data_quality(
+            db,
+            report,
+            filtered_summary,
+            row_filters=row_filters,
+        )
+
+    assert losses["aggregation_scope"] == "full_filtered_report"
+    assert losses["loss_rows"] == 32
+    assert sum(item["rows"] for item in losses["drivers"]) == 32
+    assert len(losses["drivers"]) == 12
+    assert len(losses["top_losses"]) == 10
+    assert quality["aggregation_scope"] == "full_filtered_report"
+    assert quality["review_rows"] == 32
+    assert sum(item["rows"] for item in quality["statuses"]) == 32
+    assert sum(
+        len(item["examples"]) for item in quality["statuses"]
+    ) == 10
+    assert filtered_summary["kpis"]["rowCount"] == 7
+    assert filtered_losses["loss_rows"] == 7
+    assert sum(item["rows"] for item in filtered_losses["drivers"]) == 7
+    assert len(filtered_losses["top_losses"]) == 7
+    assert filtered_quality["total_rows"] == 7
+    assert filtered_quality["review_rows"] == 7
+    assert sum(item["rows"] for item in filtered_quality["statuses"]) == 7
+
+
+def test_ai_authorization_circuit_stops_third_provider_attempt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import openai
+
+    calls = 0
+
+    class AuthorizationError(RuntimeError):
+        status_code = 401
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise AuthorizationError("invalid test credential")
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
+    client = make_client(
+        tmp_path,
+        settings_overrides={
+            "openai_api_key": "test-key",
+            "openai_circuit_failure_threshold": 2,
+        },
+    )
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+
+    for index in range(3):
+        response = client.post(
+            f"/api/ai/threads/{thread['id']}/messages",
+            json={"content": f"Что главное, попытка {index}?"},
+        )
+        assert response.status_code == 200
+
+    health = client.get("/api/health").json()
+    assert calls == 2
+    assert health["aiStatus"] == "unavailable"
+    assert health["aiStatusReason"] == "circuit_open"
+    assert health["aiRuntime"]["apiErrors"] == 2
+    assert health["aiRuntime"]["fallbackAnswers"] == 3
 
 
 def test_ai_thread_requires_report_and_is_private_to_owner(tmp_path: Path) -> None:
@@ -15896,6 +16204,142 @@ def test_ai_thread_history_lists_latest_owner_thread_for_report(
     assert client.get("/api/ai/threads?report_id=report-1&limit=1").json() == {
         "items": []
     }
+
+
+def test_ai_redacts_secrets_and_retry_is_idempotent_under_rate_limit(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"ai_rate_limit_requests_per_minute": 1},
+    )
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+    question = "Что главное? api_key=topsecretvalue123456"
+    path = f"/api/ai/threads/{thread['id']}/messages"
+
+    first = client.post(
+        path,
+        json={"content": question, "request_id": "request-1"},
+    )
+    retry = client.post(
+        path,
+        json={"content": question, "request_id": "request-1"},
+    )
+    limited = client.post(
+        path,
+        json={"content": "Новый вопрос", "request_id": "request-2"},
+    )
+
+    assert first.status_code == 200
+    assert retry.status_code == 200
+    assert limited.status_code == 429
+    assert limited.headers["retry-after"] == "60"
+    stored = client.get(f"/api/ai/threads/{thread['id']}").json()
+    user_messages = [
+        item for item in stored["messages"] if item["role"] == "user"
+    ]
+    assistant_messages = [
+        item for item in stored["messages"] if item["role"] == "assistant"
+    ]
+    assert len(user_messages) == 1
+    assert len(assistant_messages) == 2
+    assert "topsecretvalue123456" not in str(stored)
+    assert "[СЕКРЕТ СКРЫТ]" in user_messages[0]["content"]
+    assert sum(item["type"] == "input_redacted" for item in stored["events"]) == 1
+
+
+def test_ai_retention_deletes_only_expired_current_owner_threads(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        settings_overrides={"ai_retention_days": 1},
+    )
+    login(client)
+    expired_at = repository.security.utcnow() - timedelta(days=3)
+
+    with client.app.state.session_factory() as db:
+        owner = db.query(repository.User).filter_by(email="admin@example.com").one()
+        other = repository.upsert_user(
+            db,
+            email="retention-other@example.com",
+            password="secret",
+            tenant_id="shumeyko",
+            role="consultant",
+        )
+        owner_thread = repository.create_ai_thread(
+            db,
+            user=owner,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            report_id="report-1",
+            title="expired owner thread",
+        )
+        other_thread = repository.create_ai_thread(
+            db,
+            user=other,
+            tenant_id="shumeyko",
+            client_id="shumeyko",
+            report_id="report-1",
+            title="expired other thread",
+        )
+        owner_thread.created_at = expired_at
+        other_thread.created_at = expired_at
+        db.commit()
+        owner_thread_id = owner_thread.id
+        other_thread_id = other_thread.id
+
+    response = client.get("/api/ai/threads?report_id=report-1&limit=20")
+
+    assert response.status_code == 200
+    assert all(item["id"] != owner_thread_id for item in response.json()["items"])
+    with client.app.state.session_factory() as db:
+        assert db.get(repository.AiThread, owner_thread_id) is None
+        assert db.get(repository.AiThread, other_thread_id) is not None
+
+
+def test_ai_feedback_is_redacted_and_owner_scoped(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    login(client)
+    thread = client.post("/api/ai/threads", json={"report_id": "report-1"}).json()
+    answered = client.post(
+        f"/api/ai/threads/{thread['id']}/messages",
+        json={"content": "Что главное?"},
+    ).json()
+    assistant = [
+        item for item in answered["messages"] if item["role"] == "assistant"
+    ][-1]
+
+    feedback = client.post(
+        f"/api/ai/messages/{assistant['id']}/feedback",
+        json={
+            "rating": "down",
+            "comment": "Нужно точнее, token=topsecretvalue123456",
+        },
+    )
+
+    assert feedback.status_code == 200
+    events = client.get(f"/api/ai/threads/{thread['id']}/events").json()["items"]
+    stored_feedback = [item for item in events if item["type"] == "ai_feedback"][-1]
+    assert stored_feedback["payload"]["rating"] == "down"
+    assert "topsecretvalue123456" not in str(stored_feedback)
+    assert "[СЕКРЕТ СКРЫТ]" in stored_feedback["payload"]["comment"]
+
+    created = client.post(
+        "/api/admin/users",
+        json={"email": "feedback-other@example.com", "role": "consultant"},
+    ).json()
+    client.post("/api/auth/logout")
+    login_as(client, "feedback-other@example.com", created["temporaryPassword"])
+
+    forbidden = client.post(
+        f"/api/ai/messages/{assistant['id']}/feedback",
+        json={"rating": "up", "comment": ""},
+    )
+    assert forbidden.status_code == 404
 
 
 def test_ai_thread_rejects_report_client_scope_mismatch(tmp_path: Path) -> None:
@@ -15983,7 +16427,10 @@ def test_ai_fallback_reason_is_hidden_from_client_role(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    def fake_openai_answer(self, db, user, thread, report, question):
+    def fake_openai_answer(
+        self, db, user, thread, report, question, *, event_callback=None
+    ):
+        del event_callback
         return None, "BadRequestError"
 
     monkeypatch.setattr(AiAnalyst, "_openai_answer", fake_openai_answer)
@@ -16010,7 +16457,9 @@ def test_ai_fallback_reason_is_hidden_from_client_role(
     assert "BadRequestError" not in str(answer)
 
 
-def test_ai_explicit_onec_refresh_creates_new_report(tmp_path: Path) -> None:
+def test_ai_explicit_onec_refresh_runs_only_after_ui_confirmation(
+    tmp_path: Path,
+) -> None:
     fake_service = FakeAutoRefreshService(tmp_path / "reports" / "auto-refresh.xlsx")
     client = make_client(
         tmp_path,
@@ -16028,19 +16477,29 @@ def test_ai_explicit_onec_refresh_creates_new_report(tmp_path: Path) -> None:
     assistant_messages = [
         item["content"] for item in answer["messages"] if item["role"] == "assistant"
     ]
-    assert "report-1-refresh" in assistant_messages[-1]
+    assert "Обновление не запущено" in assistant_messages[-1]
+    assert client.get("/api/reports/report-1-refresh/summary").status_code == 404
+    done = [item for item in answer["events"] if item["type"] == "assistant_done"][-1]
+    assert done["payload"]["action"]["kind"] == "confirm_refresh"
+    assert fake_service.last_reason == ""
+
+    confirmation = client.post(
+        "/api/reports/report-1/refresh/onec-auto",
+        json={"reason": "Подтверждено отдельной кнопкой AI"},
+    )
+
+    assert confirmation.status_code == 200
     assert client.get("/api/reports/report-1-refresh/summary").status_code == 200
-    titles = {item["title"] for item in answer["events"]}
-    assert "Нашел нехватку 1С-данных" in titles
-    assert "Дозагружаю 1С без изменения данных" in titles
-    assert "Пересчитываю отчет" in titles
-    assert "Создан новый отчет" in titles
+    assert fake_service.last_reason == "Подтверждено отдельной кнопкой AI"
 
     audit = client.get("/api/admin/audit").json()["items"]
-    assert any(item["action"] == "ai_onec_auto_refresh_completed" for item in audit)
+    assert any(item["action"] == "source_refresh_report_created" for item in audit)
+    assert not any(
+        item["action"].startswith("ai_onec_auto_refresh") for item in audit
+    )
 
 
-def test_ai_openai_failure_does_not_repeat_completed_refresh(
+def test_ai_openai_failure_does_not_start_prepared_refresh(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -16095,11 +16554,11 @@ def test_ai_openai_failure_does_not_repeat_completed_refresh(
     )
 
     assert answer.status_code == 200
-    assert refresh.calls == 1
-    assert client.get("/api/reports/report-1-refresh/summary").status_code == 200
+    assert refresh.calls == 0
+    assert client.get("/api/reports/report-1-refresh/summary").status_code == 404
 
 
-def test_ai_reports_worker_launch_failure_without_changing_report(
+def test_ai_does_not_probe_refresh_worker_before_confirmation(
     tmp_path: Path,
 ) -> None:
     class _UnavailableAutoRefresh:
@@ -16119,7 +16578,7 @@ def test_ai_reports_worker_launch_failure_without_changing_report(
         json={"content": "Дозагрузи 1С себестоимость и пересобери отчет"},
     ).json()
 
-    assert "Не удалось запустить обновление" in str(answer)
+    assert "требуется отдельное подтверждение" in str(answer)
     assert client.get("/api/reports/report-1-refresh/summary").status_code == 404
 
 
@@ -16183,13 +16642,22 @@ def test_ai_stream_returns_safe_events_and_final_answer(tmp_path: Path) -> None:
         body = "".join(response.iter_text())
 
     assert "event: status" in body
+    assert "event: tool_started" in body
+    assert "event: tool_progress" in body
     assert "event: tool_completed" in body
     assert "event: answer_source" in body
+    assert "event: assistant_done" in body
     assert "event: final" in body
     assert "answerSource" in body
     assert '"citations":' in body
     assert '"reportId": "report-1"' in body
     assert "Убыточных строк" in body
+    assert body.index("event: status") < body.index("event: tool_started")
+    assert body.index("event: tool_started") < body.index("event: tool_progress")
+    assert body.index("event: tool_progress") < body.index("event: tool_completed")
+    assert body.rindex("event: tool_completed") < body.index("event: answer_source")
+    assert body.index("event: answer_source") < body.index("event: assistant_done")
+    assert body.index("event: assistant_done") < body.index("event: final")
 
     events = client.get(f"/api/ai/threads/{thread['id']}/events").json()["items"]
     assert any(item["title"] == "Разбираю убыточность" for item in events)

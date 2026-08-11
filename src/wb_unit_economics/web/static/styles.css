@@ -4491,6 +4491,22 @@ body.widget-open {
   font-size: 12px;
 }
 
+.ai-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ai-feedback-button {
+  min-height: 34px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
 .ai-quick-questions {
   padding: 0 20px 14px;
 }
@@ -6247,7 +6263,8 @@ td {
   .ai-form button,
   .ai-retry button,
   .ai-quick-questions button,
-  .ai-message-action {
+  .ai-message-action,
+  .ai-feedback-button {
     min-height: 44px;
   }
 

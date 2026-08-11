@@ -4,10 +4,12 @@ import hashlib
 import hmac
 import json
 import logging
+import queue
 import re
+import threading
 import time
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
@@ -55,7 +57,7 @@ from wb_unit_economics.web import (
     repository,
     security,
 )
-from wb_unit_economics.web.ai import AiAnalyst
+from wb_unit_economics.web.ai import AiAnalyst, AiRateLimitError
 from wb_unit_economics.web.chatkit_server import (
     CabinetChatKitContext,
     CabinetChatKitServer,
@@ -106,7 +108,7 @@ from wb_unit_economics.web.source_refresh_worker import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-WEB_BUILD_ID = "20260808-v2.65-scalable-refresh"
+WEB_BUILD_ID = "20260811-v2.73-ai-hardening-test"
 MAPPING_UPLOAD_ALLOWED_SUFFIXES = {".csv", ".tsv", ".txt"}
 MAPPING_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 REPORT_ENDPOINT_SLOW_SECONDS = 5.0
@@ -271,6 +273,12 @@ class ThreadCreateRequest(BaseModel):
 class MessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
     scope: dict[str, Any] = Field(default_factory=dict)
+    request_id: str = Field(default="", max_length=80)
+
+
+class AiFeedbackRequest(BaseModel):
+    rating: str = Field(pattern="^(up|down)$")
+    comment: str = Field(default="", max_length=500)
 
 
 class ClientDraftSaveRequest(BaseModel):
@@ -697,6 +705,7 @@ def create_app(
             and health_refresh.status not in expected_disabled_statuses
             else "ok"
         )
+        ai_runtime = app.state.analyst.runtime_payload()
         return {
             "status": health_status,
             "backendBuildId": WEB_BUILD_ID,
@@ -707,6 +716,9 @@ def create_app(
             "schemaVersion": schema_version(bind),
             "aiConfigured": bool(runtime_settings.resolved_openai_api_key),
             "aiModel": runtime_settings.openai_model,
+            "aiStatus": ai_runtime["status"],
+            "aiStatusReason": ai_runtime["reason"],
+            "aiRuntime": ai_runtime,
             "chatkitEnabled": runtime_settings.chatkit_enabled,
             "sourceRefreshTenantId": health_tenant_id,
             "latestPublishedReportId": latest_report.id if latest_report else "",
@@ -738,12 +750,19 @@ def create_app(
 
     @app.get("/api/ai/config")
     def ai_config(current: CurrentUser) -> dict[str, Any]:
+        del current
+        ai_runtime = app.state.analyst.runtime_payload()
         return {
             "transport": "chatkit" if runtime_settings.chatkit_enabled else "sse",
             "chatkitEnabled": runtime_settings.chatkit_enabled,
             "attachmentsEnabled": False,
             "externalActionsEnabled": False,
             "historyLimit": 20,
+            "retentionDays": runtime_settings.ai_retention_days,
+            "rateLimitRequestsPerMinute": (
+                runtime_settings.ai_rate_limit_requests_per_minute
+            ),
+            "runtimeStatus": ai_runtime["status"],
         }
 
     @app.post("/api/chatkit")
@@ -758,6 +777,11 @@ def create_app(
         host = request.headers.get("host", "")
         if origin and urlparse(origin).netloc != host:
             raise HTTPException(status_code=403, detail="cross-origin request denied")
+        repository.prune_expired_ai_threads(
+            db,
+            user=current,
+            retention_days=runtime_settings.ai_retention_days,
+        )
         raw_request = await request.body()
         try:
             protocol_request = json.loads(raw_request)
@@ -790,6 +814,12 @@ def create_app(
         )
         try:
             result = await app.state.chatkit_server.process(raw_request, context)
+        except AiRateLimitError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Слишком много вопросов AI. Повторите через минуту.",
+                headers={"Retry-After": "60"},
+            ) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=404, detail="thread not found") from exc
         except ValueError as exc:
@@ -4270,6 +4300,13 @@ def create_app(
         limit: int = 1,
     ) -> dict[str, Any]:
         report = _require_report_or_404(db, current, report_id)
+        pruned = repository.prune_expired_ai_threads(
+            db,
+            user=current,
+            retention_days=runtime_settings.ai_retention_days,
+        )
+        if pruned:
+            db.commit()
         threads = repository.list_ai_threads(
             db,
             user=current,
@@ -4301,6 +4338,11 @@ def create_app(
         report = _require_report_or_404(db, current, payload.report_id)
         if payload.client_id and payload.client_id != report.client_id:
             raise HTTPException(status_code=409, detail="report/client scope mismatch")
+        repository.prune_expired_ai_threads(
+            db,
+            user=current,
+            retention_days=runtime_settings.ai_retention_days,
+        )
         thread = repository.create_ai_thread(
             db,
             user=current,
@@ -4342,9 +4384,28 @@ def create_app(
         _reject_client_financial_recommendations(db, current, thread)
         if payload.scope:
             repository.update_ai_thread_scope(thread, payload.scope)
-        repository.add_ai_message(
-            db, thread=thread, role="user", content=payload.content
+        question, redacted, existing_message = _prepare_ai_question(
+            db,
+            user=current,
+            thread=thread,
+            payload=payload,
+            analyst=app.state.analyst,
+            settings=runtime_settings,
         )
+        if existing_message is None:
+            repository.add_ai_message(
+                db,
+                thread=thread,
+                role="user",
+                content=question,
+                chatkit_item_id=payload.request_id.strip(),
+            )
+        if redacted:
+            app.state.analyst.record_input_redaction(
+                db,
+                user=current,
+                thread=thread,
+            )
         repository.add_ai_event(
             db,
             thread=thread,
@@ -4361,15 +4422,16 @@ def create_app(
             db,
             user=current,
             thread=thread,
-            question=payload.content,
+            question=question,
         )
-        repository.add_ai_message(
+        assistant_message = repository.add_ai_message(
             db,
             thread=thread,
             role="assistant",
             content=answer.content,
             citations=list(answer.citations),
         )
+        db.flush()
         repository.add_ai_event(
             db,
             thread=thread,
@@ -4378,7 +4440,7 @@ def create_app(
             title="Ответ готов",
             message="Ответ сохранен в истории чата.",
             status="ok",
-            payload=_answer_event_payload(answer),
+            payload=_answer_event_payload(answer, message_id=assistant_message.id),
         )
         repository.audit(
             db,
@@ -4395,6 +4457,40 @@ def create_app(
             repository.thread_events(db, current, thread),
         )
 
+    @app.post("/api/ai/messages/{message_id}/feedback")
+    def save_ai_feedback(
+        message_id: int,
+        payload: AiFeedbackRequest,
+        current: CurrentUser,
+        db: DbSession,
+    ) -> dict[str, Any]:
+        try:
+            message, thread = repository.require_ai_assistant_message(
+                db,
+                user=current,
+                message_id=message_id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="message not found") from exc
+        safe_comment, _redacted = app.state.analyst.prepare_question(payload.comment)
+        if not payload.comment.strip():
+            safe_comment = ""
+        event = repository.add_ai_feedback(
+            db,
+            user=current,
+            thread=thread,
+            message=message,
+            rating=payload.rating,
+            comment=safe_comment,
+        )
+        db.commit()
+        return {
+            "status": "recorded",
+            "messageId": message.id,
+            "rating": payload.rating,
+            "eventId": event.id,
+        }
+
     @app.post("/api/ai/threads/{thread_id}/messages/stream")
     def stream_message(
         thread_id: str,
@@ -4406,87 +4502,197 @@ def create_app(
         _reject_client_financial_recommendations(db, current, thread)
         if payload.scope:
             repository.update_ai_thread_scope(thread, payload.scope)
+        question, redacted, existing_message = _prepare_ai_question(
+            db,
+            user=current,
+            thread=thread,
+            payload=payload,
+            analyst=app.state.analyst,
+            settings=runtime_settings,
+        )
+        user_id = current.id
+        tenant_id = thread.tenant_id
+        thread_owner_id = thread.id
+        request_id = payload.request_id.strip()
+        staff = repository.has_role(current, repository.STAFF_ROLES, tenant_id)
+        message_already_exists = existing_message is not None
+        db.commit()
 
         def generate():
             sent_ids: set[int] = set()
             try:
-                sent_ids.update(
-                    item["id"] for item in repository.thread_events(db, current, thread)
+                with session_factory() as initial_db:
+                    worker_user = initial_db.get(User, user_id)
+                    if worker_user is None:
+                        raise PermissionError("AI user not found")
+                    worker_thread = repository.require_thread(
+                        initial_db, worker_user, thread_owner_id
+                    )
+                    if not message_already_exists and not (
+                        request_id
+                        and repository.ai_user_message_by_request_id(
+                            initial_db,
+                            thread=worker_thread,
+                            request_id=request_id,
+                        )
+                    ):
+                        repository.add_ai_message(
+                            initial_db,
+                            thread=worker_thread,
+                            role="user",
+                            content=question,
+                            chatkit_item_id=request_id,
+                        )
+                    start = repository.add_ai_event(
+                        initial_db,
+                        thread=worker_thread,
+                        user=worker_user,
+                        event_type="status",
+                        title="Вопрос принят",
+                        message=(
+                            "Смотрю расчетную витрину. "
+                            "Внешние системы не изменяются."
+                        ),
+                        status="running",
+                    )
+                    initial_db.flush()
+                    start_payload = repository.ai_event_payload(start, staff=staff)
+                    redaction_payload = None
+                    if redacted:
+                        redaction_event = app.state.analyst.record_input_redaction(
+                            initial_db,
+                            user=worker_user,
+                            thread=worker_thread,
+                        )
+                        initial_db.flush()
+                        redaction_payload = repository.ai_event_payload(
+                            redaction_event, staff=staff
+                        )
+                    initial_db.commit()
+                sent_ids.add(start_payload["id"])
+                if redaction_payload is not None:
+                    sent_ids.add(redaction_payload["id"])
+
+                events: queue.Queue[tuple[str, dict[str, Any] | None]] = queue.Queue()
+
+                def run_answer() -> None:
+                    with session_factory() as worker_db:
+                        try:
+                            worker_user = worker_db.get(User, user_id)
+                            if worker_user is None:
+                                raise PermissionError("AI user not found")
+                            worker_thread = repository.require_thread(
+                                worker_db, worker_user, thread_owner_id
+                            )
+
+                            def publish(item: dict[str, Any]) -> None:
+                                events.put(("event", item))
+
+                            answer = app.state.analyst.answer(
+                                worker_db,
+                                user=worker_user,
+                                thread=worker_thread,
+                                question=question,
+                                event_callback=publish,
+                            )
+                            assistant = repository.add_ai_message(
+                                worker_db,
+                                thread=worker_thread,
+                                role="assistant",
+                                content=answer.content,
+                                citations=list(answer.citations),
+                            )
+                            worker_db.flush()
+                            done = repository.add_ai_event(
+                                worker_db,
+                                thread=worker_thread,
+                                user=worker_user,
+                                event_type="assistant_done",
+                                title="Ответ готов",
+                                message="Ответ сохранен в истории чата.",
+                                status="ok",
+                                payload=_answer_event_payload(
+                                    answer, message_id=assistant.id
+                                ),
+                            )
+                            repository.audit(
+                                worker_db,
+                                action="ai_message_answered",
+                                user=worker_user,
+                                tenant_id=worker_thread.tenant_id,
+                                entity_type="ai_thread",
+                                entity_id=worker_thread.id,
+                            )
+                            worker_db.flush()
+                            done_payload = repository.ai_event_payload(
+                                done, staff=staff
+                            )
+                            worker_db.commit()
+                            events.put(("event", done_payload))
+                            events.put(
+                                (
+                                    "final",
+                                    {
+                                        "content": answer.content,
+                                        "eventId": done.id,
+                                        "citations": list(answer.citations),
+                                        **_safe_answer_event_payload(
+                                            answer,
+                                            staff=staff,
+                                            message_id=assistant.id,
+                                        ),
+                                    },
+                                )
+                            )
+                        except Exception:
+                            worker_db.rollback()
+                            events.put(
+                                (
+                                    "error",
+                                    {
+                                        "message": (
+                                            "Не удалось получить ответ. "
+                                            "Данные WB/1C не менялись."
+                                        )
+                                    },
+                                )
+                            )
+                        finally:
+                            events.put(("closed", None))
+
+                worker = threading.Thread(
+                    target=run_answer,
+                    name=f"ai-stream-{thread_owner_id[:24]}",
+                    daemon=True,
                 )
-                repository.add_ai_message(
-                    db, thread=thread, role="user", content=payload.content
-                )
-                start = repository.add_ai_event(
-                    db,
-                    thread=thread,
-                    user=current,
-                    event_type="status",
-                    title="Вопрос принят",
-                    message=(
-                        "Смотрю расчетную витрину. Внешние системы не изменяются."
-                    ),
-                    status="running",
-                )
-                db.flush()
-                sent_ids.add(start.id)
+                worker.start()
                 yield _sse(
                     "status",
-                    repository.ai_event_payload(
-                        start,
-                        staff=repository.has_role(
-                            current, repository.STAFF_ROLES, thread.tenant_id
-                        ),
-                    ),
+                    start_payload,
                 )
-                answer = app.state.analyst.answer(
-                    db,
-                    user=current,
-                    thread=thread,
-                    question=payload.content,
-                )
-                repository.add_ai_message(
-                    db,
-                    thread=thread,
-                    role="assistant",
-                    content=answer.content,
-                    citations=list(answer.citations),
-                )
-                done = repository.add_ai_event(
-                    db,
-                    thread=thread,
-                    user=current,
-                    event_type="assistant_done",
-                    title="Ответ готов",
-                    message="Ответ сохранен в истории чата.",
-                    status="ok",
-                    payload=_answer_event_payload(answer),
-                )
-                repository.audit(
-                    db,
-                    action="ai_message_answered",
-                    user=current,
-                    tenant_id=thread.tenant_id,
-                    entity_type="ai_thread",
-                    entity_id=thread.id,
-                )
-                db.flush()
-                for item in repository.thread_events(db, current, thread):
-                    if item["id"] in sent_ids:
+                if redaction_payload is not None:
+                    yield _sse("input_redacted", redaction_payload)
+                while True:
+                    try:
+                        event_type, item = events.get(timeout=1.0)
+                    except queue.Empty:
+                        if worker.is_alive():
+                            continue
+                        break
+                    if event_type == "closed":
+                        break
+                    if item is None:
                         continue
-                    sent_ids.add(item["id"])
-                    yield _sse(item["type"], item)
-                yield _sse(
-                    "final",
-                    {
-                        "content": answer.content,
-                        "eventId": done.id,
-                        "citations": list(answer.citations),
-                        **_answer_event_payload(answer),
-                    },
-                )
-                db.commit()
+                    if event_type == "event":
+                        event_id = item.get("id")
+                        if isinstance(event_id, int) and event_id in sent_ids:
+                            continue
+                        if isinstance(event_id, int):
+                            sent_ids.add(event_id)
+                        yield _sse(str(item.get("type") or "status"), item)
+                    else:
+                        yield _sse(event_type, item)
             except Exception:
-                db.rollback()
                 yield _sse(
                     "error",
                     {
@@ -5022,13 +5228,69 @@ def thread_payload(
     }
 
 
-def _answer_event_payload(answer) -> dict[str, Any]:
-    return {
+def _prepare_ai_question(
+    db: Session,
+    *,
+    user: User,
+    thread: Any,
+    payload: MessageRequest,
+    analyst: AiAnalyst,
+    settings: WebSettings,
+) -> tuple[str, bool, Any | None]:
+    question, redacted = analyst.prepare_question(payload.content)
+    request_id = payload.request_id.strip()
+    existing = repository.ai_user_message_by_request_id(
+        db,
+        thread=thread,
+        request_id=request_id,
+    )
+    if existing is not None:
+        if existing.content != question:
+            raise HTTPException(
+                status_code=409,
+                detail="request_id already belongs to another AI question",
+            )
+        return question, False, existing
+    recent = repository.ai_user_message_count_since(
+        db,
+        user=user,
+        since=security.utcnow() - timedelta(minutes=1),
+    )
+    if recent >= settings.ai_rate_limit_requests_per_minute:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много вопросов AI. Повторите через минуту.",
+            headers={"Retry-After": "60"},
+        )
+    return question, redacted, None
+
+
+def _answer_event_payload(answer, *, message_id: int | None = None) -> dict[str, Any]:
+    payload = {
         "answerSource": answer.answer_source,
         "model": answer.model,
         "fallbackReason": answer.fallback_reason,
         "toolNames": list(answer.tool_names),
+        "action": answer.action,
     }
+    if message_id is not None:
+        payload["messageId"] = message_id
+    return payload
+
+
+def _safe_answer_event_payload(
+    answer,
+    *,
+    staff: bool,
+    message_id: int | None = None,
+) -> dict[str, Any]:
+    payload = _answer_event_payload(answer, message_id=message_id)
+    if not staff:
+        payload.pop("fallbackReason", None)
+        action = payload.get("action")
+        if isinstance(action, dict) and action.get("kind") == "confirm_refresh":
+            payload["action"] = None
+    return payload
 
 
 def _sse(event: str, payload: dict[str, Any]) -> str:

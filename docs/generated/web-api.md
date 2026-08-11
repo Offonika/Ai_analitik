@@ -5,8 +5,8 @@ status: active
 audience: ["engineering", "operations"]
 source_of_truth: false
 source_spec: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md"
-last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-08-06"
-updated_at: "2026-08-06"
+last_reconciled_with: "docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md @ 2026-08-11"
+updated_at: "2026-08-11"
 ---
 
 # FastAPI route inventory
@@ -45,6 +45,7 @@ updated_at: "2026-08-06"
 | `PATCH` | `/api/admin/users/{user_id}` | `admin_update_user_api_admin_users__user_id__patch` | Admin Update User |
 | `POST` | `/api/admin/users/{user_id}/reset-password` | `admin_reset_password_api_admin_users__user_id__reset_password_post` | Admin Reset Password |
 | `GET` | `/api/ai/config` | `ai_config_api_ai_config_get` | Ai Config |
+| `POST` | `/api/ai/messages/{message_id}/feedback` | `save_ai_feedback_api_ai_messages__message_id__feedback_post` | Save Ai Feedback |
 | `GET` | `/api/ai/threads` | `list_threads_api_ai_threads_get` | List Threads |
 | `POST` | `/api/ai/threads` | `create_thread_api_ai_threads_post` | Create Thread |
 | `GET` | `/api/ai/threads/{thread_id}` | `get_thread_api_ai_threads__thread_id__get` | Get Thread |
@@ -137,4 +138,4 @@ updated_at: "2026-08-06"
 | `GET` | `/cabinet` | `cabinet_cabinet_get` | Cabinet |
 | `GET` | `/integrations` | `integrations_page_integrations_get` | Integrations Page |
 
-Всего маршрутов: **116**.
+Всего маршрутов: **117**.
