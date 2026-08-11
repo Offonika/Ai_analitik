@@ -2159,3 +2159,73 @@ Rollback test — атомарно вернуть pointer на
 `shumeiko-web-test.service` и повторить local/public health, static-byte,
 safety, health-service и drift smoke. Данные, drafts, snapshots, reports,
 source refresh и production при runtime rollback не изменять.
+
+## Test-only rollout AI core hardening v2.73 — 11 августа 2026 года
+
+Rollout выполнен из локальной ветки без push и ограничен test-контуром. AI
+hardening зафиксирован commit
+`b2afb557c81a228c942919cefc115927952e4fac`; contour-scoped release builder и
+promotion guard — commit `c0f78d525d677e16687500c745a83d63daf76d09`.
+Production release, pointer, service, credentials, report data и published
+current не менялись.
+
+На точном source tree воспроизводимые проверки завершились так:
+
+```bash
+.venv/bin/pytest -q tests/test_ai_analyst.py tests/test_web_app.py \
+  -k 'test_ai_ or test_chatkit_'                    # 41 passed
+.venv/bin/pytest -q tests/test_runtime_contour_scripts.py \
+  tests/test_runtime_contour_drift.py \
+  tests/test_runtime_release_retention.py           # 19 passed
+.venv/bin/pytest -q tests/test_documentation_validators.py \
+  tests/test_docs_routing.py                        # 32 passed
+```
+
+Ruff, `node --check`, release-notes JS test, secret/path safety и пять
+обязательных documentation validators прошли. Дополнительный targeted набор
+проверил row filters, report-period filtering, sorting, static shell,
+release notes и lost-sales compatibility. Полный 45-минутный CI suite локально
+до конца не выполнялся, поэтому этот rollout не является production-
+qualification.
+
+Из commit `c0f78d5` собран test-only immutable release
+`runtime-c0f78d5-v273-ai-hardening-test-20260811` с
+`manifestVersion=2`, `sourceDirty=false`,
+`reportsRoot=/data/shumeyko/test/reports` и content SHA-256
+`e14087873d701f13b829d21937163fc394ead026b8ebe6811341c93496aeb604`.
+Archive, dependency-freeze, runtime-bootstrap и content hashes независимо
+совпали с manifest; пакет импортируется из собственного `release/src`,
+non-symlink writable entries отсутствуют, `reports` ведёт только в test root.
+Artifact-preflight на immutable package завершился `40 passed`; static contract
+проверен отдельно по точному byte-identical public asset.
+
+До promotion test указывал на
+`runtime-69ec11c-v272-db-first-report-persistence-20260807`. Pointer атомарно
+переключен на v2.73 и перезапущен только `shumeiko-web-test.service`. Local и
+public health вернули `status=ok`, `runtimeEnvironment=test`, совпадающие
+`backendBuildId=staticBuildId=20260811-v2.73-ai-hardening-test`,
+`aiConfigured=false`, `aiStatus=unavailable`,
+`aiStatusReason=not_configured`, `chatkitEnabled=false` и
+`latestSourceRefreshActive=false`. Следовательно, test не наследовал
+production OpenAI key и использует deterministic grounded fallback.
+
+Public `app.js` и `styles.css` побайтно совпали с release и отдавались с
+`Cache-Control: no-store` и `X-Robots-Tag: noindex, nofollow, noarchive`.
+Неавторизованные `/api/reports`, `/api/ai/config`, `/api/chatkit` и feedback
+вернули `401`; HEAD для `/.env`, неизвестного route, `/data/report.json` и
+`/downloads/report.xlsx` — `404`; `robots.txt` содержит `Disallow: /`.
+Штатный `shumeiko-web-test-health.service` завершился с `Result=success`, drift
+check прошёл, test service остался active с PID `1785024`, `NRestarts=0`, а
+error-level журнал после rollout пуст.
+
+Production после test rollout сохранил pointer
+`runtime-d62da9a-v274-bigint-byte-metrics-20260809`, PID `1002362`,
+`NRestarts=0`, `runtimeEnvironment=production` и `status=ok`; production
+service не перезапускался.
+
+Rollback test — выполнить новым guarded promotion script переключение на
+`runtime-69ec11c-v272-db-first-report-persistence-20260807`, перезапустить
+только `shumeiko-web-test.service` и повторить local/public health, static-byte,
+safety, health-service и drift smoke. Test-only v2.73 artifact запрещено
+promote в production; данные, reports, source refresh и production при runtime
+rollback не изменять.
