@@ -13,6 +13,11 @@ from wb_unit_economics.runtime_release_lock import (
     exclusive_runtime_release_lock,
 )
 
+CONTOUR_REPORT_ROOTS = {
+    "prod": "/data/shumeyko/prod/reports",
+    "test": "/data/shumeyko/test/reports",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -43,6 +48,21 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
 
 
+def _validate_release_reports_root(
+    manifest: dict[str, object],
+    environment: str,
+) -> None:
+    reports_root = manifest.get("reportsRoot")
+    manifest_version = int(manifest.get("manifestVersion") or 1)
+    if reports_root is None and manifest_version < 2:
+        return
+    expected = CONTOUR_REPORT_ROOTS[environment]
+    if reports_root != expected:
+        raise SystemExit(
+            f"Release reports root does not match {environment} contour"
+        )
+
+
 def _promote_release(args: argparse.Namespace) -> int:
     release = args.release_dir.resolve()
     release_root = args.release_root.resolve()
@@ -54,6 +74,7 @@ def _promote_release(args: argparse.Namespace) -> int:
         raise SystemExit("Refusing to promote a dirty release")
     if not manifest.get("sourceCommit") or not manifest.get("contentSha256"):
         raise SystemExit("Release manifest is incomplete")
+    _validate_release_reports_root(manifest, args.environment)
 
     runtime_root = args.runtime_root.resolve()
     runtime_root.mkdir(parents=True, exist_ok=True)

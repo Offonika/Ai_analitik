@@ -5,7 +5,7 @@ domain: "marketplace-analytics"
 audience: ["engineering", "operations"]
 status: draft
 source_of_truth: false
-updated_at: "2026-08-06"
+updated_at: "2026-08-11"
 ---
 
 # Эксплуатация web-кабинета Shumeyko
@@ -79,6 +79,21 @@ Report roots разделены и не находятся в Git checkout:
 
 - production: `/data/shumeyko/prod/reports`;
 - test: `/data/shumeyko/test/reports`.
+
+Immutable test release собирать с явным contour root:
+
+```bash
+.venv/bin/python scripts/build_runtime_release.py \
+  --commit <exact-commit> \
+  --release-id <runtime-id> \
+  --reports-root /data/shumeyko/test/reports
+```
+
+Перед promotion проверить, что `release-manifest.json` содержит
+`manifestVersion=2` и `reportsRoot=/data/shumeyko/test/reports`, а ссылка
+`reports` ведёт в тот же test root. Штатный promotion отклонит этот artifact
+для production; production требует отдельной contour-scoped сборки из того же
+проверенного commit.
 
 Перед первым переключением production создать новый каталог и скопировать
 действующие artifacts без удаления старого root:

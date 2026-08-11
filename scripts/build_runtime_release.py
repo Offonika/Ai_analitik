@@ -24,6 +24,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 RELEASE_SITE_MODULE = "shumeyko_release_site.py"
 RELEASE_SITE_PTH = "00-shumeyko-release-src.pth"
+ALLOWED_REPORTS_ROOTS = frozenset(
+    {
+        Path("/data/shumeyko/prod/reports"),
+        Path("/data/shumeyko/test/reports"),
+    }
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +42,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("/opt/shumeyko-releases"),
     )
     parser.add_argument("--venv", type=Path, default=ROOT / ".venv")
+    parser.add_argument(
+        "--reports-root",
+        type=Path,
+        default=Path("/data/shumeyko/prod/reports"),
+    )
     parser.add_argument(
         "--lock-path", type=Path, default=DEFAULT_RUNTIME_RELEASE_LOCK
     )
@@ -59,6 +70,28 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validated_reports_root(path: Path) -> Path:
+    resolved = path.resolve()
+    if resolved not in ALLOWED_REPORTS_ROOTS:
+        allowed = ", ".join(str(item) for item in sorted(ALLOWED_REPORTS_ROOTS))
+        raise SystemExit(f"Reports root must be one of: {allowed}")
+    return resolved
+
+
+def _release_content_sha256(
+    archive_sha256: str,
+    freeze_sha256: str,
+    runtime_bootstrap_sha256: str,
+    reports_root: Path,
+) -> str:
+    return hashlib.sha256(
+        (
+            f"{archive_sha256}:{freeze_sha256}:"
+            f"{runtime_bootstrap_sha256}:{reports_root}"
+        ).encode()
+    ).hexdigest()
 
 
 def _remove_editable_install_artifacts(site_packages: Path) -> list[str]:
@@ -120,6 +153,7 @@ def _build_release(args: argparse.Namespace) -> int:
     release_root = args.release_root.resolve()
     release_dir = release_root / release_id
     venv = args.venv.resolve()
+    reports_root = _validated_reports_root(args.reports_root)
     if release_dir.exists():
         raise SystemExit(f"Release already exists: {release_dir}")
     if not (venv / "bin" / "python").is_file():
@@ -142,10 +176,7 @@ def _build_release(args: argparse.Namespace) -> int:
         app_dir.mkdir()
         with tarfile.open(archive, "r") as bundle:
             bundle.extractall(app_dir, filter="data")
-        (app_dir / "reports").symlink_to(
-            Path("/data/shumeyko/prod/reports"),
-            target_is_directory=True,
-        )
+        (app_dir / "reports").symlink_to(reports_root, target_is_directory=True)
         shutil.copytree(venv, app_dir / ".venv", symlinks=True)
         runtime_bootstrap_sha256 = _install_release_source_bootstrap(
             app_dir / ".venv"
@@ -155,16 +186,18 @@ def _build_release(args: argparse.Namespace) -> int:
         freeze_path = app_dir / "python-freeze.txt"
         freeze_path.write_text(freeze + "\n", encoding="utf-8")
         freeze_sha256 = _sha256(freeze_path)
-        content_sha256 = hashlib.sha256(
-            (
-                f"{archive_sha256}:{freeze_sha256}:"
-                f"{runtime_bootstrap_sha256}"
-            ).encode()
-        ).hexdigest()
+        content_sha256 = _release_content_sha256(
+            archive_sha256,
+            freeze_sha256,
+            runtime_bootstrap_sha256,
+            reports_root,
+        )
         manifest = {
+            "manifestVersion": 2,
             "releaseId": release_id,
             "sourceCommit": commit,
             "sourceDirty": False,
+            "reportsRoot": str(reports_root),
             "createdAt": datetime.now(UTC).isoformat(),
             "archiveSha256": archive_sha256,
             "pythonFreezeSha256": freeze_sha256,

@@ -37,7 +37,7 @@ related_tests: [tests/test_web_app.py, tests/test_runtime_contour_scripts.py, te
 depends_on: [docs/specs/wb-unit-economics-ai-web-cabinet-implementation.md]
 related_specs: [docs/specs/wb-unit-economics-source-refresh-hardening-provider-registry.md]
 rollout_required: true
-updated_at: "2026-08-04"
+updated_at: "2026-08-11"
 ---
 
 # Goal
@@ -133,7 +133,18 @@ root, и не переводит их в `unavailable`.
 Release строится только из точного Git commit и содержит manifest с commit,
 archive hash, dependency freeze hash и content hash. Каталог release после
 сборки immutable. Test и production имеют независимые атомарные symlinks
-`current`; production получает ровно проверенный test artifact.
+`current`. Для contour-scoped artifacts production собирается из того же
+проверенного commit и dependency freeze, но с собственным `reportsRoot`; такой
+artifact требует отдельного production smoke и не является побайтовой копией
+test-only release.
+
+Builder принимает только whitelisted `--reports-root` для одного из двух
+контуров: `/data/shumeyko/prod/reports` или `/data/shumeyko/test/reports`.
+Выбранный root записывается в versioned manifest и участвует в content hash;
+promotion нового manifest отклоняется, если `reportsRoot` не совпадает с
+целевым контуром. Legacy manifest без этого поля сохраняет rollback-
+совместимость, но новый test-only artifact не может быть переключен в
+production.
 
 Build, promotion и release retention используют один неблокирующий exclusive
 lock `/run/lock/shumeiko-runtime-release.lock`. Занятый lock завершает любую из
@@ -179,6 +190,8 @@ immutable release не является свидетельством актив�
 - production health `ok`, refresh не активен, current report и Excel доступны;
 - параллельные build/promotion/retention не пересекаются, а cleanup сохраняет
   оба active target и минимум один полный rollback release;
+- новый test release содержит `reports -> /data/shumeyko/test/reports`, manifest
+  фиксирует тот же root, а promotion не допускает его в production;
 - unauthenticated reports/exports остаются закрыты, `.env`, JSON и XLSX не
   раздаются статически;
 - DNS и TLS нового домена готовы до передачи ссылки клиенту;
@@ -189,6 +202,9 @@ immutable release не является свидетельством актив�
 
 # Changelog
 
+- 2026-08-11: reports symlink immutable release стал contour-scoped,
+  зафиксирован в manifest/content hash и проверяется при promotion; test-only
+  artifact больше не содержит ссылку на production reports.
 - 2026-08-04: оформлены два независимых heavy dispatcher slots `@1/@2`; второй
   допускается только после performance-canary и замены одиночного timer.
 - 2026-07-31: основной test unit и test-only `ExecStart` overrides закрепляют

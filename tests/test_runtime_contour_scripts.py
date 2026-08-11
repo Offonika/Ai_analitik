@@ -7,17 +7,21 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from scripts.build_runtime_release import (
     RELEASE_SITE_MODULE,
     RELEASE_SITE_PTH,
     _install_release_source_bootstrap,
+    _release_content_sha256,
+    _validated_reports_root,
 )
 from scripts.prepare_test_database import (
     _delete_raw_snapshot_rows,
     _safe_current_source,
 )
+from scripts.promote_runtime_release import _validate_release_reports_root
 from wb_unit_economics.web import repository, security
 from wb_unit_economics.web.database import init_db, make_engine, make_session_factory
 from wb_unit_economics.web.models import (
@@ -337,6 +341,31 @@ def test_runtime_release_bootstrap_prefers_its_own_source(tmp_path: Path) -> Non
         assert Path(sys.path[0]).resolve() == release_src.resolve()
     finally:
         sys.path[:] = original
+
+
+def test_runtime_release_report_root_is_contour_scoped_and_hashed() -> None:
+    prod_root = Path("/data/shumeyko/prod/reports")
+    test_root = Path("/data/shumeyko/test/reports")
+
+    assert _validated_reports_root(prod_root) == prod_root
+    assert _validated_reports_root(test_root) == test_root
+    with pytest.raises(SystemExit, match="Reports root must be one of"):
+        _validated_reports_root(Path("/data/shumeyko/prod/source_refresh"))
+
+    prod_hash = _release_content_sha256("a", "b", "c", prod_root)
+    test_hash = _release_content_sha256("a", "b", "c", test_root)
+    assert prod_hash != test_hash
+
+    _validate_release_reports_root(
+        {"manifestVersion": 2, "reportsRoot": str(test_root)},
+        "test",
+    )
+    with pytest.raises(SystemExit, match="does not match prod contour"):
+        _validate_release_reports_root(
+            {"manifestVersion": 2, "reportsRoot": str(test_root)},
+            "prod",
+        )
+    _validate_release_reports_root({}, "test")
 
 
 def _read_env(path: Path) -> dict[str, str]:
