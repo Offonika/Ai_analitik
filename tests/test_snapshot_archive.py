@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from scripts.archive_source_refresh_snapshots import _parse_args
+from scripts.archive_source_refresh_snapshots import (
+    _eligible,
+    _has_snapshot_payload,
+    _parse_args,
+)
 from scripts.configure_source_refresh_s3_lifecycle import desired_rule
 from wb_unit_economics.report_archive import (
     archive_report_to_s3,
@@ -127,6 +133,50 @@ def test_archive_eligible_cli_has_no_explicit_snapshot_attribute(
     assert args.command == "archive-eligible"
     assert args.max_snapshots == 2
     assert not hasattr(args, "snapshot")
+
+
+def test_snapshot_payload_rejects_heartbeat_only_directory(tmp_path: Path) -> None:
+    blocked = tmp_path / "daily-20260901-081506"
+    blocked.mkdir()
+    (blocked / ".worker-heartbeat").write_text("", encoding="utf-8")
+    materialized = tmp_path / "daily-20260831-221504"
+    materialized.mkdir()
+    (materialized / ".worker-heartbeat").write_text("", encoding="utf-8")
+    (materialized / "manifest.json").write_text("{}", encoding="utf-8")
+
+    assert _has_snapshot_payload(blocked) is False
+    assert _has_snapshot_payload(materialized) is True
+
+
+def test_archive_eligible_ignores_nonmaterialized_and_heartbeat_only(
+    tmp_path: Path,
+) -> None:
+    materialized = tmp_path / "daily-20260829-010101"
+    materialized.mkdir()
+    (materialized / "manifest.json").write_text("{}", encoding="utf-8")
+    blocked = tmp_path / "daily-20260828-010101"
+    blocked.mkdir()
+    (blocked / ".worker-heartbeat").write_text("", encoding="utf-8")
+    unknown = tmp_path / "full-20260827-010101"
+    unknown.mkdir()
+    (unknown / "manifest.json").write_text("{}", encoding="utf-8")
+    old = (datetime.now(UTC) - timedelta(days=4)).timestamp()
+    for path in (materialized, blocked, unknown):
+        os.utime(path, (old, old))
+    args = argparse.Namespace(
+        source_root=str(tmp_path),
+        min_age_hours=48,
+        keep_daily=0,
+        keep_full=0,
+        max_snapshots=10,
+    )
+
+    selected = _eligible(
+        args,
+        materialized_names={materialized.name, blocked.name},
+    )
+
+    assert selected == [materialized]
 
 
 def test_raw_lifecycle_is_tag_scoped_and_keeps_manifests() -> None:

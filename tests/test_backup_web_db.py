@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -66,3 +68,28 @@ def test_write_pg_dump_backup_removes_partial_file_on_failure(
 
     assert not target.exists()
     assert not target.with_name(f"{target.name}.tmp").exists()
+
+
+def test_prune_old_backups_keeps_only_latest_generation(tmp_path) -> None:
+    now = datetime.now(UTC)
+    backups = []
+    for index in range(3):
+        path = tmp_path / f"shumeiko-web-2026090{index + 1}_010101.sql.gz"
+        path.write_bytes(str(index).encode())
+        stamp = (now - timedelta(days=2 - index)).timestamp()
+        os.utime(path, (stamp, stamp))
+        backups.append(path)
+    manual_dump = tmp_path / "shumeiko-web-company-fix.dump"
+    manual_dump.write_bytes(b"manual")
+
+    removed = backup_web_db.prune_old_backups(
+        tmp_path,
+        retention_days=3,
+        keep_latest=1,
+    )
+
+    assert removed == 2
+    assert backups[2].exists()
+    assert not backups[0].exists()
+    assert not backups[1].exists()
+    assert manual_dump.exists()

@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
         default=Path("/var/backups/shumeiko-web"),
     )
     parser.add_argument("--retention-days", type=int, default=3)
+    parser.add_argument("--keep-latest", type=int, default=0)
     return parser.parse_args()
 
 
@@ -39,7 +40,11 @@ def main() -> int:
     target = args.output_dir / f"shumeiko-web-{stamp}.sql.gz"
     write_pg_dump_backup(pg_dump_url(args.database_url), target)
     target.chmod(0o600)
-    removed = prune_old_backups(args.output_dir, args.retention_days)
+    removed = prune_old_backups(
+        args.output_dir,
+        args.retention_days,
+        keep_latest=args.keep_latest,
+    )
     print(f"backup={target} removed_old={removed}")
     return 0
 
@@ -101,14 +106,29 @@ def pg_dump_command(database_url: str) -> tuple[list[str], dict[str, str]]:
     return ["pg_dump", "--no-owner", "--no-privileges"], env
 
 
-def prune_old_backups(output_dir: Path, retention_days: int) -> int:
-    if retention_days <= 0:
+def prune_old_backups(
+    output_dir: Path,
+    retention_days: int,
+    *,
+    keep_latest: int = 0,
+) -> int:
+    if keep_latest < 0:
+        raise ValueError("keep_latest must be non-negative")
+    if retention_days <= 0 and keep_latest == 0:
         return 0
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     removed = 0
-    for path in output_dir.glob("shumeiko-web-*.sql.gz"):
+    backups = sorted(
+        (path for path in output_dir.glob("shumeiko-web-*.sql.gz") if path.is_file()),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+    protected = set(backups[:keep_latest])
+    for path in backups:
+        if path in protected:
+            continue
         modified = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-        if modified < cutoff:
+        if keep_latest > 0 or modified < cutoff:
             path.unlink()
             removed += 1
     return removed

@@ -1645,3 +1645,89 @@ Rollback test — атомарно вернуть test symlink на предва
 `scripts/promote_runtime_release.py --environment test`, перезапустить только
 `shumeiko-web-test.service` и повторить test health/safety smoke. Draft reports,
 source snapshots и production при runtime rollback не изменяются.
+
+## Production hotfix дедупликации налоговых профилей — 4 августа 2026 года
+
+Production full refresh за закрытый недельный период воспроизводимо завершался
+ошибкой PostgreSQL `UniqueViolation` по уникальному storage identity таблицы
+`organization_tax_profiles`, хотя обязательные WB/1С-источники успевали
+загрузиться. Для исправления от действующего production commit
+`30cc290ad3783af735787b00d2396a793ecaf20c` подготовлен отдельный минимальный
+commit `89d90c89622c2baa17aea00bacbcb8b7885674a2`: дедупликация профилей до
+записи, защита от повторного staged ID и сохранение различия между отказом
+источника и внутренней ошибкой. Связанные тесты и Ruff прошли до rollout.
+
+Из точного hotfix commit собран immutable release
+`runtime-main-89d90c8-tax-profile-hotfix-20260804`; manifest подтверждает
+`sourceDirty=false`, а импорт пакета выполняется из собственного `release/src`.
+Артефакт предварительно запущен на отдельном временном порту с test-БД и
+test writable roots, без переключения действующего test symlink; `/api/health`
+вернул `status=ok`, `runtimeEnvironment=test` и одинаковые backend/static build
+ID.
+
+Rollback target зафиксирован как
+`runtime-main-30cc290-v264-news-guide-v3-heartbeat-hotfix-20260804`. Production
+symlink атомарно переключен на hotfix release, перезапущен только
+`shumeiko-web-prod.service`. Process working directory после restart указывает
+на новый immutable release. Локальный и публичный health подтвердили
+`runtimeEnvironment=production` и одинаковые backend/static build ID;
+неавторизованный `/api/reports` вернул HTTP 401, а `/.env`, служебный JSON и
+legacy download path — HTTP 404. Публичные ответы сохранили
+`X-Robots-Tag: noindex, nofollow, noarchive`.
+
+После завершения штатного hourly daily worker выполнен контрольный read-only
+full refresh за `2026-07-27` — `2026-08-02`. Он завершился допустимым
+`needs_review`: все обязательные WB/1С-коллекции загружены, `failure_code` и
+внутренняя ошибка пусты, новый Excel находится внутри production reports root.
+Read-only DB-проверка из hotfix runtime подтвердила отсутствие повторов storage
+identity налогового профиля, готовность и наличие hash у всех
+зарегистрированных артефактов. Созданный отчёт остался
+`publication_status=draft`, `is_current=false`; опубликованный клиентский
+current не переключался. После refresh локальный и публичный `/api/health`
+вернули `status=ok`, `latestSourceRefreshStatus=needs_review`, активный refresh
+отсутствовал.
+
+Rollback runtime — атомарно вернуть production symlink на указанный предыдущий
+release через `scripts/promote_runtime_release.py --environment prod`,
+перезапустить только `shumeiko-web-prod.service` и повторить local/public
+health и safety smoke. Созданные immutable snapshots, draft и артефакты при
+runtime rollback не удаляются.
+
+## Corrective rollout периода мастера отчёта — 5 августа 2026 года
+
+Production UI показывал загруженный серверный диапазон «До вчера», но обе
+кнопки мастера оставались в состоянии «Период загружается». Причиной были
+повторные объявления функций мастера в `app.js`: более поздняя устаревшая
+реализация перезаписывала корректный выбор `default`, считала его даты пустыми
+и не разрешала запуск.
+
+Минимальный commit `94001355ad92f87b77198af6ad6da1c50ff78eb2` удаляет
+дублирующий блок, добавляет регрессионную проверку единственности функций и
+поднимает общий backend/static build ID для cache busting. Из commit собран
+чистый immutable release
+`runtime-main-9400135-report-wizard-period-hotfix-20260805`. На отдельном
+test-порту артефакт вернул `status=ok`, совпадающий новый build ID и отдал
+JavaScript с одной функцией выбора периода и логикой `defaultFullPeriod`.
+
+Production symlink атомарно переключен на новый release, перезапущен только
+`shumeiko-web-prod.service`; rollback target —
+`runtime-main-89d90c8-tax-profile-hotfix-20260804`. Локальный и публичный
+health после restart имеют `status=ok`, `runtimeEnvironment=production`,
+совпадающие backend/static build ID и отсутствие активного refresh. Публичные
+HTML и `app.js` содержат новый cache-busting ID и исправленную логику; safety
+smoke сохранил HTTP 401 для неавторизованного `/api/reports` и HTTP 404 для
+`/.env`.
+
+После corrective rollout из нового production runtime выполнен полный
+накопительный refresh за `2026-03-01` — `2026-08-02`. Все обязательные WB/1С
+коллекции загрузились, source refresh завершился допустимым `needs_review` и
+создал новый неопубликованный отчёт. Excel находится внутри production reports
+root; все зарегистрированные артефакты имеют статус `ready` и заполненный hash.
+Отчёт сохранён как `publication_status=draft`, `is_current=false`; предыдущий
+опубликованный current не переключался.
+
+Финансовая readiness нового draft остаётся `failed` из-за enforced-блокера
+`document_reconciliation_unresolved`; дополнительно сохранены явные review
+замечания по неполному источнику, mapping, качеству данных, сверкам 1С,
+себестоимости и месячной сверке. До устранения или отдельной подтверждённой
+финансовой приёмки этот draft не публиковать клиенту.

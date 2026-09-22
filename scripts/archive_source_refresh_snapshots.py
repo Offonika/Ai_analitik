@@ -11,11 +11,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 
 from wb_unit_economics.snapshot_archive import archive_snapshot, restore_snapshot
 from wb_unit_economics.web.database import make_engine, make_session_factory
-from wb_unit_economics.web.models import SourceRefreshRun
+from wb_unit_economics.web.models import SourceRefreshRun, SourceSnapshotRow
+
+MATERIALIZED_STATUSES = {"source_loaded", "report_created", "needs_review"}
 
 
 def main() -> int:
@@ -63,15 +65,23 @@ def main() -> int:
         return 0
 
 
-def _eligible(args: argparse.Namespace) -> list[Path]:
+def _eligible(
+    args: argparse.Namespace,
+    *,
+    materialized_names: set[str] | None = None,
+) -> list[Path]:
     root = Path(args.source_root).resolve(strict=True)
     now = datetime.now().timestamp()
+    if materialized_names is None:
+        materialized_names = _materialized_snapshot_names()
     candidates = [
         item
         for item in root.iterdir()
         if item.is_dir()
         and not item.is_symlink()
         and not item.name.startswith(".")
+        and item.name in materialized_names
+        and _has_snapshot_payload(item)
         and now - item.stat().st_mtime >= args.min_age_hours * 3600
     ]
     newest = sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
@@ -87,6 +97,39 @@ def _eligible(args: argparse.Namespace) -> list[Path]:
     )
     selected = [item for item in reversed(newest) if item.name not in protected]
     return selected[: args.max_snapshots]
+
+
+def _materialized_snapshot_names() -> set[str]:
+    database_url = os.getenv("SHUMEYKO_DATABASE_URL", "")
+    if not database_url:
+        raise RuntimeError("SHUMEYKO_DATABASE_URL is required for eligible archival")
+    engine = make_engine(database_url)
+    session_factory = make_session_factory(engine)
+    try:
+        with session_factory() as db:
+            names = db.scalars(
+                select(SourceRefreshRun.snapshot_set_id).where(
+                    SourceRefreshRun.status.in_(MATERIALIZED_STATUSES),
+                    SourceRefreshRun.dry_run.is_(False),
+                    SourceRefreshRun.finished_at.is_not(None),
+                    SourceRefreshRun.snapshot_set_id != "",
+                    exists(
+                        select(SourceSnapshotRow.id).where(
+                            SourceSnapshotRow.refresh_run_id == SourceRefreshRun.id
+                        )
+                    ),
+                )
+            ).all()
+        return {str(name) for name in names if name}
+    finally:
+        engine.dispose()
+
+
+def _has_snapshot_payload(snapshot: Path) -> bool:
+    return any(
+        path.is_file() and path.name != ".worker-heartbeat"
+        for path in snapshot.rglob("*")
+    )
 
 
 def _assert_no_active_refresh() -> None:

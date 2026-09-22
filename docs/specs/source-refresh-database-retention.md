@@ -66,7 +66,7 @@ depends_on:
   - docs/specs/web-cabinet-runtime-contours.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-04"
+updated_at: "2026-09-01"
 ---
 
 # Implementation Status
@@ -324,6 +324,13 @@ special file, отключенное versioning, неполный readback ил�
 объектов. Restore скачивает их во временный каталог, проверяет размер и SHA-256
 каждого файла и только затем атомарно возвращает исходное имя snapshot.
 
+Кандидатами filesystem snapshot archive являются только завершенные
+недеградационные `source_refresh_runs` со статусом `source_loaded`,
+`report_created` или `needs_review`, непустым `snapshot_set_id`, реальными
+`source_snapshot_rows` и непустым snapshot-каталогом. `blocked_low_disk`,
+blocked/dry-run/failed записи и каталоги только с `.worker-heartbeat` не участвуют
+ни в выборе кандидатов, ни в расчете защищаемых `daily/full` поколений.
+
 Автоматический snapshot archive относится только к production. Test-контур не
 имеет scheduled source-refresh, archive или retention timers. Разовый ручной
 archive тестовых snapshots допустим только как staff-операция с явными test
@@ -355,8 +362,10 @@ refresh завершается контролируемым `blocked_low_disk` �
 
 Любая ошибка backup, worker preflight, PostgreSQL или файловой защиты завершает
 контур без продолжения к следующим destructive-шагам. Ежедневный operational
-SQL-backup хранится локально одни сутки; off-host S3 maintenance backup создается
-отдельно непосредственно перед weekly retention.
+SQL-backup после успешного атомарного создания хранит локально ровно одно
+последнее поколение; ручные `.dump` не подпадают под автоматическое удаление.
+Off-host S3 maintenance backup создается ежедневно и отдельно непосредственно
+перед weekly retention; локальная копия не заменяет verified S3.
 
 # Критерии приемки
 
@@ -382,6 +391,11 @@ SQL-backup хранится локально одни сутки; off-host S3 ma
   manifest/receipt objects.
 
 ## Changelog
+
+- 2026-09-01: локальный operational SQL-backup переведен с календарной
+  retention на одно последнее поколение; filesystem snapshot archive допускает
+  только успешные непустые materialized runs и исключает `blocked_low_disk` и
+  heartbeat-only каталоги из кандидатов и protected generations.
 
 - 2026-08-04: добавлен verified S3 archive superseded-ревизий старше 12
   месяцев, read-only restore без переключения current и tagged raw lifecycle
